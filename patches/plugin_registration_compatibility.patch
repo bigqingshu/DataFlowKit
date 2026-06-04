@@ -1,0 +1,356 @@
+--- DataFlowKit.py
++++ DataFlowKit.py
+@@ -44,6 +44,7 @@
+ import os
+ import sys
+ import json
++import ast
+ import fnmatch
+ import importlib.util
+ import traceback
+@@ -4830,16 +4831,25 @@
+     def load_plugins(self, show_status=False):
+         """扫描 plugins 目录并注册插件。
+ 
+-        支持两种插件形态：
+-        1. 旧版单文件插件：plugins/xxx_plugin.py，直接在主程序环境 import。
+-        2. 独立环境插件包：plugins/插件目录/plugin.json + plugin.py。
+-           这种模式不需要主程序 import 插件代码，适合插件依赖第三方库、需要独立 venv 的场景。
++        新版插件注册分为“元信息识别”和“运行环境加载”两层：
++        1. 优先读取 plugins/插件目录/plugin.json，不 import 插件业务代码。
++        2. 其次静态解析单文件 .py 里的 PLUGIN_INFO / PARAMETER_SCHEMA，不执行插件代码。
++        3. 最后才尝试 import 插件，兼容旧版只提供 get_parameter_schema() 的插件。
++
++        如果单文件插件 import 失败，但已经能静态读取元信息，则仍注册为“仅插件独立环境运行”。
++        这样 exe 环境下即使缺少 intelhex、python-docx、pywin32 等插件依赖，插件也不会在扫描阶段消失。
+         """
+         self.plugin_registry = {}
+         self.plugin_display_map = {}
+         self.plugin_load_errors = []
+         plugins_dir = self.get_plugins_dir()
+ 
++        def normalize_run_mode(value, default="主程序内置环境"):
++            text = str(value or default or "").strip()
++            if text in ("external_python", "独立环境", "插件独立环境", "external", "external-python"):
++                return "插件独立环境"
++            return "主程序内置环境"
++
+         def normalize_info_schema(info, schema, source_name):
+             if not isinstance(info, dict):
+                 raise RuntimeError("缺少 PLUGIN_INFO / plugin_info 字典")
+@@ -4857,31 +4867,139 @@
+                 raise RuntimeError(f"插件 id 重复：{plugin_id}（来源：{source_name}）")
+             return plugin_id, dict(info), schema
+ 
+-        def register_py_file(path, filename):
++        def static_read_py_metadata(path):
++            """静态读取 .py 插件中的 PLUGIN_INFO / PARAMETER_SCHEMA，避免执行业务依赖 import。"""
++            with open(path, "r", encoding="utf-8") as f:
++                source = f.read()
++            tree = ast.parse(source, filename=path)
++            values = {}
++            for node in tree.body:
++                target_name = None
++                value_node = None
++                if isinstance(node, ast.Assign):
++                    if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
++                        target_name = node.targets[0].id
++                        value_node = node.value
++                elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
++                    target_name = node.target.id
++                    value_node = node.value
++                if target_name in ("PLUGIN_INFO", "plugin_info", "PARAMETER_SCHEMA", "parameter_schema", "PLUGIN_SCHEMA", "SCHEMA") and value_node is not None:
++                    try:
++                        values[target_name] = ast.literal_eval(value_node)
++                    except Exception:
++                        # 非常量表达式无法静态解析，交给后续 import 兜底。
++                        pass
++            info = values.get("PLUGIN_INFO") or values.get("plugin_info")
++            schema = (
++                values.get("PARAMETER_SCHEMA")
++                or values.get("parameter_schema")
++                or values.get("PLUGIN_SCHEMA")
++                or values.get("SCHEMA")
++                or []
++            )
++            return info, schema
++
++        def import_plugin_module(path, filename):
+             module_name = f"workflow_plugin_{os.path.splitext(filename)[0]}_{abs(hash(path))}"
+             spec = importlib.util.spec_from_file_location(module_name, path)
+             if spec is None or spec.loader is None:
+                 raise RuntimeError("无法创建插件导入 spec")
+             module = importlib.util.module_from_spec(spec)
+             spec.loader.exec_module(module)
+-            info = getattr(module, "PLUGIN_INFO", None)
+-            schema_func = getattr(module, "get_parameter_schema", None)
+-            schema = schema_func() if callable(schema_func) else []
+-            plugin_id, info, schema = normalize_info_schema(info, schema, filename)
+-            if not callable(getattr(module, "run", None)):
+-                raise RuntimeError("插件缺少 run(input_data, params, context) 函数")
++            return module
++
++        def build_registry_item(plugin_id, info, schema, path, *, module=None, external_entry=None,
++                                requirements_path="", manifest_path="", run_mode_default="主程序内置环境",
++                                import_ok=True, import_error="", metadata_source="import"):
++            run_mode_default = normalize_run_mode(run_mode_default, "主程序内置环境")
++            if import_ok:
++                available_run_modes = ["主程序内置环境", "插件独立环境"]
++                load_status = "可内置运行"
++            else:
++                available_run_modes = ["插件独立环境"]
++                load_status = "仅独立环境运行"
++                run_mode_default = "插件独立环境"
+             self.plugin_registry[plugin_id] = {
+                 "id": plugin_id,
+                 "info": info,
+                 "module": module,
+                 "schema": schema,
+                 "path": path,
+-                "external_entry": path,
+-                "requirements_path": "",
+-                "manifest_path": "",
+-                "run_mode_default": info.get("run_mode", "主程序内置环境"),
++                "external_entry": external_entry or path,
++                "requirements_path": requirements_path,
++                "manifest_path": manifest_path,
++                "run_mode_default": run_mode_default,
++                "import_ok": bool(import_ok),
++                "import_error": import_error or "",
++                "load_status": load_status,
++                "available_run_modes": available_run_modes,
++                "metadata_source": metadata_source,
+             }
+ 
++        def register_py_file(path, filename):
++            static_info = None
++            static_schema = []
++            static_error = ""
++            try:
++                static_info, static_schema = static_read_py_metadata(path)
++            except Exception as e:
++                static_error = str(e)
++
++            # 如果插件静态声明默认独立环境，则扫描阶段不强制 import，避免业务依赖缺失导致插件消失。
++            declared_mode = ""
++            if isinstance(static_info, dict):
++                declared_mode = normalize_run_mode(static_info.get("run_mode") or static_info.get("run_mode_default"), "")
++            if static_info and declared_mode == "插件独立环境":
++                plugin_id, info, schema = normalize_info_schema(static_info, static_schema, filename)
++                build_registry_item(
++                    plugin_id, info, schema, path,
++                    module=None,
++                    external_entry=path,
++                    run_mode_default="插件独立环境",
++                    import_ok=False,
++                    import_error="插件声明默认使用独立环境，扫描阶段已跳过主程序 import。",
++                    metadata_source="static_py",
++                )
++                return
++
++            try:
++                module = import_plugin_module(path, filename)
++                info = getattr(module, "PLUGIN_INFO", None) or static_info
++                schema_func = getattr(module, "get_parameter_schema", None)
++                if callable(schema_func):
++                    schema = schema_func()
++                else:
++                    schema = getattr(module, "PARAMETER_SCHEMA", None) or static_schema or []
++                plugin_id, info, schema = normalize_info_schema(info, schema, filename)
++                if not callable(getattr(module, "run", None)):
++                    raise RuntimeError("插件缺少 run(input_data, params, context) 函数")
++                build_registry_item(
++                    plugin_id, info, schema, path,
++                    module=module,
++                    external_entry=path,
++                    run_mode_default=info.get("run_mode", "主程序内置环境"),
++                    import_ok=True,
++                    metadata_source="import_py",
++                )
++            except Exception as import_exc:
++                if static_info:
++                    # import 失败但元信息已静态读取成功：仍注册，让用户可选择插件独立环境运行。
++                    plugin_id, info, schema = normalize_info_schema(static_info, static_schema, filename)
++                    build_registry_item(
++                        plugin_id, info, schema, path,
++                        module=None,
++                        external_entry=path,
++                        run_mode_default="插件独立环境",
++                        import_ok=False,
++                        import_error=str(import_exc),
++                        metadata_source="static_py_import_failed",
++                    )
++                else:
++                    detail = str(import_exc)
++                    if static_error:
++                        detail = f"静态元信息读取失败：{static_error}；导入失败：{detail}"
++                    raise RuntimeError(detail)
++
+         def register_manifest(plugin_dir, manifest_path):
+             with open(manifest_path, "r", encoding="utf-8") as f:
+                 manifest = json.load(f)
+@@ -4894,18 +5012,38 @@
+             entry_path = entry if os.path.isabs(entry) else os.path.join(plugin_dir, entry)
+             req = manifest.get("requirements") or info.get("requirements") or "requirements.txt"
+             req_path = req if os.path.isabs(req) else os.path.join(plugin_dir, req)
+-            run_mode_default = manifest.get("run_mode") or info.get("run_mode") or "插件独立环境"
+-            self.plugin_registry[plugin_id] = {
+-                "id": plugin_id,
+-                "info": info,
+-                "module": None,
+-                "schema": schema,
+-                "path": entry_path,
+-                "external_entry": entry_path,
+-                "requirements_path": req_path if os.path.exists(req_path) else "",
+-                "manifest_path": manifest_path,
+-                "run_mode_default": run_mode_default,
+-            }
++            run_mode_default = normalize_run_mode(manifest.get("run_mode") or info.get("run_mode") or "插件独立环境", "插件独立环境")
++
++            # plugin.json 是推荐的独立环境格式：默认不 import 业务入口。
++            # 如果 manifest 明确要求主程序内置环境，则尝试 import；失败时仍注册为仅独立环境运行。
++            module = None
++            import_ok = False
++            import_error = ""
++            metadata_source = "plugin_json"
++            if run_mode_default == "主程序内置环境":
++                try:
++                    module = import_plugin_module(entry_path, os.path.basename(entry_path))
++                    if not callable(getattr(module, "run", None)):
++                        raise RuntimeError("插件缺少 run(input_data, params, context) 函数")
++                    import_ok = True
++                    metadata_source = "plugin_json_imported"
++                except Exception as e:
++                    import_error = str(e)
++                    run_mode_default = "插件独立环境"
++            else:
++                import_error = "plugin.json 注册插件，扫描阶段默认不导入业务入口。"
++
++            build_registry_item(
++                plugin_id, info, schema, entry_path,
++                module=module,
++                external_entry=entry_path,
++                requirements_path=req_path if os.path.exists(req_path) else "",
++                manifest_path=manifest_path,
++                run_mode_default=run_mode_default,
++                import_ok=import_ok,
++                import_error=import_error,
++                metadata_source=metadata_source,
++            )
+ 
+         # 先扫描插件包目录，避免与同名 py 文件冲突时信息不完整。
+         for name in sorted(os.listdir(plugins_dir)):
+@@ -4943,18 +5081,25 @@
+                 })
+ 
+         used_names = {}
++        external_only_count = 0
+         for plugin_id, item in sorted(self.plugin_registry.items(), key=lambda kv: kv[1]["info"].get("name", kv[0])):
+             name = str(item["info"].get("name", plugin_id)).strip() or plugin_id
+-            display = f"插件 / {name}"
++            suffix = ""
++            if item.get("load_status") == "仅独立环境运行":
++                external_only_count += 1
++                suffix = " [仅独立]"
++            display = f"插件 / {name}{suffix}"
+             if display in used_names:
+                 used_names[display] += 1
+-                display = f"插件 / {name} ({plugin_id})"
++                display = f"插件 / {name} ({plugin_id}){suffix}"
+             else:
+                 used_names[display] = 1
+             self.plugin_display_map[display] = plugin_id
+ 
+         if show_status:
+-            msg = f"插件刷新完成：已加载 {len(self.plugin_registry)} 个插件"
++            msg = f"插件刷新完成：已注册 {len(self.plugin_registry)} 个插件"
++            if external_only_count:
++                msg += f"，其中仅独立环境 {external_only_count} 个"
+             if self.plugin_load_errors:
+                 msg += f"，加载失败 {len(self.plugin_load_errors)} 个"
+                 first = self.plugin_load_errors[0]
+@@ -5090,30 +5235,46 @@
+         ttk.Label(frame, text=f"ID：{plugin_id}    版本：{info.get('version', '')}    分类：{info.get('category', '')}", foreground="gray").grid(row=1, column=0, columnspan=4, sticky=tk.W, padx=4, pady=2)
+         ttk.Label(frame, text=info.get("description", ""), foreground="gray", wraplength=1050).grid(row=2, column=0, columnspan=4, sticky=tk.W, padx=4, pady=(0, 8))
+ 
++        load_status = item.get("load_status", "可内置运行")
++        import_error = str(item.get("import_error", "") or "").strip()
++        metadata_source = item.get("metadata_source", "")
++        available_run_modes = item.get("available_run_modes") or ["主程序内置环境", "插件独立环境"]
++        status_text = f"加载状态：{load_status}"
++        if metadata_source:
++            status_text += f"    元信息来源：{metadata_source}"
++        if load_status == "仅独立环境运行":
++            status_text += "    该插件不会在扫描阶段强制导入业务依赖。"
++        ttk.Label(frame, text=status_text, foreground=("#b26a00" if load_status == "仅独立环境运行" else "gray"), wraplength=1050).grid(row=3, column=0, columnspan=4, sticky=tk.W, padx=4, pady=2)
++        if import_error:
++            ttk.Label(frame, text=f"主程序环境导入提示：{import_error}", foreground="#b26a00", wraplength=1050).grid(row=4, column=0, columnspan=4, sticky=tk.W, padx=4, pady=(0, 6))
++
+         run_mode_var = tk.StringVar(value=config.get("run_mode", item.get("run_mode_default", "主程序内置环境")))
+         if run_mode_var.get() in ("external_python", "独立环境", "插件独立环境"):
+             run_mode_var.set("插件独立环境")
+         else:
+             run_mode_var.set("主程序内置环境")
+-        ttk.Label(frame, text="运行环境：").grid(row=3, column=0, sticky=tk.W, padx=4, pady=4)
+-        run_mode_combo = ttk.Combobox(frame, textvariable=run_mode_var, values=["主程序内置环境", "插件独立环境"], state="readonly", width=18)
+-        run_mode_combo.grid(row=3, column=1, sticky=tk.W, padx=4, pady=4)
++        if run_mode_var.get() not in available_run_modes:
++            run_mode_var.set(available_run_modes[0] if available_run_modes else "插件独立环境")
++            config["run_mode"] = run_mode_var.get()
++        ttk.Label(frame, text="运行环境：").grid(row=5, column=0, sticky=tk.W, padx=4, pady=4)
++        run_mode_combo = ttk.Combobox(frame, textvariable=run_mode_var, values=available_run_modes, state="readonly", width=18)
++        run_mode_combo.grid(row=5, column=1, sticky=tk.W, padx=4, pady=4)
+         run_mode_var.trace_add("write", lambda *_, v=run_mode_var: config.__setitem__("run_mode", v.get()))
+-        ttk.Label(frame, text="独立环境适合插件依赖未打包进主程序的情况", foreground="gray").grid(row=3, column=2, columnspan=2, sticky=tk.W, padx=4, pady=4)
++        ttk.Label(frame, text="独立环境适合插件依赖未打包进主程序的情况", foreground="gray").grid(row=5, column=2, columnspan=2, sticky=tk.W, padx=4, pady=4)
+ 
+         external_python_var = tk.StringVar(value=config.get("external_python", ""))
+-        ttk.Label(frame, text="独立Python：").grid(row=4, column=0, sticky=tk.W, padx=4, pady=4)
+-        ttk.Entry(frame, textvariable=external_python_var, width=58).grid(row=4, column=1, columnspan=2, sticky=tk.W, padx=4, pady=4)
++        ttk.Label(frame, text="独立Python：").grid(row=6, column=0, sticky=tk.W, padx=4, pady=4)
++        ttk.Entry(frame, textvariable=external_python_var, width=58).grid(row=6, column=1, columnspan=2, sticky=tk.W, padx=4, pady=4)
+         def choose_external_python(v=external_python_var):
+             path = filedialog.askopenfilename(title="选择插件独立环境 python.exe", filetypes=[("Python", "python.exe;python"), ("所有文件", "*.*")])
+             if path:
+                 v.set(path)
+-        ttk.Button(frame, text="选择", command=choose_external_python).grid(row=4, column=3, sticky=tk.W, padx=4, pady=4)
++        ttk.Button(frame, text="选择", command=choose_external_python).grid(row=6, column=3, sticky=tk.W, padx=4, pady=4)
+         external_python_var.trace_add("write", lambda *_, v=external_python_var: config.__setitem__("external_python", v.get()))
+ 
+         env_dir_var = tk.StringVar(value=config.get("external_env_dir", self.get_plugin_env_dir(plugin_id)))
+-        ttk.Label(frame, text="环境目录：").grid(row=5, column=0, sticky=tk.W, padx=4, pady=4)
+-        ttk.Entry(frame, textvariable=env_dir_var, width=58).grid(row=5, column=1, columnspan=2, sticky=tk.W, padx=4, pady=4)
++        ttk.Label(frame, text="环境目录：").grid(row=7, column=0, sticky=tk.W, padx=4, pady=4)
++        ttk.Entry(frame, textvariable=env_dir_var, width=58).grid(row=7, column=1, columnspan=2, sticky=tk.W, padx=4, pady=4)
+         def open_env_dir(v=env_dir_var):
+             path = v.get().strip() or self.get_plugin_env_dir(plugin_id)
+             os.makedirs(path, exist_ok=True)
+@@ -5121,12 +5282,12 @@
+                 os.startfile(path)
+             except Exception as e:
+                 messagebox.showerror("打开失败", f"无法打开环境目录：\n{path}\n\n{e}")
+-        ttk.Button(frame, text="打开", command=open_env_dir).grid(row=5, column=3, sticky=tk.W, padx=4, pady=4)
++        ttk.Button(frame, text="打开", command=open_env_dir).grid(row=7, column=3, sticky=tk.W, padx=4, pady=4)
+         env_dir_var.trace_add("write", lambda *_, v=env_dir_var: config.__setitem__("external_env_dir", v.get()))
+ 
+         entry_var = tk.StringVar(value=config.get("external_entry", item.get("external_entry", item.get("path", ""))))
+-        ttk.Label(frame, text="外部入口：").grid(row=6, column=0, sticky=tk.W, padx=4, pady=4)
+-        ttk.Entry(frame, textvariable=entry_var, width=58).grid(row=6, column=1, columnspan=2, sticky=tk.W, padx=4, pady=4)
++        ttk.Label(frame, text="外部入口：").grid(row=8, column=0, sticky=tk.W, padx=4, pady=4)
++        ttk.Entry(frame, textvariable=entry_var, width=58).grid(row=8, column=1, columnspan=2, sticky=tk.W, padx=4, pady=4)
+         def test_external_python(v=external_python_var):
+             py = v.get().strip() or self.find_external_python(config, item, allow_current=True)
+             try:
+@@ -5134,10 +5295,10 @@
+                 messagebox.showinfo("测试成功", out.strip())
+             except Exception as e:
+                 messagebox.showerror("测试失败", str(e))
+-        ttk.Button(frame, text="测试环境", command=test_external_python).grid(row=6, column=3, sticky=tk.W, padx=4, pady=4)
++        ttk.Button(frame, text="测试环境", command=test_external_python).grid(row=8, column=3, sticky=tk.W, padx=4, pady=4)
+         entry_var.trace_add("write", lambda *_, v=entry_var: config.__setitem__("external_entry", v.get()))
+ 
+-        row = 7
++        row = 9
+         schema = item.get("schema", [])
+         if not schema:
+             ttk.Label(frame, text="该插件没有声明参数。", foreground="gray").grid(row=row, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
