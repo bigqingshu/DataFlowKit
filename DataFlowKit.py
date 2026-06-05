@@ -5129,6 +5129,7 @@ class PlanWorkflowWindow:
         return {
             "plugin_id": plugin_id,
             "params": params,
+            "input_tables": [],
             "run_mode": default_run_mode,
             "external_python": "",
             "external_env_dir": self.get_plugin_env_dir(plugin_id),
@@ -5219,7 +5220,162 @@ class PlanWorkflowWindow:
             raise ValueError("请先设置 SQLite 数据库路径。")
         return PluginDatabaseAPI(db_path).get_columns(table_name)
 
-    def build_plugin_node_config(self, config, headers, transit_context=None):
+    def read_plugin_input_table_source(self, spec, current_headers, current_rows, context=None):
+        """按插件节点多表配置读取一张输入表。"""
+        spec = spec or {}
+        context = context or {"transit_tables": {}}
+        source_type = str(spec.get("source_type") or "当前工作流表").strip() or "当前工作流表"
+        if source_type == "当前工作流表":
+            headers = list(current_headers or [])
+            rows = [list(r) for r in self.normalize_rows(current_rows or [], len(headers))]
+            return {
+                "type": "table",
+                "headers": headers,
+                "rows": rows,
+                "source_name": "workflow_current",
+                "meta": {"source_type": source_type},
+            }
+        if source_type == "SQLite表":
+            table = str(spec.get("sqlite_table") or spec.get("table") or "").strip()
+            if not table:
+                raise ValueError("插件额外输入表未选择 SQLite 表。")
+            headers = self.get_workflow_sqlite_columns(table, context)
+            db_path = self.get_workflow_db_path(context)
+            with sqlite3.connect(db_path) as conn:
+                cur = conn.cursor()
+                cols = ", ".join(self.app.quote_ident(h) for h in headers)
+                cur.execute(f"SELECT {cols} FROM {self.app.quote_ident(table)} ORDER BY rowid")
+                rows = [["" if v is None else str(v) for v in row] for row in cur.fetchall()]
+            return {
+                "type": "table",
+                "headers": headers,
+                "rows": rows,
+                "source_name": f"SQLite:{table}",
+                "meta": {"source_type": source_type, "table_name": table},
+            }
+        if source_type == "中转副表":
+            name = str(spec.get("transit_table") or spec.get("table") or "").strip()
+            if not name:
+                raise ValueError("插件额外输入表未选择中转副表。")
+            item = (context.get("transit_tables", {}) or {}).get(name)
+            if not item:
+                raise ValueError(f"插件额外输入表未找到中转副表：{name}")
+            headers = list(item.get("headers", []) or [])
+            rows = [list(r) for r in (item.get("rows", []) or [])]
+            return {
+                "type": "table",
+                "headers": headers,
+                "rows": rows,
+                "source_name": f"中转:{name}",
+                "meta": {"source_type": source_type, "table_name": name},
+            }
+        raise ValueError(f"未知插件输入表来源类型：{source_type}")
+
+    def build_plugin_input_tables(self, config, current_headers, current_rows, context=None):
+        """构建插件可用的多输入表字典，兼容旧版单表 input_data。"""
+        primary = self.read_plugin_input_table_source(
+            {"source_type": "当前工作流表"},
+            current_headers,
+            current_rows,
+            context,
+        )
+        tables = {
+            "当前表": primary,
+            "workflow_current": primary,
+            "primary": primary,
+        }
+        for index, spec in enumerate(config.get("input_tables", []) or [], start=1):
+            if not isinstance(spec, dict):
+                continue
+            if spec.get("enabled", True) is False:
+                continue
+            table_data = self.read_plugin_input_table_source(spec, current_headers, current_rows, context)
+            alias = str(spec.get("alias") or "").strip() or f"输入表{index}"
+            table_data = dict(table_data)
+            meta = dict(table_data.get("meta") or {})
+            meta.update({"alias": alias, "input_index": index})
+            table_data["meta"] = meta
+            tables[alias] = table_data
+        return tables
+
+    def read_plugin_input_table_headers(self, spec, current_headers, context=None):
+        """仅读取插件输入表字段，用于节点配置下拉菜单，避免 UI 阶段整表加载。"""
+        spec = spec or {}
+        context = context or {"transit_tables": {}}
+        source_type = str(spec.get("source_type") or "当前工作流表").strip() or "当前工作流表"
+        if source_type == "当前工作流表":
+            return list(current_headers or [])
+        if source_type == "SQLite表":
+            table = str(spec.get("sqlite_table") or spec.get("table") or "").strip()
+            if not table:
+                return []
+            return list(self.get_workflow_sqlite_columns(table, context))
+        if source_type == "中转副表":
+            name = str(spec.get("transit_table") or spec.get("table") or "").strip()
+            item = (context.get("transit_tables", {}) or {}).get(name) if name else None
+            return list((item or {}).get("headers", []) or [])
+        return []
+
+    def build_plugin_input_table_headers(self, config, current_headers, context=None):
+        """构建插件可用输入表的字段映射，供动态参数控件使用。"""
+        table_headers = {
+            "当前表": list(current_headers or []),
+            "workflow_current": list(current_headers or []),
+            "primary": list(current_headers or []),
+        }
+        for index, spec in enumerate(config.get("input_tables", []) or [], start=1):
+            if not isinstance(spec, dict) or spec.get("enabled", True) is False:
+                continue
+            alias = str(spec.get("alias") or "").strip() or f"输入表{index}"
+            try:
+                table_headers[alias] = self.read_plugin_input_table_headers(spec, current_headers, context)
+            except Exception:
+                table_headers.setdefault(alias, [])
+        return table_headers
+
+    def center_toplevel(self, win, parent=None, width=None, height=None):
+        """把 Toplevel 放到父窗口中心；没有父窗口时放到屏幕中心。"""
+        try:
+            parent = parent or self.window
+            win.update_idletasks()
+            w = int(width or win.winfo_width() or win.winfo_reqwidth() or 600)
+            h = int(height or win.winfo_height() or win.winfo_reqheight() or 400)
+            if parent is not None and parent.winfo_exists():
+                parent.update_idletasks()
+                px = parent.winfo_rootx()
+                py = parent.winfo_rooty()
+                pw = parent.winfo_width()
+                ph = parent.winfo_height()
+                if pw <= 1 or ph <= 1:
+                    px = py = 0
+                    pw = win.winfo_screenwidth()
+                    ph = win.winfo_screenheight()
+            else:
+                px = py = 0
+                pw = win.winfo_screenwidth()
+                ph = win.winfo_screenheight()
+            x = max(0, px + (pw - w) // 2)
+            y = max(0, py + (ph - h) // 2)
+            win.geometry(f"{w}x{h}+{x}+{y}" if width or height else f"+{x}+{y}")
+        except Exception:
+            pass
+
+    def show_centered_toplevel(self, win, parent=None, width=None, height=None):
+        self.center_toplevel(win, parent, width, height)
+        try:
+            win.deiconify()
+        except Exception:
+            pass
+        try:
+            win.lift()
+        except Exception:
+            pass
+        try:
+            win.focus_set()
+        except Exception:
+            pass
+
+    def build_plugin_node_config(self, config, headers, transit_context=None, current_rows=None):
         frame = ttk.LabelFrame(self.config_frame, text="外部插件节点", padding=8)
         frame.pack(fill=tk.BOTH, expand=True, pady=8)
         plugin_id = config.get("plugin_id", "")
@@ -5299,6 +5455,151 @@ class PlanWorkflowWindow:
         entry_var.trace_add("write", lambda *_, v=entry_var: config.__setitem__("external_entry", v.get()))
 
         row = 9
+        input_specs = config.setdefault("input_tables", [])
+        if not isinstance(input_specs, list):
+            input_specs = []
+            config["input_tables"] = input_specs
+        transit_context = transit_context or {"transit_tables": {}}
+        transit_names = sorted((transit_context.get("transit_tables", {}) or {}).keys())
+        try:
+            sqlite_tables = self.app.get_table_names()
+        except Exception:
+            sqlite_tables = self.get_sqlite_table_names()
+
+        input_frame = ttk.LabelFrame(frame, text="插件多表输入（可选）", padding=6)
+        input_frame.grid(row=row, column=0, columnspan=4, sticky="ew", padx=4, pady=(4, 8))
+        ttk.Label(
+            input_frame,
+            text="默认会传入当前工作流表；这里可额外传入 SQLite 表或中转副表，插件可从 input_data['tables'] / context['input_tables'] 按别名读取。",
+            foreground="gray",
+            wraplength=1050,
+        ).grid(row=0, column=0, columnspan=5, sticky=tk.W, padx=4, pady=(0, 4))
+        input_lb = tk.Listbox(input_frame, height=4, width=88, exportselection=False)
+        input_lb.grid(row=1, column=0, columnspan=4, sticky="ew", padx=4, pady=4)
+
+        def format_input_spec(spec):
+            spec = spec or {}
+            alias = str(spec.get("alias") or "").strip() or "输入表"
+            source_type = str(spec.get("source_type") or "当前工作流表").strip() or "当前工作流表"
+            if source_type == "SQLite表":
+                detail = spec.get("sqlite_table") or spec.get("table") or ""
+            elif source_type == "中转副表":
+                detail = spec.get("transit_table") or spec.get("table") or ""
+            else:
+                detail = "当前工作流表"
+            enabled = "" if spec.get("enabled", True) else " [停用]"
+            return f"{alias} <- {source_type}:{detail}{enabled}"
+
+        def refresh_input_lb():
+            input_lb.delete(0, tk.END)
+            for spec in config.get("input_tables", []) or []:
+                input_lb.insert(tk.END, format_input_spec(spec))
+
+        dynamic_param_controls = []
+        refreshing_dynamic_controls = False
+
+        def edit_input_spec(index=None):
+            specs = config.setdefault("input_tables", [])
+            editing = index is not None and 0 <= index < len(specs)
+            source_spec = copy.deepcopy(specs[index]) if editing else {
+                "alias": f"输入表{len(specs) + 1}",
+                "source_type": "SQLite表",
+                "sqlite_table": sqlite_tables[0] if sqlite_tables else "",
+                "transit_table": transit_names[0] if transit_names else "",
+                "enabled": True,
+            }
+            win = tk.Toplevel(self.window)
+            try:
+                win.withdraw()
+            except Exception:
+                pass
+            win.title("插件输入表设置")
+            win.transient(self.window)
+            body = ttk.Frame(win, padding=10)
+            body.pack(fill=tk.BOTH, expand=True)
+
+            alias_var = tk.StringVar(value=source_spec.get("alias", ""))
+            source_type_var = tk.StringVar(value=source_spec.get("source_type", "SQLite表"))
+            sqlite_var = tk.StringVar(value=source_spec.get("sqlite_table", source_spec.get("table", "")))
+            transit_var = tk.StringVar(value=source_spec.get("transit_table", source_spec.get("table", "")))
+            enabled_var = tk.BooleanVar(value=bool(source_spec.get("enabled", True)))
+
+            ttk.Label(body, text="别名：").grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
+            ttk.Entry(body, textvariable=alias_var, width=30).grid(row=0, column=1, sticky=tk.W, padx=4, pady=4)
+            ttk.Checkbutton(body, text="启用", variable=enabled_var).grid(row=0, column=2, sticky=tk.W, padx=4, pady=4)
+
+            ttk.Label(body, text="来源类型：").grid(row=1, column=0, sticky=tk.W, padx=4, pady=4)
+            ttk.Combobox(
+                body,
+                textvariable=source_type_var,
+                values=["当前工作流表", "SQLite表", "中转副表"],
+                state="readonly",
+                width=18,
+            ).grid(row=1, column=1, sticky=tk.W, padx=4, pady=4)
+
+            ttk.Label(body, text="SQLite表：").grid(row=2, column=0, sticky=tk.W, padx=4, pady=4)
+            ttk.Combobox(body, textvariable=sqlite_var, values=sqlite_tables, width=34, state="normal").grid(row=2, column=1, columnspan=2, sticky=tk.W, padx=4, pady=4)
+            ttk.Label(body, text="中转副表：").grid(row=3, column=0, sticky=tk.W, padx=4, pady=4)
+            ttk.Combobox(body, textvariable=transit_var, values=transit_names, width=34, state="normal").grid(row=3, column=1, columnspan=2, sticky=tk.W, padx=4, pady=4)
+            ttk.Label(body, text="建议别名示例：文档读取表、新内容表。别名是插件读取多表时的键名。", foreground="gray", wraplength=520).grid(row=4, column=0, columnspan=3, sticky=tk.W, padx=4, pady=(4, 8))
+
+            btns = ttk.Frame(body)
+            btns.grid(row=5, column=0, columnspan=3, sticky=tk.E, padx=4, pady=4)
+
+            def on_ok():
+                alias = alias_var.get().strip() or f"输入表{len(specs) + 1}"
+                source_type = source_type_var.get().strip() or "SQLite表"
+                new_spec = {
+                    "alias": alias,
+                    "source_type": source_type,
+                    "sqlite_table": sqlite_var.get().strip(),
+                    "transit_table": transit_var.get().strip(),
+                    "enabled": bool(enabled_var.get()),
+                }
+                if editing:
+                    specs[index] = new_spec
+                else:
+                    specs.append(new_spec)
+                config["input_tables"] = specs
+                refresh_input_lb()
+                win.destroy()
+                refresh_plugin_dynamic_controls()
+
+            ttk.Button(btns, text="确定", command=on_ok).pack(side=tk.RIGHT, padx=4)
+            ttk.Button(btns, text="取消", command=win.destroy).pack(side=tk.RIGHT, padx=4)
+
+            def show_input_window():
+                self.show_centered_toplevel(win, self.window)
+                win.grab_set()
+
+            win.after_idle(show_input_window)
+
+        def selected_input_index():
+            sel = input_lb.curselection()
+            return int(sel[0]) if sel else None
+
+        def edit_selected_input():
+            idx = selected_input_index()
+            if idx is not None:
+                edit_input_spec(idx)
+
+        def delete_selected_input():
+            idx = selected_input_index()
+            specs = config.setdefault("input_tables", [])
+            if idx is not None and 0 <= idx < len(specs):
+                del specs[idx]
+                refresh_input_lb()
+                refresh_plugin_dynamic_controls()
+
+        input_btns = ttk.Frame(input_frame)
+        input_btns.grid(row=1, column=4, sticky=tk.NW, padx=4, pady=4)
+        ttk.Button(input_btns, text="增加", command=lambda: edit_input_spec(None)).pack(fill=tk.X, pady=2)
+        ttk.Button(input_btns, text="编辑", command=edit_selected_input).pack(fill=tk.X, pady=2)
+        ttk.Button(input_btns, text="删除", command=delete_selected_input).pack(fill=tk.X, pady=2)
+        ttk.Button(input_btns, text="刷新", command=lambda: (refresh_input_lb(), refresh_plugin_dynamic_controls())).pack(fill=tk.X, pady=2)
+        refresh_input_lb()
+        row += 1
+
         schema = item.get("schema", [])
         if not schema:
             ttk.Label(frame, text="该插件没有声明参数。", foreground="gray").grid(row=row, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
@@ -5307,6 +5608,118 @@ class PlanWorkflowWindow:
         def set_param(key, value):
             params[key] = value
             config["params"] = params
+
+        def get_input_table_header_map():
+            return self.build_plugin_input_table_headers(config, headers, transit_context or {})
+
+        def get_input_table_alias_choices():
+            table_headers = get_input_table_header_map()
+            choices = []
+            for key in ("当前表",):
+                if key in table_headers and key not in choices:
+                    choices.append(key)
+            for spec in config.get("input_tables", []) or []:
+                if not isinstance(spec, dict) or spec.get("enabled", True) is False:
+                    continue
+                alias = str(spec.get("alias") or "").strip()
+                if alias and alias in table_headers and alias not in choices:
+                    choices.append(alias)
+            for key in table_headers:
+                if key not in choices:
+                    choices.append(key)
+            return choices
+
+        def get_field_choices_for_table_param(spec):
+            table_param = (
+                spec.get("table_param")
+                or spec.get("source_table_param")
+                or spec.get("depends_on")
+                or spec.get("table_alias_param")
+            )
+            alias = str(params.get(table_param, "") or spec.get("table_alias", "") or spec.get("default_table_alias", "")).strip()
+            if not alias:
+                alias = "当前表"
+            return list(get_input_table_header_map().get(alias, []) or [])
+
+        def get_dynamic_parameter_choices(spec, key):
+            choices = list(spec.get("choices", spec.get("options", [])) or [])
+            provider = getattr(item.get("module"), "get_dynamic_parameter_options", None)
+            if callable(provider):
+                try:
+                    plugin_context = self.make_plugin_context(config, transit_context or {}, execute_actions=False)
+                    plugin_context["input_table_headers"] = get_input_table_header_map()
+                    plugin_context["plugin_input_table_specs"] = copy.deepcopy(config.get("input_tables", []))
+                    try:
+                        plugin_context["input_tables"] = self.build_plugin_input_tables(config, headers, current_rows or [], transit_context or {})
+                    except Exception as table_exc:
+                        plugin_context["input_tables_error"] = str(table_exc)
+                    dynamic = provider(key, dict(params), plugin_context)
+                    if isinstance(dynamic, dict):
+                        dynamic = dynamic.get("choices", dynamic.get("options", []))
+                    if isinstance(dynamic, (list, tuple)):
+                        choices = [str(v) for v in dynamic]
+                except Exception:
+                    pass
+            return choices
+
+        def dynamic_choices_for_control(control):
+            typ = control.get("type", "")
+            spec = control.get("spec", {})
+            key = control.get("key", "")
+            if typ == "dynamic_select":
+                return get_dynamic_parameter_choices(spec, key)
+            if typ == "input_table_select":
+                return get_input_table_alias_choices()
+            if typ == "input_table_field_select":
+                return get_field_choices_for_table_param(spec)
+            return []
+
+        def refresh_plugin_dynamic_controls():
+            nonlocal refreshing_dynamic_controls
+            refreshing_dynamic_controls = True
+            try:
+                for control in dynamic_param_controls:
+                    combo = control.get("combo")
+                    var = control.get("var")
+                    spec = control.get("spec", {})
+                    key = control.get("key", "")
+                    typ = control.get("type", "")
+                    if combo is None or var is None:
+                        continue
+                    choices = [str(v) for v in dynamic_choices_for_control(control)]
+                    current = str(var.get() or "")
+                    display_choices = list(choices)
+                    allow_custom = bool(spec.get("allow_custom", True))
+                    default_value = str(spec.get("default", "") or "")
+                    desired = current
+                    if typ == "input_table_select":
+                        if current not in choices:
+                            desired = choices[0] if choices else "当前表"
+                    elif typ == "input_table_field_select":
+                        if not current:
+                            desired = default_value if default_value in choices else (choices[0] if choices else default_value)
+                        elif current not in choices:
+                            if allow_custom:
+                                display_choices = [current] + [c for c in choices if c != current]
+                            else:
+                                desired = choices[0] if choices else default_value
+                    elif typ == "dynamic_select":
+                        if not current:
+                            desired = default_value if default_value in choices else (choices[0] if choices else default_value)
+                        elif current not in choices:
+                            if allow_custom:
+                                display_choices = [current] + [c for c in choices if c != current]
+                            else:
+                                desired = choices[0] if choices else default_value
+                    try:
+                        combo.configure(values=display_choices)
+                    except Exception:
+                        pass
+                    if desired != current:
+                        var.set(desired)
+                    set_param(key, var.get())
+            finally:
+                refreshing_dynamic_controls = False
 
         for spec in schema:
             if not isinstance(spec, dict):
@@ -5336,6 +5749,40 @@ class PlanWorkflowWindow:
                 choices = spec.get("choices", spec.get("options", []))
                 var = tk.StringVar(value=str(value) if value not in (None, "") else (choices[0] if choices else ""))
                 ttk.Combobox(frame, textvariable=var, values=choices, width=28, state="readonly").grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
+                var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
+            elif typ == "dynamic_select":
+                choices = get_dynamic_parameter_choices(spec, key)
+                if value not in (None, "") and str(value) not in choices:
+                    choices = [str(value)] + choices
+                var = tk.StringVar(value=str(value) if value not in (None, "") else (choices[0] if choices else ""))
+                state = "normal" if spec.get("allow_custom", True) else "readonly"
+                combo = ttk.Combobox(frame, textvariable=var, values=choices, width=28, state=state)
+                combo.grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
+                dynamic_param_controls.append({"type": typ, "spec": spec, "key": key, "var": var, "combo": combo})
+                var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
+            elif typ == "input_table_select":
+                choices = get_input_table_alias_choices()
+                if value not in (None, "") and str(value) not in choices:
+                    choices = [str(value)] + choices
+                var = tk.StringVar(value=str(value) if value not in (None, "") else (choices[0] if choices else "当前表"))
+                combo = ttk.Combobox(frame, textvariable=var, values=choices, width=28, state="readonly")
+                combo.grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
+                dynamic_param_controls.append({"type": typ, "spec": spec, "key": key, "var": var, "combo": combo})
+                def update_table_param(*_, k=key, v=var):
+                    set_param(k, v.get())
+                    if not refreshing_dynamic_controls:
+                        refresh_plugin_dynamic_controls()
+                var.trace_add("write", update_table_param)
+            elif typ == "input_table_field_select":
+                choices = get_field_choices_for_table_param(spec)
+                if value not in (None, "") and str(value) not in choices:
+                    choices = [str(value)] + choices
+                default_value = spec.get("default", "")
+                var = tk.StringVar(value=str(value) if value not in (None, "") else (default_value if default_value in choices else (choices[0] if choices else default_value)))
+                state = "normal" if spec.get("allow_custom", True) else "readonly"
+                combo = ttk.Combobox(frame, textvariable=var, values=choices, width=28, state=state)
+                combo.grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
+                dynamic_param_controls.append({"type": typ, "spec": spec, "key": key, "var": var, "combo": combo})
                 var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
             elif typ == "field_select":
                 choices = list(headers)
@@ -5443,10 +5890,24 @@ class PlanWorkflowWindow:
             def open_custom_config():
                 try:
                     plugin_context = self.make_plugin_context(config, transit_context or {}, execute_actions=False)
+                    try:
+                        input_tables = self.build_plugin_input_tables(config, headers, current_rows or [], transit_context or {})
+                        plugin_context["input_tables"] = input_tables
+                        plugin_context["plugin_input_table_specs"] = copy.deepcopy(config.get("input_tables", []))
+                    except Exception as table_exc:
+                        plugin_context["input_tables_error"] = str(table_exc)
+                        plugin_context["plugin_input_table_specs"] = copy.deepcopy(config.get("input_tables", []))
                     result = item["module"].open_config_window(self.window, dict(params), plugin_context)
                     if isinstance(result, dict):
-                        config["params"] = result
-                        self.rebuild_current_config()
+                        params.clear()
+                        params.update(result)
+                        config["params"] = params
+                        for control in dynamic_param_controls:
+                            key = control.get("key", "")
+                            var = control.get("var")
+                            if var is not None and key in params:
+                                var.set(params.get(key, ""))
+                        refresh_plugin_dynamic_controls()
                 except Exception as e:
                     messagebox.showerror("插件设置窗口错误", str(e))
             ttk.Button(frame, text="打开插件自带设置窗口", command=open_custom_config).grid(row=row, column=0, sticky=tk.W, padx=4, pady=8)
@@ -5652,6 +6113,8 @@ class PlanWorkflowWindow:
             "node_name": config.get("name") or config.get("node_name") or "插件节点",
             "plugin_id": plugin_id,
             "transit_tables": context.get("transit_tables", {}),
+            "input_tables": context.get("input_tables", {}),
+            "plugin_input_table_specs": copy.deepcopy(config.get("input_tables", [])),
         }
 
     def run_external_plugin_process(self, item, input_data, params, config, context=None, execute_actions=False):
@@ -5879,6 +6342,8 @@ class PlanWorkflowWindow:
             "node_name": node_name,
             "plugin_id": plugin_id,
             "transit_tables": context.get("transit_tables", {}),
+            "input_tables": context.get("input_tables", {}),
+            "plugin_input_table_specs": copy.deepcopy(config.get("input_tables", [])),
             # 后台进度 / 取消透传给插件。
             # progress_callback 是底层消息通道；report_progress 是推荐给插件使用的轻量封装。
             "progress_callback": progress_callback,
@@ -5893,19 +6358,24 @@ class PlanWorkflowWindow:
             raise ValueError(f"插件未加载或缺失：{plugin_id}")
         module = item.get("module")
         params = dict(config.get("params", {}))
+        runtime_context = dict(context or {})
+        input_tables = self.build_plugin_input_tables(config, headers, rows, runtime_context)
+        runtime_context["input_tables"] = input_tables
+        runtime_context["plugin_input_table_specs"] = copy.deepcopy(config.get("input_tables", []))
         input_data = {
             "type": "table",
             "headers": list(headers),
             "rows": [list(r) for r in rows],
             "source_name": "workflow_current",
             "meta": {"plugin_id": plugin_id},
+            "tables": input_tables,
         }
-        plugin_context = self.make_plugin_context(config, context or {}, execute_actions=execute_actions)
+        plugin_context = self.make_plugin_context(config, runtime_context, execute_actions=execute_actions)
         failure_policy = config.get("plugin_failure_policy", "停止工作流")
 
         try:
             if self.is_external_plugin_mode(config, item):
-                result = self.run_external_plugin_process(item, input_data, params, config, context or {}, execute_actions=execute_actions)
+                result = self.run_external_plugin_process(item, input_data, params, config, runtime_context, execute_actions=execute_actions)
             else:
                 if module is None:
                     raise RuntimeError("该插件未在主程序环境中导入。请将运行环境设置为“插件独立环境”，或改用单文件内置插件。")
@@ -6584,7 +7054,9 @@ class PlanWorkflowWindow:
             return
         self.nodes[idx]["enabled"] = not self.nodes[idx].get("enabled", True)
         self.refresh_node_list()
-        self.rebuild_current_config()
+        self.node_listbox.selection_clear(0, tk.END)
+        self.node_listbox.selection_set(idx)
+        self.node_listbox.activate(idx)
 
     def copy_node(self):
         idx = self.get_selected_node_index()
@@ -6657,9 +7129,10 @@ class PlanWorkflowWindow:
         node = self.nodes[idx]
         config = node.setdefault("config", {})
         try:
-            available_headers, _ = self.get_headers_rows_before(idx)
+            available_headers, available_rows = self.get_headers_rows_before(idx)
         except Exception:
             available_headers = list(self.preview_headers)
+            available_rows = [list(r) for r in self.preview_rows]
 
         title = ttk.Frame(self.config_frame)
         title.pack(fill=tk.X)
@@ -6702,7 +7175,7 @@ class PlanWorkflowWindow:
             self.build_match_value_output_field_name_config(config, available_headers, transit_context)
         elif node_type == "插件节点":
             transit_context = self.get_transit_context_before(idx)
-            self.build_plugin_node_config(config, available_headers, transit_context)
+            self.build_plugin_node_config(config, available_headers, transit_context, available_rows)
         elif node_type == "复制列":
             self.build_copy_column_config(config, available_headers)
         elif node_type == "复制行":
@@ -6759,6 +7232,38 @@ class PlanWorkflowWindow:
         state = "readonly" if readonly else "normal"
         ttk.Combobox(parent, textvariable=var, values=values, width=width, state=state).grid(row=row, column=col + 1, sticky=tk.W, padx=4, pady=4)
         return var
+
+    def add_labeled_combo_control(self, parent, label, value, values, row, col, width=20, readonly=True):
+        ttk.Label(parent, text=label).grid(row=row, column=col, sticky=tk.W, padx=4, pady=4)
+        var = tk.StringVar(value=value if value in values or not readonly else (values[0] if values else value))
+        state = "readonly" if readonly else "normal"
+        combo = ttk.Combobox(parent, textvariable=var, values=values, width=width, state=state)
+        combo.grid(row=row, column=col + 1, sticky=tk.W, padx=4, pady=4)
+        return var, combo
+
+    def refresh_combo_values(self, combo, var, values, keep_custom=True, fallback=""):
+        values = [str(v) for v in (values or [])]
+        current = str(var.get() or "")
+        display_values = list(values)
+        if current and current not in display_values and keep_custom:
+            display_values = [current] + display_values
+        combo.configure(values=display_values)
+        if not current:
+            var.set(fallback if fallback in values else (values[0] if values else fallback))
+        elif current not in values and not keep_custom:
+            var.set(fallback if fallback in values else (values[0] if values else fallback))
+
+    def refresh_listbox_values(self, listbox, values, selected_values=None):
+        selected_values = set(selected_values or [])
+        listbox.delete(0, tk.END)
+        selected_indices = []
+        for i, value in enumerate(values or []):
+            listbox.insert(tk.END, value)
+            if value in selected_values:
+                selected_indices.append(i)
+        for i in selected_indices:
+            listbox.selection_set(i)
+        return selected_indices
 
     def sync_var_to_config(self, var, config, key, cast=str):
         def on_change(*_):
@@ -7450,13 +7955,29 @@ class PlanWorkflowWindow:
         self.sync_var_to_config(source_table_var, config, "source_table")
         self.sync_var_to_config(transit_var, config, "transit_table")
 
+        def get_loop_source_headers_for_config():
+            source_type = source_type_var.get() or config.get("source_type", "当前表")
+            if source_type == "SQLite表":
+                table = source_table_var.get().strip() or config.get("source_table", "")
+                try:
+                    return self.app.get_table_columns(table), f"SQLite:{table}" if table else "SQLite"
+                except Exception:
+                    return [], f"SQLite:{table}" if table else "SQLite"
+            if source_type == "中转副表":
+                name = transit_var.get().strip() or config.get("transit_table", "")
+                item = (transit_context or {}).get("transit_tables", {}).get(name, {})
+                return list(item.get("headers", []) or []), f"中转:{name}" if name else "中转"
+            return list(headers), "当前表"
+
+        loop_source_headers, loop_source_name = get_loop_source_headers_for_config()
+
         flag_var = self.add_labeled_entry(frame, "执行标志字段：", config.get("flag_field", "执行标志"), 3, 0, 18)
         init_var = self.add_labeled_combo(frame, "标志初始化：", config.get("init_flag_mode", "空值填0，非0不执行"), ["空值填0，非0不执行", "强制重置全部为0", "保留已有标志位"], 3, 2, 22)
         self.sync_var_to_config(flag_var, config, "flag_field")
         self.sync_var_to_config(init_var, config, "init_flag_mode")
 
         boundary_var = self.add_labeled_combo(frame, "数据边界：", config.get("boundary_mode", "整体表格数据边界"), ["整体表格数据边界", "指定参考列数据边界", "手动指定行数"], 4, 0, 22)
-        reference_var = self.add_labeled_combo(frame, "参考列：", config.get("reference_field", headers[0] if headers else ""), headers, 4, 2, 22, readonly=False)
+        reference_var, reference_combo = self.add_labeled_combo_control(frame, "参考列：", config.get("reference_field", loop_source_headers[0] if loop_source_headers else ""), loop_source_headers, 4, 2, 22, readonly=False)
         count_var = self.add_labeled_entry(frame, "手动行数：", config.get("manual_count", "1"), 4, 4, 10)
         self.sync_var_to_config(boundary_var, config, "boundary_mode")
         self.sync_var_to_config(reference_var, config, "reference_field")
@@ -7474,14 +7995,15 @@ class PlanWorkflowWindow:
         self.sync_bool_to_config(output_current_var, config, "output_current_as_table")
         ttk.Label(frame, text="提示：一般应保持勾选。若关闭，循环体每轮会继续处理完整当前表，可能出现 4 行任务被执行成 4×4 行的效果。", foreground="gray", wraplength=900).grid(row=6, column=3, columnspan=3, sticky=tk.W, padx=4, pady=4)
 
-        ttk.Label(frame, text="读取字段（第二列及后续列）：", foreground="gray").grid(row=7, column=0, sticky=tk.W, padx=4, pady=(8, 2))
+        field_label = ttk.Label(frame, text=f"读取字段（来源：{loop_source_name}）：", foreground="gray")
+        field_label.grid(row=7, column=0, sticky=tk.W, padx=4, pady=(8, 2))
         lb_frame = ttk.Frame(frame)
         lb_frame.grid(row=8, column=0, columnspan=6, sticky=tk.W, padx=4, pady=4)
-        lb = tk.Listbox(lb_frame, selectmode=tk.MULTIPLE, height=min(10, max(4, len(headers))), width=56, exportselection=False)
+        lb = tk.Listbox(lb_frame, selectmode=tk.MULTIPLE, height=min(10, max(4, len(loop_source_headers))), width=56, exportselection=False)
         scr = ttk.Scrollbar(lb_frame, orient=tk.VERTICAL, command=lb.yview)
         lb.configure(yscrollcommand=scr.set)
-        selected = config.get("fields") or list(headers[:3])
-        for i, h in enumerate(headers):
+        selected = config.get("fields") or list(loop_source_headers[:3])
+        for i, h in enumerate(loop_source_headers):
             lb.insert(tk.END, h)
             if h in selected:
                 lb.selection_set(i)
@@ -7490,6 +8012,22 @@ class PlanWorkflowWindow:
         def update_fields(event=None):
             config["fields"] = [lb.get(i) for i in lb.curselection()]
         lb.bind("<<ListboxSelect>>", update_fields)
+        def refresh_loop_source_fields(*_):
+            config["source_type"] = source_type_var.get()
+            config["source_table"] = source_table_var.get()
+            config["transit_table"] = transit_var.get()
+            source_headers, source_name = get_loop_source_headers_for_config()
+            field_label.configure(text=f"读取字段（来源：{source_name}）：")
+            self.refresh_combo_values(reference_combo, reference_var, source_headers, keep_custom=True, fallback=source_headers[0] if source_headers else "")
+            selected_fields = config.get("fields") or list(source_headers[:3])
+            selected_indices = self.refresh_listbox_values(lb, source_headers, selected_fields)
+            if not selected_indices and source_headers:
+                for i in range(min(3, len(source_headers))):
+                    lb.selection_set(i)
+            update_fields()
+        source_type_var.trace_add("write", refresh_loop_source_fields)
+        source_table_var.trace_add("write", refresh_loop_source_fields)
+        transit_var.trace_add("write", refresh_loop_source_fields)
         ttk.Button(lb_frame, text="全选", command=lambda: (lb.selection_set(0, tk.END), update_fields())).pack(side=tk.LEFT, padx=6)
         ttk.Button(lb_frame, text="全不选", command=lambda: (lb.selection_clear(0, tk.END), update_fields())).pack(side=tk.LEFT, padx=2)
 
@@ -9092,17 +9630,17 @@ class PlanWorkflowWindow:
         name_modes = ["使用原字段名", "添加前缀", "添加后缀", "手动字段映射"]
         overwrite_values = ["覆盖全部", "只写入空单元格", "目标已有值则跳过", "目标已有值且不同才覆盖"]
 
-        source_type_var = self.add_labeled_combo(frame, "来源类型：", config.get("source_type", "当前工作流表"), source_type_values, 1, 0, 12)
-        sqlite_source_var = self.add_labeled_combo(frame, "SQLite来源表：", config.get("source_sqlite_table", ""), sqlite_tables, 1, 2, 18, readonly=False)
-        transit_source_var = self.add_labeled_combo(frame, "中转来源表：", config.get("source_transit_table", ""), transit_names, 2, 0, 18, readonly=False)
-        ttk.Button(frame, text="刷新表/字段", command=self.rebuild_current_config).grid(row=2, column=2, sticky=tk.W, padx=4, pady=4)
+        source_type_var, source_type_combo = self.add_labeled_combo_control(frame, "来源类型：", config.get("source_type", "当前工作流表"), source_type_values, 1, 0, 12)
+        sqlite_source_var, sqlite_source_combo = self.add_labeled_combo_control(frame, "SQLite来源表：", config.get("source_sqlite_table", ""), sqlite_tables, 1, 2, 18, readonly=False)
+        transit_source_var, transit_source_combo = self.add_labeled_combo_control(frame, "中转来源表：", config.get("source_transit_table", ""), transit_names, 2, 0, 18, readonly=False)
+        ttk.Button(frame, text="刷新表/字段", command=lambda: refresh_selected_write_sources(True)).grid(row=2, column=2, sticky=tk.W, padx=4, pady=4)
 
-        target_type_var = self.add_labeled_combo(frame, "目标类型：", config.get("target_type", "SQLite表"), target_type_values, 3, 0, 12)
-        sqlite_target_var = self.add_labeled_combo(frame, "SQLite目标表：", config.get("target_table", "选定列结果"), sqlite_tables, 3, 2, 18, readonly=False)
-        transit_target_var = self.add_labeled_combo(frame, "中转目标表：", config.get("target_transit_table", "选定列结果"), transit_names, 4, 0, 18, readonly=False)
+        target_type_var, target_type_combo = self.add_labeled_combo_control(frame, "目标类型：", config.get("target_type", "SQLite表"), target_type_values, 3, 0, 12)
+        sqlite_target_var, sqlite_target_combo = self.add_labeled_combo_control(frame, "SQLite目标表：", config.get("target_table", "选定列结果"), sqlite_tables, 3, 2, 18, readonly=False)
+        transit_target_var, transit_target_combo = self.add_labeled_combo_control(frame, "中转目标表：", config.get("target_transit_table", "选定列结果"), transit_names, 4, 0, 18, readonly=False)
 
         write_mode_var = self.add_labeled_combo(frame, "写入范围：", config.get("write_mode", "局部覆盖，保留目标原行数"), write_modes, 5, 0, 28)
-        name_mode_var = self.add_labeled_combo(frame, "字段命名：", config.get("field_name_mode", "使用原字段名"), name_modes, 5, 2, 14)
+        name_mode_var, name_mode_combo = self.add_labeled_combo_control(frame, "字段命名：", config.get("field_name_mode", "使用原字段名"), name_modes, 5, 2, 14)
         overwrite_var = self.add_labeled_combo(frame, "覆盖策略：", config.get("overwrite_rule", "只写入空单元格"), overwrite_values, 6, 0, 18)
 
         prefix_var = self.add_labeled_entry(frame, "前缀：", config.get("target_prefix", ""), 6, 2, 12)
@@ -9126,15 +9664,6 @@ class PlanWorkflowWindow:
         self.sync_bool_to_config(enable_write_var, config, "enable_write")
         self.sync_bool_to_config(backup_var, config, "backup_before_write")
 
-        def rebuild_on_change(*_):
-            # 切换来源/目标/命名模式后重建，刷新字段列表和控件显示。
-            self.window.after_idle(self.rebuild_current_config)
-        source_type_var.trace_add("write", rebuild_on_change)
-        sqlite_source_var.trace_add("write", rebuild_on_change)
-        transit_source_var.trace_add("write", rebuild_on_change)
-        target_type_var.trace_add("write", rebuild_on_change)
-        name_mode_var.trace_add("write", rebuild_on_change)
-
         # 获取当前配置下的来源字段，仅用于字段选择区。
         try:
             current_headers, current_rows = self.get_headers_rows_before(idx) if idx is not None else (headers, [])
@@ -9146,6 +9675,7 @@ class PlanWorkflowWindow:
             )
         except Exception as e:
             source_headers, source_rows, source_name = [], [], f"来源读取失败：{e}"
+        source_state = {"headers": list(source_headers), "rows": list(source_rows), "name": source_name}
 
         fields_frame = ttk.LabelFrame(frame, text=f"1. 选择来源字段（来源：{source_name}，{len(source_rows)} 行 × {len(source_headers)} 列）", padding=6)
         fields_frame.grid(row=8, column=0, columnspan=8, sticky="ew", padx=4, pady=6)
@@ -9185,7 +9715,8 @@ class PlanWorkflowWindow:
         map_src_var = tk.StringVar(value=source_headers[0] if source_headers else "")
         map_tgt_var = tk.StringVar(value="")
         ttk.Label(mapping_frame, text="来源字段：").grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
-        ttk.Combobox(mapping_frame, textvariable=map_src_var, values=source_headers, width=20, state="normal").grid(row=0, column=1, sticky=tk.W, padx=4, pady=4)
+        map_src_combo = ttk.Combobox(mapping_frame, textvariable=map_src_var, values=source_headers, width=20, state="normal")
+        map_src_combo.grid(row=0, column=1, sticky=tk.W, padx=4, pady=4)
         ttk.Label(mapping_frame, text="目标字段名：").grid(row=0, column=2, sticky=tk.W, padx=4, pady=4)
         ttk.Entry(mapping_frame, textvariable=map_tgt_var, width=22).grid(row=0, column=3, sticky=tk.W, padx=4, pady=4)
 
@@ -9207,6 +9738,77 @@ class PlanWorkflowWindow:
                 s, t = map_tree.item(iid, "values")
                 if s:
                     config["field_mappings"].append({"source_field": str(s), "target_field": str(t or s)})
+        refreshing_selected_write = {"active": False}
+
+        def refresh_selected_write_sources(refresh_table_choices=False):
+            if refreshing_selected_write["active"]:
+                return
+            refreshing_selected_write["active"] = True
+            try:
+                sync_selected_fields()
+                sync_field_mappings()
+                config["source_type"] = source_type_var.get()
+                config["source_sqlite_table"] = sqlite_source_var.get()
+                config["source_transit_table"] = transit_source_var.get()
+                config["target_type"] = target_type_var.get()
+                config["target_table"] = sqlite_target_var.get()
+                config["target_transit_table"] = transit_target_var.get()
+                config["field_name_mode"] = name_mode_var.get()
+
+                live_transit_context = transit_context
+                if refresh_table_choices:
+                    try:
+                        sqlite_tables[:] = self.app.get_table_names()
+                    except Exception:
+                        sqlite_tables[:] = self.get_sqlite_table_names()
+                    try:
+                        live_transit_context = self.get_transit_context_before(idx) if idx is not None else transit_context
+                    except Exception:
+                        live_transit_context = transit_context
+                    live_names = sorted((live_transit_context or {}).get("transit_tables", {}).keys())
+                    transit_names[:] = live_names
+                    for combo, var in [
+                        (sqlite_source_combo, sqlite_source_var),
+                        (sqlite_target_combo, sqlite_target_var),
+                    ]:
+                        self.refresh_combo_values(combo, var, sqlite_tables, keep_custom=True, fallback=sqlite_tables[0] if sqlite_tables else "")
+                    for combo, var in [
+                        (transit_source_combo, transit_source_var),
+                        (transit_target_combo, transit_target_var),
+                    ]:
+                        self.refresh_combo_values(combo, var, transit_names, keep_custom=True, fallback=transit_names[0] if transit_names else "")
+
+                try:
+                    current_h, current_r = self.get_headers_rows_before(idx) if idx is not None else (headers, [])
+                except Exception:
+                    current_h, current_r = headers, []
+                try:
+                    source_h, source_r, source_label = self.read_selected_columns_source_table(
+                        config, current_h, current_r, live_transit_context
+                    )
+                except Exception as exc:
+                    source_h, source_r, source_label = [], [], f"来源读取失败：{exc}"
+                source_state.update({"headers": list(source_h), "rows": list(source_r), "name": source_label})
+                fields_frame.configure(text=f"1. 选择来源字段（来源：{source_label}，{len(source_r)} 行 × {len(source_h)} 列）")
+                field_list.configure(height=min(10, max(4, len(source_h))))
+                selected = config.get("selected_fields", []) or list(source_h[:3])
+                selected_indices = self.refresh_listbox_values(field_list, source_h, selected)
+                if not selected_indices and source_h:
+                    for i in range(min(3, len(source_h))):
+                        field_list.selection_set(i)
+                sync_selected_fields()
+                self.refresh_combo_values(map_src_combo, map_src_var, source_h, keep_custom=False, fallback=source_h[0] if source_h else "")
+                self.status_var.set(f"选定列写入字段已局部刷新：来源 {source_label}，{len(source_h)} 个字段。")
+            finally:
+                refreshing_selected_write["active"] = False
+
+        def schedule_selected_write_refresh(*_):
+            self.window.after_idle(lambda: refresh_selected_write_sources(False))
+
+        source_type_var.trace_add("write", schedule_selected_write_refresh)
+        sqlite_source_var.trace_add("write", schedule_selected_write_refresh)
+        transit_source_var.trace_add("write", schedule_selected_write_refresh)
+
         def add_field_mapping():
             s = map_src_var.get().strip()
             t = map_tgt_var.get().strip() or s
@@ -9268,7 +9870,7 @@ class PlanWorkflowWindow:
         btn_frame = ttk.Frame(frame)
         btn_frame.grid(row=11, column=0, columnspan=8, sticky=tk.W, padx=4, pady=4)
         ttk.Button(btn_frame, text="生成写入预览", command=generate_node_write_preview).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btn_frame, text="刷新配置", command=self.rebuild_current_config).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btn_frame, text="刷新字段", command=lambda: refresh_selected_write_sources(True)).pack(side=tk.LEFT, padx=4)
         ttk.Label(
             btn_frame,
             text="提示：不勾选写入时只透传数据；目标选“当前工作表”会把写入结果作为后续节点输入。",
@@ -9645,20 +10247,17 @@ class PlanWorkflowWindow:
         if config.get("source_table") not in table_names and table_names:
             config["source_table"] = config.get("target_table") or table_names[0]
 
-        direction_var = self.add_labeled_combo(frame, "写入方向：", config.get("writeback_direction", direction_values[0]), direction_values, 1, 0, 24)
+        direction_var, direction_combo = self.add_labeled_combo_control(frame, "写入方向：", config.get("writeback_direction", direction_values[0]), direction_values, 1, 0, 24)
         self.sync_var_to_config(direction_var, config, "writeback_direction")
 
         direction = direction_var.get()
         external_key = "target_table" if direction == "当前表写入SQLite目标表" else "source_table"
         external_label = "目标表：" if direction == "当前表写入SQLite目标表" else "来源表："
-        external_table_var = self.add_labeled_combo(frame, external_label, config.get(external_key, ""), table_names, 1, 2, 32, readonly=True)
-
-        def on_top_change(*_):
-            config["writeback_direction"] = direction_var.get()
-            config[external_key] = external_table_var.get()
-            self.rebuild_current_config()
-        direction_var.trace_add("write", on_top_change)
-        external_table_var.trace_add("write", on_top_change)
+        external_label_widget = ttk.Label(frame, text=external_label)
+        external_label_widget.grid(row=1, column=2, sticky=tk.W, padx=4, pady=4)
+        external_table_var = tk.StringVar(value=config.get(external_key, ""))
+        external_table_combo = ttk.Combobox(frame, textvariable=external_table_var, values=table_names, width=32, state="readonly")
+        external_table_combo.grid(row=1, column=3, sticky=tk.W, padx=4, pady=4)
 
         external_columns = []
         try:
@@ -9667,12 +10266,13 @@ class PlanWorkflowWindow:
         except Exception:
             external_columns = []
 
-        ttk.Button(frame, text="刷新表/字段", command=self.rebuild_current_config).grid(row=1, column=4, sticky=tk.W, padx=4, pady=4)
+        ttk.Button(frame, text="刷新表/字段", command=lambda: refresh_writeback_fields(True)).grid(row=1, column=4, sticky=tk.W, padx=4, pady=4)
         if direction == "当前表写入SQLite目标表":
             count_text = f"当前来源字段：{len(headers)} 个；SQLite目标字段：{len(external_columns)} 个"
         else:
             count_text = f"SQLite来源字段：{len(external_columns)} 个；当前目标字段：{len(headers)} 个（目标字段可手动输入新字段名）"
-        ttk.Label(frame, text=count_text, foreground="gray").grid(row=1, column=5, columnspan=4, sticky=tk.W, padx=4, pady=4)
+        count_label = ttk.Label(frame, text=count_text, foreground="gray")
+        count_label.grid(row=1, column=5, columnspan=4, sticky=tk.W, padx=4, pady=4)
 
         use_match_var = tk.BooleanVar(value=bool(config.get("use_match_rules", True)))
         ttk.Checkbutton(frame, text="启用匹配规则定位对应行", variable=use_match_var).grid(row=2, column=0, columnspan=2, sticky=tk.W, padx=4, pady=4)
@@ -9683,7 +10283,8 @@ class PlanWorkflowWindow:
             insert_text = "关闭匹配时：目标行不足则按来源完整结构新增行"
         else:
             insert_text = "关闭匹配时：来源行多于当前表时自动新增当前行"
-        ttk.Checkbutton(frame, text=insert_text, variable=insert_missing_var).grid(row=2, column=2, columnspan=4, sticky=tk.W, padx=4, pady=4)
+        insert_missing_cb = ttk.Checkbutton(frame, text=insert_text, variable=insert_missing_var)
+        insert_missing_cb.grid(row=2, column=2, columnspan=4, sticky=tk.W, padx=4, pady=4)
         self.sync_bool_to_config(insert_missing_var, config, "sequential_insert_missing_rows")
 
         write_range_values = ["局部覆盖，保留目标原行数", "清空目标字段后覆盖，保留目标原行数", "按来源完整结构覆盖"]
@@ -9700,11 +10301,13 @@ class PlanWorkflowWindow:
         op_var = tk.StringVar(value="等于")
         tgt_match_var = tk.StringVar(value=external_columns[0] if external_columns else "")
         ttk.Label(match_frame, text="当前表字段：").grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
-        ttk.Combobox(match_frame, textvariable=src_match_var, values=headers, width=24, state="normal").grid(row=0, column=1, sticky=tk.W, padx=4, pady=4)
+        src_match_combo = ttk.Combobox(match_frame, textvariable=src_match_var, values=headers, width=24, state="normal")
+        src_match_combo.grid(row=0, column=1, sticky=tk.W, padx=4, pady=4)
         ttk.Label(match_frame, text="匹配方式：").grid(row=0, column=2, sticky=tk.W, padx=4, pady=4)
         ttk.Combobox(match_frame, textvariable=op_var, values=["等于", "不等于", "当前包含外部", "外部包含当前", "双向包含"], width=14, state="readonly").grid(row=0, column=3, sticky=tk.W, padx=4, pady=4)
         ttk.Label(match_frame, text="外部表字段：").grid(row=0, column=4, sticky=tk.W, padx=4, pady=4)
-        ttk.Combobox(match_frame, textvariable=tgt_match_var, values=external_columns, width=24, state="normal").grid(row=0, column=5, sticky=tk.W, padx=4, pady=4)
+        tgt_match_combo = ttk.Combobox(match_frame, textvariable=tgt_match_var, values=external_columns, width=24, state="normal")
+        tgt_match_combo.grid(row=0, column=5, sticky=tk.W, padx=4, pady=4)
 
         match_tree = ttk.Treeview(match_frame, columns=("当前表字段", "匹配方式", "外部表字段"), show="headings", height=4)
         for col, width in [("当前表字段", 220), ("匹配方式", 120), ("外部表字段", 220)]:
@@ -9759,10 +10362,14 @@ class PlanWorkflowWindow:
         mapping_frame.grid(row=4, column=0, columnspan=10, sticky="nsew", padx=4, pady=6)
         src_map_var = tk.StringVar(value=left_default)
         tgt_map_var = tk.StringVar(value=right_default)
-        ttk.Label(mapping_frame, text=left_label).grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
-        ttk.Combobox(mapping_frame, textvariable=src_map_var, values=left_values, width=24, state="normal").grid(row=0, column=1, sticky=tk.W, padx=4, pady=4)
-        ttk.Label(mapping_frame, text=right_label).grid(row=0, column=2, sticky=tk.W, padx=4, pady=4)
-        ttk.Combobox(mapping_frame, textvariable=tgt_map_var, values=right_values, width=24, state="normal").grid(row=0, column=3, sticky=tk.W, padx=4, pady=4)
+        src_map_label = ttk.Label(mapping_frame, text=left_label)
+        src_map_label.grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
+        src_map_combo = ttk.Combobox(mapping_frame, textvariable=src_map_var, values=left_values, width=24, state="normal")
+        src_map_combo.grid(row=0, column=1, sticky=tk.W, padx=4, pady=4)
+        tgt_map_label = ttk.Label(mapping_frame, text=right_label)
+        tgt_map_label.grid(row=0, column=2, sticky=tk.W, padx=4, pady=4)
+        tgt_map_combo = ttk.Combobox(mapping_frame, textvariable=tgt_map_var, values=right_values, width=24, state="normal")
+        tgt_map_combo.grid(row=0, column=3, sticky=tk.W, padx=4, pady=4)
         ttk.Label(mapping_frame, text="提示：右侧字段可手动输入新字段名。", foreground="gray").grid(row=0, column=4, sticky=tk.W, padx=4, pady=4)
 
         mapping_tree = ttk.Treeview(mapping_frame, columns=("来源字段", "写入字段"), show="headings", height=5)
@@ -9777,6 +10384,11 @@ class PlanWorkflowWindow:
         mapping_x.grid(row=2, column=0, columnspan=4, sticky="ew", padx=4)
         for item in config.get("field_mappings", []):
             mapping_tree.insert("", tk.END, values=(item.get("source_field", ""), item.get("target_field", "")))
+        writeback_field_state = {
+            "external_columns": list(external_columns),
+            "left_values": list(left_values),
+            "right_values": list(right_values),
+        }
 
         def sync_mappings():
             config["field_mappings"] = []
@@ -9799,7 +10411,7 @@ class PlanWorkflowWindow:
         def auto_same_name_mapping():
             for iid in mapping_tree.get_children():
                 mapping_tree.delete(iid)
-            common = [h for h in left_values if h in right_values]
+            common = [h for h in writeback_field_state.get("left_values", []) if h in writeback_field_state.get("right_values", [])]
             for h in common:
                 mapping_tree.insert("", tk.END, values=(h, h))
             sync_mappings()
@@ -9827,16 +10439,107 @@ class PlanWorkflowWindow:
         enable_write_var = tk.BooleanVar(value=bool(config.get("enable_write", False)))
         backup_var = tk.BooleanVar(value=bool(config.get("backup_before_write", True)))
         output_preview_var = tk.BooleanVar(value=bool(config.get("output_preview_table", True)))
-        if direction == "当前表写入SQLite目标表":
-            ttk.Checkbutton(policy_frame, text="允许正式执行时写入 SQLite 目标表", variable=enable_write_var).grid(row=2, column=0, columnspan=2, sticky=tk.W, padx=4, pady=4)
-            ttk.Checkbutton(policy_frame, text="写入前自动备份目标表", variable=backup_var).grid(row=2, column=2, columnspan=2, sticky=tk.W, padx=4, pady=4)
-            ttk.Checkbutton(policy_frame, text="节点输出写入预览表", variable=output_preview_var).grid(row=2, column=4, columnspan=2, sticky=tk.W, padx=4, pady=4)
-            ttk.Label(policy_frame, text="安全提示：预览计划不会写库；正式执行时也必须勾选允许写入才会 UPDATE/INSERT。", foreground="gray").grid(row=3, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(6, 0))
-        else:
-            ttk.Label(policy_frame, text="当前模式会把来源表数据写入工作流当前表，只修改内存中的当前结果；不会直接修改 SQLite。右侧映射字段可输入新字段名。", foreground="gray").grid(row=2, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(6, 0))
+        enable_write_cb = ttk.Checkbutton(policy_frame, text="允许正式执行时写入 SQLite 目标表", variable=enable_write_var)
+        backup_cb = ttk.Checkbutton(policy_frame, text="写入前自动备份目标表", variable=backup_var)
+        output_preview_cb = ttk.Checkbutton(policy_frame, text="节点输出写入预览表", variable=output_preview_var)
+        policy_note_label = ttk.Label(policy_frame, text="", foreground="gray")
+
+        def refresh_writeback_policy_widgets():
+            if direction_var.get() == "当前表写入SQLite目标表":
+                enable_write_cb.grid(row=2, column=0, columnspan=2, sticky=tk.W, padx=4, pady=4)
+                backup_cb.grid(row=2, column=2, columnspan=2, sticky=tk.W, padx=4, pady=4)
+                output_preview_cb.grid(row=2, column=4, columnspan=2, sticky=tk.W, padx=4, pady=4)
+                policy_note_label.configure(text="安全提示：预览计划不会写库；正式执行时也必须勾选允许写入才会 UPDATE/INSERT。")
+                policy_note_label.grid(row=3, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(6, 0))
+            else:
+                enable_write_cb.grid_remove()
+                backup_cb.grid_remove()
+                output_preview_cb.grid_remove()
+                policy_note_label.configure(text="当前模式会把来源表数据写入工作流当前表，只修改内存中的当前结果；不会直接修改 SQLite。右侧映射字段可输入新字段名。")
+                policy_note_label.grid(row=2, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(6, 0))
+
+        refresh_writeback_policy_widgets()
         self.sync_bool_to_config(enable_write_var, config, "enable_write")
         self.sync_bool_to_config(backup_var, config, "backup_before_write")
         self.sync_bool_to_config(output_preview_var, config, "output_preview_table")
+
+        refreshing_writeback = {"active": False}
+        last_writeback_direction = {"value": direction_var.get()}
+
+        def writeback_external_key(cur_direction=None):
+            cur_direction = cur_direction or direction_var.get()
+            return "target_table" if cur_direction == "当前表写入SQLite目标表" else "source_table"
+
+        def refresh_writeback_fields(refresh_tables=False):
+            if refreshing_writeback["active"]:
+                return
+            refreshing_writeback["active"] = True
+            try:
+                if refresh_tables:
+                    try:
+                        table_names[:] = self.app.get_table_names()
+                    except Exception:
+                        table_names[:] = self.get_sqlite_table_names()
+                    self.refresh_combo_values(external_table_combo, external_table_var, table_names, keep_custom=False, fallback=table_names[0] if table_names else "")
+
+                cur_direction = direction_var.get() or direction_values[0]
+                direction_changed = cur_direction != last_writeback_direction["value"]
+                cur_external_key = writeback_external_key(cur_direction)
+                if direction_changed:
+                    desired_table = config.get(cur_external_key, "") or (table_names[0] if table_names else "")
+                    if desired_table not in table_names and table_names:
+                        desired_table = table_names[0]
+                    external_table_var.set(desired_table)
+
+                config["writeback_direction"] = cur_direction
+                config[cur_external_key] = external_table_var.get()
+                external_label_widget.configure(text="目标表：" if cur_direction == "当前表写入SQLite目标表" else "来源表：")
+
+                try:
+                    ext_columns = self.app.get_table_columns(external_table_var.get()) if external_table_var.get() else []
+                except Exception:
+                    ext_columns = []
+                writeback_field_state["external_columns"] = list(ext_columns)
+
+                if cur_direction == "当前表写入SQLite目标表":
+                    count_label.configure(text=f"当前来源字段：{len(headers)} 个；SQLite目标字段：{len(ext_columns)} 个")
+                    insert_missing_cb.configure(text="关闭匹配时：目标行不足则按来源完整结构新增行")
+                    mapping_frame.configure(text="2. 字段映射规则（当前表字段 → SQLite目标表字段）")
+                    src_map_label.configure(text="当前表字段：")
+                    tgt_map_label.configure(text="写入目标字段：")
+                    left_values = list(headers)
+                    right_values = list(ext_columns)
+                    src_fallback = headers[0] if headers else ""
+                    tgt_fallback = ext_columns[0] if ext_columns else ""
+                else:
+                    count_label.configure(text=f"SQLite来源字段：{len(ext_columns)} 个；当前目标字段：{len(headers)} 个（目标字段可手动输入新字段名）")
+                    insert_missing_cb.configure(text="关闭匹配时：来源行多于当前表时自动新增当前行")
+                    mapping_frame.configure(text="2. 字段映射规则（SQLite来源表字段 → 当前表字段 / 新字段名）")
+                    src_map_label.configure(text="来源表字段：")
+                    tgt_map_label.configure(text="写入当前字段：")
+                    left_values = list(ext_columns)
+                    right_values = list(headers)
+                    src_fallback = ext_columns[0] if ext_columns else ""
+                    tgt_fallback = headers[0] if headers else "新字段"
+
+                writeback_field_state["left_values"] = list(left_values)
+                writeback_field_state["right_values"] = list(right_values)
+                self.refresh_combo_values(src_match_combo, src_match_var, headers, keep_custom=True, fallback=headers[0] if headers else "")
+                self.refresh_combo_values(tgt_match_combo, tgt_match_var, ext_columns, keep_custom=True, fallback=ext_columns[0] if ext_columns else "")
+                self.refresh_combo_values(src_map_combo, src_map_var, left_values, keep_custom=True, fallback=src_fallback)
+                self.refresh_combo_values(tgt_map_combo, tgt_map_var, right_values, keep_custom=True, fallback=tgt_fallback)
+                refresh_writeback_policy_widgets()
+                last_writeback_direction["value"] = cur_direction
+                self.status_var.set(f"字段映射写入表字段已局部刷新：外部表 {external_table_var.get()}，{len(ext_columns)} 个字段。")
+            finally:
+                refreshing_writeback["active"] = False
+
+        def schedule_writeback_refresh(*_):
+            self.window.after_idle(lambda: refresh_writeback_fields(False))
+
+        direction_var.trace_add("write", schedule_writeback_refresh)
+        external_table_var.trace_add("write", schedule_writeback_refresh)
+
     def build_filter_config(self, config, headers, transit_context=None):
         """
         计划节点内的高级筛选配置。
@@ -9866,6 +10569,7 @@ class PlanWorkflowWindow:
         transit_context = transit_context or {"transit_tables": {}}
         all_fields = self.get_plan_filter_available_fields(headers, selected_tables, transit_context)
         current_fields = [f"当前表.{h}" for h in headers]
+        field_state = {"all": list(all_fields), "current": list(current_fields)}
 
         # 1. 副表选择区
         source_frame = ttk.LabelFrame(frame, text="1. 副表选择（主输入固定为：上一步结果 / 当前表）", padding=6)
@@ -9896,7 +10600,7 @@ class PlanWorkflowWindow:
         def sync_extra_tables(rebuild=False):
             config["extra_tables"] = [table_list.get(i) for i in table_list.curselection()]
             if rebuild:
-                self.rebuild_current_config()
+                refresh_filter_field_sources()
 
         ttk.Button(source_frame, text="保存表选择 / 刷新字段", command=lambda: sync_extra_tables(True)).grid(row=1, column=3, sticky=tk.W, padx=4, pady=4)
         ttk.Button(source_frame, text="清空副表", command=lambda: (table_list.selection_clear(0, tk.END), sync_extra_tables(True))).grid(row=1, column=4, sticky=tk.W, padx=4, pady=4)
@@ -9910,7 +10614,8 @@ class PlanWorkflowWindow:
         op_var = tk.StringVar(value="包含")
         value_var = tk.StringVar()
         ttk.Label(condition_frame, text="字段：").grid(row=1, column=0, padx=4, pady=4)
-        ttk.Combobox(condition_frame, textvariable=field_var, values=all_fields, width=28, state="normal").grid(row=1, column=1, padx=4, pady=4)
+        field_combo = ttk.Combobox(condition_frame, textvariable=field_var, values=all_fields, width=28, state="normal")
+        field_combo.grid(row=1, column=1, padx=4, pady=4)
         ttk.Label(condition_frame, text="操作：").grid(row=1, column=2, padx=4, pady=4)
         ttk.Combobox(condition_frame, textvariable=op_var, values=self.FILTER_OPS, width=14, state="readonly").grid(row=1, column=3, padx=4, pady=4)
         ttk.Label(condition_frame, text="值：").grid(row=1, column=4, padx=4, pady=4)
@@ -10033,9 +10738,11 @@ class PlanWorkflowWindow:
         join_logic_var = tk.StringVar(value=config.get("join_logic", "AND"))
         ttk.Combobox(join_frame, textvariable=join_logic_var, values=self.LOGIC_TYPES, width=8, state="readonly").grid(row=1, column=0, padx=4, pady=4, sticky=tk.W)
         self.sync_var_to_config(join_logic_var, config, "join_logic")
-        ttk.Combobox(join_frame, textvariable=left_var, values=all_fields, width=28, state="normal").grid(row=1, column=1, padx=4, pady=4)
+        left_combo = ttk.Combobox(join_frame, textvariable=left_var, values=all_fields, width=28, state="normal")
+        left_combo.grid(row=1, column=1, padx=4, pady=4)
         ttk.Combobox(join_frame, textvariable=join_op_var, values=join_ops, width=12, state="readonly").grid(row=1, column=2, padx=4, pady=4)
-        ttk.Combobox(join_frame, textvariable=right_var, values=all_fields, width=28, state="normal").grid(row=1, column=3, padx=4, pady=4)
+        right_combo = ttk.Combobox(join_frame, textvariable=right_var, values=all_fields, width=28, state="normal")
+        right_combo.grid(row=1, column=3, padx=4, pady=4)
         ttk.Label(join_frame, text="AND=全部规则满足；OR=任意规则满足。", foreground="gray").grid(row=1, column=5, sticky=tk.W, padx=4, pady=4)
 
         join_tree = ttk.Treeview(join_frame, columns=("左字段", "匹配", "右字段"), show="headings", height=6)
@@ -10093,6 +10800,23 @@ class PlanWorkflowWindow:
 
         def sync_output_fields():
             config["output_fields"] = [out_list.get(i) for i in out_list.curselection()]
+
+        def refresh_filter_field_sources():
+            config["extra_tables"] = [table_list.get(i) for i in table_list.curselection()]
+            field_state["all"] = self.get_plan_filter_available_fields(headers, config.get("extra_tables", []), transit_context)
+            field_state["current"] = [f"当前表.{h}" for h in headers]
+            all_values = field_state["all"]
+            current_values = field_state["current"]
+            first_any = all_values[0] if all_values else ""
+            first_current = current_values[0] if current_values else first_any
+            first_external = next((f for f in all_values if not str(f).startswith("当前表.")), first_any)
+            self.refresh_combo_values(field_combo, field_var, all_values, keep_custom=True, fallback=first_any)
+            self.refresh_combo_values(left_combo, left_var, all_values, keep_custom=True, fallback=first_current)
+            self.refresh_combo_values(right_combo, right_var, all_values, keep_custom=True, fallback=first_external)
+            selected_output = set(config.get("output_fields", []))
+            self.refresh_listbox_values(out_list, all_values, selected_output)
+            sync_output_fields()
+            self.status_var.set(f"高级筛选字段已局部刷新：{len(config.get('extra_tables', []))} 个副表，{len(all_values)} 个可用字段。")
 
         out_list.bind("<<ListboxSelect>>", lambda e: sync_output_fields())
         btns = ttk.Frame(output_frame)
@@ -15945,6 +16669,7 @@ class PlanWorkflowWindow:
             total = msg.get("total")
             node_name = msg.get("node_name", "")
             message = msg.get("message", "节点处理中")
+            detail_message = msg.get("detail_message") or msg.get("detail") or message
             try:
                 current_f = float(current)
                 total_f = float(total)
@@ -15959,7 +16684,7 @@ class PlanWorkflowWindow:
                     self.node_progress_text.set(f"当前节点：{node_name} - {message}")
             except Exception:
                 self.node_progress_text.set(f"当前节点：{node_name} - {message}")
-            self.worker_status_text.set(message)
+            self.worker_status_text.set(detail_message)
             return
         if mtype == "node_done":
             idx = int(msg.get("node_index", 0))
