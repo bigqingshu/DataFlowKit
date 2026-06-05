@@ -38,9 +38,8 @@ def get_parameter_schema():
     return [
         {"name": "doc_table_alias", "label": "文档读取表别名", "type": "input_table_select", "default": "当前表"},
         {"name": "content_table_alias", "label": "新内容表别名", "type": "input_table_select", "default": "新内容表"},
-        {"name": "target_file_field", "label": "新文件路径字段", "type": "dynamic_select", "default": "target_file", "allow_custom": True},
-        {"name": "content_source_file_field", "label": "新内容源文件字段", "type": "dynamic_select", "default": "source_file", "allow_custom": True},
         {"name": "source_file_field", "label": "源文件字段", "type": "dynamic_select", "default": "source_file", "allow_custom": True},
+        {"name": "planned_file_field", "label": "拟定新文件字段", "type": "dynamic_select", "default": "target_file", "allow_custom": True},
         {
             "name": "empty_policy",
             "label": "新内容为空时",
@@ -69,7 +68,7 @@ def get_dynamic_parameter_options(param_name, params, context):
     if param_name == "source_file_field":
         table, _alias = _pick_table({}, context or {}, params.get("doc_table_alias", "当前表"), "当前表")
         return list(table.get("headers", []) or [])
-    if param_name in ("target_file_field", "content_source_file_field"):
+    if param_name == "planned_file_field":
         table, _alias = _pick_table({}, context or {}, params.get("content_table_alias", "新内容表"), "")
         return list(table.get("headers", []) or [])
     return []
@@ -612,9 +611,25 @@ def _global_rule_fields(rule):
     return ",".join(fields) or f"全局规则:{_as_text(rule.get('name'))}"
 
 
-def _target_file_for_content(content, params):
-    field = _as_text(params.get("target_file_field", "target_file")) or "target_file"
-    return _as_text(content.get(field))
+def _planned_file_field(params):
+    return _as_text(params.get("planned_file_field") or params.get("target_file_field") or "target_file") or "target_file"
+
+
+def _target_file_for_content(content, params, source_file=""):
+    field = _planned_file_field(params)
+    value = _as_text((content or {}).get(field))
+    if not value:
+        return ""
+    target_path = Path(value)
+    if target_path.is_absolute():
+        return value
+    source_text = _as_text(source_file)
+    if not source_text:
+        return value
+    source_parent = Path(source_text).parent
+    if str(source_parent) in ("", "."):
+        return value
+    return str(source_parent / value)
 
 
 def _source_files(records, params):
@@ -626,20 +641,12 @@ def _source_files(records, params):
     return values or [""]
 
 
-def _source_file_for_content(content, source_files, content_index, total_contents, params):
-    field = _as_text(params.get("content_source_file_field", "source_file")) or "source_file"
-    value = _as_text(content.get(field))
-    if value:
-        return value, f"新内容字段 {field}"
-    for auto_field in ("source_file", "源文件", "完整路径", "文件路径", "path", "file_path"):
-        value = _as_text(content.get(auto_field))
-        if value:
-            return value, f"自动字段 {auto_field}"
+def _source_file_for_content(_content, source_files, content_index, total_contents, _params):
     if len(source_files) == 1:
         return source_files[0], "唯一源文件"
     if len(source_files) == total_contents and 0 <= content_index < len(source_files):
         return source_files[content_index], "按行号配对"
-    return "", "无法确定源文件：请在新内容表提供源文件字段，或保证源文件数量与新内容行数一致"
+    return "", "无法确定源文件：请保证只有一个源文件，或源文件数量与新内容行数一致"
 
 
 def validate_params(params, input_data, context):
@@ -712,7 +719,7 @@ def run(input_data, params, context):
             return
         out_rows.append([
             source_file,
-            _target_file_for_content(content, params),
+            _target_file_for_content(content, params, source_file),
             rec.get("block_type", "") if rec else "",
             rec.get("sheet_name", "") if rec else "",
             rec.get("row_index", "") if rec else "",
@@ -731,17 +738,19 @@ def run(input_data, params, context):
         ])
 
     for content_index, content in enumerate(contents):
-        target_file = _target_file_for_content(content, params)
-        if not target_file:
-            skipped += 1
-            for rule in rules:
-                add_debug_row("新文件路径为空", rule, content)
-            continue
         source_file, source_note = _source_file_for_content(content, source_files, content_index, len(contents), params)
         if not source_file and source_files != [""]:
             skipped += len(rules) + len(global_rules)
             for rule in rules + global_rules:
                 add_debug_row(source_note, rule, content)
+            continue
+        target_file = _target_file_for_content(content, params, source_file)
+        if not target_file:
+            skipped += 1
+            for rule in rules:
+                add_debug_row("拟定新文件字段为空", rule, content, source_file)
+            for global_rule in global_rules:
+                add_debug_row("拟定新文件字段为空", global_rule, content, source_file)
             continue
         source_records = by_file.get(source_file, [])
         for rule in rules:
@@ -977,17 +986,13 @@ def open_config_window(parent, current_params, context):
     top_fields = ttk.Frame(win, padding=(8, 0, 8, 4))
     top_fields.pack(fill=tk.X)
     source_file_field_var = tk.StringVar(value=params.get("source_file_field", "source_file"))
-    target_file_field_var = tk.StringVar(value=params.get("target_file_field", "target_file"))
-    content_source_file_field_var = tk.StringVar(value=params.get("content_source_file_field", "source_file"))
+    planned_file_field_var = tk.StringVar(value=params.get("planned_file_field") or params.get("target_file_field", "target_file"))
     ttk.Label(top_fields, text="源文件字段：").pack(side=tk.LEFT)
     source_file_field_combo = ttk.Combobox(top_fields, textvariable=source_file_field_var, values=[], width=24, state="normal")
     source_file_field_combo.pack(side=tk.LEFT, padx=4)
-    ttk.Label(top_fields, text="新文件路径字段：").pack(side=tk.LEFT, padx=(12, 0))
-    target_file_field_combo = ttk.Combobox(top_fields, textvariable=target_file_field_var, values=[], width=24, state="normal")
-    target_file_field_combo.pack(side=tk.LEFT, padx=4)
-    ttk.Label(top_fields, text="新内容源文件字段：").pack(side=tk.LEFT, padx=(12, 0))
-    content_source_file_field_combo = ttk.Combobox(top_fields, textvariable=content_source_file_field_var, values=[], width=24, state="normal")
-    content_source_file_field_combo.pack(side=tk.LEFT, padx=4)
+    ttk.Label(top_fields, text="拟定新文件字段：").pack(side=tk.LEFT, padx=(12, 0))
+    planned_file_field_combo = ttk.Combobox(top_fields, textvariable=planned_file_field_var, values=[], width=24, state="normal")
+    planned_file_field_combo.pack(side=tk.LEFT, padx=4)
 
     main = ttk.PanedWindow(win, orient=tk.HORIZONTAL)
     main.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
@@ -1728,14 +1733,11 @@ def open_config_window(parent, current_params, context):
         doc_fields = current_doc_fields()
         content_fields = current_content_fields()
         source_file_field_combo.configure(values=doc_fields)
-        target_file_field_combo.configure(values=content_fields)
-        content_source_file_field_combo.configure(values=content_fields)
+        planned_file_field_combo.configure(values=content_fields)
         if not source_file_field_var.get() and doc_fields:
             source_file_field_var.set("source_file" if "source_file" in doc_fields else doc_fields[0])
-        if not target_file_field_var.get() and content_fields:
-            target_file_field_var.set("target_file" if "target_file" in content_fields else content_fields[0])
-        if not content_source_file_field_var.get() and content_fields:
-            content_source_file_field_var.set("source_file" if "source_file" in content_fields else content_fields[0])
+        if not planned_file_field_var.get() and content_fields:
+            planned_file_field_var.set("target_file" if "target_file" in content_fields else content_fields[0])
 
     def rule_id_for_rec(rec):
         return f"{rec.get('sheet_name','')}:R{rec.get('row_index')}C{rec.get('col_index')}"
@@ -2100,8 +2102,7 @@ def open_config_window(parent, current_params, context):
         params["content_table_alias"] = content_alias_var.get().strip() or "新内容表"
         params["config_name"] = config_name_var.get().strip() or "default"
         params["source_file_field"] = source_file_field_var.get().strip() or "source_file"
-        params["target_file_field"] = target_file_field_var.get().strip() or "target_file"
-        params["content_source_file_field"] = content_source_file_field_var.get().strip() or "source_file"
+        params["planned_file_field"] = planned_file_field_var.get().strip() or "target_file"
         refresh_field_combos()
         doc_table = tables.get(params["doc_table_alias"], {})
         state["records"] = _doc_records(doc_table, params)
@@ -2135,8 +2136,7 @@ def open_config_window(parent, current_params, context):
         params["content_table_alias"] = content_alias_var.get().strip() or "新内容表"
         params["config_name"] = config_name_var.get().strip() or "default"
         params["source_file_field"] = source_file_field_var.get().strip() or "source_file"
-        params["target_file_field"] = target_file_field_var.get().strip() or "target_file"
-        params["content_source_file_field"] = content_source_file_field_var.get().strip() or "source_file"
+        params["planned_file_field"] = planned_file_field_var.get().strip() or "target_file"
 
     def save_current_config():
         sync_params_from_ui()
