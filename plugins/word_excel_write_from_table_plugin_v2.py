@@ -234,6 +234,49 @@ def _progress(context, current=None, total=None, message="", **extra):
             pass
 
 
+def _short_detail_text(text, limit=90):
+    text = re.sub(r"\s+", " ", _as_text(text))
+    if len(text) > limit:
+        return text[:limit] + "..."
+    return text
+
+
+def _op_location(op):
+    sheet = _as_text(op.get("sheet_name"))
+    row = _as_text(op.get("row_index"))
+    col = _as_text(op.get("col_index"))
+    addr = _as_text(op.get("cell_address"))
+    if row and col:
+        loc = f"{sheet} R{row}C{col}" if sheet else f"R{row}C{col}"
+    elif addr:
+        loc = f"{sheet} {addr}" if sheet else addr
+    elif row:
+        loc = f"{sheet} 段落{row}" if sheet else f"段落{row}"
+    else:
+        loc = sheet or _as_text(op.get("block_type")) or "写入位置"
+    return loc.strip()
+
+
+def _op_detail_message(file_path, op):
+    return f"写入中：{Path(file_path).name} {_op_location(op)}：{_short_detail_text(op.get('value', ''))}"
+
+
+def _op_progress(context, current, total, file_path, op, op_no):
+    if not context:
+        return
+    if op_no != 1 and op_no % 20 != 0:
+        return
+    _progress(
+        context,
+        current,
+        total,
+        "写入中",
+        stage="op_write",
+        object=str(file_path),
+        detail_message=_op_detail_message(file_path, op),
+    )
+
+
 def _check_cancel(context):
     ev = context.get("cancel_event")
     return bool(ev is not None and hasattr(ev, "is_set") and ev.is_set())
@@ -326,7 +369,7 @@ def _collect_ops(input_data, params, context):
     }
 
 
-def _write_word_via_com(file_path, ops):
+def _write_word_via_com(file_path, ops, context=None, progress_current=None, progress_total=None):
     try:
         import pythoncom
         import win32com.client
@@ -345,7 +388,8 @@ def _write_word_via_com(file_path, ops):
         word.DisplayAlerts = 0
         doc = word.Documents.Open(str(file_path), ReadOnly=False, AddToRecentFiles=False, ConfirmConversions=False, Visible=False)
 
-        for op in ops:
+        for op_no, op in enumerate(ops, start=1):
+            _op_progress(context, progress_current, progress_total, file_path, op, op_no)
             bt = _as_text(op.get("block_type", "")).lower()
             try:
                 if bt == "word_paragraph":
@@ -398,7 +442,7 @@ def _write_word_via_com(file_path, ops):
             pass
 
 
-def _write_excel_via_com(file_path, ops):
+def _write_excel_via_com(file_path, ops, context=None, progress_current=None, progress_total=None):
     try:
         import pythoncom
         import win32com.client
@@ -417,7 +461,8 @@ def _write_excel_via_com(file_path, ops):
         excel.DisplayAlerts = False
         wb = excel.Workbooks.Open(str(file_path), ReadOnly=False, UpdateLinks=0)
 
-        for op in ops:
+        for op_no, op in enumerate(ops, start=1):
+            _op_progress(context, progress_current, progress_total, file_path, op, op_no)
             try:
                 sheet_name = _as_text(op.get("sheet_name", ""))
                 ws = wb.Worksheets(sheet_name) if sheet_name else wb.Worksheets(1)
@@ -507,7 +552,7 @@ class _Win32OfficeSession:
                     time.sleep(self.retry_interval)
         raise RuntimeError(f"打开文件失败，已重试 {self.open_retries} 次：{file_path}；{last_exc}")
 
-    def write_word(self, file_path, ops):
+    def write_word(self, file_path, ops, context=None, progress_current=None, progress_total=None):
         doc = None
         saved = False
         applied = 0
@@ -519,7 +564,8 @@ class _Win32OfficeSession:
                 lambda: word.Documents.Open(str(file_path), ReadOnly=False, AddToRecentFiles=False, ConfirmConversions=False, Visible=False),
                 file_path,
             )
-            for op in ops:
+            for op_no, op in enumerate(ops, start=1):
+                _op_progress(context, progress_current, progress_total, file_path, op, op_no)
                 bt = _as_text(op.get("block_type", "")).lower()
                 try:
                     if bt == "word_paragraph":
@@ -568,7 +614,7 @@ class _Win32OfficeSession:
             if saved and self.close_settle > 0:
                 time.sleep(self.close_settle)
 
-    def write_excel(self, file_path, ops):
+    def write_excel(self, file_path, ops, context=None, progress_current=None, progress_total=None):
         wb = None
         saved = False
         applied = 0
@@ -580,7 +626,8 @@ class _Win32OfficeSession:
                 lambda: excel.Workbooks.Open(str(file_path), ReadOnly=False, UpdateLinks=0),
                 file_path,
             )
-            for op in ops:
+            for op_no, op in enumerate(ops, start=1):
+                _op_progress(context, progress_current, progress_total, file_path, op, op_no)
                 try:
                     sheet_name = _as_text(op.get("sheet_name", ""))
                     ws = wb.Worksheets(sheet_name) if sheet_name else wb.Worksheets(1)
@@ -611,12 +658,12 @@ class _Win32OfficeSession:
             if saved and self.close_settle > 0:
                 time.sleep(self.close_settle)
 
-    def write_file(self, file_path, ops):
+    def write_file(self, file_path, ops, context=None, progress_current=None, progress_total=None):
         ext = file_path.suffix.lower()
         if ext in (".doc", ".docx", ".docm"):
-            return self.write_word(file_path, ops)
+            return self.write_word(file_path, ops, context, progress_current, progress_total)
         if ext in (".xls", ".xlsx", ".xlsm"):
-            return self.write_excel(file_path, ops)
+            return self.write_excel(file_path, ops, context, progress_current, progress_total)
         raise ValueError(f"win32 不支持的文件类型：{ext}")
 
     def close(self):
@@ -651,7 +698,7 @@ def _set_word_paragraph_text(p_node, text, ns_w):
     t.text = txt
 
 
-def _write_docx_zip_xml(file_path, ops):
+def _write_docx_zip_xml(file_path, ops, context=None, progress_current=None, progress_total=None):
     ns_w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
     ns = {"w": ns_w}
     applied = 0
@@ -673,7 +720,8 @@ def _write_docx_zip_xml(file_path, ops):
     paragraphs = [x for x in body_children if x.tag.split("}")[-1] == "p"]
     tables = [x for x in body_children if x.tag.split("}")[-1] == "tbl"]
 
-    for op in ops:
+    for op_no, op in enumerate(ops, start=1):
+        _op_progress(context, progress_current, progress_total, file_path, op, op_no)
         bt = _as_text(op.get("block_type", "")).lower()
         try:
             if bt == "word_paragraph":
@@ -738,7 +786,7 @@ def _write_docx_zip_xml(file_path, ops):
     return applied, skipped, logs
 
 
-def _write_excel_openpyxl(file_path, ops):
+def _write_excel_openpyxl(file_path, ops, context=None, progress_current=None, progress_total=None):
     try:
         from openpyxl import load_workbook
     except Exception as exc:
@@ -751,7 +799,8 @@ def _write_excel_openpyxl(file_path, ops):
     skipped = 0
     logs = []
     try:
-        for op in ops:
+        for op_no, op in enumerate(ops, start=1):
+            _op_progress(context, progress_current, progress_total, file_path, op, op_no)
             try:
                 sheet_name = _as_text(op.get("sheet_name", ""))
                 ws = wb[sheet_name] if sheet_name and sheet_name in wb.sheetnames else wb.worksheets[0]
@@ -779,22 +828,22 @@ def _write_excel_openpyxl(file_path, ops):
         wb.close()
 
 
-def _write_file(file_path, ops, engine):
+def _write_file(file_path, ops, engine, context=None, progress_current=None, progress_total=None):
     ext = file_path.suffix.lower()
     if engine == "win32":
         if ext in (".doc", ".docx", ".docm"):
-            return _write_word_via_com(file_path, ops)
+            return _write_word_via_com(file_path, ops, context, progress_current, progress_total)
         if ext in (".xls", ".xlsx", ".xlsm"):
-            return _write_excel_via_com(file_path, ops)
+            return _write_excel_via_com(file_path, ops, context, progress_current, progress_total)
         raise ValueError(f"win32 不支持的文件类型：{ext}")
 
     # zip_xml
     if ext == ".doc":
         raise ValueError("zip_xml 不支持 .doc，请改用 win32")
     if ext in (".docx", ".docm"):
-        return _write_docx_zip_xml(file_path, ops)
+        return _write_docx_zip_xml(file_path, ops, context, progress_current, progress_total)
     if ext in (".xlsx", ".xlsm"):
-        return _write_excel_openpyxl(file_path, ops)
+        return _write_excel_openpyxl(file_path, ops, context, progress_current, progress_total)
     if ext == ".xls":
         raise ValueError("zip_xml 不支持 .xls，请改用 win32")
     raise ValueError(f"zip_xml 不支持的文件类型：{ext}")
@@ -981,9 +1030,9 @@ def run(input_data, params, context):
             if not target_path.exists():
                 raise FileNotFoundError(f"目标文件不存在：{target_path}")
             if win32_session is not None:
-                applied, skipped, write_logs = win32_session.write_file(target_path, ops)
+                applied, skipped, write_logs = win32_session.write_file(target_path, ops, context, i - 1, total_files)
             else:
-                applied, skipped, write_logs = _write_file(target_path, ops, engine)
+                applied, skipped, write_logs = _write_file(target_path, ops, engine, context, i - 1, total_files)
             total_applied += applied
             total_skipped += skipped
             out_rows.append([str(source_path), str(target_path), target_path.name, engine, len(ops), applied, skipped, copy_status, "成功", "成功", ""])
