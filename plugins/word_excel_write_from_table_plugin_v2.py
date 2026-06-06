@@ -20,6 +20,20 @@ PLUGIN_INFO = {
     "danger_level": "file_write",
 }
 
+OUTPUT_HEADERS = [
+    "source_file",
+    "target_file",
+    "target_file_name",
+    "engine",
+    "op_total",
+    "applied",
+    "skipped",
+    "copy_status",
+    "write_status",
+    "status",
+    "error",
+]
+
 
 def get_parameter_schema():
     return [
@@ -122,6 +136,15 @@ def get_parameter_schema():
         {"name": "value_field", "label": "写入值字段", "type": "field_select", "default": "text"},
         {"name": "meta_json_field", "label": "meta字段", "type": "field_select", "default": "meta_json"},
     ]
+
+
+def get_output_schema(params=None, input_data=None, context=None):
+    return {
+        "type": "table",
+        "headers": list(OUTPUT_HEADERS),
+        "rows": [],
+        "meta": {"plugin": PLUGIN_INFO["id"], "lazy_schema": True},
+    }
 
 
 def _as_text(v):
@@ -1025,19 +1048,7 @@ def run(input_data, params, context):
             },
         }
 
-    out_headers = [
-        "source_file",
-        "target_file",
-        "target_file_name",
-        "engine",
-        "op_total",
-        "applied",
-        "skipped",
-        "copy_status",
-        "write_status",
-        "status",
-        "error",
-    ]
+    out_headers = list(OUTPUT_HEADERS)
     out_rows = []
     total_applied = 0
     total_skipped = prep["skipped_no_path"] + prep["skipped_empty_value"]

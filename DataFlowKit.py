@@ -6110,6 +6110,7 @@ class PlanWorkflowWindow:
             "log_dir": self.get_plugin_log_dir(),
             "is_preview": not bool(execute_actions),
             "execute_actions": bool(execute_actions),
+            "is_config_probe": bool(context.get("is_config_probe")),
             "workflow_name": workflow_name,
             "node_name": config.get("name") or config.get("node_name") or "插件节点",
             "plugin_id": plugin_id,
@@ -6339,6 +6340,7 @@ class PlanWorkflowWindow:
             "log_dir": self.get_plugin_log_dir(),
             "is_preview": not bool(execute_actions),
             "execute_actions": bool(execute_actions),
+            "is_config_probe": bool(context.get("is_config_probe")),
             "workflow_name": workflow_name,
             "node_name": node_name,
             "plugin_id": plugin_id,
@@ -6352,6 +6354,140 @@ class PlanWorkflowWindow:
             "cancel_event": cancel_event,
         }
 
+    def is_plugin_config_probe(self, context=None, execute_actions=False):
+        """配置界面字段探测：只推断字段，不真实执行插件。"""
+        return bool((context or {}).get("is_config_probe")) and not bool(execute_actions)
+
+    def build_plugin_probe_input_tables(self, config, current_headers, context=None):
+        """构建仅含字段的插件输入表，避免配置阶段加载整表或触发重节点。"""
+        table_headers = self.build_plugin_input_table_headers(config, current_headers, context or {})
+        tables = {}
+        for alias, headers in (table_headers or {}).items():
+            tables[alias] = {
+                "type": "table",
+                "headers": list(headers or []),
+                "rows": [],
+                "source_name": alias,
+                "meta": {"lazy_schema": True, "source_type": "config_probe"},
+            }
+        primary = tables.get("当前表") or {
+            "type": "table",
+            "headers": list(current_headers or []),
+            "rows": [],
+            "source_name": "workflow_current",
+            "meta": {"lazy_schema": True, "source_type": "config_probe"},
+        }
+        tables.setdefault("当前表", primary)
+        tables.setdefault("workflow_current", primary)
+        tables.setdefault("primary", primary)
+        return tables
+
+    def normalize_plugin_output_schema(self, schema, fallback_headers=None):
+        """把插件声明的输出 schema 规整为 table dict。"""
+        fallback_headers = list(fallback_headers or [])
+        if schema is None:
+            return None
+        if isinstance(schema, (list, tuple)):
+            headers = [str(h) for h in schema]
+            return {"type": "table", "headers": headers, "rows": [], "meta": {"lazy_schema": True}}
+        if isinstance(schema, dict):
+            if "output" in schema and isinstance(schema.get("output"), dict):
+                schema = schema.get("output")
+            headers = (
+                schema.get("headers")
+                or schema.get("fields")
+                or schema.get("columns")
+                or fallback_headers
+            )
+            rows = schema.get("rows", [])
+            meta = dict(schema.get("meta") or {})
+            meta.setdefault("lazy_schema", True)
+            return {
+                "type": schema.get("type", "table"),
+                "headers": [str(h) for h in (headers or [])],
+                "rows": [list(r) for r in (rows or [])],
+                "meta": meta,
+            }
+        return None
+
+    def get_plugin_output_schema_table(self, item, input_data, params, plugin_context, fallback_headers=None):
+        """优先调用插件 get_output_schema；未声明时读取元信息里的静态字段。"""
+        module = item.get("module")
+        schema = None
+        provider = getattr(module, "get_output_schema", None) if module is not None else None
+        if callable(provider):
+            try:
+                schema = provider(dict(params or {}), input_data, plugin_context)
+            except Exception:
+                schema = None
+        if schema is None:
+            info = item.get("info", {}) or {}
+            schema = info.get("output_schema") or info.get("output_headers") or info.get("headers")
+        return self.normalize_plugin_output_schema(schema, fallback_headers=fallback_headers)
+
+    def apply_lazy_plugin_probe_node(self, headers, rows, config, item, params, runtime_context):
+        """配置阶段插件懒加载：返回字段和空值，不调用插件 run。"""
+        plugin_id = config.get("plugin_id", "")
+        input_tables = self.build_plugin_probe_input_tables(config, headers, runtime_context)
+        runtime_context["input_tables"] = input_tables
+        runtime_context["plugin_input_table_specs"] = copy.deepcopy(config.get("input_tables", []))
+        input_data = {
+            "type": "table",
+            "headers": list(headers),
+            "rows": [],
+            "source_name": "workflow_current",
+            "meta": {"plugin_id": plugin_id, "lazy_schema": True},
+            "tables": input_tables,
+        }
+        plugin_context = self.make_plugin_context(config, runtime_context, execute_actions=False)
+        schema_table = self.get_plugin_output_schema_table(item, input_data, params, plugin_context, fallback_headers=headers)
+        schema_declared = schema_table is not None
+        if schema_table is None:
+            schema_table = {
+                "type": "table",
+                "headers": list(headers),
+                "rows": [list(r) for r in rows],
+                "meta": {"lazy_schema": True, "schema_fallback": "pass_through"},
+            }
+
+        new_headers = list(schema_table.get("headers", headers))
+        new_rows = [list(r) for r in schema_table.get("rows", [])]
+        output_mode = config.get("output_mode", "使用插件返回结果")
+        save_as_transit = bool(config.get("save_output_as_transit", False)) or output_mode.startswith("保存为中转副表")
+        transit_parts = []
+        if save_as_transit:
+            name = config.get("transit_name") or item.get("info", {}).get("name", plugin_id)
+            part = self.save_plugin_output_to_transit(
+                runtime_context,
+                name,
+                new_headers,
+                new_rows,
+                config.get("transit_conflict_mode", "覆盖"),
+                source=f"插件字段探测:{plugin_id}",
+            )
+            transit_parts.append(part)
+
+        if output_mode == "保存为中转副表并保持当前表":
+            final_headers = list(headers)
+            final_rows = [list(r) for r in rows] if not schema_declared else []
+        elif output_mode == "追加字段到当前表":
+            final_headers = list(headers)
+            for h in new_headers:
+                if h not in final_headers:
+                    final_headers.append(h)
+            final_rows = []
+        else:
+            final_headers, final_rows = new_headers, new_rows
+
+        plugin_name = item.get("info", {}).get("name", plugin_id)
+        if schema_declared:
+            stat = f"插件 {plugin_name} 字段懒加载：未执行插件，已返回 {len(final_headers)} 个字段"
+        else:
+            stat = f"插件 {plugin_name} 字段懒加载：插件未声明输出字段，暂按上游字段透传"
+        if transit_parts:
+            stat += "；" + "；".join(transit_parts)
+        return final_headers, final_rows, stat
+
     def apply_plugin_node(self, headers, rows, config, context=None, execute_actions=False):
         plugin_id = config.get("plugin_id", "")
         item = self.plugin_registry.get(plugin_id)
@@ -6360,6 +6496,8 @@ class PlanWorkflowWindow:
         module = item.get("module")
         params = dict(config.get("params", {}))
         runtime_context = dict(context or {})
+        if self.is_plugin_config_probe(runtime_context, execute_actions=execute_actions):
+            return self.apply_lazy_plugin_probe_node(headers, rows, config, item, params, runtime_context)
         input_tables = self.build_plugin_input_tables(config, headers, rows, runtime_context)
         runtime_context["input_tables"] = input_tables
         runtime_context["plugin_input_table_specs"] = copy.deepcopy(config.get("input_tables", []))
@@ -7099,6 +7237,7 @@ class PlanWorkflowWindow:
             "transit_tables": {},
             "loop_states": {},
             "loop_results": {},
+            "is_config_probe": True,
             "allow_selected_columns_write_in_preview": True,
             "selected_columns_config_preview_only": True,
         }

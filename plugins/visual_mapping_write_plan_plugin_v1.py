@@ -37,6 +37,26 @@ CONFIG_WINDOW_HEIGHT = 820
 CONFIG_WINDOW_MIN_WIDTH = 1120
 CONFIG_WINDOW_MIN_HEIGHT = 650
 
+OUTPUT_HEADERS = [
+    "source_file",
+    "target_file",
+    "block_type",
+    "sheet_name",
+    "row_index",
+    "col_index",
+    "cell_address",
+    "text",
+    "old_text",
+    "mapping_field",
+    "content_row",
+    "match_status",
+    "match_rule",
+    "anchor_rule",
+    "source_match_detail",
+    "anchor_match_detail",
+    "write_note",
+]
+
 
 def get_parameter_schema():
     return [
@@ -60,6 +80,15 @@ def get_parameter_schema():
         },
         {"name": "config_name", "label": "配置名称", "type": "dynamic_select", "default": "default", "allow_custom": True},
     ]
+
+
+def get_output_schema(params=None, input_data=None, context=None):
+    return {
+        "type": "table",
+        "headers": list(OUTPUT_HEADERS),
+        "rows": [],
+        "meta": {"plugin": PLUGIN_INFO["id"], "lazy_schema": True},
+    }
 
 
 def get_dynamic_parameter_options(param_name, params, context):
@@ -1215,25 +1244,7 @@ def run(input_data, params, context):
         by_file.setdefault(rec.get("source_file", ""), []).append(rec)
     source_files = _source_files(records, params)
 
-    out_headers = [
-        "source_file",
-        "target_file",
-        "block_type",
-        "sheet_name",
-        "row_index",
-        "col_index",
-        "cell_address",
-        "text",
-        "old_text",
-        "mapping_field",
-        "content_row",
-        "match_status",
-        "match_rule",
-        "anchor_rule",
-        "source_match_detail",
-        "anchor_match_detail",
-        "write_note",
-    ]
+    out_headers = list(OUTPUT_HEADERS)
     out_rows = []
     logs = []
     skipped = 0

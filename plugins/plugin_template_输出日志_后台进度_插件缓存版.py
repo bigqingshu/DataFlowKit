@@ -95,6 +95,29 @@ def get_parameter_schema():
     ]
 
 
+def get_output_schema(params=None, input_data=None, context=None):
+    params = dict(params or {})
+    input_data = input_data or {}
+    headers = list(input_data.get("headers", []) or [])
+    prefix = params.get("output_prefix", "插件_")
+    add_status = bool(params.get("add_status", True))
+    out_headers = list(headers)
+    extra_headers = []
+    if add_status:
+        extra_headers.append(prefix + "状态")
+    extra_headers.append(prefix + "缓存状态")
+    extra_headers.append(prefix + "文件大小")
+    for h in extra_headers:
+        if h not in out_headers:
+            out_headers.append(h)
+    return {
+        "type": "table",
+        "headers": out_headers,
+        "rows": [],
+        "meta": {"plugin": PLUGIN_INFO["id"], "lazy_schema": True},
+    }
+
+
 def validate_params(params, input_data, context):
     # 返回 (True, "") 表示校验通过；返回 (False, "错误信息") 表示阻止执行。
     return True, ""

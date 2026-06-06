@@ -22,6 +22,28 @@ PLUGIN_INFO = {
     "danger_level": "db_write",
 }
 
+DETAIL_HEADERS = [
+    "source_file",
+    "source_name",
+    "source_ext",
+    "block_type",
+    "sheet_name",
+    "row_index",
+    "col_index",
+    "cell_address",
+    "text",
+    "meta_json",
+    "is_merged",
+    "is_merge_origin",
+    "merge_origin_row",
+    "merge_origin_col",
+    "row_span",
+    "col_span",
+    "merged_range",
+]
+
+SUMMARY_HEADERS = ["source_row", "source_mode", "file_name", "file_path", "table_name", "read_rows", "write_rows", "status", "error"]
+
 
 def get_parameter_schema():
     return [
@@ -145,6 +167,19 @@ def get_parameter_schema():
             "default": "继续并记录失败",
         },
     ]
+
+
+def get_output_schema(params=None, input_data=None, context=None):
+    return {
+        "type": "table",
+        "headers": list(DETAIL_HEADERS),
+        "rows": [],
+        "meta": {
+            "plugin": PLUGIN_INFO["id"],
+            "lazy_schema": True,
+            "summary_headers": list(SUMMARY_HEADERS),
+        },
+    }
 
 
 def _as_text(v):
@@ -1394,26 +1429,8 @@ def run(input_data, params, context):
             cache_conn = None
             logs.append({"level": "WARNING", "message": f"CACHE_ERROR：初始化缓存失败：{exc}"})
 
-    detail_headers = [
-        "source_file",
-        "source_name",
-        "source_ext",
-        "block_type",
-        "sheet_name",
-        "row_index",
-        "col_index",
-        "cell_address",
-        "text",
-        "meta_json",
-        "is_merged",
-        "is_merge_origin",
-        "merge_origin_row",
-        "merge_origin_col",
-        "row_span",
-        "col_span",
-        "merged_range",
-    ]
-    summary_headers = ["source_row", "source_mode", "file_name", "file_path", "table_name", "read_rows", "write_rows", "status", "error"]
+    detail_headers = list(DETAIL_HEADERS)
+    summary_headers = list(SUMMARY_HEADERS)
     summary_rows = []
     output_rows = []
     cancelled = False
