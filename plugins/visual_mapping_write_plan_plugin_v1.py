@@ -38,6 +38,7 @@ def get_parameter_schema():
     return [
         {"name": "doc_table_alias", "label": "文档读取表别名", "type": "input_table_select", "default": "当前表"},
         {"name": "content_table_alias", "label": "新内容表别名", "type": "input_table_select", "default": "新内容表"},
+        {"name": "replace_aux_table_alias", "label": "替换辅助表别名", "type": "input_table_select", "default": "替换辅助表"},
         {"name": "source_file_field", "label": "源文件字段", "type": "dynamic_select", "default": "source_file", "allow_custom": True},
         {"name": "planned_file_field", "label": "拟定新文件字段", "type": "dynamic_select", "default": "target_file", "allow_custom": True},
         {
@@ -60,7 +61,7 @@ def get_parameter_schema():
 def get_dynamic_parameter_options(param_name, params, context):
     params = dict(params or {})
     tables = _all_tables({}, context or {})
-    if param_name in ("doc_table_alias", "content_table_alias"):
+    if param_name in ("doc_table_alias", "content_table_alias", "replace_aux_table_alias"):
         return list(tables.keys()) or ["当前表"]
     if param_name == "config_name":
         settings = _load_settings(context or {})
@@ -259,6 +260,14 @@ def _pick_table(input_data, context, alias, fallback="当前表"):
     if tables:
         key = next(iter(tables.keys()))
         return tables[key], key
+    return {"type": "table", "headers": [], "rows": []}, ""
+
+
+def _pick_optional_table(input_data, context, alias):
+    tables = _all_tables(input_data, context)
+    alias = _as_text(alias)
+    if alias and alias in tables:
+        return tables[alias], alias
     return {"type": "table", "headers": [], "rows": []}, ""
 
 
@@ -481,6 +490,59 @@ def _match_condition_chain(text, conditions, default_logic="AND"):
     return bool(result), "；".join(details)
 
 
+def _extract_group_span(match, group_index=1):
+    group_index = _to_int(group_index, 1)
+    if group_index <= 0:
+        return match.span(0), _as_text(match.group(0)), "0"
+    try:
+        if match.lastindex and group_index <= match.lastindex and match.start(group_index) >= 0:
+            return match.span(group_index), _as_text(match.group(group_index)), str(group_index)
+    except Exception:
+        pass
+    try:
+        if match.lastindex:
+            for index in range(1, match.lastindex + 1):
+                if match.start(index) >= 0:
+                    return match.span(index), _as_text(match.group(index)), str(index)
+    except Exception:
+        pass
+    return match.span(0), _as_text(match.group(0)), "0"
+
+
+def _condition_extract_items(text, conditions, default_logic="AND"):
+    ok, detail = _match_condition_chain(text, conditions, default_logic)
+    text = _as_text(text)
+    if not ok:
+        return False, detail, []
+    valid_conditions = [c for c in (conditions or []) if isinstance(c, dict)]
+    if not valid_conditions:
+        return True, detail, [{"span": (0, len(text)), "value": text, "note": "未设置匹配条件，使用全文"}]
+    regex_items = []
+    for cond in valid_conditions:
+        mode = _as_text(cond.get("mode", "包含"))
+        value = _as_text(cond.get("value"))
+        if mode not in ("正则", "正则匹配", "regex") or not value:
+            continue
+        cond_ok, _cond_detail = _match_text(text, {"enabled": True, "mode": mode, "value": value})
+        if not cond_ok:
+            continue
+        try:
+            for match_index, match in enumerate(re.finditer(value, text), start=1):
+                (start, end), extracted_value, used_group = _extract_group_span(match, 1)
+                regex_items.append({
+                    "span": (start, end),
+                    "value": extracted_value,
+                    "note": f"正则条件提取{match_index} 组{used_group}",
+                    "full_match": _as_text(match.group(0)),
+                    "group": used_group,
+                })
+        except Exception as exc:
+            return False, f"{detail}；条件提取异常：{exc}", []
+        if regex_items:
+            return True, detail, regex_items
+    return True, detail, [{"span": (0, len(text)), "value": text, "note": "条件命中，使用全文"}]
+
+
 def _feature_condition_pass(condition, source_records, source_file="", sheet_name=""):
     cond = condition or {}
     cond_sheet = _cfg_sheet_name(cond.get("sheet_name")) or _cfg_sheet_name(sheet_name)
@@ -571,43 +633,252 @@ def _expand_template(text, content):
     return re.sub(r"\{([^{}]+)\}", replace_match, template)
 
 
-def _apply_replace_steps(old_text, steps, content):
-    text = _as_text(old_text)
-    valid_steps = [s for s in (steps or []) if isinstance(s, dict) and s.get("enabled", True)]
-    if not valid_steps:
-        return text, "未设置替换步骤", None
-    details = []
-    for index, step in enumerate(valid_steps, start=1):
-        pattern = _as_text(step.get("pattern") or step.get("regex"))
-        if not pattern:
-            details.append(f"步骤{index}无正则，跳过")
+def _normalize_batch_value_source(value):
+    text = _as_text(value) or "手动输入"
+    if text in ("辅助表字段", "辅助表", "aux_field", "列字段"):
+        return "辅助表字段"
+    if text in ("辅助表固定值", "aux_fixed"):
+        return "辅助表固定值"
+    if text in ("新内容字段", "内容字段", "content_field"):
+        return "新内容字段"
+    return "手动输入"
+
+
+def _compare_batch_text(text, pattern, mode, case_sensitive=True):
+    text = "" if text is None else str(text)
+    pattern = "" if pattern is None else str(pattern)
+    mode = _as_text(mode) or "包含"
+    if mode == "为空":
+        return text == ""
+    if mode in ("不为空", "非空"):
+        return text != ""
+    if mode == "正则匹配":
+        flags = 0 if case_sensitive else re.IGNORECASE
+        return re.search(pattern, text, flags) is not None
+    cmp_text = text if case_sensitive else text.lower()
+    cmp_pattern = pattern if case_sensitive else pattern.lower()
+    if mode in ("等于", "完全相等"):
+        return cmp_text == cmp_pattern
+    if mode == "不等于":
+        return cmp_text != cmp_pattern
+    if mode == "开头是":
+        return cmp_text.startswith(cmp_pattern)
+    if mode == "结尾是":
+        return cmp_text.endswith(cmp_pattern)
+    if mode == "不包含":
+        return cmp_pattern not in cmp_text
+    return cmp_pattern in cmp_text
+
+
+def _replace_batch_text(text, match_value, replace_value, match_mode, replace_mode, case_sensitive=True, count=0):
+    text = "" if text is None else str(text)
+    match_value = "" if match_value is None else str(match_value)
+    replace_value = "" if replace_value is None else str(replace_value)
+    replace_mode = _as_text(replace_mode) or "局部替换匹配字符串"
+    count = _to_int(count, 0)
+    if replace_mode == "整格替换为新值":
+        return replace_value, 1 if replace_value != text else 0
+    if match_mode == "正则匹配":
+        flags = 0 if case_sensitive else re.IGNORECASE
+        return re.subn(match_value, replace_value, text, count=0 if count <= 0 else count, flags=flags)
+    if not match_value:
+        return text, 0
+    if case_sensitive:
+        replaced = text.count(match_value) if count <= 0 else min(text.count(match_value), count)
+        return text.replace(match_value, replace_value, count if count > 0 else -1), replaced
+    new_text, replaced = re.subn(re.escape(match_value), replace_value, text, count=0 if count <= 0 else count, flags=re.IGNORECASE)
+    return new_text, replaced
+
+
+def _batch_template_context(content, aux_row=None, extract=None):
+    data = dict(content or {})
+    extract = extract or {}
+    for key, value in extract.items():
+        data[key] = value
+    if aux_row:
+        for key, value in aux_row.items():
+            key = _as_text(key)
+            if not key:
+                continue
+            data.setdefault(key, value)
+            data[f"辅助.{key}"] = value
+            data[f"aux.{key}"] = value
+    return data
+
+
+def _iter_batch_rule_pairs(rule, content, aux_rows, extract):
+    source = _normalize_batch_value_source(rule.get("value_source"))
+    if source in ("辅助表字段", "辅助表固定值"):
+        match_field = _as_text(rule.get("match_value_field"))
+        replace_field = _as_text(rule.get("replace_value_field"))
+        if not match_field:
+            raise ValueError("未设置辅助表匹配值字段")
+        if source == "辅助表字段" and not replace_field:
+            raise ValueError("未设置辅助表替换值字段")
+        skipped = 0
+        for aux_row in aux_rows or []:
+            match_value = _as_text((aux_row or {}).get(match_field))
+            if not match_value and bool(rule.get("skip_empty_match_value", True)):
+                skipped += 1
+                continue
+            if source == "辅助表字段":
+                replace_value = _as_text((aux_row or {}).get(replace_field))
+            else:
+                replace_value = _expand_template(rule.get("replace_value", ""), _batch_template_context(content, aux_row, extract))
+            yield match_value, replace_value, f"辅助表 {match_field}->{replace_field or '固定值'}", skipped
+        return
+    if source == "新内容字段":
+        match_field = _as_text(rule.get("match_value_field"))
+        replace_field = _as_text(rule.get("replace_value_field"))
+        match_value = _as_text((content or {}).get(match_field))
+        if not match_value and bool(rule.get("skip_empty_match_value", True)):
+            return
+        replace_value = _as_text((content or {}).get(replace_field))
+        yield match_value, replace_value, f"新内容字段 {match_field}->{replace_field}", 0
+        return
+    yield _as_text(rule.get("match_value")), _expand_template(rule.get("replace_value", ""), _batch_template_context(content, None, extract)), "手动输入", 0
+
+
+def _legacy_steps_to_batch_rules(steps):
+    rows = []
+    for step in steps or []:
+        if not isinstance(step, dict):
             continue
-        replacement_type = _as_text(step.get("replacement_type", "固定值")) or "固定值"
+        replacement_type = _as_text(step.get("replacement_type") or "固定值")
         if replacement_type in ("新内容字段", "字段", "content_field"):
-            field = _as_text(step.get("replacement_field") or step.get("field"))
-            replacement = _as_text(content.get(field))
-            replacement_note = f"字段 {field}"
+            value_source = "新内容字段"
+            replace_field = _as_text(step.get("replacement_field") or step.get("field"))
+            replace_value = ""
         else:
-            replacement = _expand_template(step.get("replacement_value", ""), content)
-            replacement_note = "固定值"
-        count = _to_int(step.get("count"), 0)
+            value_source = "手动输入"
+            replace_field = ""
+            replace_value = _as_text(step.get("replacement_value"))
+        rows.append({
+            "enabled": step.get("enabled", True),
+            "match_mode": "正则匹配",
+            "match_value": _as_text(step.get("pattern") or step.get("regex")),
+            "replace_value": replace_value,
+            "replace_mode": "局部替换匹配字符串",
+            "value_source": value_source,
+            "match_value_field": "",
+            "replace_value_field": replace_field,
+            "case_sensitive": True,
+            "skip_empty_match_value": True,
+            "count": _as_text(step.get("count") or "0"),
+        })
+    return rows
+
+
+def _batch_rules_for_rule(rule):
+    return list(rule.get("batch_rules") or []) or _legacy_steps_to_batch_rules(rule.get("replace_steps") or [])
+
+
+def _apply_batch_rules_to_value(value, rules, content, aux_rows, extract):
+    text = _as_text(value)
+    valid_rules = [r for r in (rules or []) if isinstance(r, dict) and r.get("enabled", True)]
+    if not valid_rules:
+        return text, "未设置批量替换规则", None
+    details = []
+    for index, rule in enumerate(valid_rules, start=1):
+        match_mode = _as_text(rule.get("match_mode")) or "包含"
+        replace_mode = _as_text(rule.get("replace_mode")) or "局部替换匹配字符串"
+        case_sensitive = bool(rule.get("case_sensitive", True))
+        count = _to_int(rule.get("count"), 0)
+        rule_changed = 0
+        pair_count = 0
+        skipped_empty = 0
         try:
-            text, replaced = re.subn(pattern, replacement, text, count=0 if count <= 0 else count)
+            pairs = list(_iter_batch_rule_pairs(rule, content, aux_rows, extract))
         except Exception as exc:
-            return old_text, "；".join(details), f"替换步骤{index}异常：{exc}"
-        details.append(f"步骤{index} {pattern} -> {replacement_note}，替换{replaced}次")
+            return text, "；".join(details), f"批量替换规则{index}异常：{exc}"
+        source_note = _normalize_batch_value_source(rule.get("value_source"))
+        for match_value, replace_value, current_source_note, skipped in pairs:
+            pair_count += 1
+            source_note = current_source_note
+            skipped_empty = max(skipped_empty, skipped)
+            try:
+                if not _compare_batch_text(text, match_value, match_mode, case_sensitive):
+                    continue
+                text, replaced = _replace_batch_text(text, match_value, replace_value, match_mode, replace_mode, case_sensitive, count)
+            except Exception as exc:
+                return text, "；".join(details), f"批量替换规则{index}异常：{exc}"
+            rule_changed += replaced
+        detail = f"批量规则{index} {match_mode}/{replace_mode}，来源{source_note}，替换{rule_changed}次"
+        if skipped_empty:
+            detail += f"，跳过空匹配值{skipped_empty}行"
+        if pair_count == 0:
+            detail += "，无可用匹配值"
+        details.append(detail)
     return text, "；".join(details), None
+
+
+def _apply_replace_steps(old_text, rule, content, aux_rows=None, condition_items=None):
+    text = _as_text(old_text)
+    rule = rule or {}
+    batch_rules = _batch_rules_for_rule(rule)
+    if condition_items is None:
+        cond_ok, cond_detail, condition_items = _condition_extract_items(text, rule.get("conditions", []), rule.get("condition_logic", "AND"))
+        if not cond_ok:
+            return text, cond_detail, None
+    condition_items = [item for item in (condition_items or []) if isinstance(item, dict)]
+    if not condition_items:
+        return text, "匹配条件未提取到可替换值", None
+    parts = []
+    last_pos = 0
+    extracted = 0
+    changed = 0
+    detail_items = []
+    for item in condition_items:
+        try:
+            start, end = item.get("span", (0, len(text)))
+            start = int(start)
+            end = int(end)
+        except Exception:
+            start, end = 0, len(text)
+        start = max(0, min(start, len(text)))
+        end = max(start, min(end, len(text)))
+        if start < last_pos:
+            continue
+        extracted += 1
+        value = _as_text(item.get("value"))
+        extract = {
+            "提取内容": value,
+            "匹配值": value,
+            "完整匹配": _as_text(item.get("full_match", value)),
+            "原文": text,
+            "序号": extracted,
+            "group": _as_text(item.get("group", "")),
+            "组": _as_text(item.get("group", "")),
+        }
+        new_value, batch_detail, batch_error = _apply_batch_rules_to_value(value, batch_rules, content, aux_rows or [], extract)
+        if batch_error:
+            return old_text, "；".join(detail_items), batch_error
+        parts.append(text[last_pos:start])
+        parts.append(new_value)
+        last_pos = end
+        if new_value != value:
+            changed += 1
+        detail_items.append(f"{item.get('note', '条件命中值')}：{value} -> {new_value}；{batch_detail}")
+    parts.append(text[last_pos:])
+    return "".join(parts), f"条件提取 {extracted} 条，回填变化 {changed} 条；" + "；".join(detail_items[:10]), None
 
 
 def _global_rule_fields(rule):
     fields = []
-    for step in rule.get("replace_steps", []) or []:
-        if not isinstance(step, dict):
+    for item in _batch_rules_for_rule(rule):
+        if not isinstance(item, dict):
             continue
-        if _as_text(step.get("replacement_type")) in ("新内容字段", "字段", "content_field"):
-            field = _as_text(step.get("replacement_field") or step.get("field"))
-            if field and field not in fields:
-                fields.append(field)
+        value_source = _normalize_batch_value_source(item.get("value_source"))
+        match_field = _as_text(item.get("match_value_field"))
+        replace_field = _as_text(item.get("replace_value_field"))
+        if value_source == "新内容字段":
+            label = f"新内容:{match_field}->{replace_field}"
+        elif value_source in ("辅助表字段", "辅助表固定值"):
+            label = f"辅助表:{match_field}->{replace_field or '固定值'}"
+        else:
+            label = f"固定规则:{_as_text(item.get('match_value'))}"
+        if label and label not in fields:
+            fields.append(label)
     return ",".join(fields) or f"全局规则:{_as_text(rule.get('name'))}"
 
 
@@ -649,6 +920,119 @@ def _source_file_for_content(_content, source_files, content_index, total_conten
     return "", "无法确定源文件：请保证只有一个源文件，或源文件数量与新内容行数一致"
 
 
+def _preview_global_match_rows(global_rules, records, features, limit=500):
+    rules = [r for r in (global_rules or []) if isinstance(r, dict) and r.get("enabled", True)]
+    records = list(records or [])
+    by_file = {}
+    for rec in records:
+        by_file.setdefault(rec.get("source_file", ""), []).append(rec)
+    preview_rows = []
+    total_matched = 0
+    for rule in rules:
+        for source_file, source_records in by_file.items():
+            for rec in _global_rule_records(rule, source_records):
+                feature_ok, feature_detail = _feature_pass(rule.get("feature_name", ""), features, source_records, source_file, rec.get("sheet_name", ""))
+                if not feature_ok:
+                    continue
+                cond_ok, cond_detail, condition_items = _condition_extract_items(rec.get("text", ""), rule.get("conditions", []), rule.get("condition_logic", "AND"))
+                if not cond_ok:
+                    continue
+                total_matched += 1
+                if len(preview_rows) < limit:
+                    values = "；".join([_as_text(item.get("value")) for item in condition_items[:8]]) or rec.get("text", "")
+                    preview_rows.append({
+                        "rule_name": _as_text(rule.get("name")),
+                        "source_file": source_file,
+                        "location": f"{rec.get('sheet_name','')} R{rec.get('row_index')}C{rec.get('col_index')}",
+                        "old_text": rec.get("text", ""),
+                        "new_text": values,
+                        "content_row": "",
+                        "detail": f"{feature_detail}；{cond_detail}；命中值={values}",
+                        "status": "条件命中",
+                    })
+    return preview_rows, total_matched, 0
+
+
+def _preview_global_replace_rows(global_rules, records, features, contents, aux_rows, params, limit=500, include_unchanged=True):
+    rules = [r for r in (global_rules or []) if isinstance(r, dict) and r.get("enabled", True)]
+    contents = list(contents or []) or [{"__content_row__": ""}]
+    records = list(records or [])
+    by_file = {}
+    for rec in records:
+        by_file.setdefault(rec.get("source_file", ""), []).append(rec)
+    source_files = _source_files(records, params)
+    preview_rows = []
+    total_changed = 0
+    total_errors = 0
+    for rule in rules:
+        for content_index, content in enumerate(contents):
+            source_file, source_note = _source_file_for_content(content, source_files, content_index, len(contents), params)
+            if not source_file and source_files != [""]:
+                total_errors += 1
+                if len(preview_rows) < limit:
+                    preview_rows.append({
+                        "rule_name": _as_text(rule.get("name")),
+                        "source_file": "",
+                        "location": "",
+                        "old_text": "",
+                        "new_text": "",
+                        "content_row": content.get("__content_row__", ""),
+                        "detail": source_note,
+                        "status": "跳过",
+                    })
+                continue
+            target_file = _target_file_for_content(content, params, source_file)
+            source_records = by_file.get(source_file, [])
+            for rec in _global_rule_records(rule, source_records):
+                feature_ok, feature_detail = _feature_pass(rule.get("feature_name", ""), features, source_records, source_file, rec.get("sheet_name", ""))
+                if not feature_ok:
+                    continue
+                cond_ok, cond_detail, condition_items = _condition_extract_items(rec.get("text", ""), rule.get("conditions", []), rule.get("condition_logic", "AND"))
+                if not cond_ok:
+                    continue
+                new_text, replace_detail, replace_error = _apply_replace_steps(rec.get("text", ""), rule, content, aux_rows, condition_items)
+                if replace_error:
+                    total_errors += 1
+                    if len(preview_rows) < limit:
+                        preview_rows.append({
+                            "rule_name": _as_text(rule.get("name")),
+                            "source_file": source_file,
+                            "location": f"{rec.get('sheet_name','')} R{rec.get('row_index')}C{rec.get('col_index')}",
+                            "old_text": rec.get("text", ""),
+                            "new_text": rec.get("text", ""),
+                            "content_row": content.get("__content_row__", ""),
+                            "detail": replace_error,
+                            "status": "错误",
+                        })
+                    continue
+                if new_text == rec.get("text", ""):
+                    if include_unchanged and len(preview_rows) < limit:
+                        preview_rows.append({
+                            "rule_name": _as_text(rule.get("name")),
+                            "source_file": source_file,
+                            "location": f"{rec.get('sheet_name','')} R{rec.get('row_index')}C{rec.get('col_index')}",
+                            "old_text": rec.get("text", ""),
+                            "new_text": new_text,
+                            "content_row": content.get("__content_row__", ""),
+                            "detail": f"{feature_detail}；{cond_detail}；{replace_detail}；目标文件={target_file}；源文件选择={source_note}",
+                            "status": "命中未变化",
+                        })
+                    continue
+                total_changed += 1
+                if len(preview_rows) < limit:
+                    preview_rows.append({
+                        "rule_name": _as_text(rule.get("name")),
+                        "source_file": source_file,
+                        "location": f"{rec.get('sheet_name','')} R{rec.get('row_index')}C{rec.get('col_index')}",
+                        "old_text": rec.get("text", ""),
+                        "new_text": new_text,
+                        "content_row": content.get("__content_row__", ""),
+                        "detail": f"{feature_detail}；{cond_detail}；{replace_detail}；目标文件={target_file}；源文件选择={source_note}",
+                        "status": "替换",
+                    })
+    return preview_rows, total_changed, total_errors
+
+
 def validate_params(params, input_data, context):
     doc_alias = _as_text((params or {}).get("doc_table_alias", "当前表")) or "当前表"
     content_alias = _as_text((params or {}).get("content_table_alias", "新内容表")) or "新内容表"
@@ -664,6 +1048,7 @@ def run(input_data, params, context):
     params = dict(params or {})
     doc_table, doc_alias = _pick_table(input_data, context, params.get("doc_table_alias", "当前表"), "当前表")
     content_table, content_alias = _pick_table(input_data, context, params.get("content_table_alias", "新内容表"), "")
+    aux_table, aux_alias = _pick_optional_table(input_data, context, params.get("replace_aux_table_alias", "替换辅助表"))
     config_name, cfg, settings = _get_config(params, context)
     rules = [r for r in cfg.get("rules", []) if isinstance(r, dict) and r.get("enabled", True)]
     features = [f for f in cfg.get("features", []) if isinstance(f, dict)]
@@ -671,6 +1056,7 @@ def run(input_data, params, context):
     debug_output = bool(params.get("debug_output", False))
     empty_policy = _as_text(params.get("empty_policy", "跳过")) or "跳过"
     content_fields, contents = _content_rows(content_table)
+    aux_fields, aux_rows = _content_rows(aux_table)
     records = _doc_records(doc_table, params)
     by_file = {}
     for rec in records:
@@ -821,10 +1207,10 @@ def run(input_data, params, context):
                 feature_ok, feature_detail = _feature_pass(global_rule.get("feature_name", ""), features, source_records, source_file, rec.get("sheet_name", ""))
                 if not feature_ok:
                     continue
-                cond_ok, cond_detail = _match_condition_chain(rec.get("text", ""), global_rule.get("conditions", []), global_rule.get("condition_logic", "AND"))
+                cond_ok, cond_detail, condition_items = _condition_extract_items(rec.get("text", ""), global_rule.get("conditions", []), global_rule.get("condition_logic", "AND"))
                 if not cond_ok:
                     continue
-                value, replace_detail, replace_error = _apply_replace_steps(rec.get("text", ""), global_rule.get("replace_steps", []), content)
+                value, replace_detail, replace_error = _apply_replace_steps(rec.get("text", ""), global_rule, content, aux_rows, condition_items)
                 if replace_error:
                     skipped += 1
                     add_debug_row(replace_error, global_rule, content, source_file, rec)
@@ -873,10 +1259,12 @@ def run(input_data, params, context):
         "summary": {
             "doc_table": doc_alias,
             "content_table": content_alias,
+            "replace_aux_table": aux_alias,
             "rules": len(rules),
             "features": len(features),
             "global_rules": len(global_rules),
             "content_rows": len(contents),
+            "replace_aux_rows": len(aux_rows),
             "source_files": len(source_files),
             "output_rows": len(out_rows),
             "matched": matched,
@@ -972,6 +1360,10 @@ def open_config_window(parent, current_params, context):
     content_alias_var = tk.StringVar(value=params.get("content_table_alias", "新内容表"))
     content_alias_combo = ttk.Combobox(top, textvariable=content_alias_var, values=table_aliases, width=18, state="readonly")
     content_alias_combo.pack(side=tk.LEFT, padx=4)
+    ttk.Label(top, text="替换辅助表：").pack(side=tk.LEFT, padx=(12, 0))
+    aux_alias_var = tk.StringVar(value=params.get("replace_aux_table_alias", "替换辅助表"))
+    aux_alias_combo = ttk.Combobox(top, textvariable=aux_alias_var, values=table_aliases, width=18, state="readonly")
+    aux_alias_combo.pack(side=tk.LEFT, padx=4)
     ttk.Label(top, text="配置名：").pack(side=tk.LEFT, padx=(12, 0))
     config_name_var = tk.StringVar(value=params.get("config_name", config_name))
     config_name_combo = ttk.Combobox(top, textvariable=config_name_var, values=sorted((settings.get("configs") or {}).keys()), width=18, state="normal")
@@ -1446,7 +1838,7 @@ def open_config_window(parent, current_params, context):
         ttk.Label(right_panel, text="条件默认连接：").grid(row=3, column=0, sticky=tk.W, pady=3)
         ttk.Combobox(right_panel, textvariable=logic_var, values=["AND", "OR"], width=8, state="readonly").grid(row=3, column=1, sticky=tk.W, pady=3)
 
-        ttk.Label(preview_panel, text="匹配情况预览（仅显示 text）").grid(row=0, column=0, sticky=tk.W, pady=(0, 4))
+        ttk.Label(preview_panel, text="匹配/替换预览").grid(row=0, column=0, sticky=tk.W, pady=(0, 4))
         preview_text = tk.Text(preview_panel, height=28, width=34, wrap=tk.WORD)
         preview_text.grid(row=1, column=0, sticky="nsew")
         preview_scroll = ttk.Scrollbar(preview_panel, orient=tk.VERTICAL, command=preview_text.yview)
@@ -1472,37 +1864,65 @@ def open_config_window(parent, current_params, context):
         ttk.Combobox(cond_input, textvariable=cond_mode_var, values=["包含", "等于", "不等于", "正则匹配", "正则不匹配", "为空", "非空"], width=14, state="readonly").pack(side=tk.LEFT, padx=2)
         ttk.Entry(cond_input, textvariable=cond_value_var, width=48).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
 
-        step_columns = ("pattern", "replacement_type", "replacement", "field", "count")
-        step_tree = ttk.Treeview(right_panel, columns=step_columns, show="headings", height=6)
+        batch_columns = ("match_mode", "match_value", "replace_value", "replace_mode", "value_source", "match_field", "replace_field", "case", "skip", "count")
+        batch_tree = ttk.Treeview(right_panel, columns=batch_columns, show="headings", height=6)
         for col, text, width in [
-            ("pattern", "局部正则", 220),
-            ("replacement_type", "替换来源", 90),
-            ("replacement", "固定值/模板", 200),
-            ("field", "字段", 140),
+            ("match_mode", "匹配方式", 90),
+            ("match_value", "匹配值", 130),
+            ("replace_value", "替换值/模板", 150),
+            ("replace_mode", "替换方式", 150),
+            ("value_source", "替换值来源", 100),
+            ("match_field", "匹配值字段", 130),
+            ("replace_field", "替换值字段", 130),
+            ("case", "大小写", 70),
+            ("skip", "空值跳过", 80),
             ("count", "次数", 60),
         ]:
-            step_tree.heading(col, text=text)
-            step_tree.column(col, width=width, anchor=tk.W)
-        ttk.Label(right_panel, text="替换步骤").grid(row=10, column=0, columnspan=4, sticky=tk.W, pady=(8, 0))
-        step_tree.grid(row=11, column=0, columnspan=4, sticky="nsew", pady=4)
+            batch_tree.heading(col, text=text)
+            batch_tree.column(col, width=width, anchor=tk.W, stretch=False)
+        ttk.Label(right_panel, text="批量替换规则列表（按顺序作用于匹配条件命中值）").grid(row=10, column=0, columnspan=4, sticky=tk.W, pady=(8, 0))
+        batch_tree.grid(row=11, column=0, columnspan=4, sticky="nsew", pady=4)
 
-        step_input = ttk.Frame(right_panel)
-        step_input.grid(row=12, column=0, columnspan=4, sticky="ew", pady=2)
-        step_pattern_var = tk.StringVar(value="")
-        step_type_var = tk.StringVar(value="固定值")
-        step_value_var = tk.StringVar(value="")
-        step_field_var = tk.StringVar(value="")
-        step_count_var = tk.StringVar(value="0")
-        ttk.Entry(step_input, textvariable=step_pattern_var, width=24).pack(side=tk.LEFT, padx=2)
-        ttk.Combobox(step_input, textvariable=step_type_var, values=["固定值", "新内容字段"], width=12, state="readonly").pack(side=tk.LEFT, padx=2)
-        ttk.Entry(step_input, textvariable=step_value_var, width=24).pack(side=tk.LEFT, padx=2)
-        ttk.Combobox(step_input, textvariable=step_field_var, values=current_content_fields(), width=18, state="normal").pack(side=tk.LEFT, padx=2)
-        ttk.Entry(step_input, textvariable=step_count_var, width=6).pack(side=tk.LEFT, padx=2)
+        batch_input = ttk.LabelFrame(right_panel, text="批量替换规则设置", padding=6)
+        batch_input.grid(row=12, column=0, columnspan=4, sticky="ew", pady=2)
+        batch_match_mode_var = tk.StringVar(value="包含")
+        batch_match_value_var = tk.StringVar(value="")
+        batch_replace_value_var = tk.StringVar(value="")
+        batch_replace_mode_var = tk.StringVar(value="局部替换匹配字符串")
+        batch_value_source_var = tk.StringVar(value="手动输入")
+        batch_match_field_var = tk.StringVar(value="")
+        batch_replace_field_var = tk.StringVar(value="")
+        batch_case_var = tk.BooleanVar(value=True)
+        batch_skip_empty_var = tk.BooleanVar(value=True)
+        batch_count_var = tk.StringVar(value="0")
+        ttk.Label(batch_input, text="匹配方式：").grid(row=0, column=0, sticky=tk.W, padx=4, pady=3)
+        ttk.Combobox(batch_input, textvariable=batch_match_mode_var, values=["包含", "完全相等", "不等于", "开头是", "结尾是", "正则匹配", "为空", "不为空"], width=14, state="readonly").grid(row=0, column=1, sticky=tk.W, padx=4, pady=3)
+        ttk.Label(batch_input, text="匹配值：").grid(row=0, column=2, sticky=tk.W, padx=4, pady=3)
+        ttk.Entry(batch_input, textvariable=batch_match_value_var, width=22).grid(row=0, column=3, sticky="ew", padx=4, pady=3)
+        ttk.Label(batch_input, text="替换值：").grid(row=0, column=4, sticky=tk.W, padx=4, pady=3)
+        ttk.Entry(batch_input, textvariable=batch_replace_value_var, width=24).grid(row=0, column=5, sticky="ew", padx=4, pady=3)
+        ttk.Label(batch_input, text="替换方式：").grid(row=1, column=0, sticky=tk.W, padx=4, pady=3)
+        ttk.Combobox(batch_input, textvariable=batch_replace_mode_var, values=["局部替换匹配字符串", "整格替换为新值"], width=20, state="readonly").grid(row=1, column=1, sticky=tk.W, padx=4, pady=3)
+        ttk.Checkbutton(batch_input, text="区分大小写", variable=batch_case_var).grid(row=1, column=2, sticky=tk.W, padx=4, pady=3)
+        ttk.Label(batch_input, text="替换值来源：").grid(row=1, column=3, sticky=tk.W, padx=4, pady=3)
+        ttk.Combobox(batch_input, textvariable=batch_value_source_var, values=["手动输入", "辅助表字段", "辅助表固定值", "新内容字段"], width=14, state="readonly").grid(row=1, column=4, sticky=tk.W, padx=4, pady=3)
+        ttk.Label(batch_input, text="匹配值字段：").grid(row=2, column=0, sticky=tk.W, padx=4, pady=3)
+        batch_match_field_combo = ttk.Combobox(batch_input, textvariable=batch_match_field_var, values=current_aux_fields(), width=20, state="normal")
+        batch_match_field_combo.grid(row=2, column=1, sticky=tk.W, padx=4, pady=3)
+        ttk.Label(batch_input, text="替换值字段：").grid(row=2, column=2, sticky=tk.W, padx=4, pady=3)
+        batch_replace_field_combo = ttk.Combobox(batch_input, textvariable=batch_replace_field_var, values=current_aux_fields(), width=20, state="normal")
+        batch_replace_field_combo.grid(row=2, column=3, sticky=tk.W, padx=4, pady=3)
+        ttk.Checkbutton(batch_input, text="列匹配值为空时跳过", variable=batch_skip_empty_var).grid(row=2, column=4, sticky=tk.W, padx=4, pady=3)
+        ttk.Label(batch_input, text="次数：").grid(row=3, column=0, sticky=tk.W, padx=4, pady=3)
+        ttk.Entry(batch_input, textvariable=batch_count_var, width=8).grid(row=3, column=1, sticky=tk.W, padx=4, pady=3)
+        ttk.Label(batch_input, text="规则作用于匹配条件命中值；辅助表字段模式逐行使用辅助表的匹配值字段/替换值字段。", foreground="gray").grid(row=4, column=0, columnspan=6, sticky=tk.W, padx=4, pady=(2, 0))
+        batch_input.columnconfigure(3, weight=1)
+        batch_input.columnconfigure(5, weight=1)
 
         def rule_label(rule):
             prefix = "" if rule.get("enabled", True) else "[停用] "
             name = _as_text(rule.get("name")) or "未命名全局规则"
-            return f"{prefix}{name} ({len(rule.get('conditions', []) or [])} 条条件/{len(rule.get('replace_steps', []) or [])} 步)"
+            return f"{prefix}{name} ({len(rule.get('conditions', []) or [])} 条条件/{len(_batch_rules_for_rule(rule))} 条批量规则)"
 
         def serialize_conditions():
             rows = []
@@ -1511,21 +1931,62 @@ def open_config_window(parent, current_params, context):
                 rows.append({"join": _as_text(join) or "AND", "mode": _as_text(mode) or "包含", "value": _as_text(value)})
             return rows
 
-        def serialize_steps():
+        def serialize_batch_rules():
             rows = []
-            for item_id in step_tree.get_children():
-                pattern, replacement_type, replacement, field, count = step_tree.item(item_id, "values")
+            for item_id in batch_tree.get_children():
+                values = list(batch_tree.item(item_id, "values"))
+                while len(values) < 10:
+                    values.append("")
+                match_mode, match_value, replace_value, replace_mode, value_source, match_field, replace_field, case_text, skip_text, count = values[:10]
                 rows.append({
                     "enabled": True,
-                    "pattern": _as_text(pattern),
-                    "replacement_type": _as_text(replacement_type) or "固定值",
-                    "replacement_value": _as_text(replacement),
-                    "replacement_field": _as_text(field),
+                    "match_mode": _as_text(match_mode) or "包含",
+                    "match_value": _as_text(match_value),
+                    "replace_value": _as_text(replace_value),
+                    "replace_mode": _as_text(replace_mode) or "局部替换匹配字符串",
+                    "value_source": _normalize_batch_value_source(value_source),
+                    "match_value_field": _as_text(match_field),
+                    "replace_value_field": _as_text(replace_field),
+                    "case_sensitive": _as_text(case_text) not in ("否", "False", "false", "0"),
+                    "skip_empty_match_value": _as_text(skip_text) not in ("否", "False", "false", "0"),
                     "count": _as_text(count) or "0",
                 })
             return rows
 
+        def current_batch_values():
+            return (
+                batch_match_mode_var.get(),
+                batch_match_value_var.get(),
+                batch_replace_value_var.get(),
+                batch_replace_mode_var.get(),
+                batch_value_source_var.get(),
+                batch_match_field_var.get(),
+                batch_replace_field_var.get(),
+                "是" if batch_case_var.get() else "否",
+                "是" if batch_skip_empty_var.get() else "否",
+                batch_count_var.get(),
+            )
+
+        def sync_editor_rows():
+            cond_sel = cond_tree.selection()
+            if cond_sel:
+                cond_tree.item(cond_sel[0], values=(cond_join_var.get(), cond_mode_var.get(), cond_value_var.get()))
+            elif not cond_tree.get_children() and _as_text(cond_value_var.get()):
+                cond_tree.insert("", tk.END, values=(cond_join_var.get(), cond_mode_var.get(), cond_value_var.get()))
+            batch_sel = batch_tree.selection()
+            has_batch_input = any(_as_text(value) for value in (
+                batch_match_value_var.get(),
+                batch_replace_value_var.get(),
+                batch_match_field_var.get(),
+                batch_replace_field_var.get(),
+            ))
+            if batch_sel:
+                batch_tree.item(batch_sel[0], values=current_batch_values())
+            elif not batch_tree.get_children() and has_batch_input:
+                batch_tree.insert("", tk.END, values=current_batch_values())
+
         def build_rule_from_editor():
+            sync_editor_rows()
             return {
                 "name": _as_text(name_var.get()) or "未命名全局规则",
                 "enabled": bool(enabled_var.get()),
@@ -1534,8 +1995,34 @@ def open_config_window(parent, current_params, context):
                 "sheet_name": _cfg_sheet_name(sheet_var.get()),
                 "condition_logic": logic_var.get() or "AND",
                 "conditions": serialize_conditions(),
-                "replace_steps": serialize_steps(),
+                "batch_rules": serialize_batch_rules(),
             }
+
+        def refresh_condition_preview():
+            rule = build_rule_from_editor()
+            records = list(state.get("records", []) or [])
+            preview_text.configure(state="normal")
+            preview_text.delete("1.0", tk.END)
+            if not records:
+                preview_text.insert(tk.END, "当前文档读取表没有可预览记录，请先刷新可视化。")
+                preview_text.configure(state="disabled")
+                preview_status_var.set("条件命中 0 条")
+                return
+            preview_rows, total_matched, total_errors = _preview_global_match_rows([rule], records, cfg.get("features", []), limit=500)
+            for item in preview_rows:
+                preview_text.insert(
+                    tk.END,
+                    f"[{item.get('status')}] {item.get('source_file')} {item.get('location')}\n"
+                    f"原文：{item.get('old_text')}\n"
+                    f"命中值：{item.get('new_text')}\n"
+                    f"明细：{item.get('detail')}\n\n"
+                )
+            if total_matched > len(preview_rows):
+                preview_text.insert(tk.END, "... 还有更多条件命中结果未显示，请缩小规则范围\n")
+            if not preview_rows:
+                preview_text.insert(tk.END, "当前匹配条件未命中记录。")
+            preview_text.configure(state="disabled")
+            preview_status_var.set(f"条件命中 {total_matched} 条，错误 {total_errors} 条，显示 {len(preview_rows)} 条")
 
         def refresh_match_preview():
             rule = build_rule_from_editor()
@@ -1545,24 +2032,33 @@ def open_config_window(parent, current_params, context):
             if not records:
                 preview_text.insert(tk.END, "当前文档读取表没有可预览记录，请先刷新可视化。")
                 preview_text.configure(state="disabled")
-                preview_status_var.set("命中 0 条")
+                preview_status_var.set("可替换 0 条")
                 return
-            hits = []
-            candidates = _global_rule_records(rule, records)
-            for rec in candidates:
-                feature_ok, _feature_detail = _feature_pass(rule.get("feature_name", ""), cfg.get("features", []), records, rec.get("source_file", ""), rec.get("sheet_name", ""))
-                if not feature_ok:
-                    continue
-                cond_ok, _cond_detail = _match_condition_chain(rec.get("text", ""), rule.get("conditions", []), rule.get("condition_logic", "AND"))
-                if cond_ok:
-                    hits.append(_as_text(rec.get("text", "")))
-            limit = 500
-            for text_value in hits[:limit]:
-                preview_text.insert(tk.END, text_value + "\n")
-            if len(hits) > limit:
-                preview_text.insert(tk.END, f"... 还有 {len(hits) - limit} 条未显示\n")
+            sync_params_from_ui()
+            preview_rows, total_changed, total_errors = _preview_global_replace_rows(
+                [rule],
+                records,
+                cfg.get("features", []),
+                current_content_rows(),
+                current_aux_rows(),
+                params,
+                limit=500,
+                include_unchanged=True,
+            )
+            for item in preview_rows:
+                preview_text.insert(
+                    tk.END,
+                    f"[{item.get('status')}] {item.get('source_file')} {item.get('location')} 新内容行{item.get('content_row')}\n"
+                    f"原文：{item.get('old_text')}\n"
+                    f"替换：{item.get('new_text')}\n"
+                    f"明细：{item.get('detail')}\n\n"
+                )
+            if total_changed > len([r for r in preview_rows if r.get("status") == "替换"]):
+                preview_text.insert(tk.END, "... 还有更多替换结果未显示，请缩小规则范围\n")
+            if not preview_rows:
+                preview_text.insert(tk.END, "当前规则未产生可替换结果。")
             preview_text.configure(state="disabled")
-            preview_status_var.set(f"命中 {len(hits)} 条，仅显示前 {min(len(hits), limit)} 条")
+            preview_status_var.set(f"可替换 {total_changed} 条，错误 {total_errors} 条，显示 {len(preview_rows)} 条")
 
         def load_rule(index):
             if index is None or index < 0 or index >= len(cfg.get("global_rules", [])):
@@ -1579,14 +2075,19 @@ def open_config_window(parent, current_params, context):
             cond_tree.delete(*cond_tree.get_children())
             for cond in rule.get("conditions", []) or []:
                 cond_tree.insert("", tk.END, values=(_as_text(cond.get("join") or "AND"), _as_text(cond.get("mode") or "包含"), _as_text(cond.get("value"))))
-            step_tree.delete(*step_tree.get_children())
-            for step in rule.get("replace_steps", []) or []:
-                step_tree.insert("", tk.END, values=(
-                    _as_text(step.get("pattern")),
-                    _as_text(step.get("replacement_type") or "固定值"),
-                    _as_text(step.get("replacement_value")),
-                    _as_text(step.get("replacement_field")),
-                    _as_text(step.get("count") or "0"),
+            batch_tree.delete(*batch_tree.get_children())
+            for item in _batch_rules_for_rule(rule):
+                batch_tree.insert("", tk.END, values=(
+                    _as_text(item.get("match_mode") or "包含"),
+                    _as_text(item.get("match_value")),
+                    _as_text(item.get("replace_value")),
+                    _as_text(item.get("replace_mode") or "局部替换匹配字符串"),
+                    _normalize_batch_value_source(item.get("value_source")),
+                    _as_text(item.get("match_value_field")),
+                    _as_text(item.get("replace_value_field")),
+                    "是" if bool(item.get("case_sensitive", True)) else "否",
+                    "是" if bool(item.get("skip_empty_match_value", True)) else "否",
+                    _as_text(item.get("count") or "0"),
                 ))
 
         def refresh_global_list(select_index=None):
@@ -1595,6 +2096,12 @@ def open_config_window(parent, current_params, context):
                 rule_list.insert(tk.END, rule_label(rule))
             feature_combo.configure(values=current_feature_names(True))
             sheet_combo.configure(values=current_sheet_names(True))
+            field_values = []
+            for field in list(current_aux_fields()) + list(current_content_fields()):
+                if field not in field_values:
+                    field_values.append(field)
+            batch_match_field_combo.configure(values=field_values)
+            batch_replace_field_combo.configure(values=field_values)
             if cfg.get("global_rules"):
                 idx = 0 if select_index is None else max(0, min(select_index, len(cfg["global_rules"]) - 1))
                 rule_list.selection_set(idx)
@@ -1628,7 +2135,19 @@ def open_config_window(parent, current_params, context):
                 "sheet_name": "",
                 "condition_logic": "AND",
                 "conditions": [{"join": "AND", "mode": "正则匹配", "value": ""}],
-                "replace_steps": [{"enabled": True, "pattern": "", "replacement_type": "固定值", "replacement_value": "", "replacement_field": "", "count": "0"}],
+                "batch_rules": [{
+                    "enabled": True,
+                    "match_mode": "包含",
+                    "match_value": "",
+                    "replace_value": "",
+                    "replace_mode": "局部替换匹配字符串",
+                    "value_source": "手动输入",
+                    "match_value_field": "",
+                    "replace_value_field": "",
+                    "case_sensitive": True,
+                    "skip_empty_match_value": True,
+                    "count": "0",
+                }],
             })
             refresh_global_list(len(cfg["global_rules"]) - 1)
 
@@ -1656,17 +2175,17 @@ def open_config_window(parent, current_params, context):
             for item_id in cond_tree.selection():
                 cond_tree.delete(item_id)
 
-        def add_step():
-            step_tree.insert("", tk.END, values=(step_pattern_var.get(), step_type_var.get(), step_value_var.get(), step_field_var.get(), step_count_var.get()))
+        def add_batch_rule():
+            batch_tree.insert("", tk.END, values=current_batch_values())
 
-        def update_step():
-            sel = step_tree.selection()
+        def update_batch_rule():
+            sel = batch_tree.selection()
             if sel:
-                step_tree.item(sel[0], values=(step_pattern_var.get(), step_type_var.get(), step_value_var.get(), step_field_var.get(), step_count_var.get()))
+                batch_tree.item(sel[0], values=current_batch_values())
 
-        def delete_step():
-            for item_id in step_tree.selection():
-                step_tree.delete(item_id)
+        def delete_batch_rule():
+            for item_id in batch_tree.selection():
+                batch_tree.delete(item_id)
 
         def on_rule_select(_event=None):
             sel = rule_list.curselection()
@@ -1682,20 +2201,28 @@ def open_config_window(parent, current_params, context):
             cond_mode_var.set(mode or "包含")
             cond_value_var.set(value)
 
-        def on_step_select(_event=None):
-            sel = step_tree.selection()
+        def on_batch_rule_select(_event=None):
+            sel = batch_tree.selection()
             if not sel:
                 return
-            pattern, replacement_type, replacement, field, count = step_tree.item(sel[0], "values")
-            step_pattern_var.set(pattern)
-            step_type_var.set(replacement_type or "固定值")
-            step_value_var.set(replacement)
-            step_field_var.set(field)
-            step_count_var.set(count or "0")
+            values = list(batch_tree.item(sel[0], "values"))
+            while len(values) < 10:
+                values.append("")
+            match_mode, match_value, replace_value, replace_mode, value_source, match_field, replace_field, case_text, skip_text, count = values[:10]
+            batch_match_mode_var.set(match_mode or "包含")
+            batch_match_value_var.set(match_value)
+            batch_replace_value_var.set(replace_value)
+            batch_replace_mode_var.set(replace_mode or "局部替换匹配字符串")
+            batch_value_source_var.set(_normalize_batch_value_source(value_source))
+            batch_match_field_var.set(match_field)
+            batch_replace_field_var.set(replace_field)
+            batch_case_var.set(_as_text(case_text) not in ("否", "False", "false", "0"))
+            batch_skip_empty_var.set(_as_text(skip_text) not in ("否", "False", "false", "0"))
+            batch_count_var.set(count or "0")
 
         rule_list.bind("<<ListboxSelect>>", on_rule_select)
         cond_tree.bind("<<TreeviewSelect>>", on_condition_select)
-        step_tree.bind("<<TreeviewSelect>>", on_step_select)
+        batch_tree.bind("<<TreeviewSelect>>", on_batch_rule_select)
 
         left_buttons = ttk.Frame(left_panel)
         left_buttons.pack(fill=tk.X, pady=(8, 0))
@@ -1705,17 +2232,18 @@ def open_config_window(parent, current_params, context):
 
         cond_buttons = ttk.Frame(right_panel)
         cond_buttons.grid(row=9, column=0, columnspan=4, sticky=tk.E, pady=2)
+        ttk.Button(cond_buttons, text="匹配预览", command=refresh_condition_preview).pack(side=tk.LEFT, padx=12)
         ttk.Button(cond_buttons, text="增加条件", command=add_condition).pack(side=tk.LEFT, padx=2)
         ttk.Button(cond_buttons, text="更新条件", command=update_condition).pack(side=tk.LEFT, padx=2)
         ttk.Button(cond_buttons, text="删除条件", command=delete_condition).pack(side=tk.LEFT, padx=2)
 
-        step_buttons = ttk.Frame(right_panel)
-        step_buttons.grid(row=13, column=0, columnspan=4, sticky=tk.E, pady=2)
-        ttk.Button(step_buttons, text="增加步骤", command=add_step).pack(side=tk.LEFT, padx=2)
-        ttk.Button(step_buttons, text="更新步骤", command=update_step).pack(side=tk.LEFT, padx=2)
-        ttk.Button(step_buttons, text="删除步骤", command=delete_step).pack(side=tk.LEFT, padx=2)
-        ttk.Button(step_buttons, text="刷新匹配预览", command=refresh_match_preview).pack(side=tk.LEFT, padx=12)
-        ttk.Button(step_buttons, text="关闭", command=dlg.destroy).pack(side=tk.RIGHT, padx=2)
+        batch_buttons = ttk.Frame(right_panel)
+        batch_buttons.grid(row=13, column=0, columnspan=4, sticky=tk.E, pady=2)
+        ttk.Button(batch_buttons, text="增加批量规则", command=add_batch_rule).pack(side=tk.LEFT, padx=2)
+        ttk.Button(batch_buttons, text="更新批量规则", command=update_batch_rule).pack(side=tk.LEFT, padx=2)
+        ttk.Button(batch_buttons, text="删除批量规则", command=delete_batch_rule).pack(side=tk.LEFT, padx=2)
+        ttk.Button(batch_buttons, text="执行替换预览", command=refresh_match_preview).pack(side=tk.LEFT, padx=12)
+        ttk.Button(batch_buttons, text="关闭", command=dlg.destroy).pack(side=tk.RIGHT, padx=2)
 
         refresh_global_list(0)
         dlg.after_idle(lambda: _show_centered_window(dlg, win, 1280, 680))
@@ -1724,6 +2252,21 @@ def open_config_window(parent, current_params, context):
         table = tables.get(content_alias_var.get(), {})
         fields, _ = _content_rows(table)
         return fields
+
+    def current_content_rows():
+        table = tables.get(content_alias_var.get(), {})
+        _fields, rows = _content_rows(table)
+        return rows
+
+    def current_aux_fields():
+        table = tables.get(aux_alias_var.get(), {})
+        fields, _ = _content_rows(table)
+        return fields
+
+    def current_aux_rows():
+        table = tables.get(aux_alias_var.get(), {})
+        _fields, rows = _content_rows(table)
+        return rows
 
     def current_doc_fields():
         table = tables.get(doc_alias_var.get(), {})
@@ -2100,6 +2643,7 @@ def open_config_window(parent, current_params, context):
     def reload_data():
         params["doc_table_alias"] = doc_alias_var.get().strip() or "当前表"
         params["content_table_alias"] = content_alias_var.get().strip() or "新内容表"
+        params["replace_aux_table_alias"] = aux_alias_var.get().strip() or "替换辅助表"
         params["config_name"] = config_name_var.get().strip() or "default"
         params["source_file_field"] = source_file_field_var.get().strip() or "source_file"
         params["planned_file_field"] = planned_file_field_var.get().strip() or "target_file"
@@ -2125,6 +2669,7 @@ def open_config_window(parent, current_params, context):
     config_name_combo.bind("<<ComboboxSelected>>", lambda _e=None: load_config_by_name(config_name_var.get()))
     doc_alias_combo.bind("<<ComboboxSelected>>", lambda _e=None: (refresh_field_combos(), reload_data()))
     content_alias_combo.bind("<<ComboboxSelected>>", lambda _e=None: (refresh_field_combos(), reload_data()))
+    aux_alias_combo.bind("<<ComboboxSelected>>", lambda _e=None: refresh_field_combos())
 
     bottom = ttk.Frame(win, padding=8)
     bottom.pack(fill=tk.X)
@@ -2134,6 +2679,7 @@ def open_config_window(parent, current_params, context):
     def sync_params_from_ui():
         params["doc_table_alias"] = doc_alias_var.get().strip() or "当前表"
         params["content_table_alias"] = content_alias_var.get().strip() or "新内容表"
+        params["replace_aux_table_alias"] = aux_alias_var.get().strip() or "替换辅助表"
         params["config_name"] = config_name_var.get().strip() or "default"
         params["source_file_field"] = source_file_field_var.get().strip() or "source_file"
         params["planned_file_field"] = planned_file_field_var.get().strip() or "target_file"
