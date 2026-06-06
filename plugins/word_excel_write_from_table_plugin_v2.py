@@ -20,6 +20,10 @@ PLUGIN_INFO = {
     "danger_level": "file_write",
 }
 
+WORD_MODE_PRESERVE_FORMAT = "保留原格式，仅改文字值"
+WORD_MODE_OVERWRITE = "整段覆盖"
+WORD_MODE_FIND_REPLACE = "按old_text查找替换"
+
 OUTPUT_HEADERS = [
     "source_file",
     "target_file",
@@ -81,9 +85,9 @@ def get_parameter_schema():
             "name": "word_text_write_mode",
             "label": "Word文字写入方式",
             "type": "select",
-            "choices": ["保留原格式，仅改文字值", "整段覆盖"],
-            "default": "保留原格式，仅改文字值",
-            "help": "win32 写入 Word 时默认尽量保留原有字体/字号/颜色等格式；整段覆盖为旧行为。",
+            "choices": [WORD_MODE_PRESERVE_FORMAT, WORD_MODE_OVERWRITE, WORD_MODE_FIND_REPLACE],
+            "default": WORD_MODE_PRESERVE_FORMAT,
+            "help": "win32 写入 Word 时可按定位范围整段写入，也可在定位范围内按 old_text 查找替换。",
         },
         {
             "name": "error_policy",
@@ -134,6 +138,7 @@ def get_parameter_schema():
         {"name": "col_index_field", "label": "列号字段", "type": "field_select", "default": "col_index"},
         {"name": "cell_address_field", "label": "地址字段", "type": "field_select", "default": "cell_address"},
         {"name": "value_field", "label": "写入值字段", "type": "field_select", "default": "text"},
+        {"name": "old_text_field", "label": "原文匹配字段", "type": "field_select", "default": "old_text"},
         {"name": "meta_json_field", "label": "meta字段", "type": "field_select", "default": "meta_json"},
     ]
 
@@ -320,6 +325,8 @@ def validate_params(params, input_data, context):
     path_field = _as_text(p.get("path_field", "source_file")) or "source_file"
     target_path_field = _as_text(p.get("target_path_field", "target_file")) or "target_file"
     value_field = _as_text(p.get("value_field", "text")) or "text"
+    old_text_field = _as_text(p.get("old_text_field", "old_text")) or "old_text"
+    word_text_write_mode = _as_text(p.get("word_text_write_mode", WORD_MODE_PRESERVE_FORMAT)) or WORD_MODE_PRESERVE_FORMAT
     write_engine = _as_text(p.get("write_engine", "win32")).lower() or "win32"
 
     if path_field not in headers:
@@ -330,6 +337,10 @@ def validate_params(params, input_data, context):
             return False, f"新文件路径字段不存在：{target_path_field}"
     if value_field not in headers:
         return False, f"写入值字段不存在：{value_field}"
+    if word_text_write_mode == WORD_MODE_FIND_REPLACE and old_text_field not in headers:
+        return False, f"原文匹配字段不存在：{old_text_field}"
+    if word_text_write_mode == WORD_MODE_FIND_REPLACE and write_engine != "win32":
+        return False, "按old_text查找替换仅支持 win32 写入引擎"
     if write_engine not in ("win32", "zip_xml"):
         return False, f"不支持的写入引擎：{write_engine}"
     return True, ""
@@ -348,6 +359,7 @@ def _collect_ops(input_data, params, context):
     col_index_field = _as_text(params.get("col_index_field", "col_index")) or "col_index"
     cell_address_field = _as_text(params.get("cell_address_field", "cell_address")) or "cell_address"
     value_field = _as_text(params.get("value_field", "text")) or "text"
+    old_text_field = _as_text(params.get("old_text_field", "old_text")) or "old_text"
     meta_json_field = _as_text(params.get("meta_json_field", "meta_json")) or "meta_json"
     allow_empty = bool(params.get("allow_empty_text_write", False))
 
@@ -385,6 +397,7 @@ def _collect_ops(input_data, params, context):
             "col_index": _as_text(cell_by_field(row, col_index_field)),
             "cell_address": _as_text(cell_by_field(row, cell_address_field)),
             "value": value_text,
+            "old_text": str(cell_by_field(row, old_text_field) or ""),
             "meta_json": _as_text(cell_by_field(row, meta_json_field)),
         }
         key = str(target_path).lower()
@@ -400,10 +413,20 @@ def _collect_ops(input_data, params, context):
     }
 
 
-def _word_preserve_format_enabled(context):
+def _word_text_write_mode(context):
     params = (context or {}).get("params") or {}
-    mode = _as_text(params.get("word_text_write_mode", "保留原格式，仅改文字值")) or "保留原格式，仅改文字值"
-    return mode != "整段覆盖"
+    mode = _as_text(params.get("word_text_write_mode", WORD_MODE_PRESERVE_FORMAT)) or WORD_MODE_PRESERVE_FORMAT
+    if mode not in (WORD_MODE_PRESERVE_FORMAT, WORD_MODE_OVERWRITE, WORD_MODE_FIND_REPLACE):
+        return WORD_MODE_PRESERVE_FORMAT
+    return mode
+
+
+def _word_preserve_format_enabled(context):
+    return _word_text_write_mode(context) == WORD_MODE_PRESERVE_FORMAT
+
+
+def _word_find_replace_enabled(context):
+    return _word_text_write_mode(context) == WORD_MODE_FIND_REPLACE
 
 
 def _word_body_range(range_obj):
@@ -480,6 +503,46 @@ def _word_write_visible_text(range_obj, value, preserve_format=True):
         body.Text = str(value if value is not None else "")
 
 
+def _word_find_replace_visible_text(range_obj, old_text, value):
+    old_text = str(old_text if old_text is not None else "")
+    if old_text == "":
+        raise ValueError("缺少 old_text，无法执行查找替换")
+    body = _word_body_range(range_obj)
+    if int(body.End) <= int(body.Start):
+        raise ValueError("定位范围为空，无法执行查找替换")
+    finder = body.Find
+    try:
+        finder.ClearFormatting()
+    except Exception:
+        pass
+    try:
+        finder.Replacement.ClearFormatting()
+    except Exception:
+        pass
+    replaced = finder.Execute(
+        FindText=old_text,
+        MatchCase=False,
+        MatchWholeWord=False,
+        MatchWildcards=False,
+        MatchSoundsLike=False,
+        MatchAllWordForms=False,
+        Forward=True,
+        Wrap=0,
+        Format=False,
+        ReplaceWith=str(value if value is not None else ""),
+        Replace=2,
+    )
+    if not replaced:
+        raise ValueError("定位范围内未找到 old_text")
+
+
+def _word_write_range_by_mode(range_obj, op, context=None):
+    if _word_find_replace_enabled(context):
+        _word_find_replace_visible_text(range_obj, op.get("old_text", ""), op.get("value", ""))
+    else:
+        _word_write_visible_text(range_obj, op.get("value", ""), _word_preserve_format_enabled(context))
+
+
 def _write_word_via_com(file_path, ops, context=None, progress_current=None, progress_total=None):
     try:
         import pythoncom
@@ -492,7 +555,6 @@ def _write_word_via_com(file_path, ops, context=None, progress_current=None, pro
     applied = 0
     skipped = 0
     logs = []
-    preserve_word_format = _word_preserve_format_enabled(context)
     try:
         pythoncom.CoInitialize()
         word = win32com.client.DispatchEx("Word.Application")
@@ -509,7 +571,7 @@ def _write_word_via_com(file_path, ops, context=None, progress_current=None, pro
                     if not pi or pi <= 0:
                         raise ValueError("缺少 paragraph 索引(row_index)")
                     para = doc.Paragraphs(int(pi))
-                    _word_write_visible_text(para.Range, op.get("value", ""), preserve_word_format)
+                    _word_write_range_by_mode(para.Range, op, context)
                     applied += 1
                 elif bt == "word_table_cell":
                     table_idx = _parse_table_index(op.get("sheet_name", ""), op.get("meta_json", ""))
@@ -524,7 +586,7 @@ def _write_word_via_com(file_path, ops, context=None, progress_current=None, pro
                     if not row_i or not col_i:
                         raise ValueError("缺少单元格行列索引(row_index/col_index/cell_address)")
                     cell = doc.Tables(int(table_idx)).Cell(int(row_i), int(col_i))
-                    _word_write_visible_text(cell.Range, op.get("value", ""), preserve_word_format)
+                    _word_write_range_by_mode(cell.Range, op, context)
                     applied += 1
                 else:
                     skipped += 1
@@ -667,7 +729,6 @@ class _Win32OfficeSession:
         applied = 0
         skipped = 0
         logs = []
-        preserve_word_format = _word_preserve_format_enabled(context)
         try:
             word = self._word_app()
             doc = self._open_with_retry(
@@ -683,7 +744,7 @@ class _Win32OfficeSession:
                         if not pi or pi <= 0:
                             raise ValueError("缺少 paragraph 索引(row_index)")
                         para = doc.Paragraphs(int(pi))
-                        _word_write_visible_text(para.Range, op.get("value", ""), preserve_word_format)
+                        _word_write_range_by_mode(para.Range, op, context)
                         applied += 1
                     elif bt == "word_table_cell":
                         table_idx = _parse_table_index(op.get("sheet_name", ""), op.get("meta_json", ""))
@@ -698,7 +759,7 @@ class _Win32OfficeSession:
                         if not row_i or not col_i:
                             raise ValueError("缺少单元格行列索引(row_index/col_index/cell_address)")
                         cell = doc.Tables(int(table_idx)).Cell(int(row_i), int(col_i))
-                        _word_write_visible_text(cell.Range, op.get("value", ""), preserve_word_format)
+                        _word_write_range_by_mode(cell.Range, op, context)
                         applied += 1
                     else:
                         skipped += 1
@@ -1187,6 +1248,8 @@ def run(input_data, params, context):
             "win32_retry_interval_ms": win32_retry_interval_ms,
             "win32_close_settle_ms": win32_close_settle_ms,
             "target_path_field": _as_text(p.get("target_path_field", "target_file")) or "target_file",
+            "word_text_write_mode": _as_text(p.get("word_text_write_mode", WORD_MODE_PRESERVE_FORMAT)) or WORD_MODE_PRESERVE_FORMAT,
+            "old_text_field": _as_text(p.get("old_text_field", "old_text")) or "old_text",
             "target_missing_policy": _as_text(p.get("target_missing_policy", "从源文件复制")) or "从源文件复制",
             "target_existing_policy": _as_text(p.get("target_existing_policy", "直接写入")) or "直接写入",
             "same_path_policy": _as_text(p.get("same_path_policy", "修改源文件")) or "修改源文件",
