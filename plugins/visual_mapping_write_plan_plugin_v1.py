@@ -1092,32 +1092,50 @@ def _preview_global_replace_rows(global_rules, records, features, contents, aux_
     preview_rows = []
     total_changed = 0
     total_errors = 0
+    total_skipped = 0
+
+    def append_skip(rule, source_file, content, detail, status="跳过", rec=None):
+        nonlocal total_skipped
+        total_skipped += 1
+        if len(preview_rows) >= limit:
+            return
+        preview_rows.append({
+            "rule_name": _as_text(rule.get("name")),
+            "source_file": source_file,
+            "location": f"{rec.get('sheet_name','')} R{rec.get('row_index')}C{rec.get('col_index')}" if rec else "",
+            "old_text": rec.get("text", "") if rec else "",
+            "new_text": rec.get("text", "") if rec else "",
+            "content_row": content.get("__content_row__", "") if isinstance(content, dict) else "",
+            "detail": detail,
+            "status": status,
+        })
+
     for rule in rules:
         for content_index, content in enumerate(contents):
             source_file, source_note = _source_file_for_content(content, source_files, content_index, len(contents), params)
             if not source_file and source_files != [""]:
-                total_errors += 1
-                if len(preview_rows) < limit:
-                    preview_rows.append({
-                        "rule_name": _as_text(rule.get("name")),
-                        "source_file": "",
-                        "location": "",
-                        "old_text": "",
-                        "new_text": "",
-                        "content_row": content.get("__content_row__", ""),
-                        "detail": source_note,
-                        "status": "跳过",
-                    })
+                append_skip(rule, "", content, source_note)
                 continue
             target_file = _target_file_for_content(content, params, source_file)
+            if not target_file:
+                append_skip(rule, source_file, content, f"拟定新文件字段为空：{_planned_file_field(params)}；源文件选择={source_note}")
+                continue
             source_records = by_file.get(source_file, [])
-            for rec in _global_rule_records(rule, source_records):
+            candidates = _global_rule_records(rule, source_records)
+            if not candidates:
+                append_skip(rule, source_file, content, f"全局规则范围内无候选记录；源文件选择={source_note}")
+                continue
+            condition_checked = 0
+            condition_hits = 0
+            for rec in candidates:
                 feature_ok, feature_detail = _feature_pass(rule.get("feature_name", ""), features, source_records, source_file, rec.get("sheet_name", ""))
                 if not feature_ok:
                     continue
+                condition_checked += 1
                 cond_ok, cond_detail, condition_items = _condition_extract_items(rec.get("text", ""), rule.get("conditions", []), rule.get("condition_logic", "AND"))
                 if not cond_ok:
                     continue
+                condition_hits += 1
                 new_text, replace_detail, replace_error = _apply_replace_steps(rec.get("text", ""), rule, content, aux_rows, condition_items, table_context, params)
                 if replace_error:
                     total_errors += 1
@@ -1158,7 +1176,11 @@ def _preview_global_replace_rows(global_rules, records, features, contents, aux_
                         "detail": f"{feature_detail}；{cond_detail}；{replace_detail}；目标文件={target_file}；源文件选择={source_note}",
                         "status": "替换",
                     })
-    return preview_rows, total_changed, total_errors
+            if condition_checked == 0:
+                append_skip(rule, source_file, content, f"候选记录 {len(candidates)} 条，但表特征未通过；源文件选择={source_note}")
+            elif condition_hits == 0:
+                append_skip(rule, source_file, content, f"候选记录 {len(candidates)} 条，匹配条件未命中；源文件选择={source_note}")
+    return preview_rows, total_changed, total_errors + total_skipped
 
 
 def validate_params(params, input_data, context):
@@ -1216,6 +1238,7 @@ def run(input_data, params, context):
     logs = []
     skipped = 0
     matched = 0
+    skip_reasons = {}
 
     if not rules and not global_rules:
         return {
@@ -1231,6 +1254,8 @@ def run(input_data, params, context):
     progress = (context or {}).get("report_progress")
 
     def add_debug_row(note, rule, content, source_file="", rec=None, status="跳过"):
+        note_key = _as_text(note) or "未说明跳过原因"
+        skip_reasons[note_key] = skip_reasons.get(note_key, 0) + 1
         if not debug_output:
             return
         out_rows.append([
@@ -1381,6 +1406,10 @@ def run(input_data, params, context):
                 add_debug_row("全局规则未命中任何可替换记录", global_rule, content, source_file, status="跳过")
 
     logs.append({"level": "INFO", "message": f"配置={config_name}，单元格规则 {len(rules)} 条，全局规则 {len(global_rules)} 条，生成 {matched} 条，跳过 {skipped} 条"})
+    if skipped and skip_reasons:
+        reason_text = "；".join([f"{reason}×{count}" for reason, count in sorted(skip_reasons.items(), key=lambda item: item[1], reverse=True)[:8]])
+        level = "WARNING" if matched == 0 else "INFO"
+        logs.append({"level": level, "message": f"写入计划跳过原因：{reason_text}"})
     return {
         "ok": True,
         "message": f"写入计划生成完成：{matched} 条",
@@ -1515,6 +1544,12 @@ def open_config_window(parent, current_params, context):
     ttk.Label(right, text="已配置规则").pack(anchor=tk.W, pady=(8, 0))
     rule_frame, rule_lb = _make_scrollable_listbox(right, height=15, exportselection=False)
     rule_frame.pack(fill=tk.BOTH, expand=True)
+    rule_button_row = ttk.Frame(right)
+    rule_button_row.pack(fill=tk.X, pady=(6, 0))
+    ttk.Button(rule_button_row, text="删除选中", command=lambda: delete_selected_rule()).pack(side=tk.LEFT, padx=2)
+    ttk.Button(rule_button_row, text="启用/停用", command=lambda: toggle_selected_rule()).pack(side=tk.LEFT, padx=2)
+    ttk.Button(rule_button_row, text="上移", command=lambda: move_selected_rule(-1)).pack(side=tk.LEFT, padx=2)
+    ttk.Button(rule_button_row, text="下移", command=lambda: move_selected_rule(1)).pack(side=tk.LEFT, padx=2)
 
     grid_col_w = 180
     grid_row_h = 82
@@ -2514,7 +2549,7 @@ def open_config_window(parent, current_params, context):
                 include_unchanged=True,
                 table_context=current_table_context(),
             )
-            header_var.set(f"可替换 {total_changed} 条；错误 {total_errors} 条；显示 {len(preview_rows)} 条")
+            header_var.set(f"可替换 {total_changed} 条；错误/跳过 {total_errors} 条；显示 {len(preview_rows)} 条")
             for item in preview_rows:
                 preview_text.insert(
                     tk.END,
@@ -2578,6 +2613,97 @@ def open_config_window(parent, current_params, context):
             feature_name = _cfg_feature_name(rule.get("feature_name"))
             feature_note = f" [特征:{feature_name}]" if feature_name else ""
             rule_lb.insert(tk.END, f"{prefix}[全局] {rule.get('name','')}{feature_note}")
+
+    def select_rule_list_index(index):
+        total = rule_lb.size()
+        if total <= 0:
+            return
+        index = max(0, min(int(index), total - 1))
+        rule_lb.selection_clear(0, tk.END)
+        rule_lb.selection_set(index)
+        rule_lb.see(index)
+
+    def selected_rule_ref(show_warning=True):
+        sel = rule_lb.curselection()
+        if not sel:
+            if show_warning:
+                messagebox.showwarning("未选择规则", "请先在“已配置规则”列表里选中一条规则。", parent=win)
+            return None
+        list_index = int(sel[0])
+        normal_rules = cfg.setdefault("rules", [])
+        if list_index < len(normal_rules):
+            return {
+                "kind": "rules",
+                "label": "普通映射规则",
+                "rules": normal_rules,
+                "index": list_index,
+                "list_index": list_index,
+                "rule": normal_rules[list_index],
+            }
+        global_rules = cfg.setdefault("global_rules", [])
+        global_index = list_index - len(normal_rules)
+        if 0 <= global_index < len(global_rules):
+            return {
+                "kind": "global_rules",
+                "label": "全局替换规则",
+                "rules": global_rules,
+                "index": global_index,
+                "list_index": list_index,
+                "rule": global_rules[global_index],
+            }
+        if show_warning:
+            messagebox.showwarning("规则不存在", "当前选中的规则已经不存在，请刷新列表后重试。", parent=win)
+        return None
+
+    def rule_list_index(kind, index):
+        if kind == "global_rules":
+            return len(cfg.get("rules", []) or []) + int(index)
+        return int(index)
+
+    def after_rule_manage(kind, index, message):
+        refresh_rules()
+        select_rule_list_index(rule_list_index(kind, index))
+        if state.get("selected_group"):
+            render_group(state["selected_group"])
+        status_var.set(f"{message}；请点击“保存配置”写入当前配置")
+
+    def delete_selected_rule():
+        ref = selected_rule_ref()
+        if not ref:
+            return
+        rule = ref["rule"]
+        name = _as_text(rule.get("name")) or _as_text(rule.get("id")) or "未命名规则"
+        if not messagebox.askyesno("删除规则", f"确定删除这条{ref['label']}吗？\n\n{name}", parent=win):
+            return
+        ref["rules"].pop(ref["index"])
+        next_index = min(ref["index"], max(0, len(ref["rules"]) - 1))
+        after_rule_manage(ref["kind"], next_index, f"已删除规则：{name}")
+
+    def toggle_selected_rule():
+        ref = selected_rule_ref()
+        if not ref:
+            return
+        rule = ref["rule"]
+        enabled = not bool(rule.get("enabled", True))
+        rule["enabled"] = enabled
+        name = _as_text(rule.get("name")) or _as_text(rule.get("id")) or "未命名规则"
+        state_text = "启用" if enabled else "停用"
+        after_rule_manage(ref["kind"], ref["index"], f"已{state_text}规则：{name}")
+
+    def move_selected_rule(delta):
+        ref = selected_rule_ref()
+        if not ref:
+            return
+        rules = ref["rules"]
+        old_index = ref["index"]
+        new_index = old_index + int(delta)
+        if new_index < 0 or new_index >= len(rules):
+            status_var.set("规则已经在当前分组的边界位置")
+            return
+        rules[old_index], rules[new_index] = rules[new_index], rules[old_index]
+        direction = "上移" if delta < 0 else "下移"
+        name = _as_text(rules[new_index].get("name")) or _as_text(rules[new_index].get("id")) or "未命名规则"
+        after_rule_manage(ref["kind"], new_index, f"已{direction}规则：{name}")
 
     def show_info(rec):
         state["selected_rec"] = rec
@@ -2712,6 +2838,73 @@ def open_config_window(parent, current_params, context):
                 return
             choose_anchor_candidate(candidates)
 
+        def preview_source_match():
+            match_cfg = {
+                "enabled": bool(sm_enabled.get()),
+                "mode": sm_mode.get(),
+                "value": sm_value.get(),
+            }
+            records = same_scope_records()
+            matched_records = []
+            failed_records = []
+            for item in records:
+                ok, detail = _match_text(item.get("text", ""), match_cfg)
+                row = (item, detail)
+                if ok:
+                    matched_records.append(row)
+                else:
+                    failed_records.append(row)
+            current_ok, current_detail = _match_text(rec.get("text", ""), match_cfg)
+
+            preview = _make_floating_child(dlg, "输入源匹配预览")
+            preview_body = ttk.Frame(preview, padding=10)
+            preview_body.pack(fill=tk.BOTH, expand=True)
+            preview_body.rowconfigure(1, weight=1)
+            preview_body.columnconfigure(0, weight=1)
+
+            header = (
+                f"当前格：{'通过' if current_ok else '不通过'}；"
+                f"同源同表命中 {len(matched_records)} / {len(records)} 条；"
+                f"匹配方式={match_cfg.get('mode')}；匹配值={match_cfg.get('value')}"
+            )
+            if not match_cfg.get("enabled"):
+                header += "；注意：未勾选启用，当前规则正式执行会按全部通过处理"
+            ttk.Label(preview_body, text=header, foreground="gray").grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 6))
+
+            txt = tk.Text(preview_body, height=28, width=110, wrap=tk.WORD)
+            txt.grid(row=1, column=0, sticky="nsew")
+            scroll = ttk.Scrollbar(preview_body, orient=tk.VERTICAL, command=txt.yview)
+            scroll.grid(row=1, column=1, sticky="ns")
+            txt.configure(yscrollcommand=scroll.set)
+
+            txt.insert(tk.END, f"当前格 R{rec.get('row_index')}C{rec.get('col_index')}：{current_detail}\n")
+            txt.insert(tk.END, f"当前文本：{rec.get('text', '')}\n\n")
+            if matched_records:
+                txt.insert(tk.END, "命中记录：\n")
+                for item, detail in matched_records[:300]:
+                    txt.insert(
+                        tk.END,
+                        f"- {item.get('sheet_name','')} R{item.get('row_index')}C{item.get('col_index')}：{item.get('text','')}\n  明细：{detail}\n"
+                    )
+                if len(matched_records) > 300:
+                    txt.insert(tk.END, f"... 还有 {len(matched_records) - 300} 条命中未显示。\n")
+            else:
+                txt.insert(tk.END, "没有任何命中记录。\n")
+                txt.insert(tk.END, "建议检查：是否勾选“启用”、匹配方式是否正确、正则是否可匹配当前格文本、是否存在大小写/空格差异。\n")
+                if failed_records:
+                    txt.insert(tk.END, "\n未命中示例：\n")
+                    for item, detail in failed_records[:20]:
+                        txt.insert(
+                            tk.END,
+                            f"- {item.get('sheet_name','')} R{item.get('row_index')}C{item.get('col_index')}：{item.get('text','')}\n  明细：{detail}\n"
+                        )
+            txt.configure(state="disabled")
+
+            button_row = ttk.Frame(preview_body)
+            button_row.grid(row=2, column=0, columnspan=2, sticky=tk.E, pady=(8, 0))
+            ttk.Button(button_row, text="关闭", command=preview.destroy).pack(side=tk.RIGHT, padx=4)
+            preview.after_idle(lambda: _show_centered_window(preview, dlg, 980, 620))
+
         def on_ok():
             rule["feature_name"] = _cfg_feature_name(feature_var.get())
             source_match.update({"enabled": bool(sm_enabled.get()), "mode": sm_mode.get(), "value": sm_value.get()})
@@ -2730,6 +2923,7 @@ def open_config_window(parent, current_params, context):
         btns = ttk.Frame(body)
         btns.grid(row=7, column=0, columnspan=4, sticky=tk.E, pady=8)
         ttk.Button(btns, text="自动反推偏移", command=auto_infer_offset).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btns, text="匹配预览", command=preview_source_match).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="确定", command=on_ok).pack(side=tk.RIGHT, padx=4)
         ttk.Button(btns, text="取消", command=dlg.destroy).pack(side=tk.RIGHT, padx=4)
         dlg.after_idle(lambda: _show_centered_window(dlg, win))
@@ -2952,6 +3146,161 @@ def open_config_window(parent, current_params, context):
         params["source_file_field"] = source_file_field_var.get().strip() or "source_file"
         params["planned_file_field"] = planned_file_field_var.get().strip() or "target_file"
 
+    def show_rule_replace_preview():
+        sync_params_from_ui()
+        if not state.get("records"):
+            reload_data()
+        records = list(state.get("records", []) or [])
+        enabled_rules = [r for r in cfg.get("rules", []) if isinstance(r, dict) and r.get("enabled", True)]
+        selected = rule_lb.curselection()
+        selected_note = "全部普通映射规则"
+        if selected and int(selected[0]) < len(enabled_rules):
+            enabled_rules = [enabled_rules[int(selected[0])]]
+            selected_note = f"选中规则：{enabled_rules[0].get('name', '')}"
+        contents = current_content_rows()
+        by_file = {}
+        for item in records:
+            by_file.setdefault(item.get("source_file", ""), []).append(item)
+        source_files = _source_files(records, params)
+        empty_policy = _as_text(params.get("empty_policy", "跳过")) or "跳过"
+
+        dlg = _make_floating_child(win, "规则替换预览")
+        body = ttk.Frame(dlg, padding=10)
+        body.pack(fill=tk.BOTH, expand=True)
+        body.rowconfigure(1, weight=1)
+        body.columnconfigure(0, weight=1)
+        header_var = tk.StringVar(value="")
+        ttk.Label(body, textvariable=header_var, foreground="gray").grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 6))
+        txt = tk.Text(body, height=32, width=128, wrap=tk.WORD)
+        txt.grid(row=1, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(body, orient=tk.VERTICAL, command=txt.yview)
+        scroll.grid(row=1, column=1, sticky="ns")
+        txt.configure(yscrollcommand=scroll.set)
+
+        generated = []
+        skipped_items = []
+
+        def add_skip(rule, content, note, source_file="", rec=None):
+            skipped_items.append({
+                "rule": rule,
+                "content": content,
+                "note": note,
+                "source_file": source_file,
+                "rec": rec,
+            })
+
+        if not records:
+            header_var.set("可生成 0 条；文档读取表没有记录")
+            txt.insert(tk.END, "当前文档读取表没有可预览记录，请先刷新可视化。\n")
+        elif not enabled_rules:
+            header_var.set("可生成 0 条；没有启用的普通映射规则")
+            txt.insert(tk.END, "已配置规则中没有启用的普通映射规则。若只配置了全局规则，请使用“全局替换预览”。\n")
+        elif not contents:
+            header_var.set("可生成 0 条；新内容表没有记录")
+            txt.insert(tk.END, "当前新内容表没有可用于替换的行。\n")
+        else:
+            for content_index, content in enumerate(contents):
+                source_file, source_note = _source_file_for_content(content, source_files, content_index, len(contents), params)
+                if not source_file and source_files != [""]:
+                    for rule in enabled_rules:
+                        add_skip(rule, content, source_note)
+                    continue
+                target_file = _target_file_for_content(content, params, source_file)
+                if not target_file:
+                    for rule in enabled_rules:
+                        add_skip(rule, content, f"拟定新文件字段为空：{_planned_file_field(params)}；源文件选择={source_note}", source_file)
+                    continue
+                source_records = by_file.get(source_file, [])
+                for rule in enabled_rules:
+                    locator = rule.get("source_locator", {}) or {}
+                    feature_ok, feature_detail = _feature_pass(rule.get("feature_name", ""), cfg.get("features", []), source_records, source_file, _as_text(locator.get("sheet_name")))
+                    if not feature_ok:
+                        add_skip(rule, content, feature_detail, source_file)
+                        continue
+                    rec, anchor_detail = _locate_target_record(rule, source_records, source_file)
+                    if rec is None:
+                        add_skip(rule, content, anchor_detail, source_file)
+                        continue
+                    ok, match_detail = _match_text(rec.get("text", ""), rule.get("source_match", {}))
+                    if not ok:
+                        add_skip(rule, content, f"输入源内容匹配未通过：{match_detail}", source_file, rec)
+                        continue
+                    mapping = rule.get("mapping", {}) or {}
+                    field = _as_text(mapping.get("content_field") or mapping.get("field"))
+                    if not field:
+                        add_skip(rule, content, "未选择映射字段", source_file, rec)
+                        continue
+                    field_exists = field in content
+                    value = _as_text(content.get(field))
+                    if value == "" and empty_policy == "跳过":
+                        note = "映射字段为空，按策略跳过"
+                        if not field_exists:
+                            note = f"映射字段不存在：{field}，按空值跳过"
+                        add_skip(rule, content, note, source_file, rec)
+                        continue
+                    if value == "" and empty_policy == "报错":
+                        note = f"映射字段为空会报错：{field}"
+                        if not field_exists:
+                            note = f"映射字段不存在会报错：{field}"
+                        add_skip(rule, content, note, source_file, rec)
+                        continue
+                    generated.append({
+                        "rule": rule,
+                        "content": content,
+                        "source_file": source_file,
+                        "target_file": target_file,
+                        "rec": rec,
+                        "field": field,
+                        "field_exists": field_exists,
+                        "value": value,
+                        "source_note": source_note,
+                        "feature_detail": feature_detail,
+                        "match_detail": match_detail,
+                        "anchor_detail": anchor_detail,
+                    })
+
+            header_var.set(f"{selected_note}；可生成 {len(generated)} 条；跳过 {len(skipped_items)} 条；新内容行 {len(contents)}；源文件 {len(source_files)}")
+            if generated:
+                txt.insert(tk.END, "可生成写入计划：\n")
+                for item in generated[:300]:
+                    rec = item["rec"]
+                    rule = item["rule"]
+                    same_note = "；注意：新值与原文相同" if item["value"] == rec.get("text", "") else ""
+                    field_note = "" if item["field_exists"] else "；注意：字段不存在，当前按空字符串处理"
+                    txt.insert(
+                        tk.END,
+                        f"[生成] {rule.get('name','')}  {rec.get('sheet_name','')} R{rec.get('row_index')}C{rec.get('col_index')}  新内容行{item['content'].get('__content_row__','')}\n"
+                        f"源文件：{item['source_file']}\n"
+                        f"目标文件：{item['target_file']}\n"
+                        f"原文：{rec.get('text','')}\n"
+                        f"替换：{item['value']}\n"
+                        f"字段：{item['field']}{field_note}{same_note}\n"
+                        f"明细：源文件选择={item['source_note']}；{item['feature_detail']}；{item['match_detail']}；{item['anchor_detail']}\n\n"
+                    )
+                if len(generated) > 300:
+                    txt.insert(tk.END, f"... 还有 {len(generated) - 300} 条生成结果未显示。\n\n")
+            else:
+                txt.insert(tk.END, "没有生成任何写入计划。\n\n")
+            if skipped_items:
+                txt.insert(tk.END, "跳过明细：\n")
+                for item in skipped_items[:300]:
+                    rec = item.get("rec")
+                    location = f"{rec.get('sheet_name','')} R{rec.get('row_index')}C{rec.get('col_index')}" if rec else ""
+                    txt.insert(
+                        tk.END,
+                        f"[跳过] {item['rule'].get('name','')} {location} 新内容行{item['content'].get('__content_row__','')}\n"
+                        f"原因：{item['note']}\n"
+                        f"源文件：{item.get('source_file','')}\n\n"
+                    )
+                if len(skipped_items) > 300:
+                    txt.insert(tk.END, f"... 还有 {len(skipped_items) - 300} 条跳过明细未显示。\n")
+
+        txt.configure(state="disabled")
+        buttons = ttk.Frame(body)
+        buttons.grid(row=2, column=0, columnspan=2, sticky=tk.E, pady=(8, 0))
+        ttk.Button(buttons, text="关闭", command=dlg.destroy).pack(side=tk.RIGHT, padx=4)
+        dlg.after_idle(lambda: _show_centered_window(dlg, win, 1120, 720))
+
     def save_current_config():
         sync_params_from_ui()
         _save_config(params, context, cfg)
@@ -2971,6 +3320,7 @@ def open_config_window(parent, current_params, context):
     ttk.Button(bottom, text="保存配置", command=save_current_config).pack(side=tk.LEFT, padx=4)
     ttk.Button(bottom, text="确定", command=save_and_close).pack(side=tk.RIGHT, padx=4)
     ttk.Button(bottom, text="取消", command=win.destroy).pack(side=tk.RIGHT, padx=4)
+    ttk.Button(bottom, text="规则替换预览", command=show_rule_replace_preview).pack(side=tk.RIGHT, padx=4)
 
     reload_data()
     _show_centered_window(win, parent, CONFIG_WINDOW_WIDTH, CONFIG_WINDOW_HEIGHT)
