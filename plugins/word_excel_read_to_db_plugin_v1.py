@@ -45,8 +45,8 @@ def get_parameter_schema():
             "name": "doc_read_strategy",
             "label": ".doc读取策略",
             "type": "select",
-            "choices": ["win32快速读取", "win32文本段落+精确表格", "win32文本反推表格", "win32纯文本快速读取", "转换docx后XML读取", "win32完整读取"],
-            "default": "win32快速读取",
+            "choices": ["win32文本段落+精确表格", "win32快速读取", "win32文本反推表格", "win32纯文本快速读取", "转换docx后XML读取", "win32完整读取"],
+            "default": "win32文本段落+精确表格",
             "help": ".doc 专用。win32文本段落+精确表格跳过慢速逐段读取，但保留精确 table_x/R行C列；win32文本反推表格为更快近似。",
         },
         {
@@ -350,7 +350,7 @@ def _parse_params_hash(params):
     data = {
         "read_engine": _as_text(params.get("read_engine", "win32")) or "win32",
         "word_merge_mode": _as_text(params.get("word_merge_mode", "关闭")) or "关闭",
-        "doc_read_strategy": _as_text(params.get("doc_read_strategy", "win32快速读取")) or "win32快速读取",
+        "doc_read_strategy": _as_text(params.get("doc_read_strategy", "win32文本段落+精确表格")) or "win32文本段落+精确表格",
     }
     txt = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(txt.encode("utf-8")).hexdigest()
@@ -1264,7 +1264,7 @@ def _read_file_rows(file_path, read_engine, params=None, context=None, progress_
     word_merge_mode = _as_text(params.get("word_merge_mode", "关闭")) or "关闭"
     if word_merge_mode not in ("关闭", "简化", "完整"):
         word_merge_mode = "关闭"
-    doc_strategy = _as_text(params.get("doc_read_strategy", "win32快速读取")) or "win32快速读取"
+    doc_strategy = _as_text(params.get("doc_read_strategy", "win32文本段落+精确表格")) or "win32文本段落+精确表格"
 
     if ext in (".doc", ".docx", ".docm"):
         if ext == ".doc":
@@ -1354,9 +1354,9 @@ def run(input_data, params, context):
     word_merge_mode = _as_text(p.get("word_merge_mode", "关闭")) or "关闭"
     if word_merge_mode not in ("关闭", "简化", "完整"):
         word_merge_mode = "关闭"
-    doc_read_strategy = _as_text(p.get("doc_read_strategy", "win32快速读取")) or "win32快速读取"
+    doc_read_strategy = _as_text(p.get("doc_read_strategy", "win32文本段落+精确表格")) or "win32文本段落+精确表格"
     if doc_read_strategy not in ("win32快速读取", "win32文本段落+精确表格", "win32文本反推表格", "win32纯文本快速读取", "转换docx后XML读取", "win32完整读取"):
-        doc_read_strategy = "win32快速读取"
+        doc_read_strategy = "win32文本段落+精确表格"
     p["read_engine"] = read_engine
     p["word_merge_mode"] = word_merge_mode
     p["doc_read_strategy"] = doc_read_strategy

@@ -64,6 +64,14 @@ def get_parameter_schema():
             "default": 200,
         },
         {
+            "name": "word_text_write_mode",
+            "label": "Word文字写入方式",
+            "type": "select",
+            "choices": ["保留原格式，仅改文字值", "整段覆盖"],
+            "default": "保留原格式，仅改文字值",
+            "help": "win32 写入 Word 时默认尽量保留原有字体/字号/颜色等格式；整段覆盖为旧行为。",
+        },
+        {
             "name": "error_policy",
             "label": "失败处理",
             "type": "select",
@@ -369,6 +377,86 @@ def _collect_ops(input_data, params, context):
     }
 
 
+def _word_preserve_format_enabled(context):
+    params = (context or {}).get("params") or {}
+    mode = _as_text(params.get("word_text_write_mode", "保留原格式，仅改文字值")) or "保留原格式，仅改文字值"
+    return mode != "整段覆盖"
+
+
+def _word_body_range(range_obj):
+    start = int(range_obj.Start)
+    end = int(range_obj.End)
+    if end > start:
+        text = str(range_obj.Text)
+        while end > start and text.endswith(("\r\x07", "\r", "\x07")):
+            end -= 1
+            text = text[:-1]
+    return range_obj.Document.Range(start, max(start, end))
+
+
+def _word_capture_font(range_obj):
+    try:
+        body = _word_body_range(range_obj)
+        if int(body.End) > int(body.Start):
+            sample = body.Document.Range(int(body.Start), int(body.Start) + 1)
+        else:
+            sample = body
+        font = sample.Font
+        return {
+            "Name": font.Name,
+            "NameFarEast": getattr(font, "NameFarEast", ""),
+            "Size": font.Size,
+            "Bold": font.Bold,
+            "Italic": font.Italic,
+            "Underline": font.Underline,
+            "Color": font.Color,
+        }
+    except Exception:
+        return {}
+
+
+def _word_apply_font(range_obj, font_info):
+    if not font_info:
+        return
+    try:
+        font = range_obj.Font
+        for key, value in font_info.items():
+            if value is None or value == 9999999:
+                continue
+            try:
+                setattr(font, key, value)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _word_write_text_preserve_format(range_obj, value):
+    text = str(value if value is not None else "")
+    original_text = str(range_obj.Text)
+    font_info = _word_capture_font(range_obj)
+    is_table_cell = original_text.endswith("\r\x07")
+    if is_table_cell:
+        range_obj.Text = text + "\r\x07"
+        new_body = _word_body_range(range_obj)
+        _word_apply_font(new_body, font_info)
+        return
+    body = _word_body_range(range_obj)
+    start = int(body.Start)
+    body.Text = text
+    if text:
+        new_body = range_obj.Document.Range(start, start + len(text))
+        _word_apply_font(new_body, font_info)
+
+
+def _word_write_visible_text(range_obj, value, preserve_format=True):
+    if preserve_format:
+        _word_write_text_preserve_format(range_obj, value)
+    else:
+        body = _word_body_range(range_obj)
+        body.Text = str(value if value is not None else "")
+
+
 def _write_word_via_com(file_path, ops, context=None, progress_current=None, progress_total=None):
     try:
         import pythoncom
@@ -381,6 +469,7 @@ def _write_word_via_com(file_path, ops, context=None, progress_current=None, pro
     applied = 0
     skipped = 0
     logs = []
+    preserve_word_format = _word_preserve_format_enabled(context)
     try:
         pythoncom.CoInitialize()
         word = win32com.client.DispatchEx("Word.Application")
@@ -397,10 +486,7 @@ def _write_word_via_com(file_path, ops, context=None, progress_current=None, pro
                     if not pi or pi <= 0:
                         raise ValueError("缺少 paragraph 索引(row_index)")
                     para = doc.Paragraphs(int(pi))
-                    rng = para.Range
-                    start = int(rng.Start)
-                    end = max(start, int(rng.End) - 1)
-                    doc.Range(start, end).Text = str(op.get("value", ""))
+                    _word_write_visible_text(para.Range, op.get("value", ""), preserve_word_format)
                     applied += 1
                 elif bt == "word_table_cell":
                     table_idx = _parse_table_index(op.get("sheet_name", ""), op.get("meta_json", ""))
@@ -415,7 +501,7 @@ def _write_word_via_com(file_path, ops, context=None, progress_current=None, pro
                     if not row_i or not col_i:
                         raise ValueError("缺少单元格行列索引(row_index/col_index/cell_address)")
                     cell = doc.Tables(int(table_idx)).Cell(int(row_i), int(col_i))
-                    cell.Range.Text = str(op.get("value", "")) + "\r\x07"
+                    _word_write_visible_text(cell.Range, op.get("value", ""), preserve_word_format)
                     applied += 1
                 else:
                     skipped += 1
@@ -558,6 +644,7 @@ class _Win32OfficeSession:
         applied = 0
         skipped = 0
         logs = []
+        preserve_word_format = _word_preserve_format_enabled(context)
         try:
             word = self._word_app()
             doc = self._open_with_retry(
@@ -573,10 +660,7 @@ class _Win32OfficeSession:
                         if not pi or pi <= 0:
                             raise ValueError("缺少 paragraph 索引(row_index)")
                         para = doc.Paragraphs(int(pi))
-                        rng = para.Range
-                        start = int(rng.Start)
-                        end = max(start, int(rng.End) - 1)
-                        doc.Range(start, end).Text = str(op.get("value", ""))
+                        _word_write_visible_text(para.Range, op.get("value", ""), preserve_word_format)
                         applied += 1
                     elif bt == "word_table_cell":
                         table_idx = _parse_table_index(op.get("sheet_name", ""), op.get("meta_json", ""))
@@ -591,7 +675,7 @@ class _Win32OfficeSession:
                         if not row_i or not col_i:
                             raise ValueError("缺少单元格行列索引(row_index/col_index/cell_address)")
                         cell = doc.Tables(int(table_idx)).Cell(int(row_i), int(col_i))
-                        cell.Range.Text = str(op.get("value", "")) + "\r\x07"
+                        _word_write_visible_text(cell.Range, op.get("value", ""), preserve_word_format)
                         applied += 1
                     else:
                         skipped += 1
@@ -897,6 +981,8 @@ def _prepare_target_file(source_path, target_path, params, preview_protected):
 
 def run(input_data, params, context):
     p = dict(params or {})
+    context = dict(context or {})
+    context["params"] = p
     engine = _as_text(p.get("write_engine", "win32")).lower() or "win32"
     error_policy = _as_text(p.get("error_policy", "继续并记录失败"))
     preview_write = bool(p.get("preview_write_files", False))

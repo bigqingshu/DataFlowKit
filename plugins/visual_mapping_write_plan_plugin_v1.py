@@ -32,6 +32,10 @@ PLUGIN_INFO = {
 SETTINGS_FILE = "visual_mapping_write_plan_settings.json"
 FEATURE_ANY_LABEL = "不限制"
 SHEET_ALL_LABEL = "所有表"
+CONFIG_WINDOW_WIDTH = 1360
+CONFIG_WINDOW_HEIGHT = 820
+CONFIG_WINDOW_MIN_WIDTH = 1120
+CONFIG_WINDOW_MIN_HEIGHT = 650
 
 
 def get_parameter_schema():
@@ -149,7 +153,21 @@ def _make_floating_child(parent, title):
         pass
     dlg.title(title)
     dlg.transient(parent)
+    try:
+        dlg.resizable(True, True)
+    except Exception:
+        pass
     return dlg
+
+
+def _make_scrollable_listbox(parent, **kwargs):
+    frame = ttk.Frame(parent)
+    listbox = tk.Listbox(frame, **kwargs)
+    scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=listbox.yview)
+    listbox.configure(yscrollcommand=scrollbar.set)
+    listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+    return frame, listbox
 
 
 def _to_int(value, default=0):
@@ -360,6 +378,24 @@ def _content_rows(table):
         rec["__content_row__"] = row_no
         records.append(rec)
     return unique_fields, records
+
+
+def _table_row_context(tables, content_alias="", aux_alias=""):
+    rows_by_alias = {}
+    fields_by_alias = {}
+    for alias, table in (tables or {}).items():
+        if not isinstance(table, dict):
+            continue
+        fields, rows = _content_rows(table)
+        alias = _as_text(alias)
+        rows_by_alias[alias] = rows
+        fields_by_alias[alias] = fields
+    return {
+        "rows_by_alias": rows_by_alias,
+        "fields_by_alias": fields_by_alias,
+        "content_alias": _as_text(content_alias),
+        "aux_alias": _as_text(aux_alias),
+    }
 
 
 def _match_text(text, match_cfg):
@@ -644,6 +680,45 @@ def _normalize_batch_value_source(value):
     return "手动输入"
 
 
+def _normalize_batch_table_source(value):
+    text = _as_text(value)
+    if not text or text in ("manual", "fixed", "固定值", "手工输入"):
+        return "手动输入"
+    return text
+
+
+def _is_manual_batch_source(value):
+    return _normalize_batch_table_source(value) == "手动输入"
+
+
+def _legacy_batch_match_source(rule, params=None):
+    source = _normalize_batch_value_source((rule or {}).get("value_source"))
+    params = params or {}
+    if source in ("辅助表字段", "辅助表固定值"):
+        return _as_text(params.get("replace_aux_table_alias") or "替换辅助表")
+    if source == "新内容字段":
+        return _as_text(params.get("content_table_alias") or "新内容表")
+    return "手动输入"
+
+
+def _legacy_batch_replace_source(rule, params=None):
+    source = _normalize_batch_value_source((rule or {}).get("value_source"))
+    params = params or {}
+    if source == "辅助表字段":
+        return _as_text(params.get("replace_aux_table_alias") or "替换辅助表")
+    if source == "新内容字段":
+        return _as_text(params.get("content_table_alias") or "新内容表")
+    return "手动输入"
+
+
+def _batch_match_source(rule, params=None):
+    return _normalize_batch_table_source((rule or {}).get("match_value_source") or _legacy_batch_match_source(rule, params))
+
+
+def _batch_replace_source(rule, params=None):
+    return _normalize_batch_table_source((rule or {}).get("replace_value_source") or _legacy_batch_replace_source(rule, params))
+
+
 def _compare_batch_text(text, pattern, mode, case_sensitive=True):
     text = "" if text is None else str(text)
     pattern = "" if pattern is None else str(pattern)
@@ -690,7 +765,7 @@ def _replace_batch_text(text, match_value, replace_value, match_mode, replace_mo
     return new_text, replaced
 
 
-def _batch_template_context(content, aux_row=None, extract=None):
+def _batch_template_context(content, aux_row=None, extract=None, source_rows=None):
     data = dict(content or {})
     extract = extract or {}
     for key, value in extract.items():
@@ -703,40 +778,93 @@ def _batch_template_context(content, aux_row=None, extract=None):
             data.setdefault(key, value)
             data[f"辅助.{key}"] = value
             data[f"aux.{key}"] = value
+    for alias, row in (source_rows or {}).items():
+        alias = _as_text(alias)
+        if not alias or not isinstance(row, dict):
+            continue
+        for key, value in row.items():
+            key = _as_text(key)
+            if not key:
+                continue
+            data.setdefault(key, value)
+            data[f"{alias}.{key}"] = value
     return data
 
 
-def _iter_batch_rule_pairs(rule, content, aux_rows, extract):
-    source = _normalize_batch_value_source(rule.get("value_source"))
-    if source in ("辅助表字段", "辅助表固定值"):
-        match_field = _as_text(rule.get("match_value_field"))
-        replace_field = _as_text(rule.get("replace_value_field"))
-        if not match_field:
-            raise ValueError("未设置辅助表匹配值字段")
-        if source == "辅助表字段" and not replace_field:
-            raise ValueError("未设置辅助表替换值字段")
-        skipped = 0
-        for aux_row in aux_rows or []:
-            match_value = _as_text((aux_row or {}).get(match_field))
-            if not match_value and bool(rule.get("skip_empty_match_value", True)):
-                skipped += 1
-                continue
-            if source == "辅助表字段":
-                replace_value = _as_text((aux_row or {}).get(replace_field))
-            else:
-                replace_value = _expand_template(rule.get("replace_value", ""), _batch_template_context(content, aux_row, extract))
-            yield match_value, replace_value, f"辅助表 {match_field}->{replace_field or '固定值'}", skipped
-        return
-    if source == "新内容字段":
-        match_field = _as_text(rule.get("match_value_field"))
-        replace_field = _as_text(rule.get("replace_value_field"))
-        match_value = _as_text((content or {}).get(match_field))
+def _batch_source_rows(source, table_context, content):
+    source = _normalize_batch_table_source(source)
+    if _is_manual_batch_source(source):
+        return []
+    table_context = table_context or {}
+    content_alias = _as_text(table_context.get("content_alias"))
+    if source == content_alias:
+        return [content or {}]
+    rows_by_alias = table_context.get("rows_by_alias") or {}
+    if source not in rows_by_alias:
+        raise ValueError(f"未找到来源表：{source}")
+    return rows_by_alias.get(source) or []
+
+
+def _batch_row_at(source, rows, index, content, table_context):
+    source = _normalize_batch_table_source(source)
+    if _is_manual_batch_source(source):
+        return None
+    if source == _as_text((table_context or {}).get("content_alias")):
+        return content or {}
+    return rows[index] if 0 <= index < len(rows or []) else {}
+
+
+def _iter_batch_rule_pairs(rule, content, aux_rows, extract, table_context=None, params=None):
+    match_source = _batch_match_source(rule, params)
+    replace_source = _batch_replace_source(rule, params)
+    match_field = _as_text(rule.get("match_value_field"))
+    replace_field = _as_text(rule.get("replace_value_field"))
+    match_is_manual = _is_manual_batch_source(match_source)
+    replace_is_manual = _is_manual_batch_source(replace_source)
+    table_context = table_context or {}
+    if not table_context:
+        table_context = {
+            "content_alias": _as_text((params or {}).get("content_table_alias") or "新内容表"),
+            "rows_by_alias": {
+                _as_text((params or {}).get("replace_aux_table_alias") or "替换辅助表"): list(aux_rows or []),
+            },
+        }
+    if not match_is_manual and not match_field:
+        raise ValueError(f"未设置匹配值字段：{match_source}")
+    if not replace_is_manual and not replace_field:
+        raise ValueError(f"未设置替换值字段：{replace_source}")
+    match_rows = [] if match_is_manual else _batch_source_rows(match_source, table_context, content)
+    replace_rows = [] if replace_is_manual else _batch_source_rows(replace_source, table_context, content)
+    if not match_is_manual:
+        total_rows = len(match_rows)
+    elif not replace_is_manual:
+        total_rows = len(replace_rows)
+    else:
+        total_rows = 1
+    skipped = 0
+    for index in range(total_rows):
+        match_row = _batch_row_at(match_source, match_rows, index, content, table_context)
+        replace_row = _batch_row_at(replace_source, replace_rows, index, content, table_context)
+        source_rows = {}
+        aux_alias = _as_text(table_context.get("aux_alias") or (params or {}).get("replace_aux_table_alias") or "替换辅助表")
+        if isinstance(match_row, dict):
+            source_rows[match_source] = match_row
+        if isinstance(replace_row, dict):
+            source_rows[replace_source] = replace_row
+        aux_row = source_rows.get(aux_alias)
+        if match_is_manual:
+            match_value = _expand_template(rule.get("match_value", ""), _batch_template_context(content, aux_row, extract, source_rows))
+        else:
+            match_value = _as_text((match_row or {}).get(match_field))
         if not match_value and bool(rule.get("skip_empty_match_value", True)):
-            return
-        replace_value = _as_text((content or {}).get(replace_field))
-        yield match_value, replace_value, f"新内容字段 {match_field}->{replace_field}", 0
-        return
-    yield _as_text(rule.get("match_value")), _expand_template(rule.get("replace_value", ""), _batch_template_context(content, None, extract)), "手动输入", 0
+            skipped += 1
+            continue
+        if replace_is_manual:
+            replace_value = _expand_template(rule.get("replace_value", ""), _batch_template_context(content, aux_row, extract, source_rows))
+        else:
+            replace_value = _as_text((replace_row or {}).get(replace_field))
+        source_note = f"匹配[{match_source}:{match_field or '手动'}]→替换[{replace_source}:{replace_field or '手动'}]"
+        yield match_value, replace_value, source_note, skipped
 
 
 def _legacy_steps_to_batch_rules(steps):
@@ -756,9 +884,11 @@ def _legacy_steps_to_batch_rules(steps):
         rows.append({
             "enabled": step.get("enabled", True),
             "match_mode": "正则匹配",
+            "match_value_source": "手动输入",
             "match_value": _as_text(step.get("pattern") or step.get("regex")),
             "replace_value": replace_value,
             "replace_mode": "局部替换匹配字符串",
+            "replace_value_source": "",
             "value_source": value_source,
             "match_value_field": "",
             "replace_value_field": replace_field,
@@ -773,7 +903,7 @@ def _batch_rules_for_rule(rule):
     return list(rule.get("batch_rules") or []) or _legacy_steps_to_batch_rules(rule.get("replace_steps") or [])
 
 
-def _apply_batch_rules_to_value(value, rules, content, aux_rows, extract):
+def _apply_batch_rules_to_value(value, rules, content, aux_rows, extract, table_context=None, params=None):
     text = _as_text(value)
     valid_rules = [r for r in (rules or []) if isinstance(r, dict) and r.get("enabled", True)]
     if not valid_rules:
@@ -788,10 +918,10 @@ def _apply_batch_rules_to_value(value, rules, content, aux_rows, extract):
         pair_count = 0
         skipped_empty = 0
         try:
-            pairs = list(_iter_batch_rule_pairs(rule, content, aux_rows, extract))
+            pairs = list(_iter_batch_rule_pairs(rule, content, aux_rows, extract, table_context, params))
         except Exception as exc:
             return text, "；".join(details), f"批量替换规则{index}异常：{exc}"
-        source_note = _normalize_batch_value_source(rule.get("value_source"))
+        source_note = f"{_batch_match_source(rule, params)}->{_batch_replace_source(rule, params)}"
         for match_value, replace_value, current_source_note, skipped in pairs:
             pair_count += 1
             source_note = current_source_note
@@ -812,7 +942,7 @@ def _apply_batch_rules_to_value(value, rules, content, aux_rows, extract):
     return text, "；".join(details), None
 
 
-def _apply_replace_steps(old_text, rule, content, aux_rows=None, condition_items=None):
+def _apply_replace_steps(old_text, rule, content, aux_rows=None, condition_items=None, table_context=None, params=None):
     text = _as_text(old_text)
     rule = rule or {}
     batch_rules = _batch_rules_for_rule(rule)
@@ -850,7 +980,7 @@ def _apply_replace_steps(old_text, rule, content, aux_rows=None, condition_items
             "group": _as_text(item.get("group", "")),
             "组": _as_text(item.get("group", "")),
         }
-        new_value, batch_detail, batch_error = _apply_batch_rules_to_value(value, batch_rules, content, aux_rows or [], extract)
+        new_value, batch_detail, batch_error = _apply_batch_rules_to_value(value, batch_rules, content, aux_rows or [], extract, table_context, params)
         if batch_error:
             return old_text, "；".join(detail_items), batch_error
         parts.append(text[last_pos:start])
@@ -868,15 +998,13 @@ def _global_rule_fields(rule):
     for item in _batch_rules_for_rule(rule):
         if not isinstance(item, dict):
             continue
-        value_source = _normalize_batch_value_source(item.get("value_source"))
+        match_source = _batch_match_source(item)
+        replace_source = _batch_replace_source(item)
         match_field = _as_text(item.get("match_value_field"))
         replace_field = _as_text(item.get("replace_value_field"))
-        if value_source == "新内容字段":
-            label = f"新内容:{match_field}->{replace_field}"
-        elif value_source in ("辅助表字段", "辅助表固定值"):
-            label = f"辅助表:{match_field}->{replace_field or '固定值'}"
-        else:
-            label = f"固定规则:{_as_text(item.get('match_value'))}"
+        match_label = _as_text(item.get("match_value")) if _is_manual_batch_source(match_source) else f"{match_source}.{match_field}"
+        replace_label = _as_text(item.get("replace_value")) if _is_manual_batch_source(replace_source) else f"{replace_source}.{replace_field}"
+        label = f"{match_label}->{replace_label}"
         if label and label not in fields:
             fields.append(label)
     return ",".join(fields) or f"全局规则:{_as_text(rule.get('name'))}"
@@ -953,7 +1081,7 @@ def _preview_global_match_rows(global_rules, records, features, limit=500):
     return preview_rows, total_matched, 0
 
 
-def _preview_global_replace_rows(global_rules, records, features, contents, aux_rows, params, limit=500, include_unchanged=True):
+def _preview_global_replace_rows(global_rules, records, features, contents, aux_rows, params, limit=500, include_unchanged=True, table_context=None):
     rules = [r for r in (global_rules or []) if isinstance(r, dict) and r.get("enabled", True)]
     contents = list(contents or []) or [{"__content_row__": ""}]
     records = list(records or [])
@@ -990,7 +1118,7 @@ def _preview_global_replace_rows(global_rules, records, features, contents, aux_
                 cond_ok, cond_detail, condition_items = _condition_extract_items(rec.get("text", ""), rule.get("conditions", []), rule.get("condition_logic", "AND"))
                 if not cond_ok:
                     continue
-                new_text, replace_detail, replace_error = _apply_replace_steps(rec.get("text", ""), rule, content, aux_rows, condition_items)
+                new_text, replace_detail, replace_error = _apply_replace_steps(rec.get("text", ""), rule, content, aux_rows, condition_items, table_context, params)
                 if replace_error:
                     total_errors += 1
                     if len(preview_rows) < limit:
@@ -1046,6 +1174,7 @@ def validate_params(params, input_data, context):
 
 def run(input_data, params, context):
     params = dict(params or {})
+    all_tables = _all_tables(input_data, context)
     doc_table, doc_alias = _pick_table(input_data, context, params.get("doc_table_alias", "当前表"), "当前表")
     content_table, content_alias = _pick_table(input_data, context, params.get("content_table_alias", "新内容表"), "")
     aux_table, aux_alias = _pick_optional_table(input_data, context, params.get("replace_aux_table_alias", "替换辅助表"))
@@ -1057,6 +1186,7 @@ def run(input_data, params, context):
     empty_policy = _as_text(params.get("empty_policy", "跳过")) or "跳过"
     content_fields, contents = _content_rows(content_table)
     aux_fields, aux_rows = _content_rows(aux_table)
+    table_context = _table_row_context(all_tables, content_alias, aux_alias)
     records = _doc_records(doc_table, params)
     by_file = {}
     for rec in records:
@@ -1210,7 +1340,7 @@ def run(input_data, params, context):
                 cond_ok, cond_detail, condition_items = _condition_extract_items(rec.get("text", ""), global_rule.get("conditions", []), global_rule.get("condition_logic", "AND"))
                 if not cond_ok:
                     continue
-                value, replace_detail, replace_error = _apply_replace_steps(rec.get("text", ""), global_rule, content, aux_rows, condition_items)
+                value, replace_detail, replace_error = _apply_replace_steps(rec.get("text", ""), global_rule, content, aux_rows, condition_items, table_context, params)
                 if replace_error:
                     skipped += 1
                     add_debug_row(replace_error, global_rule, content, source_file, rec)
@@ -1319,61 +1449,41 @@ def open_config_window(parent, current_params, context):
     except Exception:
         pass
     win.title("可视化映射写入计划设置")
-    win.transient(parent)
-    maximize_text = tk.StringVar(value="最大化")
-    maximize_state = {"geometry": ""}
-
-    def toggle_maximize():
-        try:
-            if win.state() == "zoomed":
-                win.state("normal")
-                if maximize_state.get("geometry"):
-                    win.geometry(maximize_state["geometry"])
-                maximize_text.set("最大化")
-            else:
-                maximize_state["geometry"] = win.geometry()
-                win.state("zoomed")
-                maximize_text.set("还原")
-        except Exception:
-            try:
-                if not maximize_state.get("geometry"):
-                    maximize_state["geometry"] = win.geometry()
-                sw = win.winfo_screenwidth()
-                sh = win.winfo_screenheight()
-                if maximize_text.get() == "最大化":
-                    win.geometry(f"{sw}x{sh}+0+0")
-                    maximize_text.set("还原")
-                else:
-                    win.geometry(maximize_state.get("geometry", "1180x760"))
-                    maximize_text.set("最大化")
-            except Exception:
-                pass
+    try:
+        win.resizable(True, True)
+        win.minsize(CONFIG_WINDOW_MIN_WIDTH, CONFIG_WINDOW_MIN_HEIGHT)
+    except Exception:
+        pass
 
     top = ttk.Frame(win, padding=8)
     top.pack(fill=tk.X)
-    ttk.Button(top, textvariable=maximize_text, command=toggle_maximize).pack(side=tk.RIGHT, padx=4)
-    ttk.Label(top, text="文档读取表：").pack(side=tk.LEFT)
+    selector_row = ttk.Frame(top)
+    selector_row.pack(fill=tk.X)
+    action_row = ttk.Frame(top)
+    action_row.pack(fill=tk.X, pady=(6, 0))
+    ttk.Label(selector_row, text="文档读取表：").pack(side=tk.LEFT)
     doc_alias_var = tk.StringVar(value=params.get("doc_table_alias", "当前表"))
-    doc_alias_combo = ttk.Combobox(top, textvariable=doc_alias_var, values=table_aliases, width=18, state="readonly")
+    doc_alias_combo = ttk.Combobox(selector_row, textvariable=doc_alias_var, values=table_aliases, width=18, state="readonly")
     doc_alias_combo.pack(side=tk.LEFT, padx=4)
-    ttk.Label(top, text="新内容表：").pack(side=tk.LEFT, padx=(12, 0))
+    ttk.Label(selector_row, text="新内容表：").pack(side=tk.LEFT, padx=(12, 0))
     content_alias_var = tk.StringVar(value=params.get("content_table_alias", "新内容表"))
-    content_alias_combo = ttk.Combobox(top, textvariable=content_alias_var, values=table_aliases, width=18, state="readonly")
+    content_alias_combo = ttk.Combobox(selector_row, textvariable=content_alias_var, values=table_aliases, width=18, state="readonly")
     content_alias_combo.pack(side=tk.LEFT, padx=4)
-    ttk.Label(top, text="替换辅助表：").pack(side=tk.LEFT, padx=(12, 0))
+    ttk.Label(selector_row, text="替换辅助表：").pack(side=tk.LEFT, padx=(12, 0))
     aux_alias_var = tk.StringVar(value=params.get("replace_aux_table_alias", "替换辅助表"))
-    aux_alias_combo = ttk.Combobox(top, textvariable=aux_alias_var, values=table_aliases, width=18, state="readonly")
+    aux_alias_combo = ttk.Combobox(selector_row, textvariable=aux_alias_var, values=table_aliases, width=18, state="readonly")
     aux_alias_combo.pack(side=tk.LEFT, padx=4)
-    ttk.Label(top, text="配置名：").pack(side=tk.LEFT, padx=(12, 0))
+    ttk.Label(selector_row, text="配置名：").pack(side=tk.LEFT, padx=(12, 0))
     config_name_var = tk.StringVar(value=params.get("config_name", config_name))
-    config_name_combo = ttk.Combobox(top, textvariable=config_name_var, values=sorted((settings.get("configs") or {}).keys()), width=18, state="normal")
+    config_name_combo = ttk.Combobox(selector_row, textvariable=config_name_var, values=sorted((settings.get("configs") or {}).keys()), width=18, state="normal")
     config_name_combo.pack(side=tk.LEFT, padx=4)
-    ttk.Button(top, text="管理配置", command=lambda: manage_configs()).pack(side=tk.LEFT, padx=4)
-    ttk.Button(top, text="管理表特征", command=lambda: manage_features()).pack(side=tk.LEFT, padx=4)
-    ttk.Button(top, text="全局搜索替换规则窗口", command=lambda: manage_global_rules()).pack(side=tk.LEFT, padx=4)
+    ttk.Button(action_row, text="管理配置", command=lambda: manage_configs()).pack(side=tk.LEFT, padx=4)
+    ttk.Button(action_row, text="管理表特征", command=lambda: manage_features()).pack(side=tk.LEFT, padx=4)
+    ttk.Button(action_row, text="全局搜索替换规则窗口", command=lambda: manage_global_rules()).pack(side=tk.LEFT, padx=4)
+    ttk.Button(action_row, text="全局替换预览", command=lambda: show_global_replace_preview()).pack(side=tk.LEFT, padx=4)
 
     status_var = tk.StringVar(value="")
-    ttk.Label(top, textvariable=status_var, foreground="gray").pack(side=tk.LEFT, padx=10)
+    ttk.Label(action_row, textvariable=status_var, foreground="gray").pack(side=tk.LEFT, padx=10)
 
     top_fields = ttk.Frame(win, padding=(8, 0, 8, 4))
     top_fields.pack(fill=tk.X)
@@ -1396,15 +1506,15 @@ def open_config_window(parent, current_params, context):
     main.add(right, weight=2)
 
     ttk.Label(left, text="表格 / Sheet").pack(anchor=tk.W)
-    group_lb = tk.Listbox(left, height=18, exportselection=False)
-    group_lb.pack(fill=tk.BOTH, expand=True)
+    group_frame, group_lb = _make_scrollable_listbox(left, height=18, exportselection=False)
+    group_frame.pack(fill=tk.BOTH, expand=True)
 
     ttk.Label(right, text="当前格信息").pack(anchor=tk.W)
     info_text = tk.Text(right, height=14, width=36)
     info_text.pack(fill=tk.X, pady=4)
     ttk.Label(right, text="已配置规则").pack(anchor=tk.W, pady=(8, 0))
-    rule_lb = tk.Listbox(right, height=15, exportselection=False)
-    rule_lb.pack(fill=tk.BOTH, expand=True)
+    rule_frame, rule_lb = _make_scrollable_listbox(right, height=15, exportselection=False)
+    rule_frame.pack(fill=tk.BOTH, expand=True)
 
     grid_col_w = 180
     grid_row_h = 82
@@ -1492,8 +1602,8 @@ def open_config_window(parent, current_params, context):
         dlg = _make_floating_child(win, "管理映射配置")
         body = ttk.Frame(dlg, padding=10)
         body.pack(fill=tk.BOTH, expand=True)
-        lb = tk.Listbox(body, height=12, width=36, exportselection=False)
-        lb.grid(row=0, column=0, rowspan=6, sticky="nsew", padx=4, pady=4)
+        lb_frame, lb = _make_scrollable_listbox(body, height=12, width=36, exportselection=False)
+        lb_frame.grid(row=0, column=0, rowspan=6, sticky="nsew", padx=4, pady=4)
         body.rowconfigure(0, weight=1)
         body.columnconfigure(0, weight=1)
 
@@ -1608,8 +1718,8 @@ def open_config_window(parent, current_params, context):
         right_panel.columnconfigure(1, weight=1)
         right_panel.rowconfigure(5, weight=1)
 
-        feature_lb = tk.Listbox(left_panel, height=18, width=28, exportselection=False)
-        feature_lb.pack(fill=tk.BOTH, expand=True)
+        feature_frame, feature_lb = _make_scrollable_listbox(left_panel, height=18, width=28, exportselection=False)
+        feature_frame.pack(fill=tk.BOTH, expand=True)
         selected_idx = {"value": None}
 
         name_var = tk.StringVar(value="")
@@ -1622,7 +1732,10 @@ def open_config_window(parent, current_params, context):
         ttk.Combobox(right_panel, textvariable=logic_var, values=["AND", "OR"], width=8, state="readonly").grid(row=1, column=1, sticky=tk.W, pady=3)
 
         columns = ("join", "sheet", "row", "col", "mode", "value")
-        cond_tree = ttk.Treeview(right_panel, columns=columns, show="headings", height=8)
+        cond_tree_frame = ttk.Frame(right_panel)
+        cond_tree_frame.rowconfigure(0, weight=1)
+        cond_tree_frame.columnconfigure(0, weight=1)
+        cond_tree = ttk.Treeview(cond_tree_frame, columns=columns, show="headings", height=8)
         for col, text, width in [
             ("join", "连接", 58),
             ("sheet", "表格/Sheet", 110),
@@ -1633,10 +1746,13 @@ def open_config_window(parent, current_params, context):
         ]:
             cond_tree.heading(col, text=text)
             cond_tree.column(col, width=width, anchor=tk.W)
-        cond_tree.grid(row=5, column=0, columnspan=3, sticky="nsew", pady=(6, 4))
-        cond_scroll = ttk.Scrollbar(right_panel, orient=tk.VERTICAL, command=cond_tree.yview)
-        cond_scroll.grid(row=5, column=3, sticky="ns", pady=(6, 4))
-        cond_tree.configure(yscrollcommand=cond_scroll.set)
+        cond_tree_frame.grid(row=5, column=0, columnspan=4, sticky="nsew", pady=(6, 4))
+        cond_tree.grid(row=0, column=0, sticky="nsew")
+        cond_scroll_y = ttk.Scrollbar(cond_tree_frame, orient=tk.VERTICAL, command=cond_tree.yview)
+        cond_scroll_y.grid(row=0, column=1, sticky="ns")
+        cond_scroll_x = ttk.Scrollbar(cond_tree_frame, orient=tk.HORIZONTAL, command=cond_tree.xview)
+        cond_scroll_x.grid(row=1, column=0, sticky="ew")
+        cond_tree.configure(yscrollcommand=cond_scroll_y.set, xscrollcommand=cond_scroll_x.set)
 
         input_row = ttk.Frame(right_panel)
         input_row.grid(row=6, column=0, columnspan=4, sticky="ew", pady=4)
@@ -1794,6 +1910,7 @@ def open_config_window(parent, current_params, context):
         dlg.after_idle(lambda: _show_centered_window(dlg, win, 860, 520))
 
     def manage_global_rules():
+        sync_params_from_ui()
         cfg.setdefault("global_rules", [])
         dlg = _make_floating_child(win, "全局搜索替换规则窗口")
         body = ttk.Frame(dlg, padding=10)
@@ -1813,8 +1930,8 @@ def open_config_window(parent, current_params, context):
         preview_panel.columnconfigure(0, weight=1)
         preview_panel.rowconfigure(1, weight=1)
 
-        rule_list = tk.Listbox(left_panel, height=22, width=32, exportselection=False)
-        rule_list.pack(fill=tk.BOTH, expand=True)
+        rule_list_frame, rule_list = _make_scrollable_listbox(left_panel, height=22, width=32, exportselection=False)
+        rule_list_frame.pack(fill=tk.BOTH, expand=True)
         selected_idx = {"value": None}
 
         name_var = tk.StringVar(value="")
@@ -1848,12 +1965,19 @@ def open_config_window(parent, current_params, context):
         ttk.Label(preview_panel, textvariable=preview_status_var, foreground="gray").grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=(4, 0))
 
         cond_columns = ("join", "mode", "value")
-        cond_tree = ttk.Treeview(right_panel, columns=cond_columns, show="headings", height=6)
+        cond_tree_frame = ttk.Frame(right_panel)
+        cond_tree_frame.rowconfigure(0, weight=1)
+        cond_tree_frame.columnconfigure(0, weight=1)
+        cond_tree = ttk.Treeview(cond_tree_frame, columns=cond_columns, show="headings", height=6)
         for col, text, width in [("join", "连接", 70), ("mode", "匹配", 120), ("value", "值/正则", 360)]:
             cond_tree.heading(col, text=text)
             cond_tree.column(col, width=width, anchor=tk.W)
         ttk.Label(right_panel, text="匹配条件").grid(row=6, column=0, columnspan=4, sticky=tk.W, pady=(8, 0))
-        cond_tree.grid(row=7, column=0, columnspan=4, sticky="nsew", pady=4)
+        cond_tree_frame.grid(row=7, column=0, columnspan=4, sticky="nsew", pady=4)
+        cond_tree.grid(row=0, column=0, sticky="nsew")
+        cond_tree_scroll = ttk.Scrollbar(cond_tree_frame, orient=tk.VERTICAL, command=cond_tree.yview)
+        cond_tree_scroll.grid(row=0, column=1, sticky="ns")
+        cond_tree.configure(yscrollcommand=cond_tree_scroll.set)
 
         cond_input = ttk.Frame(right_panel)
         cond_input.grid(row=8, column=0, columnspan=4, sticky="ew", pady=2)
@@ -1864,15 +1988,19 @@ def open_config_window(parent, current_params, context):
         ttk.Combobox(cond_input, textvariable=cond_mode_var, values=["包含", "等于", "不等于", "正则匹配", "正则不匹配", "为空", "非空"], width=14, state="readonly").pack(side=tk.LEFT, padx=2)
         ttk.Entry(cond_input, textvariable=cond_value_var, width=48).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
 
-        batch_columns = ("match_mode", "match_value", "replace_value", "replace_mode", "value_source", "match_field", "replace_field", "case", "skip", "count")
-        batch_tree = ttk.Treeview(right_panel, columns=batch_columns, show="headings", height=6)
+        batch_columns = ("match_mode", "match_source", "match_value", "match_field", "replace_mode", "replace_source", "replace_value", "replace_field", "case", "skip", "count")
+        batch_tree_frame = ttk.Frame(right_panel)
+        batch_tree_frame.rowconfigure(0, weight=1)
+        batch_tree_frame.columnconfigure(0, weight=1)
+        batch_tree = ttk.Treeview(batch_tree_frame, columns=batch_columns, show="headings", height=6)
         for col, text, width in [
             ("match_mode", "匹配方式", 90),
+            ("match_source", "匹配值来源", 120),
             ("match_value", "匹配值", 130),
-            ("replace_value", "替换值/模板", 150),
-            ("replace_mode", "替换方式", 150),
-            ("value_source", "替换值来源", 100),
             ("match_field", "匹配值字段", 130),
+            ("replace_mode", "替换方式", 150),
+            ("replace_source", "替换值来源", 120),
+            ("replace_value", "替换值/模板", 150),
             ("replace_field", "替换值字段", 130),
             ("case", "大小写", 70),
             ("skip", "空值跳过", 80),
@@ -1881,43 +2009,109 @@ def open_config_window(parent, current_params, context):
             batch_tree.heading(col, text=text)
             batch_tree.column(col, width=width, anchor=tk.W, stretch=False)
         ttk.Label(right_panel, text="批量替换规则列表（按顺序作用于匹配条件命中值）").grid(row=10, column=0, columnspan=4, sticky=tk.W, pady=(8, 0))
-        batch_tree.grid(row=11, column=0, columnspan=4, sticky="nsew", pady=4)
+        batch_tree_frame.grid(row=11, column=0, columnspan=4, sticky="nsew", pady=4)
+        batch_tree.grid(row=0, column=0, sticky="nsew")
+        batch_tree_y_scroll = ttk.Scrollbar(batch_tree_frame, orient=tk.VERTICAL, command=batch_tree.yview)
+        batch_tree_y_scroll.grid(row=0, column=1, sticky="ns")
+        batch_tree_x_scroll = ttk.Scrollbar(batch_tree_frame, orient=tk.HORIZONTAL, command=batch_tree.xview)
+        batch_tree_x_scroll.grid(row=1, column=0, sticky="ew")
+        batch_tree.configure(yscrollcommand=batch_tree_y_scroll.set, xscrollcommand=batch_tree_x_scroll.set)
 
         batch_input = ttk.LabelFrame(right_panel, text="批量替换规则设置", padding=6)
         batch_input.grid(row=12, column=0, columnspan=4, sticky="ew", pady=2)
         batch_match_mode_var = tk.StringVar(value="包含")
+        batch_match_source_var = tk.StringVar(value="手动输入")
         batch_match_value_var = tk.StringVar(value="")
         batch_replace_value_var = tk.StringVar(value="")
         batch_replace_mode_var = tk.StringVar(value="局部替换匹配字符串")
-        batch_value_source_var = tk.StringVar(value="手动输入")
+        batch_replace_source_var = tk.StringVar(value="手动输入")
         batch_match_field_var = tk.StringVar(value="")
         batch_replace_field_var = tk.StringVar(value="")
         batch_case_var = tk.BooleanVar(value=True)
         batch_skip_empty_var = tk.BooleanVar(value=True)
         batch_count_var = tk.StringVar(value="0")
-        ttk.Label(batch_input, text="匹配方式：").grid(row=0, column=0, sticky=tk.W, padx=4, pady=3)
-        ttk.Combobox(batch_input, textvariable=batch_match_mode_var, values=["包含", "完全相等", "不等于", "开头是", "结尾是", "正则匹配", "为空", "不为空"], width=14, state="readonly").grid(row=0, column=1, sticky=tk.W, padx=4, pady=3)
-        ttk.Label(batch_input, text="匹配值：").grid(row=0, column=2, sticky=tk.W, padx=4, pady=3)
-        ttk.Entry(batch_input, textvariable=batch_match_value_var, width=22).grid(row=0, column=3, sticky="ew", padx=4, pady=3)
-        ttk.Label(batch_input, text="替换值：").grid(row=0, column=4, sticky=tk.W, padx=4, pady=3)
-        ttk.Entry(batch_input, textvariable=batch_replace_value_var, width=24).grid(row=0, column=5, sticky="ew", padx=4, pady=3)
-        ttk.Label(batch_input, text="替换方式：").grid(row=1, column=0, sticky=tk.W, padx=4, pady=3)
-        ttk.Combobox(batch_input, textvariable=batch_replace_mode_var, values=["局部替换匹配字符串", "整格替换为新值"], width=20, state="readonly").grid(row=1, column=1, sticky=tk.W, padx=4, pady=3)
-        ttk.Checkbutton(batch_input, text="区分大小写", variable=batch_case_var).grid(row=1, column=2, sticky=tk.W, padx=4, pady=3)
-        ttk.Label(batch_input, text="替换值来源：").grid(row=1, column=3, sticky=tk.W, padx=4, pady=3)
-        ttk.Combobox(batch_input, textvariable=batch_value_source_var, values=["手动输入", "辅助表字段", "辅助表固定值", "新内容字段"], width=14, state="readonly").grid(row=1, column=4, sticky=tk.W, padx=4, pady=3)
-        ttk.Label(batch_input, text="匹配值字段：").grid(row=2, column=0, sticky=tk.W, padx=4, pady=3)
-        batch_match_field_combo = ttk.Combobox(batch_input, textvariable=batch_match_field_var, values=current_aux_fields(), width=20, state="normal")
-        batch_match_field_combo.grid(row=2, column=1, sticky=tk.W, padx=4, pady=3)
-        ttk.Label(batch_input, text="替换值字段：").grid(row=2, column=2, sticky=tk.W, padx=4, pady=3)
-        batch_replace_field_combo = ttk.Combobox(batch_input, textvariable=batch_replace_field_var, values=current_aux_fields(), width=20, state="normal")
-        batch_replace_field_combo.grid(row=2, column=3, sticky=tk.W, padx=4, pady=3)
-        ttk.Checkbutton(batch_input, text="列匹配值为空时跳过", variable=batch_skip_empty_var).grid(row=2, column=4, sticky=tk.W, padx=4, pady=3)
-        ttk.Label(batch_input, text="次数：").grid(row=3, column=0, sticky=tk.W, padx=4, pady=3)
-        ttk.Entry(batch_input, textvariable=batch_count_var, width=8).grid(row=3, column=1, sticky=tk.W, padx=4, pady=3)
-        ttk.Label(batch_input, text="规则作用于匹配条件命中值；辅助表字段模式逐行使用辅助表的匹配值字段/替换值字段。", foreground="gray").grid(row=4, column=0, columnspan=6, sticky=tk.W, padx=4, pady=(2, 0))
-        batch_input.columnconfigure(3, weight=1)
-        batch_input.columnconfigure(5, weight=1)
+        batch_input.columnconfigure(0, weight=1)
+        batch_input.columnconfigure(1, weight=1)
+        match_panel = ttk.LabelFrame(batch_input, text="1. 匹配命中值", padding=6)
+        match_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 4), pady=2)
+        replace_panel = ttk.LabelFrame(batch_input, text="2. 替换为", padding=6)
+        replace_panel.grid(row=0, column=1, sticky="nsew", padx=(4, 0), pady=2)
+        option_panel = ttk.Frame(batch_input)
+        option_panel.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        match_panel.columnconfigure(1, weight=1)
+        replace_panel.columnconfigure(1, weight=1)
+        option_panel.columnconfigure(4, weight=1)
+
+        ttk.Label(match_panel, text="匹配方式：").grid(row=0, column=0, sticky=tk.W, padx=4, pady=3)
+        ttk.Combobox(match_panel, textvariable=batch_match_mode_var, values=["包含", "完全相等", "不等于", "开头是", "结尾是", "正则匹配", "为空", "不为空"], width=14, state="readonly").grid(row=0, column=1, sticky="ew", padx=4, pady=3)
+        ttk.Label(match_panel, text="匹配值来源：").grid(row=1, column=0, sticky=tk.W, padx=4, pady=3)
+        batch_match_source_combo = ttk.Combobox(match_panel, textvariable=batch_match_source_var, values=[], width=16, state="readonly")
+        batch_match_source_combo.grid(row=1, column=1, sticky="ew", padx=4, pady=3)
+        ttk.Label(match_panel, text="匹配值：").grid(row=2, column=0, sticky=tk.W, padx=4, pady=3)
+        batch_match_value_entry = ttk.Entry(match_panel, textvariable=batch_match_value_var, width=24)
+        batch_match_value_entry.grid(row=2, column=1, sticky="ew", padx=4, pady=3)
+        ttk.Label(match_panel, text="匹配值字段：").grid(row=3, column=0, sticky=tk.W, padx=4, pady=3)
+        batch_match_field_combo = ttk.Combobox(match_panel, textvariable=batch_match_field_var, values=[], width=24, state="readonly")
+        batch_match_field_combo.grid(row=3, column=1, sticky="ew", padx=4, pady=3)
+
+        ttk.Label(replace_panel, text="替换方式：").grid(row=0, column=0, sticky=tk.W, padx=4, pady=3)
+        ttk.Combobox(replace_panel, textvariable=batch_replace_mode_var, values=["局部替换匹配字符串", "整格替换为新值"], width=20, state="readonly").grid(row=0, column=1, sticky="ew", padx=4, pady=3)
+        ttk.Label(replace_panel, text="替换值来源：").grid(row=1, column=0, sticky=tk.W, padx=4, pady=3)
+        batch_replace_source_combo = ttk.Combobox(replace_panel, textvariable=batch_replace_source_var, values=[], width=16, state="readonly")
+        batch_replace_source_combo.grid(row=1, column=1, sticky="ew", padx=4, pady=3)
+        ttk.Label(replace_panel, text="替换值：").grid(row=2, column=0, sticky=tk.W, padx=4, pady=3)
+        batch_replace_value_entry = ttk.Entry(replace_panel, textvariable=batch_replace_value_var, width=26)
+        batch_replace_value_entry.grid(row=2, column=1, sticky="ew", padx=4, pady=3)
+        ttk.Label(replace_panel, text="替换值字段：").grid(row=3, column=0, sticky=tk.W, padx=4, pady=3)
+        batch_replace_field_combo = ttk.Combobox(replace_panel, textvariable=batch_replace_field_var, values=[], width=24, state="readonly")
+        batch_replace_field_combo.grid(row=3, column=1, sticky="ew", padx=4, pady=3)
+
+        ttk.Checkbutton(option_panel, text="区分大小写", variable=batch_case_var).grid(row=0, column=0, sticky=tk.W, padx=4, pady=3)
+        ttk.Checkbutton(option_panel, text="列匹配值为空时跳过", variable=batch_skip_empty_var).grid(row=0, column=1, sticky=tk.W, padx=12, pady=3)
+        ttk.Label(option_panel, text="次数：").grid(row=0, column=2, sticky=tk.W, padx=(12, 4), pady=3)
+        ttk.Entry(option_panel, textvariable=batch_count_var, width=8).grid(row=0, column=3, sticky=tk.W, padx=4, pady=3)
+        ttk.Label(option_panel, text="0 表示全部；规则只作用于匹配条件命中值。", foreground="gray").grid(row=0, column=4, sticky=tk.W, padx=12, pady=3)
+
+        def batch_source_choices():
+            choices = ["手动输入"]
+            for alias in table_aliases:
+                alias = _as_text(alias)
+                if alias and alias not in choices:
+                    choices.append(alias)
+            return choices
+
+        def batch_source_fields(source):
+            source = _normalize_batch_table_source(source)
+            if _is_manual_batch_source(source):
+                return []
+            table = tables.get(source, {})
+            fields, _rows = _content_rows(table)
+            return fields
+
+        def refresh_batch_source_options():
+            choices = batch_source_choices()
+            batch_match_source_combo.configure(values=choices)
+            batch_replace_source_combo.configure(values=choices)
+            if batch_match_source_var.get() not in choices:
+                batch_match_source_var.set("手动输入")
+            if batch_replace_source_var.get() not in choices:
+                batch_replace_source_var.set("手动输入")
+
+        def refresh_batch_field_combos(reset_invalid=True):
+            refresh_batch_source_options()
+            match_fields = batch_source_fields(batch_match_source_var.get())
+            replace_fields = batch_source_fields(batch_replace_source_var.get())
+            batch_match_field_combo.configure(values=match_fields, state="readonly" if match_fields else "disabled")
+            batch_replace_field_combo.configure(values=replace_fields, state="readonly" if replace_fields else "disabled")
+            batch_match_value_entry.configure(state="normal" if _is_manual_batch_source(batch_match_source_var.get()) else "disabled")
+            batch_replace_value_entry.configure(state="normal" if _is_manual_batch_source(batch_replace_source_var.get()) else "disabled")
+            if reset_invalid and batch_match_field_var.get() not in match_fields:
+                batch_match_field_var.set("")
+            if reset_invalid and batch_replace_field_var.get() not in replace_fields:
+                batch_replace_field_var.set("")
+
+        batch_match_source_combo.bind("<<ComboboxSelected>>", lambda _event=None: refresh_batch_field_combos(True))
+        batch_replace_source_combo.bind("<<ComboboxSelected>>", lambda _event=None: refresh_batch_field_combos(True))
 
         def rule_label(rule):
             prefix = "" if rule.get("enabled", True) else "[停用] "
@@ -1935,16 +2129,18 @@ def open_config_window(parent, current_params, context):
             rows = []
             for item_id in batch_tree.get_children():
                 values = list(batch_tree.item(item_id, "values"))
-                while len(values) < 10:
+                while len(values) < 11:
                     values.append("")
-                match_mode, match_value, replace_value, replace_mode, value_source, match_field, replace_field, case_text, skip_text, count = values[:10]
+                match_mode, match_source, match_value, match_field, replace_mode, replace_source, replace_value, replace_field, case_text, skip_text, count = values[:11]
                 rows.append({
                     "enabled": True,
                     "match_mode": _as_text(match_mode) or "包含",
+                    "match_value_source": _normalize_batch_table_source(match_source),
                     "match_value": _as_text(match_value),
                     "replace_value": _as_text(replace_value),
                     "replace_mode": _as_text(replace_mode) or "局部替换匹配字符串",
-                    "value_source": _normalize_batch_value_source(value_source),
+                    "replace_value_source": _normalize_batch_table_source(replace_source),
+                    "value_source": "手动输入",
                     "match_value_field": _as_text(match_field),
                     "replace_value_field": _as_text(replace_field),
                     "case_sensitive": _as_text(case_text) not in ("否", "False", "false", "0"),
@@ -1956,11 +2152,12 @@ def open_config_window(parent, current_params, context):
         def current_batch_values():
             return (
                 batch_match_mode_var.get(),
+                batch_match_source_var.get(),
                 batch_match_value_var.get(),
-                batch_replace_value_var.get(),
-                batch_replace_mode_var.get(),
-                batch_value_source_var.get(),
                 batch_match_field_var.get(),
+                batch_replace_mode_var.get(),
+                batch_replace_source_var.get(),
+                batch_replace_value_var.get(),
                 batch_replace_field_var.get(),
                 "是" if batch_case_var.get() else "否",
                 "是" if batch_skip_empty_var.get() else "否",
@@ -2044,6 +2241,7 @@ def open_config_window(parent, current_params, context):
                 params,
                 limit=500,
                 include_unchanged=True,
+                table_context=current_table_context(),
             )
             for item in preview_rows:
                 preview_text.insert(
@@ -2079,11 +2277,12 @@ def open_config_window(parent, current_params, context):
             for item in _batch_rules_for_rule(rule):
                 batch_tree.insert("", tk.END, values=(
                     _as_text(item.get("match_mode") or "包含"),
+                    _batch_match_source(item, params),
                     _as_text(item.get("match_value")),
-                    _as_text(item.get("replace_value")),
-                    _as_text(item.get("replace_mode") or "局部替换匹配字符串"),
-                    _normalize_batch_value_source(item.get("value_source")),
                     _as_text(item.get("match_value_field")),
+                    _as_text(item.get("replace_mode") or "局部替换匹配字符串"),
+                    _batch_replace_source(item, params),
+                    _as_text(item.get("replace_value")),
                     _as_text(item.get("replace_value_field")),
                     "是" if bool(item.get("case_sensitive", True)) else "否",
                     "是" if bool(item.get("skip_empty_match_value", True)) else "否",
@@ -2096,12 +2295,7 @@ def open_config_window(parent, current_params, context):
                 rule_list.insert(tk.END, rule_label(rule))
             feature_combo.configure(values=current_feature_names(True))
             sheet_combo.configure(values=current_sheet_names(True))
-            field_values = []
-            for field in list(current_aux_fields()) + list(current_content_fields()):
-                if field not in field_values:
-                    field_values.append(field)
-            batch_match_field_combo.configure(values=field_values)
-            batch_replace_field_combo.configure(values=field_values)
+            refresh_batch_field_combos(False)
             if cfg.get("global_rules"):
                 idx = 0 if select_index is None else max(0, min(select_index, len(cfg["global_rules"]) - 1))
                 rule_list.selection_set(idx)
@@ -2138,9 +2332,11 @@ def open_config_window(parent, current_params, context):
                 "batch_rules": [{
                     "enabled": True,
                     "match_mode": "包含",
+                    "match_value_source": "手动输入",
                     "match_value": "",
                     "replace_value": "",
                     "replace_mode": "局部替换匹配字符串",
+                    "replace_value_source": "手动输入",
                     "value_source": "手动输入",
                     "match_value_field": "",
                     "replace_value_field": "",
@@ -2206,19 +2402,21 @@ def open_config_window(parent, current_params, context):
             if not sel:
                 return
             values = list(batch_tree.item(sel[0], "values"))
-            while len(values) < 10:
+            while len(values) < 11:
                 values.append("")
-            match_mode, match_value, replace_value, replace_mode, value_source, match_field, replace_field, case_text, skip_text, count = values[:10]
+            match_mode, match_source, match_value, match_field, replace_mode, replace_source, replace_value, replace_field, case_text, skip_text, count = values[:11]
             batch_match_mode_var.set(match_mode or "包含")
+            batch_match_source_var.set(_normalize_batch_table_source(match_source))
             batch_match_value_var.set(match_value)
-            batch_replace_value_var.set(replace_value)
-            batch_replace_mode_var.set(replace_mode or "局部替换匹配字符串")
-            batch_value_source_var.set(_normalize_batch_value_source(value_source))
             batch_match_field_var.set(match_field)
+            batch_replace_mode_var.set(replace_mode or "局部替换匹配字符串")
+            batch_replace_source_var.set(_normalize_batch_table_source(replace_source))
+            batch_replace_value_var.set(replace_value)
             batch_replace_field_var.set(replace_field)
             batch_case_var.set(_as_text(case_text) not in ("否", "False", "false", "0"))
             batch_skip_empty_var.set(_as_text(skip_text) not in ("否", "False", "false", "0"))
             batch_count_var.set(count or "0")
+            refresh_batch_field_combos(False)
 
         rule_list.bind("<<ListboxSelect>>", on_rule_select)
         cond_tree.bind("<<TreeviewSelect>>", on_condition_select)
@@ -2267,6 +2465,76 @@ def open_config_window(parent, current_params, context):
         table = tables.get(aux_alias_var.get(), {})
         _fields, rows = _content_rows(table)
         return rows
+
+    def current_table_context():
+        return _table_row_context(tables, content_alias_var.get(), aux_alias_var.get())
+
+    def show_global_replace_preview():
+        sync_params_from_ui()
+        if not state.get("records"):
+            reload_data()
+        dlg = _make_floating_child(win, "全局替换预览")
+        body = ttk.Frame(dlg, padding=10)
+        body.pack(fill=tk.BOTH, expand=True)
+        body.rowconfigure(1, weight=1)
+        body.columnconfigure(0, weight=1)
+
+        header_var = tk.StringVar(value="")
+        ttk.Label(body, textvariable=header_var, foreground="gray").grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 6))
+        preview_text = tk.Text(body, height=32, width=120, wrap=tk.WORD)
+        preview_text.grid(row=1, column=0, sticky="nsew")
+        preview_scroll = ttk.Scrollbar(body, orient=tk.VERTICAL, command=preview_text.yview)
+        preview_scroll.grid(row=1, column=1, sticky="ns")
+        preview_text.configure(yscrollcommand=preview_scroll.set)
+
+        def render_preview():
+            sync_params_from_ui()
+            records = list(state.get("records", []) or [])
+            preview_text.configure(state="normal")
+            preview_text.delete("1.0", tk.END)
+            if not records:
+                header_var.set("可替换 0 条；文档读取表没有可预览记录")
+                preview_text.insert(tk.END, "当前文档读取表没有可预览记录，请先刷新可视化。")
+                preview_text.configure(state="disabled")
+                return
+            global_rules = cfg.get("global_rules", []) or []
+            if not any(isinstance(rule, dict) and rule.get("enabled", True) for rule in global_rules):
+                header_var.set("可替换 0 条；没有启用的全局搜索替换规则")
+                preview_text.insert(tk.END, "当前配置没有启用的全局搜索替换规则。")
+                preview_text.configure(state="disabled")
+                return
+            preview_rows, total_changed, total_errors = _preview_global_replace_rows(
+                global_rules,
+                records,
+                cfg.get("features", []),
+                current_content_rows(),
+                current_aux_rows(),
+                params,
+                limit=800,
+                include_unchanged=True,
+                table_context=current_table_context(),
+            )
+            header_var.set(f"可替换 {total_changed} 条；错误 {total_errors} 条；显示 {len(preview_rows)} 条")
+            for item in preview_rows:
+                preview_text.insert(
+                    tk.END,
+                    f"[{item.get('status')}] 规则：{item.get('rule_name')}  {item.get('source_file')} {item.get('location')} 新内容行{item.get('content_row')}\n"
+                    f"原文：{item.get('old_text')}\n"
+                    f"替换：{item.get('new_text')}\n"
+                    f"明细：{item.get('detail')}\n\n"
+                )
+            if total_changed > len([r for r in preview_rows if r.get("status") == "替换"]):
+                preview_text.insert(tk.END, "... 还有更多替换结果未显示，请缩小规则范围或增加预览上限。\n")
+            if not preview_rows:
+                preview_text.insert(tk.END, "当前全局规则未产生可替换结果。")
+            preview_text.configure(state="disabled")
+
+        button_row = ttk.Frame(body)
+        button_row.grid(row=2, column=0, columnspan=2, sticky=tk.E, pady=(8, 0))
+        ttk.Button(button_row, text="刷新预览", command=render_preview).pack(side=tk.LEFT, padx=4)
+        ttk.Button(button_row, text="关闭", command=dlg.destroy).pack(side=tk.LEFT, padx=4)
+        render_preview()
+        dlg.after_idle(lambda: _show_centered_window(dlg, win, 1120, 720))
 
     def current_doc_fields():
         table = tables.get(doc_alias_var.get(), {})
@@ -2411,8 +2679,8 @@ def open_config_window(parent, current_params, context):
             body2 = ttk.Frame(chooser, padding=10)
             body2.pack(fill=tk.BOTH, expand=True)
             ttk.Label(body2, text="命中多个锚点，请选择用于反推偏移的单元格：").pack(anchor=tk.W, pady=(0, 6))
-            lb = tk.Listbox(body2, height=min(12, max(4, len(candidates))), width=72, exportselection=False)
-            lb.pack(fill=tk.BOTH, expand=True)
+            lb_frame, lb = _make_scrollable_listbox(body2, height=min(12, max(4, len(candidates))), width=72, exportselection=False)
+            lb_frame.pack(fill=tk.BOTH, expand=True)
             for item in candidates:
                 label = f"R{item.get('row_index')}C{item.get('col_index')}  {item.get('text', '')}"
                 lb.insert(tk.END, label[:180])
@@ -2705,7 +2973,7 @@ def open_config_window(parent, current_params, context):
     ttk.Button(bottom, text="取消", command=win.destroy).pack(side=tk.RIGHT, padx=4)
 
     reload_data()
-    _show_centered_window(win, parent, 1180, 760)
+    _show_centered_window(win, parent, CONFIG_WINDOW_WIDTH, CONFIG_WINDOW_HEIGHT)
     win.grab_set()
     win.wait_window()
     return result["params"] if result.get("ok") else current_params

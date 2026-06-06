@@ -4399,6 +4399,7 @@ class PlanWorkflowWindow:
     NODE_TYPES = ["获取文件列表", "节点组 / 子工作流", "循环执行起点", "批量替换", "数据提取", "格式规范化 / 日期时间解析", "新建日期时间列", "新建列", "合并列", "批量更改列名", "去重 / 重复数据处理", "列数字运算", "匹配值输出列名", "复制列", "复制行", "删除行", "填充值", "序列填充", "区域填充", "行数据映射填充", "保存中转数据", "选定列写入指定表", "字段映射写入表", "高级筛选", "删除列", "移动列", "批量重命名", "循环判断回跳"]
     LOGIC_TYPES = ["AND", "OR"]
     FILTER_OPS = ["等于", "不等于", "包含", "不包含", "开头是", "结尾是", "大于", "小于", "大于等于", "小于等于", "为空", "不为空", "正则匹配"]
+    FILTER_VALUE_SOURCES = ["固定值", "字段值"]
     REPLACE_MATCH_MODES = ["包含", "完全相等", "开头是", "结尾是", "正则匹配", "为空", "不为空"]
     REPLACE_MODES = ["局部替换匹配字符串", "整格替换为新值"]
     EXTRACT_METHODS = [
@@ -10606,20 +10607,41 @@ class PlanWorkflowWindow:
         ttk.Button(source_frame, text="清空副表", command=lambda: (table_list.selection_clear(0, tk.END), sync_extra_tables(True))).grid(row=1, column=4, sticky=tk.W, padx=4, pady=4)
 
         # 2. 筛选条件区
-        condition_frame = ttk.LabelFrame(frame, text="2. 筛选条件（可筛选当前表字段或副表字段）", padding=6)
+        condition_frame = ttk.LabelFrame(frame, text="2. 筛选条件（可筛选字段，并支持固定值或字段值匹配）", padding=6)
         condition_frame.grid(row=2, column=0, columnspan=8, sticky="nsew", pady=6)
         logic_var = self.add_labeled_combo(condition_frame, "条件关系：", config.get("logic", "AND"), self.LOGIC_TYPES, 0, 0, 8)
         self.sync_var_to_config(logic_var, config, "logic")
         field_var = tk.StringVar(value=all_fields[0] if all_fields else "")
         op_var = tk.StringVar(value="包含")
+        value_source_var = tk.StringVar(value="固定值")
         value_var = tk.StringVar()
         ttk.Label(condition_frame, text="字段：").grid(row=1, column=0, padx=4, pady=4)
         field_combo = ttk.Combobox(condition_frame, textvariable=field_var, values=all_fields, width=28, state="normal")
         field_combo.grid(row=1, column=1, padx=4, pady=4)
         ttk.Label(condition_frame, text="操作：").grid(row=1, column=2, padx=4, pady=4)
         ttk.Combobox(condition_frame, textvariable=op_var, values=self.FILTER_OPS, width=14, state="readonly").grid(row=1, column=3, padx=4, pady=4)
-        ttk.Label(condition_frame, text="值：").grid(row=1, column=4, padx=4, pady=4)
-        ttk.Entry(condition_frame, textvariable=value_var, width=24).grid(row=1, column=5, padx=4, pady=4)
+        ttk.Label(condition_frame, text="值来源：").grid(row=1, column=4, padx=4, pady=4)
+        value_source_combo = ttk.Combobox(condition_frame, textvariable=value_source_var, values=self.FILTER_VALUE_SOURCES, width=10, state="readonly")
+        value_source_combo.grid(row=1, column=5, padx=4, pady=4)
+        ttk.Label(condition_frame, text="匹配值：").grid(row=1, column=6, padx=4, pady=4)
+        value_combo = ttk.Combobox(condition_frame, textvariable=value_var, values=[], width=28, state="normal")
+        value_combo.grid(row=1, column=7, padx=4, pady=4)
+
+        def refresh_condition_value_input(*_):
+            current_source = value_source_var.get()
+            source = self.normalize_filter_condition_value_source({"value_source": current_source})
+            if current_source != source:
+                value_source_var.set(source)
+                return
+            if source == "字段值":
+                value_combo.configure(values=field_state["all"])
+                if not value_var.get().strip() and field_state["all"]:
+                    value_var.set(field_state["all"][0])
+            else:
+                value_combo.configure(values=[])
+
+        value_source_var.trace_add("write", refresh_condition_value_input)
+        refresh_condition_value_input()
 
         cond_toolbar = ttk.Frame(condition_frame)
         cond_toolbar.grid(row=2, column=0, columnspan=7, sticky="w", padx=4, pady=(2, 0))
@@ -10631,35 +10653,61 @@ class PlanWorkflowWindow:
             cond_edit_text.set("修改模式:开" if cond_edit_mode.get() else "修改模式:关")
 
         ttk.Button(cond_toolbar, textvariable=cond_edit_text, command=toggle_cond_edit_mode).pack(side=tk.LEFT, padx=2)
-        ttk.Label(cond_toolbar, text="开启后双击下方条件列表，可直接修改字段/操作/值。", foreground="gray").pack(side=tk.LEFT, padx=8)
+        ttk.Label(cond_toolbar, text="开启修改模式后可双击列表编辑；值来源=字段值时，匹配值请选择 当前表.字段 或 副表.字段。", foreground="gray").pack(side=tk.LEFT, padx=8)
 
-        cond_tree = ttk.Treeview(condition_frame, columns=("字段", "操作", "值"), show="headings", height=6)
-        for c, w in [("字段", 260), ("操作", 120), ("值", 260)]:
+        cond_tree = ttk.Treeview(condition_frame, columns=("字段", "操作", "值来源", "匹配值"), show="headings", height=6)
+        for c, w in [("字段", 250), ("操作", 110), ("值来源", 90), ("匹配值", 250)]:
             cond_tree.heading(c, text=c)
             cond_tree.column(c, width=w, anchor=tk.W)
         cond_y_scroll = ttk.Scrollbar(condition_frame, orient=tk.VERTICAL, command=cond_tree.yview)
         cond_x_scroll = ttk.Scrollbar(condition_frame, orient=tk.HORIZONTAL, command=cond_tree.xview)
         cond_tree.configure(yscrollcommand=cond_y_scroll.set, xscrollcommand=cond_x_scroll.set)
-        cond_tree.grid(row=3, column=0, columnspan=6, sticky="nsew", padx=4, pady=4)
-        cond_y_scroll.grid(row=3, column=6, sticky="ns", pady=4)
-        cond_x_scroll.grid(row=4, column=0, columnspan=6, sticky="ew", padx=4)
+        cond_tree.grid(row=3, column=0, columnspan=8, sticky="nsew", padx=4, pady=4)
+        cond_y_scroll.grid(row=3, column=8, sticky="ns", pady=4)
+        cond_x_scroll.grid(row=4, column=0, columnspan=8, sticky="ew", padx=4)
         condition_frame.rowconfigure(3, weight=1)
-        condition_frame.columnconfigure(5, weight=1)
+        condition_frame.columnconfigure(7, weight=1)
         for cond in config.get("conditions", []):
-            cond_tree.insert("", tk.END, values=(cond.get("field", ""), cond.get("op", ""), cond.get("value", "")))
+            cond_tree.insert(
+                "",
+                tk.END,
+                values=(
+                    cond.get("field", ""),
+                    cond.get("op", ""),
+                    self.normalize_filter_condition_value_source(cond),
+                    cond.get("value", ""),
+                )
+            )
 
         def sync_conditions_from_tree():
             result = []
             for iid in cond_tree.get_children():
-                f, o, v = cond_tree.item(iid, "values")
-                result.append({"field": f, "op": o, "value": v})
+                values = list(cond_tree.item(iid, "values"))
+                while len(values) < 4:
+                    values.append("")
+                f, o, source, v = values[:4]
+                result.append({
+                    "field": f,
+                    "op": o,
+                    "value_source": self.normalize_filter_condition_value_source({"value_source": source}),
+                    "value": v,
+                })
             config["conditions"] = result
 
         def add_cond():
             if not field_var.get().strip():
                 messagebox.showwarning("提示", "请选择条件字段。")
                 return
-            cond_tree.insert("", tk.END, values=(field_var.get(), op_var.get(), value_var.get()))
+            cond_tree.insert(
+                "",
+                tk.END,
+                values=(
+                    field_var.get(),
+                    op_var.get(),
+                    self.normalize_filter_condition_value_source({"value_source": value_source_var.get()}),
+                    value_var.get(),
+                )
+            )
             sync_conditions_from_tree()
 
         def del_cond():
@@ -10686,7 +10734,7 @@ class PlanWorkflowWindow:
                 return
             x, y, width, height = bbox
             values = list(cond_tree.item(row_id, "values"))
-            while len(values) < 3:
+            while len(values) < 4:
                 values.append("")
             entry = ttk.Entry(cond_tree)
             entry.place(x=x, y=y, width=width, height=height)
@@ -10811,11 +10859,19 @@ class PlanWorkflowWindow:
             first_current = current_values[0] if current_values else first_any
             first_external = next((f for f in all_values if not str(f).startswith("当前表.")), first_any)
             self.refresh_combo_values(field_combo, field_var, all_values, keep_custom=True, fallback=first_any)
+            self.refresh_combo_values(
+                value_combo,
+                value_var,
+                all_values if value_source_var.get() == "字段值" else [],
+                keep_custom=True,
+                fallback=first_any if value_source_var.get() == "字段值" else "",
+            )
             self.refresh_combo_values(left_combo, left_var, all_values, keep_custom=True, fallback=first_current)
             self.refresh_combo_values(right_combo, right_var, all_values, keep_custom=True, fallback=first_external)
             selected_output = set(config.get("output_fields", []))
             self.refresh_listbox_values(out_list, all_values, selected_output)
             sync_output_fields()
+            refresh_condition_value_input()
             self.status_var.set(f"高级筛选字段已局部刷新：{len(config.get('extra_tables', []))} 个副表，{len(all_values)} 个可用字段。")
 
         out_list.bind("<<ListboxSelect>>", lambda e: sync_output_fields())
@@ -14329,12 +14385,71 @@ class PlanWorkflowWindow:
                 continue
         return fields
 
-    def make_current_table_records(self, headers, rows):
+    def plan_filter_field_belongs_to_table(self, field, table_name):
+        return str(field or "").startswith(f"{table_name}.")
+
+    def add_plan_filter_required_field(self, field, headers, extra_tables, current_headers, table_fields):
+        field = str(field or "").strip()
+        if not field:
+            return
+        if field.startswith("当前表."):
+            if current_headers is None:
+                return
+            header = field.split(".", 1)[1]
+            if header in headers:
+                current_headers.add(header)
+            return
+        if field in headers:
+            if current_headers is None:
+                return
+            current_headers.add(field)
+            return
+        for table in extra_tables:
+            if self.plan_filter_field_belongs_to_table(field, table) and table_fields.get(table) is not None:
+                table_fields[table].add(field)
+                return
+
+    def collect_plan_filter_required_fields(self, headers, extra_tables, conditions, join_rules, output_fields, final_fields):
+        current_headers = set()
+        table_fields = {table: set() for table in extra_tables}
+        if not output_fields and extra_tables:
+            current_headers = None
+            table_fields = {table: None for table in extra_tables}
+        else:
+            for field in final_fields or []:
+                self.add_plan_filter_required_field(field, headers, extra_tables, current_headers, table_fields)
+
+        for rule in join_rules or []:
+            self.add_plan_filter_required_field(rule.get("left", ""), headers, extra_tables, current_headers, table_fields)
+            self.add_plan_filter_required_field(rule.get("right", ""), headers, extra_tables, current_headers, table_fields)
+        for cond in conditions or []:
+            self.add_plan_filter_required_field(cond.get("field", ""), headers, extra_tables, current_headers, table_fields)
+            if self.normalize_filter_condition_value_source(cond) == "字段值":
+                self.add_plan_filter_required_field(cond.get("value", ""), headers, extra_tables, current_headers, table_fields)
+        return current_headers, table_fields
+
+    def get_required_columns_for_plan_table(self, table_name, columns, required_fields):
+        if required_fields is None:
+            return list(columns)
+        wanted = set()
+        prefix = f"{table_name}."
+        for field in required_fields:
+            field = str(field or "")
+            if field.startswith(prefix):
+                wanted.add(field[len(prefix):])
+        return [col for col in columns if col in wanted]
+
+    def make_current_table_records(self, headers, rows, required_headers=None):
         normalized = self.normalize_rows(rows, len(headers))
         records = []
+        if required_headers is None:
+            selected_indexes = list(enumerate(headers))
+        else:
+            required_headers = set(required_headers)
+            selected_indexes = [(i, header) for i, header in enumerate(headers) if header in required_headers]
         for row in normalized:
             record = {}
-            for i, header in enumerate(headers):
+            for i, header in selected_indexes:
                 value = self.safe_cell(row, i)
                 # 兼容旧版计划：同时支持“字段名”和“当前表.字段名”。
                 record[header] = value
@@ -14342,19 +14457,21 @@ class PlanWorkflowWindow:
             records.append(record)
         return records
 
-    def load_plan_table_records(self, table_name, context=None):
+    def load_plan_table_records(self, table_name, context=None, required_fields=None):
         if str(table_name).startswith("中转:"):
             name = str(table_name).split(":", 1)[1]
             transit_tables = (context or {}).get("transit_tables", {})
             if name not in transit_tables:
                 raise ValueError(f"中转副表不存在或尚未生成：{name}")
             item = transit_tables[name]
-            columns = list(item.get("headers", []))
-            db_rows = self.normalize_rows(item.get("rows", []), len(columns))
+            all_columns = list(item.get("headers", []))
+            columns = self.get_required_columns_for_plan_table(table_name, all_columns, required_fields)
+            column_indexes = [(all_columns.index(col), col) for col in columns]
+            db_rows = self.normalize_rows(item.get("rows", []), len(all_columns))
             records = []
             for row in db_rows:
                 record = {}
-                for i, col in enumerate(columns):
+                for i, col in column_indexes:
                     record[f"{table_name}.{col}"] = self.safe_cell(row, i)
                 records.append(record)
             return records
@@ -14362,10 +14479,15 @@ class PlanWorkflowWindow:
         db_path = self.get_workflow_db_path(context)
         if not db_path or not os.path.exists(db_path):
             raise ValueError("当前 SQLite 数据库路径不存在，无法读取副表。")
-        columns = self.get_workflow_sqlite_columns(table_name, context)
+        all_columns = self.get_workflow_sqlite_columns(table_name, context)
+        columns = self.get_required_columns_for_plan_table(table_name, all_columns, required_fields)
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
-        cur.execute(f"SELECT * FROM {self.app.quote_ident(table_name)}")
+        if columns:
+            select_expr = ", ".join(self.app.quote_ident(col) for col in columns)
+        else:
+            select_expr = "1"
+        cur.execute(f"SELECT {select_expr} FROM {self.app.quote_ident(table_name)}")
         db_rows = cur.fetchall()
         conn.close()
         records = []
@@ -14377,11 +14499,28 @@ class PlanWorkflowWindow:
             records.append(record)
         return records
 
+    def normalize_filter_condition_value_source(self, cond):
+        source = str((cond or {}).get("value_source") or (cond or {}).get("value_mode") or "固定值").strip()
+        if source in ["字段值", "指定字段", "表字段", "字段", "按字段值"]:
+            return "字段值"
+        return "固定值"
+
+    def resolve_plan_condition_value(self, record, cond):
+        value = (cond or {}).get("value", "")
+        if self.normalize_filter_condition_value_source(cond) != "字段值":
+            return value, True
+        value_key = str(value or "")
+        if value_key not in record:
+            return "", False
+        return record.get(value_key, ""), True
+
     def eval_plan_condition_record(self, record, cond):
         field = cond.get("field", "")
         op = cond.get("op", "包含")
-        value = cond.get("value", "")
         if field not in record:
+            return False
+        value, value_ok = self.resolve_plan_condition_value(record, cond)
+        if not value_ok and op not in ["为空", "不为空"]:
             return False
         return self.compare_values(record.get(field, ""), op, value, True)
 
@@ -14412,11 +14551,83 @@ class PlanWorkflowWindow:
         checks = [self.eval_plan_condition_record(record, cond) for cond in conditions]
         return any(checks) if logic == "OR" else all(checks)
 
+    def plan_filter_condition_dependencies(self, cond):
+        deps = []
+        field = str((cond or {}).get("field", "") or "").strip()
+        if field:
+            deps.append(field)
+        if self.normalize_filter_condition_value_source(cond) == "字段值":
+            value_field = str((cond or {}).get("value", "") or "").strip()
+            if value_field:
+                deps.append(value_field)
+        return deps
+
+    def record_survives_available_plan_conditions(self, record, conditions, logic):
+        if not conditions:
+            return True
+        checks = []
+        has_pending = False
+        for cond in conditions:
+            deps = self.plan_filter_condition_dependencies(cond)
+            if all(dep in record for dep in deps):
+                checks.append(self.eval_plan_condition_record(record, cond))
+            else:
+                has_pending = True
+        if not checks:
+            return True
+        if logic == "OR":
+            return any(checks) or has_pending
+        return all(checks)
+
     def record_passes_plan_join_rules(self, record, join_rules, logic="AND"):
         if not join_rules:
             return True
         checks = [self.eval_plan_join_rule_record(record, rule) for rule in join_rules]
         return any(checks) if logic == "OR" else all(checks)
+
+    def get_plan_filter_hash_join_rules(self, table_name, join_rules, join_logic, right_records):
+        if join_logic != "AND" or not right_records:
+            return []
+        sample_keys = set()
+        for record in right_records:
+            sample_keys.update(record.keys())
+            if sample_keys:
+                break
+        hash_rules = []
+        for rule in join_rules or []:
+            if rule.get("op", "等于") != "等于":
+                continue
+            left_key = str(rule.get("left", "") or "")
+            right_key = str(rule.get("right", "") or "")
+            left_is_table = self.plan_filter_field_belongs_to_table(left_key, table_name)
+            right_is_table = self.plan_filter_field_belongs_to_table(right_key, table_name)
+            if left_is_table and not right_is_table and left_key in sample_keys:
+                hash_rules.append((right_key, left_key))
+            elif right_is_table and not left_is_table and right_key in sample_keys:
+                hash_rules.append((left_key, right_key))
+        return hash_rules
+
+    def build_plan_filter_right_index(self, right_records, hash_rules):
+        index = {}
+        missing_key_records = []
+        for record in right_records:
+            if any(right_key not in record for _, right_key in hash_rules):
+                missing_key_records.append(record)
+                continue
+            key = tuple(str(record.get(right_key, "")) for _, right_key in hash_rules)
+            index.setdefault(key, []).append(record)
+        return index, missing_key_records
+
+    def iter_plan_filter_join_candidates(self, left_record, right_records, hash_rules, right_index, missing_key_records):
+        if not hash_rules:
+            return right_records
+        if any(left_key not in left_record for left_key, _ in hash_rules):
+            return right_records
+        key = tuple(str(left_record.get(left_key, "")) for left_key, _ in hash_rules)
+        candidates = list(right_index.get(key, []))
+        if missing_key_records:
+            candidates.extend(missing_key_records)
+        return candidates
 
 
     def get_row_mapping_end_index(self, rows, start_idx, config, col_count):
@@ -15322,18 +15533,56 @@ class PlanWorkflowWindow:
         max_intermediate = self.get_positive_int(config.get("max_intermediate", "200000"), 200000)
         remove_duplicates = bool(config.get("remove_duplicates", False))
 
-        records = self.make_current_table_records(headers, rows)
+        # 字段输出规则：不选择输出字段时，单表保持旧逻辑输出当前表字段；多表则输出所有可用字段。
+        if output_fields:
+            fields = output_fields
+        elif extra_tables:
+            fields = self.get_plan_filter_available_fields(headers, extra_tables, context)
+        else:
+            fields = list(headers)
+
+        current_required, table_required = self.collect_plan_filter_required_fields(
+            headers, extra_tables, conditions, join_rules, output_fields, fields
+        )
+        records = self.make_current_table_records(headers, rows, current_required)
+        early_filtered = 0
+        hash_join_tables = 0
+        pruned_table_count = sum(1 for table in extra_tables if table_required.get(table) is not None)
+        before_count = len(records)
+        records = [
+            record for record in records
+            if self.record_survives_available_plan_conditions(record, conditions, logic)
+        ]
+        early_filtered += before_count - len(records)
 
         # 多表匹配：以上一步结果作为当前表，依次与选中的 SQLite 副表组合。
         for table in extra_tables:
-            right_records = self.load_plan_table_records(table, context=context)
+            right_records = self.load_plan_table_records(table, context=context, required_fields=table_required.get(table))
+            before_count = len(right_records)
+            right_records = [
+                record for record in right_records
+                if self.record_survives_available_plan_conditions(record, conditions, logic)
+            ]
+            early_filtered += before_count - len(right_records)
+            hash_rules = self.get_plan_filter_hash_join_rules(table, join_rules, join_logic, right_records)
+            right_index = {}
+            missing_key_records = []
+            if hash_rules:
+                right_index, missing_key_records = self.build_plan_filter_right_index(right_records, hash_rules)
+                hash_join_tables += 1
             new_records = []
             for left_record in records:
-                for right_record in right_records:
+                candidates = self.iter_plan_filter_join_candidates(
+                    left_record, right_records, hash_rules, right_index, missing_key_records
+                )
+                for right_record in candidates:
                     merged = {}
                     merged.update(left_record)
                     merged.update(right_record)
-                    if self.record_passes_plan_join_rules(merged, join_rules, join_logic):
+                    if (
+                        self.record_passes_plan_join_rules(merged, join_rules, join_logic)
+                        and self.record_survives_available_plan_conditions(merged, conditions, logic)
+                    ):
                         new_records.append(merged)
                         if len(new_records) > max_intermediate:
                             raise RuntimeError(
@@ -15343,14 +15592,6 @@ class PlanWorkflowWindow:
             records = new_records
             if not records:
                 break
-
-        # 字段输出规则：不选择输出字段时，单表保持旧逻辑输出当前表字段；多表则输出所有可用字段。
-        if output_fields:
-            fields = output_fields
-        elif extra_tables:
-            fields = self.get_plan_filter_available_fields(headers, extra_tables, context)
-        else:
-            fields = list(headers)
 
         result_rows = []
         seen_rows = set()
@@ -15372,6 +15613,15 @@ class PlanWorkflowWindow:
         stat = f"筛选/匹配后 {len(result_rows)} 行"
         if remove_duplicates:
             stat += f"，已去除重复内容 {duplicate_count} 行"
+        optimizations = []
+        if pruned_table_count:
+            optimizations.append(f"字段裁剪 {pruned_table_count} 表")
+        if early_filtered:
+            optimizations.append(f"提前过滤 {early_filtered} 行")
+        if hash_join_tables:
+            optimizations.append(f"等值索引匹配 {hash_join_tables} 表")
+        if optimizations:
+            stat += "；优化：" + "，".join(optimizations)
         return fields, result_rows, stat
 
     def match_value_output_column_match(self, source_value, lookup_value, mode):
