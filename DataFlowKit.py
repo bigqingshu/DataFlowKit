@@ -4424,7 +4424,7 @@ class PlanWorkflowWindow:
         self.app = app
         self.window = tk.Toplevel(app.root)
         self.window.title("计划 / 工作流处理")
-        self.window.geometry("1680x850")
+        self.window.geometry("1680x950")
         self.window.minsize(1050, 650)
         self.window.transient(app.root)
 
@@ -4611,19 +4611,28 @@ class PlanWorkflowWindow:
 
         progress_frame = ttk.LabelFrame(right, text="执行进度", padding=8)
         progress_frame.pack(fill=tk.X, pady=(0, 8))
-        ttk.Label(progress_frame, textvariable=self.workflow_progress_text).grid(row=0, column=0, sticky=tk.W, padx=4, pady=2)
+        self.workflow_progress_label = ttk.Label(progress_frame, textvariable=self.workflow_progress_text, anchor=tk.W)
+        self.workflow_progress_label.grid(row=0, column=0, sticky="ew", padx=4, pady=(2, 0))
         self.workflow_progress_bar = ttk.Progressbar(progress_frame, variable=self.workflow_progress_var, maximum=100, mode="determinate")
-        self.workflow_progress_bar.grid(row=0, column=1, sticky="ew", padx=4, pady=2)
-        ttk.Label(progress_frame, textvariable=self.node_progress_text).grid(row=1, column=0, sticky=tk.W, padx=4, pady=2)
+        self.workflow_progress_bar.grid(row=1, column=0, sticky="ew", padx=4, pady=(2, 6))
+        self.node_progress_label = ttk.Label(progress_frame, textvariable=self.node_progress_text, anchor=tk.W)
+        self.node_progress_label.grid(row=2, column=0, sticky="ew", padx=4, pady=(2, 0))
         self.node_progress_bar = ttk.Progressbar(progress_frame, variable=self.node_progress_var, maximum=100, mode="determinate")
-        self.node_progress_bar.grid(row=1, column=1, sticky="ew", padx=4, pady=2)
+        self.node_progress_bar.grid(row=3, column=0, sticky="ew", padx=4, pady=(2, 6))
         worker_btns = ttk.Frame(progress_frame)
-        worker_btns.grid(row=0, column=2, rowspan=2, sticky=tk.E, padx=4)
+        worker_btns.grid(row=2, column=1, sticky=tk.E, padx=(8, 4), pady=0)
         self.workflow_cancel_button = ttk.Button(worker_btns, text="取消后台任务", command=self.cancel_background_workflow)
         self.workflow_cancel_button.pack(side=tk.LEFT, padx=2)
         self.workflow_cancel_button.configure(state="disabled")
-        ttk.Label(progress_frame, textvariable=self.worker_status_text).grid(row=2, column=0, columnspan=3, sticky=tk.W, padx=4, pady=(4, 0))
-        progress_frame.columnconfigure(1, weight=1)
+        self.worker_status_label = ttk.Label(progress_frame, textvariable=self.worker_status_text, anchor=tk.W, wraplength=980, justify=tk.LEFT)
+        self.worker_status_label.grid(row=4, column=0, columnspan=2, sticky="ew", padx=4, pady=(4, 0))
+        progress_frame.columnconfigure(0, weight=1)
+        def update_progress_wrap(event, label=self.worker_status_label):
+            try:
+                label.configure(wraplength=max(320, int(event.width) - 32))
+            except Exception:
+                pass
+        progress_frame.bind("<Configure>", update_progress_wrap)
 
         output_frame = ttk.LabelFrame(right, text="5. 输出设置", padding=8)
         output_frame.pack(fill=tk.X)
@@ -17066,13 +17075,13 @@ class PlanWorkflowWindow:
                     percent = max(0, min(100, current_f / total_f * 100))
                     self.node_progress_var.set(percent)
                     if int(total_f) == total_f and int(current_f) == current_f:
-                        self.node_progress_text.set(f"当前节点：{node_name} - {int(current_f)} / {int(total_f)}，{message}")
+                        self.node_progress_text.set(f"当前节点：{node_name} - {int(current_f)} / {int(total_f)}")
                     else:
-                        self.node_progress_text.set(f"当前节点：{node_name} - {current_f:g} / {total_f:g}，{message}")
+                        self.node_progress_text.set(f"当前节点：{node_name} - {current_f:g} / {total_f:g}")
                 else:
-                    self.node_progress_text.set(f"当前节点：{node_name} - {message}")
+                    self.node_progress_text.set(f"当前节点：{node_name} - 处理中")
             except Exception:
-                self.node_progress_text.set(f"当前节点：{node_name} - {message}")
+                self.node_progress_text.set(f"当前节点：{node_name} - 处理中")
             self.worker_status_text.set(detail_message)
             return
         if mtype == "node_done":
