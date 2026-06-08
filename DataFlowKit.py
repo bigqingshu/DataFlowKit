@@ -53,6 +53,7 @@ import threading
 import queue
 import time
 import subprocess
+import uuid
 from datetime import datetime
 
 
@@ -70,15 +71,49 @@ def get_app_dir():
         return os.path.dirname(os.path.abspath(sys.executable))
     return os.path.dirname(os.path.abspath(__file__))
 
-class PluginDatabaseAPI:
+class TableAccessManager:
     """
-    插件统一数据库访问 API。
+    表访问统一管理入口。
 
-    插件可通过 context["db"] 使用该对象，避免每个插件重复编写 sqlite3 读写逻辑。
-    第一版提供常用安全接口：列出表、读取表、写入表、备份表、获取字段等。
+    第一阶段先统一 SQLite 读写、日志与进度事件；权限配置由工作流节点保存，
+    后续映射窗口可以直接复用这里的权限检查和执行入口。
     """
-    def __init__(self, db_path):
+    def __init__(self, db_path, node_id="", node_name="", node_type="", context=None, progress_callback=None):
         self.db_path = db_path or ""
+        self.node_id = str(node_id or "")
+        self.node_name = str(node_name or "")
+        self.node_type = str(node_type or "")
+        self.context = context if isinstance(context, dict) else None
+        self.progress_callback = progress_callback or ((self.context or {}).get("progress_callback") if self.context else None)
+        self.events = []
+
+    def _log_event(self, operation, table_name="", status="ok", **extra):
+        event = {
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "node_id": self.node_id,
+            "node_name": self.node_name,
+            "node_type": self.node_type,
+            "operation": operation,
+            "table_name": table_name,
+            "status": status,
+        }
+        event.update(extra)
+        self.events.append(event)
+        if self.context is not None:
+            self.context.setdefault("table_access_logs", []).append(event)
+        if callable(self.progress_callback):
+            message = extra.get("message") or f"{operation} {table_name}".strip()
+            try:
+                self.progress_callback({
+                    "type": "node_progress",
+                    "node_name": self.node_type or self.node_name or "表访问",
+                    "message": message,
+                    "detail_message": message,
+                    "table_operation": operation,
+                    "table_name": table_name,
+                })
+            except Exception:
+                pass
 
     def _ensure_db_path(self):
         if not self.db_path:
@@ -138,14 +173,26 @@ class PluginDatabaseAPI:
             cur.execute(f"PRAGMA table_info({self.quote_ident(table_name)})")
             return [r[1] for r in cur.fetchall()]
 
-    def read_table(self, table_name, limit=None, offset=0, include_rowid=False):
+    def read_table(self, table_name, limit=None, offset=0, include_rowid=False, fields=None):
         """
         读取 SQLite 表为工作流 table 格式：{"type":"table", "headers":[], "rows":[]}。
         include_rowid=True 时，会在第一列增加 __rowid__。
         """
-        columns = self.get_columns(table_name)
+        all_columns = self.get_columns(table_name)
+        if fields is None:
+            columns = all_columns
+        else:
+            wanted = [str(f) for f in (fields or []) if str(f) in all_columns]
+            columns = wanted
         if not columns:
-            return {"type": "table", "headers": [], "rows": [], "source_name": table_name, "meta": {"db_path": self.db_path}}
+            if not self.table_exists(table_name):
+                return {"type": "table", "headers": [], "rows": [], "source_name": table_name, "meta": {"db_path": self.db_path}}
+            with self._connect() as conn:
+                cur = conn.cursor()
+                cur.execute(f"SELECT 1 FROM {self.quote_ident(table_name)} ORDER BY rowid")
+                rows = [[] for _ in cur.fetchall()]
+            self._log_event("read_table", table_name, rows=len(rows), columns=0, message=f"读取表 {table_name}：{len(rows)} 行 × 0 列")
+            return {"type": "table", "headers": [], "rows": rows, "source_name": table_name, "meta": {"db_path": self.db_path}}
         select_cols = ", ".join(self.quote_ident(c) for c in columns)
         if include_rowid:
             sql = f"SELECT rowid AS __rowid__, {select_cols} FROM {self.quote_ident(table_name)} ORDER BY rowid"
@@ -161,7 +208,27 @@ class PluginDatabaseAPI:
             cur = conn.cursor()
             cur.execute(sql, params)
             rows = [["" if v is None else str(v) for v in r] for r in cur.fetchall()]
+        self._log_event("read_table", table_name, rows=len(rows), columns=len(headers), message=f"读取表 {table_name}：{len(rows)} 行 × {len(headers)} 列")
         return {"type": "table", "headers": headers, "rows": rows, "source_name": table_name, "meta": {"db_path": self.db_path}}
+
+    def read_records(self, table_name, fields=None, include_rowid=False, include_row_index=False, prefix=""):
+        data = self.read_table(table_name, include_rowid=include_rowid, fields=fields)
+        headers = list(data.get("headers", []))
+        rows = [list(r) for r in data.get("rows", [])]
+        records = []
+        for row_index, row in enumerate(rows, start=1):
+            record = {}
+            if include_row_index:
+                record["__row_index__"] = row_index
+            for i, header in enumerate(headers):
+                value = row[i] if i < len(row) else ""
+                if header == "__rowid__":
+                    record["__rowid__"] = value
+                else:
+                    key = f"{prefix}{header}" if prefix else header
+                    record[key] = value
+            records.append(record)
+        return [h for h in headers if h != "__rowid__"], records
 
     def backup_table(self, table_name, backup_name=None):
         """复制指定表为备份表，返回实际备份表名。"""
@@ -178,6 +245,7 @@ class PluginDatabaseAPI:
             cur = conn.cursor()
             cur.execute(f"CREATE TABLE {self.quote_ident(actual)} AS SELECT * FROM {self.quote_ident(table_name)}")
             conn.commit()
+        self._log_event("backup_table", table_name, backup_name=actual, message=f"备份表 {table_name} -> {actual}")
         return actual
 
     def _create_table(self, cur, table_name, headers):
@@ -231,6 +299,8 @@ class PluginDatabaseAPI:
             if mode == "replace":
                 cur.execute(f"DROP TABLE IF EXISTS {self.quote_ident(actual_name)}")
                 self._create_table(cur, actual_name, headers)
+            elif mode == "timestamp":
+                self._create_table(cur, actual_name, headers)
             elif mode == "fail":
                 if exists:
                     raise ValueError(f"表已存在：{actual_name}")
@@ -260,7 +330,64 @@ class PluginDatabaseAPI:
             if fixed_rows:
                 cur.executemany(insert_sql, fixed_rows)
             conn.commit()
+        self._log_event("write_table", actual_name, mode=mode, rows=len(rows), columns=len(headers), message=f"写入表 {actual_name}：{len(rows)} 行 × {len(headers)} 列，模式 {mode}")
         return {"table_name": actual_name, "rows": len(rows), "columns": len(headers), "mode": mode}
+
+    def clear_fields(self, table_name, fields):
+        existing = set(self.get_columns(table_name))
+        clean_fields = []
+        for field in fields or []:
+            field = str(field or "").strip()
+            if field and field in existing and field not in clean_fields:
+                clean_fields.append(field)
+        if not clean_fields:
+            return 0
+        with self._connect() as conn:
+            cur = conn.cursor()
+            set_sql = ", ".join(f"{self.quote_ident(field)}=''" for field in clean_fields)
+            cur.execute(f"UPDATE {self.quote_ident(table_name)} SET {set_sql}")
+            conn.commit()
+        self._log_event("clear_fields", table_name, fields=clean_fields, message=f"清空表 {table_name} 字段：{len(clean_fields)} 个")
+        return len(clean_fields)
+
+    def apply_cell_actions(self, table_name, actions):
+        write_actions = [a for a in (actions or []) if a.get("write")]
+        if not write_actions:
+            return 0
+        target_columns = self.get_columns(table_name)
+        with self._connect() as conn:
+            cur = conn.cursor()
+            actual = 0
+            for action in write_actions:
+                if action.get("is_new_row"):
+                    continue
+                target_field = action.get("target_field")
+                if target_field not in target_columns:
+                    continue
+                sql = f"UPDATE {self.quote_ident(table_name)} SET {self.quote_ident(target_field)}=? WHERE rowid=?"
+                cur.execute(sql, (action.get("new_value", ""), action.get("target_rowid")))
+                actual += 1
+
+            insert_groups = {}
+            for action in write_actions:
+                if not action.get("is_new_row"):
+                    continue
+                key = action.get("new_row_key") or f"source_{action.get('source_row', '')}"
+                insert_groups.setdefault(key, {})[action.get("target_field", "")] = action.get("new_value", "")
+
+            for _, values_by_field in insert_groups.items():
+                insert_cols = [col for col in target_columns if col in values_by_field]
+                if not insert_cols:
+                    continue
+                placeholders = ", ".join(["?"] * len(insert_cols))
+                col_sql = ", ".join(self.quote_ident(col) for col in insert_cols)
+                sql = f"INSERT INTO {self.quote_ident(table_name)} ({col_sql}) VALUES ({placeholders})"
+                cur.execute(sql, [values_by_field.get(col, "") for col in insert_cols])
+                actual += len(insert_cols)
+
+            conn.commit()
+        self._log_event("update_cells", table_name, cells=actual, message=f"更新表 {table_name}：{actual} 处")
+        return actual
 
     def execute_select(self, sql, params=None):
         """执行只读 SELECT 查询，返回 table 格式。"""
@@ -272,7 +399,17 @@ class PluginDatabaseAPI:
             cur.execute(sql_text, params or [])
             headers = [d[0] for d in (cur.description or [])]
             rows = [["" if v is None else str(v) for v in r] for r in cur.fetchall()]
+        self._log_event("execute_select", "execute_select", rows=len(rows), columns=len(headers), message=f"执行只读查询：{len(rows)} 行 × {len(headers)} 列")
         return {"type": "table", "headers": headers, "rows": rows, "source_name": "execute_select", "meta": {"db_path": self.db_path}}
+
+
+class PluginDatabaseAPI(TableAccessManager):
+    """
+    插件兼容别名。
+
+    插件继续使用 context["db"] / PluginDatabaseAPI，不需要立刻改调用方式。
+    """
+    pass
 
 
 
@@ -4787,6 +4924,7 @@ class PlanWorkflowWindow:
         self.build_node_config(idx)
 
     def refresh_node_list(self):
+        self.ensure_node_tree_identity(self.nodes)
         selected = self.get_selected_node_index()
         self.node_listbox.delete(0, tk.END)
         for idx, node in enumerate(self.nodes, start=1):
@@ -5162,16 +5300,7 @@ class PlanWorkflowWindow:
         if not db_path or not os.path.exists(db_path):
             return []
         try:
-            conn = sqlite3.connect(db_path)
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT name FROM sqlite_master
-                WHERE type='table' AND name NOT LIKE 'sqlite_%'
-                ORDER BY name
-            """)
-            tables = [r[0] for r in cur.fetchall()]
-            conn.close()
-            return tables
+            return TableAccessManager(db_path).list_tables()
         except Exception:
             return []
 
@@ -5193,6 +5322,182 @@ class PlanWorkflowWindow:
             return self.app.db_path_var.get().strip()
         except Exception:
             return ""
+
+    def make_node_id(self):
+        return "node_" + uuid.uuid4().hex[:12]
+
+    def table_permission_set(self, read=False, write=False, create=False, append=False, update=False,
+                             clear=False, replace=False, alter=False, delete=False, drop=False):
+        return {
+            "read_table": bool(read),
+            "write_table": bool(write),
+            "create_table": bool(create),
+            "append_rows": bool(append),
+            "update_rows": bool(update),
+            "clear_table": bool(clear),
+            "replace_table": bool(replace),
+            "alter_schema": bool(alter),
+            "delete_rows": bool(delete),
+            "drop_table": bool(drop),
+        }
+
+    def make_table_access_entry(self, role, table, source_type="SQLite表", is_current_table=False,
+                                permissions=None, write_mode="", field_mapping=None, log_only=False):
+        return {
+            "role": role,
+            "table": table,
+            "source_type": source_type,
+            "is_current_table": bool(is_current_table),
+            "permissions": permissions or self.table_permission_set(read=True),
+            "write_mode": write_mode,
+            "field_mapping": field_mapping or {},
+            "log_only": bool(log_only),
+        }
+
+    def default_table_access_for_node(self, node):
+        node_type = (node or {}).get("type", "")
+        config = (node or {}).get("config", {}) or {}
+        tables = [
+            self.make_table_access_entry(
+                "current",
+                "__CURRENT_TABLE__",
+                source_type="当前工作流表",
+                is_current_table=True,
+                permissions=self.table_permission_set(read=True, write=True, update=True),
+                write_mode="current_table_default",
+                log_only=True,
+            )
+        ]
+
+        if node_type == "高级筛选":
+            for table in config.get("extra_tables", []) or []:
+                tables.append(self.make_table_access_entry("lookup", table, permissions=self.table_permission_set(read=True)))
+
+        elif node_type == "选定列写入指定表":
+            if config.get("source_type") == "SQLite表" and config.get("source_sqlite_table"):
+                tables.append(self.make_table_access_entry("source", config.get("source_sqlite_table"), permissions=self.table_permission_set(read=True)))
+            if config.get("target_type", "SQLite表") == "SQLite表":
+                can_write = bool(config.get("enable_write", False))
+                mode = self.normalize_selected_columns_write_mode(config.get("write_mode", "")) if hasattr(self, "normalize_selected_columns_write_mode") else config.get("write_mode", "")
+                tables.append(self.make_table_access_entry(
+                    "target",
+                    config.get("target_table", ""),
+                    permissions=self.table_permission_set(
+                        read=True,
+                        write=can_write,
+                        create=can_write,
+                        update=can_write,
+                        clear=can_write and mode == "清空目标字段后覆盖，保留目标原行数",
+                        replace=can_write and mode in ("按来源完整结构覆盖", "覆盖重建目标表"),
+                        alter=can_write,
+                    ),
+                    write_mode=mode,
+                ))
+
+        elif node_type == "字段映射写入表":
+            if config.get("writeback_direction", "当前表写入SQLite目标表") == "其他表写入当前表":
+                tables.append(self.make_table_access_entry("source", config.get("source_table", ""), permissions=self.table_permission_set(read=True)))
+            else:
+                can_write = bool(config.get("enable_write", False))
+                mode = config.get("write_range_mode", "局部覆盖，保留目标原行数")
+                tables.append(self.make_table_access_entry(
+                    "target",
+                    config.get("target_table", ""),
+                    permissions=self.table_permission_set(
+                        read=True,
+                        write=can_write,
+                        update=can_write,
+                        clear=can_write and mode == "清空目标字段后覆盖，保留目标原行数",
+                        replace=can_write and mode == "按来源完整结构覆盖",
+                    ),
+                    write_mode=mode,
+                ))
+
+        elif node_type == "保存中转数据" and config.get("save_sqlite"):
+            can_write = True
+            mode = config.get("sqlite_mode", "自动加时间戳")
+            tables.append(self.make_table_access_entry(
+                "output",
+                config.get("sqlite_table", config.get("transit_name", "")),
+                permissions=self.table_permission_set(read=True, write=can_write, create=can_write, append=mode == "追加写入", replace=mode == "覆盖同名表"),
+                write_mode=mode,
+            ))
+
+        elif node_type == "节点组 / 子工作流":
+            if config.get("input_source_type") == "SQLite表" and config.get("input_sqlite_table"):
+                tables.append(self.make_table_access_entry("source", config.get("input_sqlite_table"), permissions=self.table_permission_set(read=True)))
+            if config.get("save_to_sqlite"):
+                tables.append(self.make_table_access_entry(
+                    "output",
+                    config.get("output_sqlite_table", config.get("group_name", "")),
+                    permissions=self.table_permission_set(read=True, write=True, create=True, append=True, replace=True),
+                    write_mode=config.get("output_sqlite_mode", ""),
+                ))
+
+        elif node_type == "插件节点":
+            for spec in config.get("input_tables", []) or []:
+                if (spec or {}).get("source_type") == "SQLite表":
+                    tables.append(self.make_table_access_entry(
+                        spec.get("alias") or "input",
+                        spec.get("sqlite_table") or spec.get("table") or "",
+                        permissions=self.table_permission_set(read=True),
+                    ))
+
+        return {"version": 1, "auto_generated": True, "tables": tables}
+
+    def ensure_node_identity(self, node, force_new=False):
+        if not isinstance(node, dict):
+            return node
+        if force_new or not str(node.get("node_id", "")).strip():
+            node["node_id"] = self.make_node_id()
+        if not isinstance(node.get("table_access"), dict):
+            node["table_access"] = self.default_table_access_for_node(node)
+        return node
+
+    def ensure_node_tree_identity(self, nodes, force_new=False):
+        for node in nodes or []:
+            self.ensure_node_identity(node, force_new=force_new)
+            cfg = node.get("config", {}) if isinstance(node, dict) else {}
+            child_nodes = cfg.get("nodes") if isinstance(cfg, dict) else None
+            if isinstance(child_nodes, list):
+                self.ensure_node_tree_identity(child_nodes, force_new=force_new)
+
+    def refresh_node_table_access(self, node):
+        if isinstance(node, dict) and (
+            not isinstance(node.get("table_access"), dict)
+            or bool(node.get("table_access", {}).get("auto_generated", True))
+        ):
+            node["table_access"] = self.default_table_access_for_node(node)
+        return node
+
+    def refresh_node_tree_table_access(self, nodes):
+        for node in nodes or []:
+            self.ensure_node_identity(node)
+            self.refresh_node_table_access(node)
+            cfg = node.get("config", {}) if isinstance(node, dict) else {}
+            child_nodes = cfg.get("nodes") if isinstance(cfg, dict) else None
+            if isinstance(child_nodes, list):
+                self.refresh_node_tree_table_access(child_nodes)
+
+    def get_table_manager(self, context=None, node=None, node_type="", node_name=""):
+        db_path = self.get_workflow_db_path(context)
+        current = (context or {}).get("current_node_info", {}) if isinstance(context, dict) else {}
+        if isinstance(node, dict):
+            self.ensure_node_identity(node)
+            node_id = node.get("node_id", "")
+            node_name = node.get("name", node_name)
+            node_type = node.get("type", node_type)
+        else:
+            node_id = current.get("node_id", "")
+            node_name = current.get("node_name", node_name)
+            node_type = current.get("node_type", node_type)
+        return TableAccessManager(
+            db_path,
+            node_id=node_id,
+            node_name=node_name,
+            node_type=node_type,
+            context=context,
+        )
 
     def get_workflow_output_mode(self, context=None):
         snapshot = self.get_workflow_snapshot(context)
@@ -5228,7 +5533,7 @@ class PlanWorkflowWindow:
         db_path = self.get_workflow_db_path(context)
         if not db_path:
             raise ValueError("请先设置 SQLite 数据库路径。")
-        return PluginDatabaseAPI(db_path).get_columns(table_name)
+        return self.get_table_manager(context).get_columns(table_name)
 
     def read_plugin_input_table_source(self, spec, current_headers, current_rows, context=None):
         """按插件节点多表配置读取一张输入表。"""
@@ -5249,13 +5554,9 @@ class PlanWorkflowWindow:
             table = str(spec.get("sqlite_table") or spec.get("table") or "").strip()
             if not table:
                 raise ValueError("插件额外输入表未选择 SQLite 表。")
-            headers = self.get_workflow_sqlite_columns(table, context)
-            db_path = self.get_workflow_db_path(context)
-            with sqlite3.connect(db_path) as conn:
-                cur = conn.cursor()
-                cols = ", ".join(self.app.quote_ident(h) for h in headers)
-                cur.execute(f"SELECT {cols} FROM {self.app.quote_ident(table)} ORDER BY rowid")
-                rows = [["" if v is None else str(v) for v in row] for row in cur.fetchall()]
+            data = self.get_table_manager(context).read_table(table)
+            headers = list(data.get("headers", []))
+            rows = [list(row) for row in data.get("rows", [])]
             return {
                 "type": "table",
                 "headers": headers,
@@ -6343,7 +6644,7 @@ class PlanWorkflowWindow:
         return {
             "app_dir": app_dir,
             "db_path": db_path,
-            "db": PluginDatabaseAPI(db_path),
+            "db": self.get_table_manager(context, node_type="插件节点", node_name=node_name),
             "plugins_dir": self.get_plugins_dir(),
             "plugin_data_dir": self.get_plugin_data_dir(plugin_id),
             "log_dir": self.get_plugin_log_dir(),
@@ -7160,6 +7461,7 @@ class PlanWorkflowWindow:
                 "name": self.default_name_for_node(node_type),
                 "config": self.default_config_for_type(node_type),
             }
+        self.ensure_node_identity(node)
         self.nodes.append(node)
         self.refresh_node_list()
         idx = len(self.nodes) - 1
@@ -7213,6 +7515,7 @@ class PlanWorkflowWindow:
         import copy
         new_node = copy.deepcopy(self.nodes[idx])
         new_node["name"] = f"{new_node.get('name', new_node.get('type'))}_复制"
+        self.ensure_node_tree_identity([new_node], force_new=True)
         self.nodes.insert(idx + 1, new_node)
         self.refresh_node_list()
         self.node_listbox.selection_clear(0, tk.END)
@@ -7545,7 +7848,7 @@ class PlanWorkflowWindow:
                 if not name:
                     return []
                 try:
-                    return PluginDatabaseAPI(self.get_workflow_db_path(context if 'context' in locals() else None)).get_columns(name)
+                    return self.get_table_manager(context if 'context' in locals() else None).get_columns(name)
                 except Exception:
                     return []
             return list(headers)
@@ -8224,7 +8527,7 @@ class PlanWorkflowWindow:
             table_name = config.get("source_table", "")
             if not table_name:
                 raise ValueError("循环执行起点未选择 SQLite 来源表。")
-            db = PluginDatabaseAPI(self.get_workflow_db_path(context if 'context' in locals() else None))
+            db = self.get_table_manager(context if 'context' in locals() else None, node_type="循环执行起点")
             data = db.read_table(table_name)
             return list(data.get("headers", [])), [list(r) for r in data.get("rows", [])], f"SQLite:{table_name}"
         if source_type == "中转副表":
@@ -10073,13 +10376,9 @@ class PlanWorkflowWindow:
             table = str(config.get("source_sqlite_table", "")).strip()
             if not table:
                 raise ValueError("请选择 SQLite 来源表。")
-            headers = self.get_workflow_sqlite_columns(table, context)
-            db_path = self.get_workflow_db_path(context)
-            with sqlite3.connect(db_path) as conn:
-                cur = conn.cursor()
-                cols = ", ".join(self.app.quote_ident(h) for h in headers)
-                cur.execute(f"SELECT {cols} FROM {self.app.quote_ident(table)} ORDER BY rowid")
-                rows = [["" if v is None else str(v) for v in row] for row in cur.fetchall()]
+            data = self.get_table_manager(context, node_type="选定列写入指定表").read_table(table)
+            headers = list(data.get("headers", []))
+            rows = [list(row) for row in data.get("rows", [])]
             return headers, rows, f"SQLite:{table}"
         if source_type == "中转副表":
             name = str(config.get("source_transit_table", "")).strip()
@@ -10109,13 +10408,9 @@ class PlanWorkflowWindow:
                 if not self.sqlite_table_exists_by_name(self.app.sanitize_sql_name(table, "选定列结果"), context=context):
                     return [], [], f"SQLite:{table}"
                 real_table = self.app.sanitize_sql_name(table, "选定列结果")
-                headers = self.get_workflow_sqlite_columns(real_table, context)
-                db_path = self.get_workflow_db_path(context)
-                with sqlite3.connect(db_path) as conn:
-                    cur = conn.cursor()
-                    cols = ", ".join(self.app.quote_ident(h) for h in headers)
-                    cur.execute(f"SELECT {cols} FROM {self.app.quote_ident(real_table)} ORDER BY rowid")
-                    rows = [["" if v is None else str(v) for v in row] for row in cur.fetchall()]
+                data = self.get_table_manager(context, node_type="选定列写入指定表").read_table(real_table)
+                headers = list(data.get("headers", []))
+                rows = [list(row) for row in data.get("rows", [])]
                 return headers, rows, f"SQLite:{real_table}"
             except Exception:
                 return [], [], f"SQLite:{table}"
@@ -11678,19 +11973,11 @@ class PlanWorkflowWindow:
 
     def read_sqlite_table_for_preview(self, table_name):
         """读取 SQLite 表为 headers/rows，用于结果预览区快速查看。"""
-        db_path = self.get_workflow_db_path(context)
+        db_path = self.get_workflow_db_path(None)
         if not db_path or not os.path.exists(db_path):
             raise ValueError("当前 SQLite 数据库路径不存在。")
-        columns = self.get_workflow_sqlite_columns(table_name, context)
-        conn = sqlite3.connect(db_path)
-        cur = conn.cursor()
-        cur.execute(f"SELECT * FROM {self.app.quote_ident(table_name)} ORDER BY rowid")
-        db_rows = cur.fetchall()
-        conn.close()
-        rows = []
-        for row in db_rows:
-            rows.append([self.app.format_db_value(row[i]) if i < len(row) else "" for i in range(len(columns))])
-        return columns, rows
+        data = TableAccessManager(db_path, node_type="结果预览").read_table(table_name)
+        return list(data.get("headers", [])), [list(row) for row in data.get("rows", [])]
 
     def load_selected_preview_table(self):
         """把下拉菜单选中的表加载到计划窗口结果预览区。"""
@@ -11922,6 +12209,8 @@ class PlanWorkflowWindow:
 
             idx = pc
             node = node_list[idx]
+            self.ensure_node_identity(node)
+            self.refresh_node_table_access(node)
             if not node.get("enabled", True):
                 logs.append(f"跳过 {idx+1}.{node.get('type')}")
                 pc += 1
@@ -11929,6 +12218,12 @@ class PlanWorkflowWindow:
 
             node_type = node.get("type")
             config = node.get("config", {})
+            context["current_node_info"] = {
+                "node_id": node.get("node_id", ""),
+                "node_name": node.get("name", ""),
+                "node_type": node_type,
+                "node_index": idx,
+            }
             if progress_callback is not None:
                 progress_callback({
                     "type": "node_start",
@@ -12417,7 +12712,7 @@ class PlanWorkflowWindow:
             name = str(config.get("input_sqlite_table", "")).strip()
             if not name:
                 raise ValueError("节点组入口选择了 SQLite 表，但没有填写表名。")
-            db = PluginDatabaseAPI(self.get_workflow_db_path(context if 'context' in locals() else None))
+            db = self.get_table_manager(context if 'context' in locals() else None, node_type="节点组 / 子工作流")
             data = db.read_table(name)
             return list(data.get("headers", [])), [list(r) for r in data.get("rows", [])], f"SQLite:{name}"
         return list(headers), [list(r) for r in rows], "当前工作表"
@@ -12511,7 +12806,7 @@ class PlanWorkflowWindow:
             if not table_name:
                 raise ValueError("节点组已启用 SQLite 输出，但未填写 SQLite 表名。")
             mode = self.normalize_group_sqlite_mode(config.get("output_sqlite_mode", "自动加时间戳新表"))
-            db = PluginDatabaseAPI(self.get_workflow_db_path(parent_context))
+            db = self.get_table_manager(parent_context, node_type="节点组 / 子工作流")
             info = db.write_table(table_name, result_headers, result_rows, mode=mode)
             parts.append(f"SQLite表：{info.get('table_name')}（{info.get('rows')}行）")
             # 后台线程中不能直接刷新 Tk 表名下拉框。这里只记录 UI 刷新请求，
@@ -14629,21 +14924,14 @@ class PlanWorkflowWindow:
             raise ValueError("当前 SQLite 数据库路径不存在，无法读取副表。")
         all_columns = self.get_workflow_sqlite_columns(table_name, context)
         columns = self.get_required_columns_for_plan_table(table_name, all_columns, required_fields)
-        conn = sqlite3.connect(db_path)
-        cur = conn.cursor()
-        if columns:
-            select_expr = ", ".join(self.app.quote_ident(col) for col in columns)
-        else:
-            select_expr = "1"
-        cur.execute(f"SELECT {select_expr} FROM {self.app.quote_ident(table_name)}")
-        db_rows = cur.fetchall()
-        conn.close()
+        data = self.get_table_manager(context, node_type="高级筛选").read_table(table_name, fields=columns)
+        db_rows = [list(row) for row in data.get("rows", [])]
         records = []
         for row in db_rows:
             record = {}
             for i, col in enumerate(columns):
                 value = row[i] if i < len(row) else ""
-                record[f"{table_name}.{col}"] = self.app.format_db_value(value)
+                record[f"{table_name}.{col}"] = value
             records.append(record)
         return records
 
@@ -14923,37 +15211,13 @@ class PlanWorkflowWindow:
 
     def save_result_to_sqlite_append(self, headers, rows, table_name_raw, context=None):
         """追加写入 SQLite 表；表不存在则创建，字段不足则自动 ADD COLUMN。"""
-        db_path = self.get_workflow_db_path(context if 'context' in locals() else None)
-        if not db_path:
-            raise ValueError("请先设置 SQLite 数据库路径。")
         table_name = self.app.sanitize_sql_name(table_name_raw, "中转数据")
         sql_columns = self.app.make_sql_columns(headers)
         if not sql_columns:
             raise ValueError("没有可写入的字段。")
-        conn = sqlite3.connect(db_path)
-        try:
-            cur = conn.cursor()
-            exists = self.app.table_exists(conn, table_name)
-            if not exists:
-                col_defs = [f"{self.app.quote_ident(col)} TEXT" for col in sql_columns]
-                cur.execute(f"CREATE TABLE {self.app.quote_ident(table_name)} ({', '.join(col_defs)})")
-            else:
-                cur.execute(f"PRAGMA table_info({self.app.quote_ident(table_name)})")
-                existing_cols = [r[1] for r in cur.fetchall()]
-                for col in sql_columns:
-                    if col not in existing_cols:
-                        cur.execute(f"ALTER TABLE {self.app.quote_ident(table_name)} ADD COLUMN {self.app.quote_ident(col)} TEXT")
-
-            placeholders = ", ".join(["?"] * len(sql_columns))
-            col_names = ", ".join(self.app.quote_ident(col) for col in sql_columns)
-            insert_sql = f"INSERT INTO {self.app.quote_ident(table_name)} ({col_names}) VALUES ({placeholders})"
-            normalized_rows = self.normalize_rows(rows, len(sql_columns))
-            if normalized_rows:
-                cur.executemany(insert_sql, normalized_rows)
-            conn.commit()
-            return table_name
-        finally:
-            conn.close()
+        normalized_rows = self.normalize_rows(rows, len(sql_columns))
+        info = self.get_table_manager(context, node_type="保存中转数据").write_table(table_name, sql_columns, normalized_rows, mode="append")
+        return info.get("table_name", table_name)
 
     def export_headers_rows_to_xlsx_file(self, headers, rows, path):
         """把指定 headers / rows 导出为 xlsx 文件，复用主程序现有导出逻辑。"""
@@ -14980,11 +15244,10 @@ class PlanWorkflowWindow:
         db_path = self.get_workflow_db_path(context if 'context' in locals() else None)
         if not db_path or not os.path.exists(db_path):
             return False
-        conn = sqlite3.connect(db_path)
         try:
-            return self.app.table_exists(conn, table_name)
-        finally:
-            conn.close()
+            return self.get_table_manager(context).table_exists(table_name)
+        except Exception:
+            return False
 
     def apply_save_transit_node(self, headers, rows, config, context=None, execute_actions=False):
         """保存中转数据：保存当前数据副本，默认不改变主流程数据。"""
@@ -15068,79 +15331,21 @@ class PlanWorkflowWindow:
         db_path = self.get_workflow_db_path(context if 'context' in locals() else None)
         if not db_path or not os.path.exists(db_path):
             raise ValueError("SQLite 数据库路径不存在，请先选择数据库。")
-        columns = self.get_workflow_sqlite_columns(table_name, context)
-        conn = sqlite3.connect(db_path)
-        try:
-            cur = conn.cursor()
-            cur.execute(f"SELECT rowid, * FROM {self.app.quote_ident(table_name)} ORDER BY rowid")
-            raw_rows = cur.fetchall()
-        finally:
-            conn.close()
-        records = []
-        for index, raw in enumerate(raw_rows, start=1):
-            record = {"__rowid__": raw[0], "__row_index__": index}
-            for i, col in enumerate(columns):
-                val = raw[i + 1] if i + 1 < len(raw) else ""
-                record[col] = "" if val is None else str(val)
-            records.append(record)
+        columns, records = self.get_table_manager(context, node_type="字段映射写入表").read_records(
+            table_name,
+            include_rowid=True,
+            include_row_index=True,
+        )
         return columns, records
 
     def backup_sqlite_table_for_writeback(self, table_name, context=None):
-        db_path = self.get_workflow_db_path(context if 'context' in locals() else None)
-        conn = sqlite3.connect(db_path)
-        try:
-            cur = conn.cursor()
-            backup_name = f"{table_name}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            cur.execute(f"CREATE TABLE {self.app.quote_ident(backup_name)} AS SELECT * FROM {self.app.quote_ident(table_name)}")
-            conn.commit()
-            return backup_name
-        finally:
-            conn.close()
+        return self.get_table_manager(context, node_type="字段映射写入表").backup_table(table_name)
 
     def apply_writeback_updates_to_sqlite(self, table_name, actions, context=None):
         db_path = self.get_workflow_db_path(context if 'context' in locals() else None)
         if not db_path or not os.path.exists(db_path):
             raise ValueError("SQLite 数据库路径不存在，请先选择数据库。")
-        write_actions = [a for a in actions if a.get("write")]
-        if not write_actions:
-            return 0
-
-        target_columns = self.get_workflow_sqlite_columns(table_name, context)
-        conn = sqlite3.connect(db_path)
-        try:
-            cur = conn.cursor()
-            actual = 0
-
-            # 1) 已有目标行：按 rowid UPDATE。
-            for action in write_actions:
-                if action.get("is_new_row"):
-                    continue
-                sql = f"UPDATE {self.app.quote_ident(table_name)} SET {self.app.quote_ident(action['target_field'])}=? WHERE rowid=?"
-                cur.execute(sql, (action.get("new_value", ""), action.get("target_rowid")))
-                actual += 1
-
-            # 2) 目标表行数不足时：以“来源行”为单位 INSERT 一整行，再写入该来源行的映射字段。
-            insert_groups = {}
-            for action in write_actions:
-                if not action.get("is_new_row"):
-                    continue
-                key = action.get("new_row_key") or f"source_{action.get('source_row', '')}"
-                insert_groups.setdefault(key, {})[action.get("target_field", "")] = action.get("new_value", "")
-
-            for _, values_by_field in insert_groups.items():
-                insert_cols = [col for col in target_columns if col in values_by_field]
-                if not insert_cols:
-                    continue
-                placeholders = ", ".join(["?"] * len(insert_cols))
-                col_sql = ", ".join(self.app.quote_ident(col) for col in insert_cols)
-                sql = f"INSERT INTO {self.app.quote_ident(table_name)} ({col_sql}) VALUES ({placeholders})"
-                cur.execute(sql, [values_by_field.get(col, "") for col in insert_cols])
-                actual += len(insert_cols)
-
-            conn.commit()
-            return actual
-        finally:
-            conn.close()
+        return self.get_table_manager(context, node_type="字段映射写入表").apply_cell_actions(table_name, actions)
 
     def clear_writeback_target_fields_in_sqlite(self, table_name, target_fields, context=None):
         """清空 SQLite 目标表中指定字段的全部旧值，返回清空字段数量。"""
@@ -15152,18 +15357,7 @@ class PlanWorkflowWindow:
                 fields.append(field)
         if not fields:
             return 0
-        db_path = self.get_workflow_db_path(context if 'context' in locals() else None)
-        if not db_path or not os.path.exists(db_path):
-            raise ValueError("SQLite 数据库路径不存在，请先选择数据库。")
-        conn = sqlite3.connect(db_path)
-        try:
-            cur = conn.cursor()
-            set_sql = ", ".join(f"{self.app.quote_ident(field)}=''" for field in fields)
-            cur.execute(f"UPDATE {self.app.quote_ident(table_name)} SET {set_sql}")
-            conn.commit()
-            return len(fields)
-        finally:
-            conn.close()
+        return self.get_table_manager(context, node_type="字段映射写入表").clear_fields(table_name, fields)
 
     def build_writeback_full_structure_rows_for_sqlite(self, headers, rows, config, target_columns):
         """按来源完整结构生成 SQLite 目标表的新 rows，并生成预览动作。
@@ -16524,29 +16718,14 @@ class PlanWorkflowWindow:
             raise ValueError("请先设置 SQLite 数据库路径。")
         table_name = self.app.sanitize_sql_name(table_name_raw, "计划结果")
         sql_columns = self.app.make_sql_columns(headers)
-        conn = sqlite3.connect(db_path)
-        try:
-            cur = conn.cursor()
-            if overwrite:
-                if self.app.table_exists(conn, table_name):
-                    if backup:
-                        backup_name = f"{table_name}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                        cur.execute(f"CREATE TABLE {self.app.quote_ident(backup_name)} AS SELECT * FROM {self.app.quote_ident(table_name)}")
-                    cur.execute(f"DROP TABLE IF EXISTS {self.app.quote_ident(table_name)}")
-            else:
-                table_name = self.app.get_available_table_name(conn, table_name)
-
-            col_defs = [f"{self.app.quote_ident(col)} TEXT" for col in sql_columns]
-            cur.execute(f"CREATE TABLE IF NOT EXISTS {self.app.quote_ident(table_name)} ({', '.join(col_defs)})")
-            placeholders = ", ".join(["?"] * len(sql_columns))
-            col_names = ", ".join(self.app.quote_ident(col) for col in sql_columns)
-            insert_sql = f"INSERT INTO {self.app.quote_ident(table_name)} ({col_names}) VALUES ({placeholders})"
-            normalized_rows = self.normalize_rows(rows, len(sql_columns))
-            cur.executemany(insert_sql, normalized_rows)
-            conn.commit()
-            return table_name
-        finally:
-            conn.close()
+        if not sql_columns:
+            raise ValueError("没有可写入的字段。")
+        manager = self.get_table_manager(context, node_type="工作流输出")
+        if overwrite and backup and manager.table_exists(table_name):
+            manager.backup_table(table_name)
+        mode = "replace" if overwrite else "timestamp"
+        info = manager.write_table(table_name, sql_columns, self.normalize_rows(rows, len(sql_columns)), mode=mode)
+        return info.get("table_name", table_name)
 
     def get_plan_dir(self):
         """返回程序真实目录下的 plan 模板目录，并确保目录存在。"""
@@ -16573,6 +16752,7 @@ class PlanWorkflowWindow:
         if not plan_name:
             plan_name = self.output_table_var.get().strip() or "工作流计划"
 
+        self.refresh_node_tree_table_access(self.nodes)
         return {
             "template_type": "workflow_plan",
             "version": "1.0",
@@ -16605,6 +16785,7 @@ class PlanWorkflowWindow:
             raise ValueError(reason)
 
         self.nodes = data.get("nodes", [])
+        self.ensure_node_tree_identity(self.nodes)
         self.output_mode_var.set(data.get("output_mode", "输出到主界面预览区"))
         self.output_table_var.set(data.get("output_table", self.make_default_output_table_name()))
         self.backup_before_overwrite_var.set(bool(data.get("backup_before_overwrite", True)))
