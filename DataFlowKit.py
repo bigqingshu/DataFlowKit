@@ -4902,7 +4902,7 @@ class PlanWorkflowWindow:
     - 计划内的“高级筛选”支持以上一步结果作为“当前表”，再选择数据库中的其他表进行多表匹配。
     """
 
-    NODE_TYPES = ["获取文件列表", "节点组 / 子工作流", "循环执行起点", "批量替换", "数据提取", "格式规范化 / 日期时间解析", "新建日期时间列", "新建列", "合并列", "批量更改列名", "去重 / 重复数据处理", "列数字运算", "匹配值输出列名", "复制列", "复制行", "删除行", "填充值", "序列填充", "区域填充", "行数据映射填充", "保存中转数据", "选定列写入指定表", "字段映射写入表", "高级筛选", "删除列", "移动列", "批量重命名", "循环判断回跳"]
+    NODE_TYPES = ["获取文件列表", "节点组 / 子工作流", "循环执行起点", "跳转锚点节点", "无条件跳转节点", "条件判断节点", "条件跳转节点", "批量替换", "数据提取", "格式规范化 / 日期时间解析", "新建日期时间列", "新建列", "合并列", "批量更改列名", "去重 / 重复数据处理", "列数字运算", "匹配值输出列名", "复制列", "复制行", "删除行", "填充值", "序列填充", "区域填充", "行数据映射填充", "保存中转数据", "选定列写入指定表", "字段映射写入表", "高级筛选", "删除列", "移动列", "批量重命名", "循环判断回跳"]
     TABLE_ACCESS_POLICY_CHOICES = ["只审计", "预检确认", "强制拦截"]
     TABLE_ACCESS_POLICY_DISPLAY = {
         "audit": "只审计",
@@ -5132,6 +5132,7 @@ class PlanWorkflowWindow:
         ttk.Button(node_btns3, text="表节点映射", command=self.open_table_access_window).pack(side=tk.LEFT, padx=2, pady=2)
         ttk.Button(node_btns3, text="权限预检", command=self.open_table_access_precheck_window).pack(side=tk.LEFT, padx=2, pady=2)
         ttk.Button(node_btns3, text="审计日志", command=self.open_table_access_audit_window).pack(side=tk.LEFT, padx=2, pady=2)
+        ttk.Button(node_btns3, text="跳转管理", command=self.open_jump_manager_window).pack(side=tk.LEFT, padx=2, pady=2)
 
         policy_frame = ttk.Frame(node_frame)
         policy_frame.pack(fill=tk.X)
@@ -5815,17 +5816,32 @@ class PlanWorkflowWindow:
     def default_table_access_for_node(self, node):
         node_type = (node or {}).get("type", "")
         config = (node or {}).get("config", {}) or {}
-        tables = [
-            self.make_table_access_entry(
-                "current",
-                "__CURRENT_TABLE__",
-                source_type="当前工作流表",
-                is_current_table=True,
-                permissions=self.table_permission_set(read=True, write=True, update=True),
-                write_mode="current_table_default",
-                log_only=True,
-            )
-        ]
+        if node_type in ("跳转锚点节点", "无条件跳转节点", "条件跳转节点"):
+            tables = []
+        elif node_type == "条件判断节点":
+            tables = [
+                self.make_table_access_entry(
+                    "current",
+                    "__CURRENT_TABLE__",
+                    source_type="当前工作流表",
+                    is_current_table=True,
+                    permissions=self.table_permission_set(read=True),
+                    write_mode="read_current_table",
+                    log_only=True,
+                )
+            ]
+        else:
+            tables = [
+                self.make_table_access_entry(
+                    "current",
+                    "__CURRENT_TABLE__",
+                    source_type="当前工作流表",
+                    is_current_table=True,
+                    permissions=self.table_permission_set(read=True, write=True, update=True),
+                    write_mode="current_table_default",
+                    log_only=True,
+                )
+            ]
 
         if node_type == "高级筛选":
             for table in config.get("extra_tables", []) or []:
@@ -6049,7 +6065,7 @@ class PlanWorkflowWindow:
                 write_mode="覆盖循环队列",
             ))
 
-        elif node_type in ("条件跳转", "条件跳转节点", "条件分支跳转"):
+        elif node_type in ("条件跳转", "条件分支跳转"):
             source_type = str(config.get("source_type", "当前工作流表") or "当前工作流表").strip()
             if source_type == "SQLite表" and config.get("source_table"):
                 tables.append(self.make_table_access_entry(
@@ -6847,6 +6863,698 @@ class PlanWorkflowWindow:
         issues = self.build_table_access_precheck(execute_actions=True)
         self.show_table_access_precheck_dialog(issues, title="权限预检", allow_continue=False)
 
+    def jump_node_label(self, idx, node):
+        node_type = node.get("type", "")
+        name = str(node.get("name", "") or "").strip()
+        label = f"{idx + 1}.{node_type}"
+        if name:
+            label += f" / {name}"
+        return label
+
+    def collect_jump_anchors(self, nodes=None):
+        node_list = nodes if nodes is not None else self.nodes
+        anchors = []
+        by_id = {}
+        for idx, node in enumerate(node_list or []):
+            if node.get("type") != "跳转锚点节点":
+                continue
+            cfg = node.get("config", {}) or {}
+            anchor_id = str(cfg.get("anchor_id", "") or "").strip()
+            entry = {
+                "anchor_id": anchor_id,
+                "anchor_name": str(cfg.get("anchor_name", "") or node.get("name", "") or "").strip(),
+                "description": str(cfg.get("description", "") or "").strip(),
+                "node_index": idx,
+                "node_id": node.get("node_id", ""),
+                "node_name": node.get("name", ""),
+                "enabled": bool(node.get("enabled", True)),
+                "node": node,
+            }
+            anchors.append(entry)
+            if anchor_id:
+                by_id.setdefault(anchor_id, []).append(entry)
+        return {"all": anchors, "by_id": by_id}
+
+    def collect_condition_flag_producers(self, nodes=None):
+        node_list = nodes if nodes is not None else self.nodes
+        flags = {}
+        for idx, node in enumerate(node_list or []):
+            if node.get("type") != "条件判断节点" or not node.get("enabled", True):
+                continue
+            flag_name = str((node.get("config", {}) or {}).get("flag_name", "") or "").strip()
+            if not flag_name:
+                continue
+            flags.setdefault(flag_name, []).append({
+                "node_index": idx,
+                "node": node,
+                "label": self.jump_node_label(idx, node),
+            })
+        return flags
+
+    def resolve_jump_anchor_index(self, anchor_id, anchors_info=None, nodes=None):
+        anchor_id = str(anchor_id or "").strip()
+        if not anchor_id:
+            return None, "目标锚点未配置"
+        anchors_info = anchors_info if isinstance(anchors_info, dict) else self.collect_jump_anchors(nodes=nodes)
+        matches = list((anchors_info.get("by_id") or {}).get(anchor_id, []) or [])
+        if not matches:
+            return None, f"目标锚点不存在：{anchor_id}"
+        enabled = [item for item in matches if item.get("enabled")]
+        if not enabled:
+            return None, f"目标锚点已禁用：{anchor_id}"
+        if len(enabled) > 1:
+            return None, f"目标锚点重复：{anchor_id}"
+        target_idx = int(enabled[0].get("node_index", -1))
+        return target_idx, f"有效：节点 {target_idx + 1}"
+
+    def jump_relation_status_text(self, relation, anchors_info=None, nodes=None):
+        if not relation.get("enabled", True):
+            return "跳转节点已禁用"
+        target = str(relation.get("target_anchor_id", "") or "").strip()
+        if not target:
+            return "未配置目标锚点"
+        target_idx, message = self.resolve_jump_anchor_index(target, anchors_info=anchors_info, nodes=nodes)
+        if target_idx is None:
+            return message
+        return f"有效 -> 节点 {target_idx + 1}"
+
+    def collect_jump_relations(self, nodes=None, anchors_info=None):
+        node_list = nodes if nodes is not None else self.nodes
+        anchors_info = anchors_info if isinstance(anchors_info, dict) else self.collect_jump_anchors(nodes=node_list)
+        relations = []
+        for idx, node in enumerate(node_list or []):
+            node_type = node.get("type", "")
+            cfg = node.get("config", {}) or {}
+            enabled = bool(node.get("enabled", True))
+            if node_type == "无条件跳转节点":
+                relation = {
+                    "source_index": idx,
+                    "source_label": self.jump_node_label(idx, node),
+                    "source_type": node_type,
+                    "kind": "无条件",
+                    "flag_name": "",
+                    "condition_value": "始终",
+                    "target_anchor_id": str(cfg.get("target_anchor_id", "") or "").strip(),
+                    "enabled": enabled,
+                    "is_default": False,
+                    "node": node,
+                }
+                relation["status"] = self.jump_relation_status_text(relation, anchors_info=anchors_info, nodes=node_list)
+                relations.append(relation)
+            elif node_type == "条件跳转节点":
+                flag_name = str(cfg.get("flag_name", "") or "").strip()
+                rules = cfg.get("jump_rules", [])
+                if not isinstance(rules, list):
+                    rules = []
+                for rule_idx, rule in enumerate(rules):
+                    if not isinstance(rule, dict):
+                        continue
+                    relation = {
+                        "source_index": idx,
+                        "source_label": self.jump_node_label(idx, node),
+                        "source_type": node_type,
+                        "kind": "条件",
+                        "flag_name": flag_name,
+                        "condition_value": str(rule.get("value", "") or "").strip(),
+                        "target_anchor_id": str(rule.get("target_anchor_id", "") or "").strip(),
+                        "enabled": enabled,
+                        "is_default": False,
+                        "rule_index": rule_idx,
+                        "node": node,
+                    }
+                    relation["status"] = self.jump_relation_status_text(relation, anchors_info=anchors_info, nodes=node_list)
+                    relations.append(relation)
+                default_anchor = str(cfg.get("default_anchor_id", "") or "").strip()
+                if default_anchor:
+                    relation = {
+                        "source_index": idx,
+                        "source_label": self.jump_node_label(idx, node),
+                        "source_type": node_type,
+                        "kind": "默认",
+                        "flag_name": flag_name,
+                        "condition_value": "DEFAULT",
+                        "target_anchor_id": default_anchor,
+                        "enabled": enabled,
+                        "is_default": True,
+                        "node": node,
+                    }
+                    relation["status"] = self.jump_relation_status_text(relation, anchors_info=anchors_info, nodes=node_list)
+                    relations.append(relation)
+                if not rules and not default_anchor:
+                    relation = {
+                        "source_index": idx,
+                        "source_label": self.jump_node_label(idx, node),
+                        "source_type": node_type,
+                        "kind": "条件",
+                        "flag_name": flag_name,
+                        "condition_value": "",
+                        "target_anchor_id": "",
+                        "enabled": enabled,
+                        "is_default": False,
+                        "node": node,
+                        "status": "未配置跳转规则",
+                    }
+                    relations.append(relation)
+        return relations
+
+    def add_jump_validation_issue(self, issues, severity, item, message, suggestion="", relation=None, anchor=None):
+        issues.append({
+            "severity": severity,
+            "item": item,
+            "message": message,
+            "suggestion": suggestion,
+            "relation": relation,
+            "anchor": anchor,
+        })
+
+    def next_enabled_node_after_anchor(self, anchor, nodes=None):
+        node_list = nodes if nodes is not None else self.nodes
+        start = int(anchor.get("node_index", -1)) + 1
+        for idx in range(start, len(node_list or [])):
+            if (node_list[idx] or {}).get("enabled", True):
+                return idx
+        return None
+
+    def validate_jump_relations(self, nodes=None):
+        node_list = nodes if nodes is not None else self.nodes
+        anchors_info = self.collect_jump_anchors(nodes=node_list)
+        relations = self.collect_jump_relations(nodes=node_list, anchors_info=anchors_info)
+        flag_producers = self.collect_condition_flag_producers(nodes=node_list)
+        issues = []
+
+        for anchor in anchors_info.get("all", []):
+            anchor_id = anchor.get("anchor_id", "")
+            label = f"{anchor.get('node_index', -1) + 1}.锚点"
+            if not anchor_id:
+                self.add_jump_validation_issue(
+                    issues, "error", label, "锚点ID为空，其他跳转节点无法引用它。",
+                    "给锚点填写唯一、稳定的锚点ID。", anchor=anchor
+                )
+            if anchor.get("enabled") and self.next_enabled_node_after_anchor(anchor, nodes=node_list) is None:
+                self.add_jump_validation_issue(
+                    issues, "warning", anchor_id or label, "锚点后没有可执行节点。",
+                    "如果该锚点不是终点，请在锚点后添加处理节点。", anchor=anchor
+                )
+
+        for anchor_id, matches in (anchors_info.get("by_id") or {}).items():
+            enabled_matches = [m for m in matches if m.get("enabled")]
+            if len(matches) > 1:
+                self.add_jump_validation_issue(
+                    issues, "error", anchor_id, f"锚点ID重复：{len(matches)} 个节点使用同一个ID。",
+                    "保留一个锚点ID，其他锚点改名；重复锚点运行时默认不跳转。",
+                    anchor=matches[0],
+                )
+            if matches and not enabled_matches:
+                self.add_jump_validation_issue(
+                    issues, "warning", anchor_id, "该锚点当前全部处于禁用状态。",
+                    "启用目标锚点，或调整跳转节点目标。", anchor=matches[0]
+                )
+
+        referenced = {str(rel.get("target_anchor_id", "") or "").strip() for rel in relations if str(rel.get("target_anchor_id", "") or "").strip()}
+        for anchor in anchors_info.get("all", []):
+            anchor_id = anchor.get("anchor_id", "")
+            if anchor_id and anchor.get("enabled") and anchor_id not in referenced:
+                self.add_jump_validation_issue(
+                    issues, "info", anchor_id, "锚点未被任何跳转节点引用。",
+                    "如果只是流程定位标记可以保留；如果希望跳到这里，请在跳转节点中绑定它。", anchor=anchor
+                )
+
+        checked_flag_nodes = set()
+        for rel in relations:
+            if not rel.get("enabled", True):
+                continue
+            source_idx = int(rel.get("source_index", -1))
+            source_label = rel.get("source_label", "")
+            target = str(rel.get("target_anchor_id", "") or "").strip()
+            if rel.get("source_type") == "条件跳转节点":
+                flag_name = str(rel.get("flag_name", "") or "").strip()
+                flag_key = (source_idx, flag_name)
+                if flag_key not in checked_flag_nodes:
+                    checked_flag_nodes.add(flag_key)
+                    if not flag_name:
+                        self.add_jump_validation_issue(
+                            issues, "warning", source_label, "条件跳转节点未填写读取标志。",
+                            "填写条件判断节点输出的标志名；未填写时运行默认不跳转。", relation=rel
+                        )
+                    elif flag_name not in flag_producers:
+                        self.add_jump_validation_issue(
+                            issues, "warning", source_label, f"未找到条件标志来源：{flag_name}",
+                            "在该节点之前添加条件判断节点，或确认标志名完全一致。", relation=rel
+                        )
+                    elif all(item.get("node_index", 0) > source_idx for item in flag_producers.get(flag_name, [])):
+                        self.add_jump_validation_issue(
+                            issues, "warning", source_label, f"条件标志 {flag_name} 的生成节点位于跳转节点之后。",
+                            "把条件判断节点移到条件跳转节点之前。", relation=rel
+                        )
+                if not str(rel.get("condition_value", "") or "").strip() and not rel.get("is_default"):
+                    self.add_jump_validation_issue(
+                        issues, "warning", source_label, "条件规则的条件值为空。",
+                        "填写 TRUE/FALSE 或条件判断节点实际输出值；空值规则很容易误判。", relation=rel
+                    )
+
+            if not target:
+                self.add_jump_validation_issue(
+                    issues, "warning", source_label, "跳转目标锚点未配置，运行时默认不跳转。",
+                    "选择一个锚点；如果确实希望未命中时继续执行，可以保留默认锚点为空。", relation=rel
+                )
+                continue
+
+            target_idx, message = self.resolve_jump_anchor_index(target, anchors_info=anchors_info, nodes=node_list)
+            if target_idx is None:
+                self.add_jump_validation_issue(
+                    issues, "error", source_label, message,
+                    "检查锚点ID是否存在、是否启用，以及是否重复。", relation=rel
+                )
+                continue
+            if target_idx == source_idx:
+                self.add_jump_validation_issue(
+                    issues, "error", source_label, "跳转目标指向当前节点，可能形成自跳转。",
+                    "改为跳到独立锚点，或删除该规则。", relation=rel
+                )
+            elif target_idx < source_idx:
+                self.add_jump_validation_issue(
+                    issues, "warning", source_label, f"目标锚点在当前节点之前：节点 {target_idx + 1}",
+                    "这会形成回跳路径，请确认有条件能够退出，避免死循环。", relation=rel
+                )
+
+        severity_order = {"error": 0, "warning": 1, "info": 2}
+        issues.sort(key=lambda item: (severity_order.get(item.get("severity"), 9), item.get("item", "")))
+        return issues
+
+    def jump_validation_summary_text(self, issues):
+        issues = list(issues or [])
+        if not issues:
+            return "跳转校验完成：未发现明显问题。"
+        counts = {}
+        for issue in issues:
+            sev = issue.get("severity", "info")
+            counts[sev] = counts.get(sev, 0) + 1
+        parts = []
+        if counts.get("error"):
+            parts.append(f"错误 {counts['error']}")
+        if counts.get("warning"):
+            parts.append(f"警告 {counts['warning']}")
+        if counts.get("info"):
+            parts.append(f"提示 {counts['info']}")
+        return "跳转校验完成：" + "，".join(parts)
+
+    def jump_issue_detail_text(self, issue):
+        if not issue:
+            return ""
+        lines = [
+            f"级别：{issue.get('severity', '')}",
+            f"对象：{issue.get('item', '')}",
+            f"问题：{issue.get('message', '')}",
+        ]
+        if issue.get("suggestion"):
+            lines.append(f"建议：{issue.get('suggestion')}")
+        rel = issue.get("relation") or {}
+        if rel:
+            lines.extend([
+                "",
+                "关系：",
+                f"来源：{rel.get('source_label', '')}",
+                f"类型：{rel.get('kind', '')}",
+                f"读取标志：{rel.get('flag_name', '')}",
+                f"条件值：{rel.get('condition_value', '')}",
+                f"目标锚点：{rel.get('target_anchor_id', '')}",
+                f"状态：{rel.get('status', '')}",
+            ])
+        anchor = issue.get("anchor") or {}
+        if anchor:
+            lines.extend([
+                "",
+                "锚点：",
+                f"节点：{anchor.get('node_index', -1) + 1}",
+                f"锚点ID：{anchor.get('anchor_id', '')}",
+                f"名称：{anchor.get('anchor_name', '')}",
+                f"启用：{'是' if anchor.get('enabled') else '否'}",
+            ])
+        return "\n".join(lines)
+
+    def show_jump_precheck_dialog(self, issues, title="跳转校验", allow_continue=False):
+        issues = list(issues or [])
+        result = {"continue": not allow_continue}
+        win = tk.Toplevel(self.window)
+        win.title(title)
+        win.geometry("1180x620")
+        win.minsize(900, 480)
+        win.transient(self.window)
+
+        main = ttk.Frame(win, padding=8)
+        main.pack(fill=tk.BOTH, expand=True)
+        summary_var = tk.StringVar(value=self.jump_validation_summary_text(issues))
+        ttk.Label(main, textvariable=summary_var, font=("TkDefaultFont", 10, "bold")).pack(anchor=tk.W, pady=(0, 6))
+        ttk.Label(main, text="跳转目标无效时运行会默认不跳转；这里用于提前发现配置风险。", foreground="gray").pack(anchor=tk.W, pady=(0, 6))
+
+        tree_wrap = ttk.Frame(main)
+        tree_wrap.pack(fill=tk.BOTH, expand=True)
+        columns = ("severity", "item", "message", "suggestion")
+        tree = ttk.Treeview(tree_wrap, columns=columns, show="headings", height=18)
+        for col, text, width in [
+            ("severity", "级别", 70),
+            ("item", "对象", 180),
+            ("message", "问题", 420),
+            ("suggestion", "建议", 360),
+        ]:
+            tree.heading(col, text=text)
+            tree.column(col, width=width, anchor=tk.W)
+        tree.tag_configure("error", foreground="#b00020")
+        tree.tag_configure("warning", foreground="#8a5a00")
+        tree.tag_configure("info", foreground="#335c99")
+        yscroll = ttk.Scrollbar(tree_wrap, orient=tk.VERTICAL, command=tree.yview)
+        xscroll = ttk.Scrollbar(tree_wrap, orient=tk.HORIZONTAL, command=tree.xview)
+        tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+        tree_wrap.rowconfigure(0, weight=1)
+        tree_wrap.columnconfigure(0, weight=1)
+
+        for idx, issue in enumerate(issues):
+            sev = issue.get("severity", "info")
+            tree.insert(
+                "",
+                tk.END,
+                iid=str(idx),
+                values=(sev, issue.get("item", ""), issue.get("message", ""), issue.get("suggestion", "")),
+                tags=(sev,),
+            )
+
+        def show_detail(event=None):
+            sel = tree.selection()
+            if not sel:
+                return
+            issue = issues[int(sel[0])]
+            messagebox.showinfo("跳转校验详情", self.jump_issue_detail_text(issue), parent=win)
+
+        def open_manager():
+            result["continue"] = False
+            win.destroy()
+            self.open_jump_manager_window()
+
+        tree.bind("<Double-1>", show_detail)
+
+        bottom = ttk.Frame(win, padding=(8, 0, 8, 8))
+        bottom.pack(fill=tk.X)
+        ttk.Button(bottom, text="打开跳转管理", command=open_manager).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bottom, text="详情", command=show_detail).pack(side=tk.LEFT, padx=4)
+        if allow_continue:
+            def continue_run():
+                result["continue"] = True
+                win.destroy()
+            def cancel_run():
+                result["continue"] = False
+                win.destroy()
+            ttk.Button(bottom, text="继续运行", command=continue_run).pack(side=tk.RIGHT, padx=4)
+            ttk.Button(bottom, text="取消运行", command=cancel_run).pack(side=tk.RIGHT, padx=4)
+            win.protocol("WM_DELETE_WINDOW", cancel_run)
+        else:
+            ttk.Button(bottom, text="关闭", command=win.destroy).pack(side=tk.RIGHT, padx=4)
+
+        self.center_toplevel(win, self.window, 1180, 620)
+        try:
+            win.grab_set()
+        except Exception:
+            pass
+        self.window.wait_window(win)
+        return bool(result.get("continue"))
+
+    def confirm_jump_precheck(self, execute_actions=False, stop_index=None):
+        issues = self.validate_jump_relations()
+        actionable = [issue for issue in issues if issue.get("severity") in ("error", "warning")]
+        self.last_jump_precheck = list(issues or [])
+        if not actionable:
+            return True
+        errors = [issue for issue in actionable if issue.get("severity") == "error"]
+        if not execute_actions and not errors:
+            self.status_var.set(self.jump_validation_summary_text(actionable) + " 预览继续执行；可在跳转管理中查看。")
+            return True
+        return self.show_jump_precheck_dialog(
+            actionable,
+            title="执行前跳转校验" if execute_actions else "预览前跳转校验",
+            allow_continue=True,
+        )
+
+    def open_jump_manager_window(self):
+        self.ensure_node_tree_identity(self.nodes)
+        win = tk.Toplevel(self.window)
+        win.title("跳转管理")
+        win.geometry("1360x740")
+        win.minsize(1050, 560)
+        win.transient(self.window)
+
+        main = ttk.Frame(win, padding=8)
+        main.pack(fill=tk.BOTH, expand=True)
+        summary_var = tk.StringVar()
+        ttk.Label(
+            main,
+            text="跳转系统只管理锚点与跳转关系，不管理表映射、字段映射或字段权限。",
+            foreground="gray",
+        ).pack(anchor=tk.W, pady=(0, 4))
+        ttk.Label(main, textvariable=summary_var, font=("TkDefaultFont", 10, "bold")).pack(anchor=tk.W, pady=(0, 6))
+
+        panes = ttk.Panedwindow(main, orient=tk.HORIZONTAL)
+        panes.pack(fill=tk.BOTH, expand=True)
+
+        left = ttk.LabelFrame(panes, text="锚点", padding=6)
+        middle = ttk.LabelFrame(panes, text="跳转关系", padding=6)
+        right = ttk.Frame(panes)
+        panes.add(left, weight=1)
+        panes.add(middle, weight=2)
+        panes.add(right, weight=2)
+
+        anchor_tree = ttk.Treeview(left, columns=("index", "anchor", "name", "refs", "status"), show="headings", height=20)
+        for col, text, width in [
+            ("index", "#", 45),
+            ("anchor", "锚点ID", 150),
+            ("name", "名称", 120),
+            ("refs", "引用", 55),
+            ("status", "状态", 85),
+        ]:
+            anchor_tree.heading(col, text=text)
+            anchor_tree.column(col, width=width, anchor=tk.W)
+        anchor_scroll = ttk.Scrollbar(left, orient=tk.VERTICAL, command=anchor_tree.yview)
+        anchor_tree.configure(yscrollcommand=anchor_scroll.set)
+        anchor_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        anchor_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        anchor_tree.tag_configure("disabled", foreground="#777777")
+        anchor_tree.tag_configure("error", foreground="#b00020")
+
+        relation_tree = ttk.Treeview(
+            middle,
+            columns=("source", "kind", "flag", "value", "target", "status"),
+            show="headings",
+            height=20,
+        )
+        for col, text, width in [
+            ("source", "来源节点", 190),
+            ("kind", "类型", 70),
+            ("flag", "标志", 120),
+            ("value", "条件值", 90),
+            ("target", "目标锚点", 140),
+            ("status", "状态", 190),
+        ]:
+            relation_tree.heading(col, text=text)
+            relation_tree.column(col, width=width, anchor=tk.W)
+        rel_y = ttk.Scrollbar(middle, orient=tk.VERTICAL, command=relation_tree.yview)
+        rel_x = ttk.Scrollbar(middle, orient=tk.HORIZONTAL, command=relation_tree.xview)
+        relation_tree.configure(yscrollcommand=rel_y.set, xscrollcommand=rel_x.set)
+        relation_tree.grid(row=0, column=0, sticky="nsew")
+        rel_y.grid(row=0, column=1, sticky="ns")
+        rel_x.grid(row=1, column=0, sticky="ew")
+        middle.rowconfigure(0, weight=1)
+        middle.columnconfigure(0, weight=1)
+        relation_tree.tag_configure("ok", foreground="#1b5e20")
+        relation_tree.tag_configure("warning", foreground="#8a5a00")
+        relation_tree.tag_configure("error", foreground="#b00020")
+        relation_tree.tag_configure("disabled", foreground="#777777")
+
+        detail_frame = ttk.LabelFrame(right, text="详情", padding=6)
+        detail_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
+        detail_text = tk.Text(detail_frame, height=12, wrap=tk.WORD)
+        detail_text.pack(fill=tk.BOTH, expand=True)
+        detail_text.configure(state=tk.DISABLED)
+
+        issue_frame = ttk.LabelFrame(right, text="校验结果", padding=6)
+        issue_frame.pack(fill=tk.BOTH, expand=True)
+        issue_tree = ttk.Treeview(issue_frame, columns=("severity", "item", "message", "suggestion"), show="headings", height=10)
+        for col, text, width in [
+            ("severity", "级别", 70),
+            ("item", "对象", 130),
+            ("message", "问题", 220),
+            ("suggestion", "建议", 220),
+        ]:
+            issue_tree.heading(col, text=text)
+            issue_tree.column(col, width=width, anchor=tk.W)
+        issue_scroll = ttk.Scrollbar(issue_frame, orient=tk.VERTICAL, command=issue_tree.yview)
+        issue_tree.configure(yscrollcommand=issue_scroll.set)
+        issue_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        issue_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        issue_tree.tag_configure("error", foreground="#b00020")
+        issue_tree.tag_configure("warning", foreground="#8a5a00")
+        issue_tree.tag_configure("info", foreground="#335c99")
+
+        state = {"anchors": [], "relations": [], "issues": []}
+
+        def set_detail(text):
+            detail_text.configure(state=tk.NORMAL)
+            detail_text.delete("1.0", tk.END)
+            detail_text.insert("1.0", text or "")
+            detail_text.configure(state=tk.DISABLED)
+
+        def relation_tag(relation):
+            if not relation.get("enabled", True):
+                return "disabled"
+            status = relation.get("status", "")
+            if status.startswith("有效"):
+                return "ok"
+            if "不存在" in status or "重复" in status:
+                return "error"
+            return "warning"
+
+        def refresh_all():
+            self.ensure_node_tree_identity(self.nodes)
+            anchors_info = self.collect_jump_anchors()
+            relations = self.collect_jump_relations(anchors_info=anchors_info)
+            issues = self.validate_jump_relations()
+            state["anchors"] = anchors_info.get("all", [])
+            state["relations"] = relations
+            state["issues"] = issues
+
+            refs = {}
+            for rel in relations:
+                target = str(rel.get("target_anchor_id", "") or "").strip()
+                if target:
+                    refs[target] = refs.get(target, 0) + 1
+
+            anchor_tree.delete(*anchor_tree.get_children())
+            for idx, anchor in enumerate(state["anchors"]):
+                anchor_id = anchor.get("anchor_id", "")
+                status = "启用" if anchor.get("enabled") else "禁用"
+                tag = ""
+                if not anchor.get("enabled"):
+                    tag = "disabled"
+                if anchor_id and len((anchors_info.get("by_id") or {}).get(anchor_id, [])) > 1:
+                    status = "重复"
+                    tag = "error"
+                anchor_tree.insert(
+                    "",
+                    tk.END,
+                    iid=str(idx),
+                    values=(anchor.get("node_index", -1) + 1, anchor_id, anchor.get("anchor_name", ""), refs.get(anchor_id, 0), status),
+                    tags=(tag,),
+                )
+
+            relation_tree.delete(*relation_tree.get_children())
+            for idx, rel in enumerate(relations):
+                relation_tree.insert(
+                    "",
+                    tk.END,
+                    iid=str(idx),
+                    values=(
+                        rel.get("source_label", ""),
+                        rel.get("kind", ""),
+                        rel.get("flag_name", ""),
+                        rel.get("condition_value", ""),
+                        rel.get("target_anchor_id", ""),
+                        rel.get("status", ""),
+                    ),
+                    tags=(relation_tag(rel),),
+                )
+
+            issue_tree.delete(*issue_tree.get_children())
+            for idx, issue in enumerate(issues):
+                issue_tree.insert(
+                    "",
+                    tk.END,
+                    iid=str(idx),
+                    values=(issue.get("severity", ""), issue.get("item", ""), issue.get("message", ""), issue.get("suggestion", "")),
+                    tags=(issue.get("severity", ""),),
+                )
+            summary_var.set(
+                f"锚点 {len(state['anchors'])} 个，跳转关系 {len(relations)} 条。"
+                + self.jump_validation_summary_text(issues)
+            )
+            if state["anchors"]:
+                anchor_tree.selection_set("0")
+                anchor_tree.focus("0")
+                show_anchor_detail()
+            else:
+                set_detail("当前工作流还没有跳转锚点节点。")
+
+        def show_anchor_detail(event=None):
+            sel = anchor_tree.selection()
+            if not sel:
+                return
+            idx = int(sel[0])
+            anchors = state.get("anchors", [])
+            if idx < 0 or idx >= len(anchors):
+                return
+            anchor = anchors[idx]
+            anchor_id = anchor.get("anchor_id", "")
+            refs = [rel for rel in state.get("relations", []) if rel.get("target_anchor_id") == anchor_id]
+            lines = [
+                f"锚点节点：{anchor.get('node_index', -1) + 1}",
+                f"锚点ID：{anchor_id}",
+                f"显示名称：{anchor.get('anchor_name', '')}",
+                f"启用：{'是' if anchor.get('enabled') else '否'}",
+                f"说明：{anchor.get('description', '') or '-'}",
+                "",
+                f"引用关系：{len(refs)} 条",
+            ]
+            for rel in refs[:20]:
+                lines.append(f"- {rel.get('source_label', '')} / {rel.get('kind', '')} / {rel.get('condition_value', '')}")
+            if len(refs) > 20:
+                lines.append(f"... 仅显示前 20 条，共 {len(refs)} 条。")
+            set_detail("\n".join(lines))
+
+        def show_relation_detail(event=None):
+            sel = relation_tree.selection()
+            if not sel:
+                return
+            idx = int(sel[0])
+            relations = state.get("relations", [])
+            if idx < 0 or idx >= len(relations):
+                return
+            rel = relations[idx]
+            lines = [
+                f"来源节点：{rel.get('source_label', '')}",
+                f"跳转类型：{rel.get('kind', '')}",
+                f"读取标志：{rel.get('flag_name', '') or '-'}",
+                f"条件值：{rel.get('condition_value', '') or '-'}",
+                f"目标锚点：{rel.get('target_anchor_id', '') or '-'}",
+                f"状态：{rel.get('status', '')}",
+                "",
+                "运行规则：",
+                "目标有效时跳到锚点节点；锚点节点自身不计算，随后继续执行锚点后的节点。",
+                "目标缺失、禁用、不存在或重复时，默认不跳转并继续后续节点。",
+            ]
+            set_detail("\n".join(lines))
+
+        def show_issue_detail(event=None):
+            sel = issue_tree.selection()
+            if not sel:
+                return
+            idx = int(sel[0])
+            issues = state.get("issues", [])
+            if 0 <= idx < len(issues):
+                set_detail(self.jump_issue_detail_text(issues[idx]))
+
+        anchor_tree.bind("<<TreeviewSelect>>", show_anchor_detail)
+        relation_tree.bind("<<TreeviewSelect>>", show_relation_detail)
+        issue_tree.bind("<<TreeviewSelect>>", show_issue_detail)
+        relation_tree.bind("<Double-1>", show_relation_detail)
+        issue_tree.bind("<Double-1>", show_issue_detail)
+
+        bottom = ttk.Frame(win, padding=(8, 0, 8, 8))
+        bottom.pack(fill=tk.X)
+        ttk.Button(bottom, text="刷新", command=refresh_all).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bottom, text="关闭", command=win.destroy).pack(side=tk.RIGHT, padx=4)
+
+        refresh_all()
+        self.center_toplevel(win, self.window, 1360, 740)
+
     def table_access_log_text(self, event):
         try:
             return json.dumps(event, ensure_ascii=False, default=str)
@@ -7097,7 +7805,7 @@ class PlanWorkflowWindow:
         preset_combo.grid(row=2, column=1, sticky=tk.W, padx=3, pady=3)
         ttk.Checkbutton(table_form, text="当前表", variable=is_current_var).grid(row=2, column=2, sticky=tk.W, padx=3, pady=3)
         ttk.Checkbutton(table_form, text="只记录", variable=log_only_var).grid(row=2, column=3, sticky=tk.W, padx=3, pady=3)
-        ttk.Label(table_form, text="字段匹配").grid(row=4, column=0, sticky=tk.W, padx=3, pady=3)
+        ttk.Label(table_form, text="字段权限范围").grid(row=4, column=0, sticky=tk.W, padx=3, pady=3)
         field_mapping_mode_var = tk.StringVar(value="按字段名")
         ttk.Combobox(
             table_form,
@@ -7133,7 +7841,7 @@ class PlanWorkflowWindow:
             field_tree.column(col, width=width, anchor=tk.W)
         field_tree.pack(fill=tk.BOTH, expand=True)
 
-        field_form = ttk.LabelFrame(right, text="字段映射设置", padding=6)
+        field_form = ttk.LabelFrame(right, text="字段权限设置", padding=6)
         field_form.pack(fill=tk.X, pady=(6, 0))
         source_field_var = tk.StringVar()
         target_field_var = tk.StringVar()
@@ -7562,8 +8270,8 @@ class PlanWorkflowWindow:
         ttk.Button(field_btns, text="新增字段", command=add_field_entry).pack(side=tk.LEFT, padx=3)
         ttk.Button(field_btns, text="保存字段", command=save_field_entry).pack(side=tk.LEFT, padx=3)
         ttk.Button(field_btns, text="删除字段", command=delete_field_entry).pack(side=tk.LEFT, padx=3)
-        ttk.Button(field_btns, text="自动字段匹配", command=auto_match_fields).pack(side=tk.LEFT, padx=3)
-        ttk.Button(field_btns, text="按顺序匹配", command=auto_match_fields_by_order).pack(side=tk.LEFT, padx=3)
+        ttk.Button(field_btns, text="按字段名生成权限", command=auto_match_fields).pack(side=tk.LEFT, padx=3)
+        ttk.Button(field_btns, text="按列顺序生成权限", command=auto_match_fields_by_order).pack(side=tk.LEFT, padx=3)
         ttk.Button(field_btns, text="清空字段", command=clear_fields).pack(side=tk.LEFT, padx=3)
 
         bottom = ttk.Frame(win, padding=(8, 0, 8, 8))
@@ -9198,6 +9906,39 @@ class PlanWorkflowWindow:
                 "end_output_mode": "循环队列表",
                 "result_table_name": "循环结果",
             }
+        if node_type == "跳转锚点节点":
+            suffix = datetime.now().strftime("%H%M%S")
+            return {
+                "anchor_id": f"anchor_{suffix}",
+                "anchor_name": f"锚点_{suffix}",
+                "description": "",
+            }
+        if node_type == "无条件跳转节点":
+            return {
+                "target_anchor_id": "",
+                "note": "",
+            }
+        if node_type == "条件判断节点":
+            return {
+                "flag_name": f"condition_{datetime.now().strftime('%H%M%S')}",
+                "source_type": "当前表",
+                "condition_type": "表行数",
+                "field": first,
+                "op": "大于",
+                "value": "0",
+                "case_sensitive": True,
+                "true_value": "TRUE",
+                "false_value": "FALSE",
+            }
+        if node_type == "条件跳转节点":
+            return {
+                "flag_name": "",
+                "jump_rules": [
+                    {"value": "TRUE", "target_anchor_id": ""},
+                    {"value": "FALSE", "target_anchor_id": ""},
+                ],
+                "default_anchor_id": "",
+            }
         if node_type == "批量替换":
             return {
                 "target_field": first,
@@ -9793,6 +10534,14 @@ class PlanWorkflowWindow:
             self.build_loop_start_config(config, available_headers, transit_context)
         elif node_type == "循环判断回跳":
             self.build_loop_judge_config(config, available_headers)
+        elif node_type == "跳转锚点节点":
+            self.build_jump_anchor_config(config)
+        elif node_type == "无条件跳转节点":
+            self.build_unconditional_jump_config(config)
+        elif node_type == "条件判断节点":
+            self.build_condition_check_config(config, available_headers)
+        elif node_type == "条件跳转节点":
+            self.build_conditional_jump_config(config)
         elif node_type == "批量替换":
             self.build_replace_config(config, available_headers)
         elif node_type == "数据提取":
@@ -10707,6 +11456,147 @@ class PlanWorkflowWindow:
         ttk.Button(action_frame, text="执行循环一次", command=self.execute_loop_once_from_selected_judge).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(action_frame, text="重置单步循环缓存", command=self.reset_manual_loop_context).pack(side=tk.LEFT, padx=4)
         ttk.Label(action_frame, text="用于调试循环：每点一次只跑当前循环一轮，后续预览节点会优先接着该缓存继续执行。", foreground="gray").pack(side=tk.LEFT, padx=10)
+
+    def jump_anchor_choices(self):
+        choices = []
+        for node in self.nodes or []:
+            if node.get("type") != "跳转锚点节点":
+                continue
+            cfg = node.get("config", {}) or {}
+            anchor_id = str(cfg.get("anchor_id", "") or "").strip()
+            if not anchor_id:
+                continue
+            name = str(cfg.get("anchor_name", "") or node.get("name", "") or "").strip()
+            choices.append(f"{anchor_id} - {name}" if name else anchor_id)
+        return choices
+
+    def anchor_id_from_choice(self, value):
+        text = str(value or "").strip()
+        if " - " in text:
+            return text.split(" - ", 1)[0].strip()
+        return text
+
+    def set_anchor_var_to_config(self, var, config, key):
+        def sync(*_):
+            config[key] = self.anchor_id_from_choice(var.get())
+        sync()
+        var.trace_add("write", sync)
+
+    def build_jump_anchor_config(self, config):
+        config.setdefault("anchor_id", f"anchor_{datetime.now().strftime('%H%M%S')}")
+        config.setdefault("anchor_name", config.get("anchor_id", "锚点"))
+        config.setdefault("description", "")
+        frame = ttk.LabelFrame(self.config_frame, text="跳转锚点节点", padding=8)
+        frame.pack(fill=tk.BOTH, expand=True, pady=8)
+        ttk.Label(frame, text="锚点节点只做定位，不参与计算、表映射、字段映射或权限控制。", foreground="gray").grid(row=0, column=0, columnspan=6, sticky=tk.W, padx=4, pady=(0, 6))
+        anchor_var = self.add_labeled_entry(frame, "锚点ID：", config.get("anchor_id", ""), 1, 0, 26)
+        name_var = self.add_labeled_entry(frame, "显示名称：", config.get("anchor_name", ""), 1, 2, 26)
+        desc_var = self.add_labeled_entry(frame, "说明：", config.get("description", ""), 2, 0, 56)
+        for var, key in [(anchor_var, "anchor_id"), (name_var, "anchor_name"), (desc_var, "description")]:
+            self.sync_var_to_config(var, config, key)
+        ttk.Button(frame, text="打开跳转管理", command=self.open_jump_manager_window).grid(row=3, column=0, sticky=tk.W, padx=4, pady=(8, 4))
+
+    def build_unconditional_jump_config(self, config):
+        config.setdefault("target_anchor_id", "")
+        config.setdefault("note", "")
+        frame = ttk.LabelFrame(self.config_frame, text="无条件跳转节点", padding=8)
+        frame.pack(fill=tk.BOTH, expand=True, pady=8)
+        ttk.Label(frame, text="执行到这里时尝试跳到目标锚点；未绑定、锚点不存在或锚点禁用时默认不跳转。", foreground="gray").grid(row=0, column=0, columnspan=6, sticky=tk.W, padx=4, pady=(0, 6))
+        target_var = self.add_labeled_combo(frame, "目标锚点：", config.get("target_anchor_id", ""), self.jump_anchor_choices(), 1, 0, 34, readonly=False)
+        note_var = self.add_labeled_entry(frame, "说明：", config.get("note", ""), 2, 0, 56)
+        self.set_anchor_var_to_config(target_var, config, "target_anchor_id")
+        self.sync_var_to_config(note_var, config, "note")
+        ttk.Button(frame, text="打开跳转管理", command=self.open_jump_manager_window).grid(row=3, column=0, sticky=tk.W, padx=4, pady=(8, 4))
+
+    def build_condition_check_config(self, config, headers):
+        config.setdefault("flag_name", f"condition_{datetime.now().strftime('%H%M%S')}")
+        config.setdefault("condition_type", "表行数")
+        config.setdefault("field", headers[0] if headers else "")
+        config.setdefault("op", "大于")
+        config.setdefault("value", "0")
+        config.setdefault("case_sensitive", True)
+        config.setdefault("true_value", "TRUE")
+        config.setdefault("false_value", "FALSE")
+        frame = ttk.LabelFrame(self.config_frame, text="条件判断节点", padding=8)
+        frame.pack(fill=tk.BOTH, expand=True, pady=8)
+        ttk.Label(frame, text="条件判断只计算结果并写入运行期标志，不负责跳转，也不做字段映射。第一版以当前表为判断对象。", foreground="gray").grid(row=0, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
+        flag_var = self.add_labeled_entry(frame, "输出标志：", config.get("flag_name", ""), 1, 0, 22)
+        type_var = self.add_labeled_combo(frame, "判断类型：", config.get("condition_type", "表行数"), ["表行数", "字段值", "字段是否存在", "字段空值数量", "字段包含值数量"], 1, 2, 18)
+        field_var = self.add_labeled_combo(frame, "字段：", config.get("field", headers[0] if headers else ""), headers, 2, 0, 24, readonly=False)
+        op_var = self.add_labeled_combo(frame, "操作：", config.get("op", "大于"), ["等于", "不等于", "大于", "小于", "大于等于", "小于等于", "包含", "不包含", "为空", "不为空", "正则匹配"], 2, 2, 14)
+        value_var = self.add_labeled_entry(frame, "比较值：", config.get("value", "0"), 2, 4, 22)
+        true_var = self.add_labeled_entry(frame, "满足输出：", config.get("true_value", "TRUE"), 3, 0, 14)
+        false_var = self.add_labeled_entry(frame, "不满足输出：", config.get("false_value", "FALSE"), 3, 2, 14)
+        case_var = tk.BooleanVar(value=bool(config.get("case_sensitive", True)))
+        ttk.Checkbutton(frame, text="区分大小写", variable=case_var).grid(row=3, column=4, sticky=tk.W, padx=4, pady=4)
+        for var, key in [(flag_var, "flag_name"), (type_var, "condition_type"), (field_var, "field"), (op_var, "op"), (value_var, "value"), (true_var, "true_value"), (false_var, "false_value")]:
+            self.sync_var_to_config(var, config, key)
+        case_var.trace_add("write", lambda *_: config.__setitem__("case_sensitive", bool(case_var.get())))
+
+    def build_conditional_jump_config(self, config):
+        config.setdefault("flag_name", "")
+        config.setdefault("jump_rules", [{"value": "TRUE", "target_anchor_id": ""}, {"value": "FALSE", "target_anchor_id": ""}])
+        config.setdefault("default_anchor_id", "")
+        frame = ttk.LabelFrame(self.config_frame, text="条件跳转节点", padding=8)
+        frame.pack(fill=tk.BOTH, expand=True, pady=8)
+        ttk.Label(frame, text="条件跳转只读取条件判断节点输出的标志；条件值未映射或目标锚点无效时默认不跳转。", foreground="gray").grid(row=0, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
+        flag_var = self.add_labeled_entry(frame, "读取标志：", config.get("flag_name", ""), 1, 0, 24)
+        self.sync_var_to_config(flag_var, config, "flag_name")
+        choices = self.jump_anchor_choices()
+        rules_frame = ttk.LabelFrame(frame, text="条件值 -> 锚点", padding=6)
+        rules_frame.grid(row=2, column=0, columnspan=8, sticky="nsew", padx=4, pady=6)
+        rule_tree = ttk.Treeview(rules_frame, columns=("value", "anchor"), show="headings", height=5)
+        rule_tree.heading("value", text="条件值")
+        rule_tree.heading("anchor", text="目标锚点")
+        rule_tree.column("value", width=120, anchor=tk.W)
+        rule_tree.column("anchor", width=260, anchor=tk.W)
+        rule_tree.grid(row=0, column=0, columnspan=5, sticky="nsew", padx=2, pady=2)
+        value_var = tk.StringVar()
+        anchor_var = tk.StringVar()
+        ttk.Label(rules_frame, text="条件值").grid(row=1, column=0, sticky=tk.W, padx=2, pady=4)
+        ttk.Entry(rules_frame, textvariable=value_var, width=16).grid(row=1, column=1, sticky=tk.W, padx=2, pady=4)
+        ttk.Label(rules_frame, text="目标锚点").grid(row=1, column=2, sticky=tk.W, padx=2, pady=4)
+        ttk.Combobox(rules_frame, textvariable=anchor_var, values=choices, width=34).grid(row=1, column=3, sticky=tk.W, padx=2, pady=4)
+
+        def refresh_rules():
+            rule_tree.delete(*rule_tree.get_children())
+            for i, item in enumerate(config.get("jump_rules", []) or []):
+                rule_tree.insert("", tk.END, iid=str(i), values=(item.get("value", ""), item.get("target_anchor_id", "")))
+
+        def on_rule_select(event=None):
+            sel = rule_tree.selection()
+            if not sel:
+                return
+            idx = int(sel[0])
+            rules = config.get("jump_rules", []) or []
+            if 0 <= idx < len(rules):
+                value_var.set(rules[idx].get("value", ""))
+                anchor_var.set(rules[idx].get("target_anchor_id", ""))
+
+        def save_rule():
+            rules = config.setdefault("jump_rules", [])
+            item = {"value": value_var.get().strip(), "target_anchor_id": self.anchor_id_from_choice(anchor_var.get())}
+            sel = rule_tree.selection()
+            if sel and 0 <= int(sel[0]) < len(rules):
+                rules[int(sel[0])] = item
+            else:
+                rules.append(item)
+            refresh_rules()
+
+        def delete_rule():
+            rules = config.setdefault("jump_rules", [])
+            sel = rule_tree.selection()
+            if sel and 0 <= int(sel[0]) < len(rules):
+                del rules[int(sel[0])]
+            refresh_rules()
+
+        rule_tree.bind("<<TreeviewSelect>>", on_rule_select)
+        ttk.Button(rules_frame, text="添加/保存规则", command=save_rule).grid(row=1, column=4, sticky=tk.W, padx=2, pady=4)
+        ttk.Button(rules_frame, text="删除规则", command=delete_rule).grid(row=2, column=4, sticky=tk.W, padx=2, pady=4)
+        default_var = self.add_labeled_combo(frame, "默认锚点：", config.get("default_anchor_id", ""), choices, 3, 0, 34, readonly=False)
+        self.set_anchor_var_to_config(default_var, config, "default_anchor_id")
+        ttk.Button(frame, text="打开跳转管理", command=self.open_jump_manager_window).grid(row=4, column=0, sticky=tk.W, padx=4, pady=(8, 4))
+        refresh_rules()
 
     def get_loop_source_table_data(self, headers, rows, config, context=None):
         source_type = config.get("source_type", "当前表")
@@ -14466,6 +15356,8 @@ class PlanWorkflowWindow:
         context.setdefault("transit_tables", {})
         context.setdefault("loop_states", {})
         context.setdefault("loop_results", {})
+        context.setdefault("condition_flags", {})
+        context.setdefault("jump_logs", [])
         if isinstance(snapshot, dict) and snapshot.get("table_access_policy") is not None:
             context["table_access_policy"] = TableAccessManager.normalize_permission_policy(snapshot.get("table_access_policy"))
         else:
@@ -14480,6 +15372,7 @@ class PlanWorkflowWindow:
         pc = int(start_index or 0)
         steps = 0
         max_steps = max(1000, len(node_list) * 2000)
+        anchors_info = self.collect_jump_anchors(nodes=node_list)
 
         while pc < len(node_list) and pc <= end:
             if cancel_event is not None and cancel_event.is_set():
@@ -14536,6 +15429,32 @@ class PlanWorkflowWindow:
                                 raise RuntimeError(f"未找到循环起点：{config.get('loop_id', '')}")
                         else:
                             jump_to = int(ctrl["jump_to"])
+                elif node_type == "跳转锚点节点":
+                    headers, rows, stat = self.apply_jump_anchor_node(headers, rows, config, context=context)
+                elif node_type == "无条件跳转节点":
+                    headers, rows, stat, ctrl = self.apply_unconditional_jump_node(
+                        headers,
+                        rows,
+                        config,
+                        context=context,
+                        anchors_info=anchors_info,
+                        nodes=node_list,
+                    )
+                    if ctrl.get("jump_to") is not None:
+                        jump_to = int(ctrl["jump_to"])
+                elif node_type == "条件判断节点":
+                    headers, rows, stat = self.apply_condition_check_node(headers, rows, config, context=context)
+                elif node_type == "条件跳转节点":
+                    headers, rows, stat, ctrl = self.apply_conditional_jump_node(
+                        headers,
+                        rows,
+                        config,
+                        context=context,
+                        anchors_info=anchors_info,
+                        nodes=node_list,
+                    )
+                    if ctrl.get("jump_to") is not None:
+                        jump_to = int(ctrl["jump_to"])
                 else:
                     headers, rows, stat = self.apply_node(headers, rows, node, execute_actions=execute_actions, context=context)
 
@@ -15187,6 +16106,206 @@ class PlanWorkflowWindow:
         if short:
             parts.append(short)
         return final_headers, final_rows, f"节点组【{group_name}】完成：" + "；".join(parts)
+
+    def append_jump_runtime_log(self, context, event):
+        if not isinstance(context, dict):
+            return
+        payload = dict(event or {})
+        payload.setdefault("time", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        current = context.get("current_node_info", {}) if isinstance(context.get("current_node_info"), dict) else {}
+        payload.setdefault("node_id", current.get("node_id", ""))
+        payload.setdefault("node_name", current.get("node_name", ""))
+        payload.setdefault("node_type", current.get("node_type", ""))
+        payload.setdefault("node_index", current.get("node_index", ""))
+        context.setdefault("jump_logs", []).append(payload)
+
+    def apply_jump_anchor_node(self, headers, rows, config, context=None):
+        anchor_id = str(config.get("anchor_id", "") or "").strip()
+        anchor_name = str(config.get("anchor_name", "") or "").strip()
+        detail = f"定位锚点：{anchor_id or '未命名'}"
+        if anchor_name:
+            detail += f" / {anchor_name}"
+        self.append_jump_runtime_log(context, {
+            "event": "anchor",
+            "anchor_id": anchor_id,
+            "anchor_name": anchor_name,
+            "status": "ok",
+            "message": detail,
+        })
+        return list(headers), [list(r) for r in rows], detail
+
+    def resolve_jump_target_control(self, anchor_id, context=None, anchors_info=None, nodes=None, source="跳转"):
+        target_idx, message = self.resolve_jump_anchor_index(anchor_id, anchors_info=anchors_info, nodes=nodes)
+        if target_idx is None:
+            self.append_jump_runtime_log(context, {
+                "event": source,
+                "target_anchor_id": str(anchor_id or "").strip(),
+                "status": "warning",
+                "message": message + "，默认不跳转",
+            })
+            return {"jump_to": None, "message": message + "，默认不跳转", "status": "warning"}
+        self.append_jump_runtime_log(context, {
+            "event": source,
+            "target_anchor_id": str(anchor_id or "").strip(),
+            "target_index": target_idx,
+            "status": "ok",
+            "message": f"跳转到锚点 {anchor_id}（节点 {target_idx + 1}）",
+        })
+        return {"jump_to": target_idx, "message": f"跳转到锚点 {anchor_id}（节点 {target_idx + 1}）", "status": "ok"}
+
+    def apply_unconditional_jump_node(self, headers, rows, config, context=None, anchors_info=None, nodes=None):
+        target = str(config.get("target_anchor_id", "") or "").strip()
+        ctrl = self.resolve_jump_target_control(target, context=context, anchors_info=anchors_info, nodes=nodes, source="unconditional_jump")
+        return list(headers), [list(r) for r in rows], "无条件跳转：" + ctrl.get("message", ""), ctrl
+
+    def condition_count_empty_cells(self, headers, rows, field):
+        if field not in headers:
+            raise ValueError(f"字段不存在：{field}")
+        idx = headers.index(field)
+        return sum(1 for row in self.normalize_rows(rows, len(headers)) if self.safe_cell(row, idx).strip() == "")
+
+    def condition_count_contains_cells(self, headers, rows, field, value, case_sensitive=True):
+        if field not in headers:
+            raise ValueError(f"字段不存在：{field}")
+        idx = headers.index(field)
+        needle = str(value or "")
+        if not case_sensitive:
+            needle = needle.lower()
+        count = 0
+        for row in self.normalize_rows(rows, len(headers)):
+            text = self.safe_cell(row, idx)
+            haystack = text if case_sensitive else text.lower()
+            if needle in haystack:
+                count += 1
+        return count
+
+    def evaluate_condition_check_node(self, headers, rows, config, context=None):
+        condition_type = str(config.get("condition_type", "表行数") or "表行数").strip()
+        field = str(config.get("field", "") or "").strip()
+        op = str(config.get("op", "大于") or "大于").strip()
+        value = str(config.get("value", "") or "")
+        case_sensitive = bool(config.get("case_sensitive", True))
+        fixed_rows = self.normalize_rows(rows, len(headers))
+
+        if condition_type == "表行数":
+            actual = len(fixed_rows)
+            passed = self.compare_values(str(actual), op, value, case_sensitive=True)
+            return passed, actual, f"表行数 {actual} {op} {value}"
+
+        if condition_type == "字段是否存在":
+            exists = field in headers
+            if op in ("不等于", "不包含"):
+                passed = not exists
+            else:
+                passed = exists
+            return passed, "TRUE" if exists else "FALSE", f"字段 {field or '-'} {'存在' if exists else '不存在'}"
+
+        if condition_type == "字段值":
+            if field not in headers:
+                raise ValueError(f"字段不存在：{field}")
+            idx = headers.index(field)
+            matched = 0
+            for row in fixed_rows:
+                if self.compare_values(self.safe_cell(row, idx), op, value, case_sensitive=case_sensitive):
+                    matched += 1
+            passed = matched > 0
+            return passed, matched, f"字段值任意行满足：{field} {op} {value}，命中 {matched} 行"
+
+        if condition_type == "字段空值数量":
+            actual = self.condition_count_empty_cells(headers, fixed_rows, field)
+            passed = self.compare_values(str(actual), op, value, case_sensitive=True)
+            return passed, actual, f"字段空值数量：{field}={actual}，条件 {op} {value}"
+
+        if condition_type == "字段包含值数量":
+            actual = self.condition_count_contains_cells(headers, fixed_rows, field, value, case_sensitive=case_sensitive)
+            passed = self.compare_values(str(actual), op, value, case_sensitive=True)
+            return passed, actual, f"字段包含值数量：{field} 包含 {value} 的行数={actual}，条件 {op} {value}"
+
+        raise ValueError(f"未知条件判断类型：{condition_type}")
+
+    def apply_condition_check_node(self, headers, rows, config, context=None):
+        context = context if isinstance(context, dict) else {}
+        flag_name = str(config.get("flag_name", "") or "").strip()
+        if not flag_name:
+            raise ValueError("条件判断节点未填写输出标志。")
+        passed, actual_value, detail = self.evaluate_condition_check_node(headers, rows, config, context=context)
+        output_value = str(config.get("true_value", "TRUE") if passed else config.get("false_value", "FALSE"))
+        item = {
+            "value": output_value,
+            "passed": bool(passed),
+            "actual": actual_value,
+            "detail": detail,
+            "source_node": copy.deepcopy(context.get("current_node_info", {})) if isinstance(context, dict) else {},
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        context.setdefault("condition_flags", {})[flag_name] = item
+        self.append_jump_runtime_log(context, {
+            "event": "condition_check",
+            "flag_name": flag_name,
+            "value": output_value,
+            "passed": bool(passed),
+            "actual": actual_value,
+            "status": "ok",
+            "message": detail,
+        })
+        return list(headers), [list(r) for r in rows], f"条件判断：{flag_name}={output_value}；{detail}"
+
+    def find_conditional_jump_target(self, flag_value, config):
+        value_text = str(flag_value or "").strip()
+        rules = config.get("jump_rules", [])
+        if not isinstance(rules, list):
+            rules = []
+        for rule in rules:
+            if not isinstance(rule, dict):
+                continue
+            expected = str(rule.get("value", "") or "").strip()
+            if expected == value_text:
+                return str(rule.get("target_anchor_id", "") or "").strip(), f"命中条件值 {value_text}"
+        default_anchor = str(config.get("default_anchor_id", "") or "").strip()
+        if default_anchor:
+            return default_anchor, f"条件值 {value_text or '-'} 未映射，使用默认锚点"
+        return "", f"条件值 {value_text or '-'} 未映射"
+
+    def apply_conditional_jump_node(self, headers, rows, config, context=None, anchors_info=None, nodes=None):
+        context = context if isinstance(context, dict) else {}
+        flag_name = str(config.get("flag_name", "") or "").strip()
+        if not flag_name:
+            message = "条件跳转未填写读取标志，默认不跳转"
+            self.append_jump_runtime_log(context, {
+                "event": "conditional_jump",
+                "flag_name": flag_name,
+                "status": "warning",
+                "message": message,
+            })
+            return list(headers), [list(r) for r in rows], message, {"jump_to": None, "message": message, "status": "warning"}
+        flags = context.setdefault("condition_flags", {})
+        if flag_name not in flags:
+            message = f"条件标志未产生：{flag_name}，默认不跳转"
+            self.append_jump_runtime_log(context, {
+                "event": "conditional_jump",
+                "flag_name": flag_name,
+                "status": "warning",
+                "message": message,
+            })
+            return list(headers), [list(r) for r in rows], message, {"jump_to": None, "message": message, "status": "warning"}
+
+        flag_item = flags.get(flag_name, {}) or {}
+        flag_value = str(flag_item.get("value", "") or "").strip()
+        target, rule_message = self.find_conditional_jump_target(flag_value, config)
+        if not target:
+            message = f"条件跳转：{flag_name}={flag_value or '-'}；{rule_message}，默认不跳转"
+            self.append_jump_runtime_log(context, {
+                "event": "conditional_jump",
+                "flag_name": flag_name,
+                "flag_value": flag_value,
+                "status": "warning",
+                "message": message,
+            })
+            return list(headers), [list(r) for r in rows], message, {"jump_to": None, "message": message, "status": "warning"}
+
+        ctrl = self.resolve_jump_target_control(target, context=context, anchors_info=anchors_info, nodes=nodes, source="conditional_jump")
+        stat = f"条件跳转：{flag_name}={flag_value or '-'}；{rule_message}；{ctrl.get('message', '')}"
+        return list(headers), [list(r) for r in rows], stat, ctrl
 
     def apply_node(self, headers, rows, node, execute_actions=False, context=None):
         node_type = node.get("type")
@@ -19430,6 +20549,9 @@ class PlanWorkflowWindow:
     def _start_background_workflow(self, mode, title, stop_index=None, execute_actions=False):
         if self.is_background_workflow_running():
             messagebox.showwarning("后台任务运行中", "当前已有工作流正在后台执行，请等待完成或先取消。")
+            return
+        if not self.confirm_jump_precheck(execute_actions=execute_actions, stop_index=stop_index):
+            self.status_var.set("工作流已取消：跳转校验未继续。")
             return
         if execute_actions and not self.confirm_table_access_precheck(execute_actions=True, stop_index=stop_index):
             self.status_var.set("执行计划已取消：权限预检未继续。")
