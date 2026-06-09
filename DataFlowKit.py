@@ -78,6 +78,85 @@ class TableAccessManager:
     第一阶段先统一 SQLite 读写、日志与进度事件；权限配置由工作流节点保存，
     后续映射窗口可以直接复用这里的权限检查和执行入口。
     """
+    WRITE_MODE_ALIASES = {
+        "": "",
+        "current_table_default": "current_table_default",
+        "append": "append",
+        "追加": "append",
+        "追加写入": "append",
+        "追加到已有表": "append",
+        "overlay": "overlay_by_order",
+        "overlay_by_order": "overlay_by_order",
+        "局部覆盖": "overlay_by_order",
+        "局部覆盖，保留目标原行数": "overlay_by_order",
+        "按顺序覆盖": "overlay_by_order",
+        "update_by_key": "update_by_key",
+        "按键更新": "update_by_key",
+        "按匹配字段更新": "update_by_key",
+        "upsert_by_key": "upsert_by_key",
+        "追加或更新": "upsert_by_key",
+        "匹配更新或追加": "upsert_by_key",
+        "replace": "replace_table",
+        "overwrite": "replace_table",
+        "replace_table": "replace_table",
+        "覆盖": "replace_table",
+        "覆盖表": "replace_table",
+        "覆盖整表": "replace_table",
+        "覆盖同名表": "replace_table",
+        "覆盖重建目标表": "replace_table",
+        "按来源完整结构覆盖": "replace_table",
+        "clear_keep_schema": "clear_keep_schema",
+        "清空保留结构写入": "clear_keep_schema",
+        "清空目标字段后覆盖，保留目标原行数": "clear_keep_schema",
+        "keep_schema_insert": "keep_schema_insert",
+        "保留结构写入": "keep_schema_insert",
+        "write_fields_only": "write_fields_only",
+        "指定字段写入": "write_fields_only",
+        "fill_blank_fields": "fill_blank_fields",
+        "字段空缺补齐": "fill_blank_fields",
+        "create_new": "create_new",
+        "新建表写入": "create_new",
+        "timestamp": "timestamp_new",
+        "auto_timestamp": "timestamp_new",
+        "timestamp_new": "timestamp_new",
+        "自动加时间戳": "timestamp_new",
+        "自动加时间戳新表": "timestamp_new",
+        "fail": "fail_if_exists",
+        "new": "fail_if_exists",
+        "fail_if_exists": "fail_if_exists",
+        "报错停止": "fail_if_exists",
+        "不覆盖，存在则报错": "fail_if_exists",
+        "存在则报错": "fail_if_exists",
+    }
+    SQLITE_BACKEND_WRITE_MODES = {
+        "append": "append",
+        "replace_table": "replace",
+        "timestamp_new": "timestamp",
+        "create_new": "fail",
+        "fail_if_exists": "fail",
+    }
+    TABLE_ACCESS_POLICY_ALIASES = {
+        "": "audit",
+        "audit": "audit",
+        "只审计": "audit",
+        "审计": "audit",
+        "默认只审计": "audit",
+        "log": "audit",
+        "prompt": "prompt",
+        "预检确认": "prompt",
+        "确认": "prompt",
+        "warn": "prompt",
+        "strict": "strict",
+        "enforce": "strict",
+        "强制": "strict",
+        "强制拦截": "strict",
+        "拦截": "strict",
+        "off": "off",
+        "disabled": "off",
+        "none": "off",
+        "关闭": "off",
+    }
+
     def __init__(self, db_path, node_id="", node_name="", node_type="", context=None, progress_callback=None,
                  table_access=None, permission_policy=None):
         self.db_path = db_path or ""
@@ -90,12 +169,91 @@ class TableAccessManager:
         if not isinstance(table_access, dict) and isinstance(current_info, dict):
             table_access = current_info.get("table_access")
         self.table_access = table_access if isinstance(table_access, dict) else {}
-        self.permission_policy = str(
+        self.permission_policy = self.normalize_permission_policy(
             permission_policy
             or ((self.context or {}).get("table_access_policy") if self.context else "")
             or "audit"
-        ).strip().lower()
+        )
         self.events = []
+
+    @classmethod
+    def normalize_permission_policy(cls, value):
+        text = str(value or "").strip()
+        return cls.TABLE_ACCESS_POLICY_ALIASES.get(text, cls.TABLE_ACCESS_POLICY_ALIASES.get(text.lower(), "audit"))
+
+    @classmethod
+    def normalize_write_mode(cls, mode):
+        text = str(mode or "").strip()
+        if text in cls.WRITE_MODE_ALIASES:
+            return cls.WRITE_MODE_ALIASES[text]
+        lower = text.lower()
+        if lower in cls.WRITE_MODE_ALIASES:
+            return cls.WRITE_MODE_ALIASES[lower]
+        if "追加" in text and ("更新" in text or "匹配" in text):
+            return "upsert_by_key"
+        if "追加" in text:
+            return "append"
+        if "清空" in text:
+            return "clear_keep_schema"
+        if "时间戳" in text or "自动加" in text:
+            return "timestamp_new"
+        if "报错" in text or "不覆盖" in text or "存在则报错" in text:
+            return "fail_if_exists"
+        if "新建" in text and "时间戳" not in text:
+            return "create_new"
+        if "更新" in text or "匹配" in text:
+            return "update_by_key"
+        if "字段" in text or "局部" in text or "顺序" in text:
+            return "overlay_by_order"
+        if "覆盖" in text or "重建" in text:
+            return "replace_table"
+        return lower
+
+    @classmethod
+    def sqlite_backend_write_mode(cls, mode):
+        standard = cls.normalize_write_mode(mode)
+        backend = cls.SQLITE_BACKEND_WRITE_MODES.get(standard)
+        if not backend:
+            raise ValueError(f"当前写入入口不支持写入模式：{mode}")
+        return backend
+
+    @classmethod
+    def required_permissions_for_write_mode(cls, mode, exists=False, partial=False):
+        standard = cls.normalize_write_mode(mode)
+        required = ["write_table"]
+        if standard == "append":
+            required.append("append_rows")
+            if not exists:
+                required.append("create_table")
+        elif standard in {"create_new", "timestamp_new", "fail_if_exists"}:
+            required.append("create_table")
+        elif standard == "replace_table":
+            required.append("replace_table" if exists else "create_table")
+        elif standard == "clear_keep_schema":
+            required.extend(["clear_table", "update_rows"])
+            if not exists:
+                required.append("create_table")
+        elif standard in {"overlay_by_order", "write_fields_only", "fill_blank_fields"} or partial:
+            required.append("update_rows")
+            if not exists:
+                required.append("create_table")
+        elif standard == "update_by_key":
+            required.extend(["read_table", "update_rows"])
+        elif standard == "upsert_by_key":
+            required.extend(["read_table", "update_rows", "append_rows"])
+            if not exists:
+                required.append("create_table")
+        elif standard == "keep_schema_insert":
+            if not exists:
+                required.append("create_table")
+        else:
+            required.append("replace_table" if exists else "create_table")
+
+        result = []
+        for perm in required:
+            if perm not in result:
+                result.append(perm)
+        return result
 
     def _log_event(self, operation, table_name="", status="ok", **extra):
         emit_progress = bool(extra.pop("emit_progress", True))
@@ -178,7 +336,7 @@ class TableAccessManager:
         return name
 
     def is_permission_enforced(self):
-        return self.permission_policy in {"enforce", "strict", "强制", "拦截"}
+        return self.permission_policy in {"strict", "enforce"}
 
     def _access_tables(self):
         tables = (self.table_access or {}).get("tables", [])
@@ -218,11 +376,31 @@ class TableAccessManager:
             values = []
         return [item for item in values if isinstance(item, dict)]
 
-    def _match_field_rule(self, entry, field_name):
+    def _match_field_rule(self, entry, field_name, field_index=None):
         field_name = str(field_name or "").strip()
-        if not field_name:
+        mapping_mode = str((entry or {}).get("field_mapping_mode", "") or "").strip()
+        by_order = mapping_mode in {"by_order", "按列顺序", "按顺序", "order"}
+        if field_index is not None:
+            try:
+                field_pos = int(field_index) + 1
+            except Exception:
+                field_pos = None
+        else:
+            field_pos = None
+        if not field_name and field_pos is None:
             return None
         for rule in self._field_rules(entry):
+            rule_mode = str(rule.get("match_mode", "") or "").strip()
+            if (by_order or rule_mode in {"by_order", "按列顺序", "按顺序", "order"}) and field_pos is not None:
+                for key in ("target_index", "source_index", "index", "column_index"):
+                    raw_index = rule.get(key)
+                    if raw_index in ("", None):
+                        continue
+                    try:
+                        if int(raw_index) == field_pos:
+                            return rule
+                    except Exception:
+                        continue
             candidates = [
                 rule.get("target_field"),
                 rule.get("field"),
@@ -246,7 +424,7 @@ class TableAccessManager:
     def check_table_permission(self, table_name, permissions, operation="table_access", fields=None,
                                field_action=None, write_mode="", source_type=""):
         """权限校验骨架：audit 模式只记录，enforce/strict 模式才拦截。"""
-        if self.permission_policy in {"off", "disabled", "none", "关闭"}:
+        if self.permission_policy == "off":
             return True
         table_name = str(table_name or "").strip()
         required = [p for p in (permissions or []) if p]
@@ -270,11 +448,11 @@ class TableAccessManager:
             action = str(field_action or "").strip()
             if action:
                 rules = self._field_rules(entry)
-                for field in fields or []:
+                for field_index, field in enumerate(fields or []):
                     field = str(field or "").strip()
-                    if not field:
+                    if not field and field_index is None:
                         continue
-                    rule = self._match_field_rule(entry, field)
+                    rule = self._match_field_rule(entry, field, field_index=field_index)
                     if rule is None:
                         if rules:
                             missing_fields.append(f"{field}:未配置")
@@ -317,25 +495,12 @@ class TableAccessManager:
         return status not in {"denied", "missing"} or not self.is_permission_enforced()
 
     def validate_write_mode(self, table_name, mode, exists=None, fields=None):
-        mode = (mode or "replace").lower()
-        if mode == "overwrite":
-            mode = "replace"
-        if mode == "new":
-            mode = "fail"
-        if mode == "auto_timestamp":
-            mode = "timestamp"
+        standard_mode = self.normalize_write_mode(mode or "replace_table")
+        backend_mode = self.sqlite_backend_write_mode(standard_mode)
         if exists is None:
             exists = self.table_exists(table_name)
 
-        required = ["write_table"]
-        if mode == "append":
-            required.append("append_rows")
-            if not exists:
-                required.append("create_table")
-        elif mode == "replace":
-            required.append("replace_table")
-        elif mode in {"fail", "timestamp"}:
-            required.append("create_table")
+        required = self.required_permissions_for_write_mode(standard_mode, exists=exists)
 
         self.check_table_permission(
             table_name,
@@ -343,10 +508,10 @@ class TableAccessManager:
             operation="write_table",
             fields=fields,
             field_action="write",
-            write_mode=mode,
+            write_mode=standard_mode,
             source_type="SQLite表",
         )
-        return mode
+        return backend_mode
 
     def list_tables(self):
         """返回当前数据库中的普通表名列表。"""
@@ -482,17 +647,11 @@ class TableAccessManager:
         rows = [list(r) for r in (rows or [])]
         if not headers:
             raise ValueError("headers 不能为空")
-        mode = (mode or "replace").lower()
-        if mode == "overwrite":
-            mode = "replace"
-        if mode == "new":
-            mode = "fail"
-        if mode == "auto_timestamp":
-            mode = "timestamp"
+        standard_mode = self.normalize_write_mode(mode or "replace_table")
 
         actual_name = table_name
         exists = self.table_exists(table_name)
-        self.validate_write_mode(table_name, mode, exists=exists, fields=headers)
+        mode = self.validate_write_mode(table_name, standard_mode, exists=exists, fields=headers)
         if mode == "timestamp" and exists:
             actual_name = self._timestamp_table_name(table_name)
             exists = False
@@ -533,8 +692,8 @@ class TableAccessManager:
             if fixed_rows:
                 cur.executemany(insert_sql, fixed_rows)
             conn.commit()
-        self._log_event("write_table", actual_name, mode=mode, rows=len(rows), columns=len(headers), message=f"写入表 {actual_name}：{len(rows)} 行 × {len(headers)} 列，模式 {mode}")
-        return {"table_name": actual_name, "rows": len(rows), "columns": len(headers), "mode": mode}
+        self._log_event("write_table", actual_name, mode=mode, write_mode=standard_mode, rows=len(rows), columns=len(headers), message=f"写入表 {actual_name}：{len(rows)} 行 × {len(headers)} 列，模式 {standard_mode}")
+        return {"table_name": actual_name, "rows": len(rows), "columns": len(headers), "mode": mode, "write_mode": standard_mode}
 
     def clear_fields(self, table_name, fields):
         self.check_table_permission(
@@ -4744,6 +4903,29 @@ class PlanWorkflowWindow:
     """
 
     NODE_TYPES = ["获取文件列表", "节点组 / 子工作流", "循环执行起点", "批量替换", "数据提取", "格式规范化 / 日期时间解析", "新建日期时间列", "新建列", "合并列", "批量更改列名", "去重 / 重复数据处理", "列数字运算", "匹配值输出列名", "复制列", "复制行", "删除行", "填充值", "序列填充", "区域填充", "行数据映射填充", "保存中转数据", "选定列写入指定表", "字段映射写入表", "高级筛选", "删除列", "移动列", "批量重命名", "循环判断回跳"]
+    TABLE_ACCESS_POLICY_CHOICES = ["只审计", "预检确认", "强制拦截"]
+    TABLE_ACCESS_POLICY_DISPLAY = {
+        "audit": "只审计",
+        "prompt": "预检确认",
+        "strict": "强制拦截",
+        "off": "关闭",
+    }
+    STANDARD_WRITE_MODE_CHOICES = [
+        "",
+        "current_table_default",
+        "create_new",
+        "append",
+        "overlay_by_order",
+        "update_by_key",
+        "upsert_by_key",
+        "clear_keep_schema",
+        "keep_schema_insert",
+        "replace_table",
+        "timestamp_new",
+        "fail_if_exists",
+        "write_fields_only",
+        "fill_blank_fields",
+    ]
     LOGIC_TYPES = ["AND", "OR"]
     FILTER_OPS = ["等于", "不等于", "包含", "不包含", "开头是", "结尾是", "大于", "小于", "大于等于", "小于等于", "为空", "不为空", "正则匹配"]
     FILTER_VALUE_SOURCES = ["固定值", "字段值"]
@@ -4785,6 +4967,7 @@ class PlanWorkflowWindow:
         self.output_mode_var = tk.StringVar(value="输出到主界面预览区")
         self.output_table_var = tk.StringVar(value=self.make_default_output_table_name())
         self.backup_before_overwrite_var = tk.BooleanVar(value=True)
+        self.table_access_policy_var = tk.StringVar(value="只审计")
         self.node_type_var = tk.StringVar(value=self.NODE_TYPES[0])
         self.selected_node_index = None
         self.preview_edit_mode = False
@@ -4852,6 +5035,50 @@ class PlanWorkflowWindow:
         base = self.app.sanitize_sql_name(self.app.table_name_var.get(), "计划结果")
         return f"{base}_计划结果_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
+    def normalize_table_access_policy(self, value=None):
+        if value is None:
+            value = self.table_access_policy_var.get()
+        return TableAccessManager.normalize_permission_policy(value)
+
+    def table_access_policy_display(self, value=None):
+        policy = self.normalize_table_access_policy(value)
+        return self.TABLE_ACCESS_POLICY_DISPLAY.get(policy, "只审计")
+
+    def set_table_access_policy(self, value):
+        self.table_access_policy_var.set(self.table_access_policy_display(value))
+
+    def normalize_table_access_write_mode(self, mode):
+        return TableAccessManager.normalize_write_mode(mode)
+
+    def write_mode_permission_set(self, mode, exists=False, read=False, partial=False):
+        perms = {key: False for key, _ in self.table_access_permission_items()}
+        for key in TableAccessManager.required_permissions_for_write_mode(mode, exists=exists, partial=partial):
+            if key in perms:
+                perms[key] = True
+        if read:
+            perms["read_table"] = True
+        return perms
+
+    def write_mode_display_text(self, mode):
+        standard = self.normalize_table_access_write_mode(mode)
+        labels = {
+            "": "",
+            "current_table_default": "当前表默认",
+            "create_new": "新建表写入",
+            "append": "追加行",
+            "overlay_by_order": "按顺序覆盖",
+            "update_by_key": "按键更新",
+            "upsert_by_key": "匹配更新或追加",
+            "clear_keep_schema": "清空保留结构写入",
+            "keep_schema_insert": "保留结构写入",
+            "replace_table": "替换整表",
+            "timestamp_new": "自动时间戳新表",
+            "fail_if_exists": "存在则报错",
+            "write_fields_only": "指定字段写入",
+            "fill_blank_fields": "字段空缺补齐",
+        }
+        return labels.get(standard, str(mode or ""))
+
     def build_ui(self):
         main = ttk.Frame(self.window, padding=8)
         main.pack(fill=tk.BOTH, expand=True)
@@ -4905,6 +5132,17 @@ class PlanWorkflowWindow:
         ttk.Button(node_btns3, text="表节点映射", command=self.open_table_access_window).pack(side=tk.LEFT, padx=2, pady=2)
         ttk.Button(node_btns3, text="权限预检", command=self.open_table_access_precheck_window).pack(side=tk.LEFT, padx=2, pady=2)
         ttk.Button(node_btns3, text="审计日志", command=self.open_table_access_audit_window).pack(side=tk.LEFT, padx=2, pady=2)
+
+        policy_frame = ttk.Frame(node_frame)
+        policy_frame.pack(fill=tk.X)
+        ttk.Label(policy_frame, text="权限策略：").pack(side=tk.LEFT, padx=(2, 2), pady=2)
+        ttk.Combobox(
+            policy_frame,
+            textvariable=self.table_access_policy_var,
+            values=self.TABLE_ACCESS_POLICY_CHOICES,
+            width=10,
+            state="readonly",
+        ).pack(side=tk.LEFT, padx=2, pady=2)
 
         tpl_frame = ttk.LabelFrame(left, text="3. 计划模板", padding=8)
         tpl_frame.pack(fill=tk.X)
@@ -5568,7 +5806,8 @@ class PlanWorkflowWindow:
             "source_type": source_type,
             "is_current_table": bool(is_current_table),
             "permissions": permissions or self.table_permission_set(read=True),
-            "write_mode": write_mode,
+            "write_mode": self.normalize_table_access_write_mode(write_mode),
+            "field_mapping_mode": "by_name",
             "field_mapping": field_mapping or {},
             "log_only": bool(log_only),
         }
@@ -5810,6 +6049,23 @@ class PlanWorkflowWindow:
                 write_mode="覆盖循环队列",
             ))
 
+        elif node_type in ("条件跳转", "条件跳转节点", "条件分支跳转"):
+            source_type = str(config.get("source_type", "当前工作流表") or "当前工作流表").strip()
+            if source_type == "SQLite表" and config.get("source_table"):
+                tables.append(self.make_table_access_entry(
+                    "branch_source",
+                    config.get("source_table", ""),
+                    source_type="SQLite表",
+                    permissions=self.table_permission_set(read=True),
+                ))
+            elif source_type == "中转副表" and config.get("transit_table"):
+                tables.append(self.make_table_access_entry(
+                    "branch_source",
+                    config.get("transit_table", ""),
+                    source_type="中转副表",
+                    permissions=self.table_permission_set(read=True),
+                ))
+
         return {"version": 1, "auto_generated": True, "tables": tables}
 
     def ensure_node_identity(self, node, force_new=False):
@@ -5946,7 +6202,7 @@ class PlanWorkflowWindow:
         if not ops:
             return "无操作"
         text = "/".join(ops)
-        return f"{text}；{mode}" if mode else text
+        return f"{text}；{self.write_mode_display_text(mode)}" if mode else text
 
     def table_access_entry_status(self, entry):
         entry = entry or {}
@@ -6001,6 +6257,43 @@ class PlanWorkflowWindow:
                     items.append((str(key), value))
             return items
         return []
+
+    def find_table_access_field_rule(self, entry, target="", source="", field_index=None):
+        target = str(target or "").strip()
+        source = str(source or "").strip()
+        mapping_mode = str((entry or {}).get("field_mapping_mode", "") or "").strip()
+        by_order = mapping_mode in {"by_order", "按列顺序", "按顺序", "order"}
+        field_pos = None
+        if field_index is not None:
+            try:
+                field_pos = int(field_index) + 1
+            except Exception:
+                field_pos = None
+        for _, item in self.table_access_field_items(entry):
+            if not isinstance(item, dict):
+                continue
+            rule_mode = str(item.get("match_mode", "") or "").strip()
+            if (by_order or rule_mode in {"by_order", "按列顺序", "按顺序", "order"}) and field_pos is not None:
+                for key in ("target_index", "source_index", "index", "column_index"):
+                    raw_index = item.get(key)
+                    if raw_index in ("", None):
+                        continue
+                    try:
+                        if int(raw_index) == field_pos:
+                            return item
+                    except Exception:
+                        continue
+            candidates = [
+                str(item.get("target_field", "") or "").strip(),
+                str(item.get("source_field", "") or "").strip(),
+                str(item.get("field", "") or "").strip(),
+                str(item.get("name", "") or "").strip(),
+            ]
+            if target and target in candidates:
+                return item
+            if source and source in candidates:
+                return item
+        return None
 
     def make_table_access_field_key(self, mapping, source_field, target_field):
         base = str(target_field or source_field or "字段").strip() or "字段"
@@ -6088,6 +6381,47 @@ class PlanWorkflowWindow:
                 },
             }
         entry["field_mapping"] = mapping
+        entry["field_mapping_mode"] = "by_name"
+        return len(mapping)
+
+    def auto_match_table_access_fields_by_order(self, node_index, entry):
+        entry = entry or {}
+        try:
+            source_fields, _ = self.get_headers_rows_before(node_index)
+        except Exception:
+            source_fields = list(self.preview_headers or [])
+
+        table = str(entry.get("table", "") or "").strip()
+        target_fields = []
+        if table and table != "__CURRENT_TABLE__" and entry.get("source_type", "SQLite表") == "SQLite表":
+            try:
+                target_fields = self.app.get_table_columns(table)
+            except Exception:
+                target_fields = []
+        if not target_fields:
+            target_fields = list(source_fields)
+
+        count = max(len(source_fields), len(target_fields))
+        mapping = {}
+        for idx in range(count):
+            source = source_fields[idx] if idx < len(source_fields) else ""
+            target = target_fields[idx] if idx < len(target_fields) else source
+            key = f"col_{idx + 1}"
+            mapping[key] = {
+                "source_field": source,
+                "target_field": target,
+                "source_index": idx + 1,
+                "target_index": idx + 1,
+                "match_mode": "by_order",
+                "permissions": {
+                    "read_field": True,
+                    "write_field": bool((entry.get("permissions") or {}).get("write_table")),
+                    "create_field": bool((entry.get("permissions") or {}).get("alter_schema")),
+                    "protect_field": False,
+                },
+            }
+        entry["field_mapping"] = mapping
+        entry["field_mapping_mode"] = "by_order"
         return len(mapping)
 
     def apply_table_access_preset_to_vars(self, preset, permission_vars, log_only_var=None):
@@ -6296,24 +6630,15 @@ class PlanWorkflowWindow:
                     expected_fields = expected.get("field_mapping") or {}
                     actual_fields = actual.get("field_mapping") or {}
                     if isinstance(expected_fields, dict) and isinstance(actual_fields, dict):
-                        for _, field_rule in expected_fields.items():
+                        for field_index, (_, field_rule) in enumerate(expected_fields.items()):
                             if not isinstance(field_rule, dict):
                                 continue
                             target = str(field_rule.get("target_field") or field_rule.get("source_field") or "").strip()
+                            source = str(field_rule.get("source_field") or "").strip()
                             expected_fperms = field_rule.get("permissions") or {}
                             if not target:
                                 continue
-                            actual_rule = None
-                            for _, item in actual_fields.items():
-                                if not isinstance(item, dict):
-                                    continue
-                                candidates = [
-                                    str(item.get("target_field", "") or "").strip(),
-                                    str(item.get("source_field", "") or "").strip(),
-                                ]
-                                if target in candidates:
-                                    actual_rule = item
-                                    break
+                            actual_rule = self.find_table_access_field_rule(actual, target=target, source=source, field_index=field_index)
                             if actual_rule is None:
                                 continue
                             actual_fperms = actual_rule.get("permissions") or {}
@@ -6495,10 +6820,23 @@ class PlanWorkflowWindow:
 
     def confirm_table_access_precheck(self, execute_actions=True, stop_index=None):
         issues = self.build_table_access_precheck(execute_actions=execute_actions, stop_index=stop_index)
+        self.last_table_access_precheck = list(issues or [])
         actionable = self.table_access_precheck_actionable(issues)
         if not actionable:
             self.status_var.set(self.table_access_precheck_summary_text(issues))
             return True
+        policy = self.normalize_table_access_policy()
+        if policy == "audit":
+            self.status_var.set(self.table_access_precheck_summary_text(actionable) + " 当前策略为只审计，执行不会因预检提示而中断。")
+            return True
+        if policy == "strict":
+            self.show_table_access_precheck_dialog(
+                actionable,
+                title="执行前权限预检 - 强制拦截",
+                allow_continue=False,
+            )
+            self.status_var.set("执行计划已拦截：当前权限策略为强制拦截，请先处理权限预检项。")
+            return False
         return self.show_table_access_precheck_dialog(
             actionable,
             title="执行前权限预检",
@@ -6745,7 +7083,7 @@ class PlanWorkflowWindow:
         ttk.Combobox(
             table_form,
             textvariable=write_mode_var,
-            values=["", "current_table_default", "append", "overlay", "update_by_key", "upsert_by_key", "replace_table", "clear_keep_schema", "keep_schema_insert", "write_fields_only"],
+            values=self.STANDARD_WRITE_MODE_CHOICES,
             width=19,
         ).grid(row=1, column=4, sticky=tk.W, padx=3, pady=3)
         ttk.Label(table_form, text="预设").grid(row=2, column=0, sticky=tk.W, padx=3, pady=3)
@@ -6759,6 +7097,15 @@ class PlanWorkflowWindow:
         preset_combo.grid(row=2, column=1, sticky=tk.W, padx=3, pady=3)
         ttk.Checkbutton(table_form, text="当前表", variable=is_current_var).grid(row=2, column=2, sticky=tk.W, padx=3, pady=3)
         ttk.Checkbutton(table_form, text="只记录", variable=log_only_var).grid(row=2, column=3, sticky=tk.W, padx=3, pady=3)
+        ttk.Label(table_form, text="字段匹配").grid(row=4, column=0, sticky=tk.W, padx=3, pady=3)
+        field_mapping_mode_var = tk.StringVar(value="按字段名")
+        ttk.Combobox(
+            table_form,
+            textvariable=field_mapping_mode_var,
+            values=["按字段名", "按列顺序", "手动"],
+            width=12,
+            state="readonly",
+        ).grid(row=4, column=1, sticky=tk.W, padx=3, pady=3)
 
         perm_frame = ttk.Frame(table_form)
         perm_frame.grid(row=3, column=0, columnspan=5, sticky=tk.W, pady=(4, 0))
@@ -6767,12 +7114,14 @@ class PlanWorkflowWindow:
 
         field_tree = ttk.Treeview(
             right,
-            columns=("source", "target", "read", "write", "create", "protect", "status"),
+            columns=("source_index", "source", "target_index", "target", "read", "write", "create", "protect", "status"),
             show="headings",
             height=14,
         )
         for col, text, width in [
+            ("source_index", "源序", 48),
             ("source", "来源字段", 110),
+            ("target_index", "目序", 48),
             ("target", "目标字段", 110),
             ("read", "读", 42),
             ("write", "写", 42),
@@ -6788,16 +7137,22 @@ class PlanWorkflowWindow:
         field_form.pack(fill=tk.X, pady=(6, 0))
         source_field_var = tk.StringVar()
         target_field_var = tk.StringVar()
+        source_index_var = tk.StringVar()
+        target_index_var = tk.StringVar()
         field_permission_vars = {key: tk.BooleanVar(value=False) for key, _ in self.field_permission_items()}
 
         ttk.Label(field_form, text="来源字段").grid(row=0, column=0, sticky=tk.W, padx=3, pady=3)
         source_field_combo = ttk.Combobox(field_form, textvariable=source_field_var, width=22)
         source_field_combo.grid(row=0, column=1, sticky=tk.W, padx=3, pady=3)
+        ttk.Label(field_form, text="源序号").grid(row=0, column=2, sticky=tk.W, padx=3, pady=3)
+        ttk.Entry(field_form, textvariable=source_index_var, width=6).grid(row=0, column=3, sticky=tk.W, padx=3, pady=3)
         ttk.Label(field_form, text="目标字段").grid(row=1, column=0, sticky=tk.W, padx=3, pady=3)
         target_field_combo = ttk.Combobox(field_form, textvariable=target_field_var, width=22)
         target_field_combo.grid(row=1, column=1, sticky=tk.W, padx=3, pady=3)
+        ttk.Label(field_form, text="目序号").grid(row=1, column=2, sticky=tk.W, padx=3, pady=3)
+        ttk.Entry(field_form, textvariable=target_index_var, width=6).grid(row=1, column=3, sticky=tk.W, padx=3, pady=3)
         fp_frame = ttk.Frame(field_form)
-        fp_frame.grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=(4, 0))
+        fp_frame.grid(row=2, column=0, columnspan=4, sticky=tk.W, pady=(4, 0))
         for idx, (key, label) in enumerate(self.field_permission_items()):
             ttk.Checkbutton(fp_frame, text=label, variable=field_permission_vars[key]).grid(row=0, column=idx, sticky=tk.W, padx=4, pady=2)
 
@@ -6846,7 +7201,15 @@ class PlanWorkflowWindow:
             role_var.set(entry.get("role", "target"))
             source_type_var.set(entry.get("source_type", "SQLite表"))
             table_var.set(entry.get("table", ""))
-            write_mode_var.set(entry.get("write_mode", ""))
+            write_mode_var.set(self.normalize_table_access_write_mode(entry.get("write_mode", "")))
+            mode_display = {
+                "by_order": "按列顺序",
+                "order": "按列顺序",
+                "按列顺序": "按列顺序",
+                "manual": "手动",
+                "手动": "手动",
+            }.get(str(entry.get("field_mapping_mode", "by_name") or "by_name").strip(), "按字段名")
+            field_mapping_mode_var.set(mode_display)
             is_current_var.set(bool(entry.get("is_current_table")))
             log_only_var.set(bool(entry.get("log_only")))
             perms = entry.get("permissions") or {}
@@ -6876,7 +7239,9 @@ class PlanWorkflowWindow:
                     tk.END,
                     iid=str(row_idx),
                     values=(
+                        item.get("source_index", ""),
                         item.get("source_field", ""),
+                        item.get("target_index", ""),
                         item.get("target_field", ""),
                         self.field_bool_text(perms.get("read_field")),
                         self.field_bool_text(perms.get("write_field")),
@@ -6902,7 +7267,7 @@ class PlanWorkflowWindow:
                         self.table_access_operation_summary(entry),
                         "是" if entry.get("is_current_table") else "否",
                         self.table_permission_summary(entry),
-                        entry.get("write_mode", ""),
+                        self.write_mode_display_text(entry.get("write_mode", "")),
                         self.table_access_entry_status(entry),
                     ),
                 )
@@ -6961,6 +7326,8 @@ class PlanWorkflowWindow:
                 return
             source_field_var.set(item.get("source_field", ""))
             target_field_var.set(item.get("target_field", ""))
+            source_index_var.set(item.get("source_index", ""))
+            target_index_var.set(item.get("target_index", ""))
             perms = item.get("permissions") or {}
             for pkey, var in field_permission_vars.items():
                 var.set(bool(perms.get(pkey)))
@@ -6983,7 +7350,11 @@ class PlanWorkflowWindow:
             entry["table"] = table_var.get().strip()
             entry["is_current_table"] = bool(is_current_var.get() or entry["table"] == "__CURRENT_TABLE__")
             entry["log_only"] = bool(log_only_var.get())
-            entry["write_mode"] = write_mode_var.get().strip()
+            entry["write_mode"] = self.normalize_table_access_write_mode(write_mode_var.get())
+            entry["field_mapping_mode"] = {
+                "按列顺序": "by_order",
+                "手动": "manual",
+            }.get(field_mapping_mode_var.get(), "by_name")
             entry["permissions"] = {key: bool(var.get()) for key, var in permission_vars.items()}
             if entry["is_current_table"] and not entry["table"]:
                 entry["table"] = "__CURRENT_TABLE__"
@@ -7046,9 +7417,14 @@ class PlanWorkflowWindow:
                     key = state["field_keys"][row_idx]
             if not key:
                 key = self.make_table_access_field_key(mapping, source_field_var.get(), target_field_var.get())
+            source_index = source_index_var.get().strip()
+            target_index = target_index_var.get().strip()
             mapping[key] = {
                 "source_field": source_field_var.get().strip(),
                 "target_field": target_field_var.get().strip(),
+                "source_index": source_index,
+                "target_index": target_index,
+                "match_mode": "by_order" if field_mapping_mode_var.get() == "按列顺序" else "by_name",
                 "permissions": {pkey: bool(var.get()) for pkey, var in field_permission_vars.items()},
             }
             refresh_field_tree()
@@ -7057,6 +7433,8 @@ class PlanWorkflowWindow:
         def add_field_entry():
             source_field_var.set("")
             target_field_var.set("")
+            source_index_var.set("")
+            target_index_var.set("")
             field_permission_vars["read_field"].set(True)
             field_permission_vars["write_field"].set(bool(permission_vars["write_table"].get()))
             field_permission_vars["create_field"].set(False)
@@ -7086,6 +7464,17 @@ class PlanWorkflowWindow:
             count = self.auto_match_table_access_fields(state.get("node_index") or 0, entry)
             refresh_field_tree()
             status_var.set(f"自动字段匹配完成：{count} 个字段。")
+
+        def auto_match_fields_by_order():
+            entry = current_table_entry()
+            node = current_node()
+            if entry is None or node is None:
+                return
+            self.mark_node_table_access_manual(node)
+            count = self.auto_match_table_access_fields_by_order(state.get("node_index") or 0, entry)
+            field_mapping_mode_var.set("按列顺序")
+            refresh_field_tree()
+            status_var.set(f"按列顺序字段匹配完成：{count} 个字段。")
 
         def clear_fields():
             entry = current_table_entry()
@@ -7135,18 +7524,32 @@ class PlanWorkflowWindow:
                 f"操作：{self.table_access_operation_summary(entry)}\n"
                 f"状态：{self.table_access_entry_status(entry)}\n"
                 f"权限：{self.table_permission_summary(entry)}\n"
-                f"写入模式：{entry.get('write_mode', '') or '未设置'}\n"
+                f"写入模式：{self.write_mode_display_text(entry.get('write_mode', '')) or '未设置'}\n"
                 f"字段映射：{len(fields)} 个"
             )
             messagebox.showinfo("预览影响", message, parent=win)
 
-        preset_combo.bind("<<ComboboxSelected>>", lambda event=None: self.apply_table_access_preset_to_vars(preset_var.get(), permission_vars, log_only_var))
+        def apply_table_preset(event=None):
+            preset = preset_var.get()
+            self.apply_table_access_preset_to_vars(preset, permission_vars, log_only_var)
+            mode_by_preset = {
+                "追加写入": "append",
+                "更新写入": "update_by_key",
+                "追加或更新": "upsert_by_key",
+                "覆盖/清空": "clear_keep_schema",
+                "新建表": "create_new",
+                "危险全开": "replace_table",
+            }
+            if preset in mode_by_preset:
+                write_mode_var.set(mode_by_preset[preset])
+
+        preset_combo.bind("<<ComboboxSelected>>", apply_table_preset)
         node_tree.bind("<<TreeviewSelect>>", on_node_selected)
         table_tree.bind("<<TreeviewSelect>>", on_table_selected)
         field_tree.bind("<<TreeviewSelect>>", on_field_selected)
 
         table_btns = ttk.Frame(table_form)
-        table_btns.grid(row=4, column=0, columnspan=5, sticky=tk.W, pady=(6, 0))
+        table_btns.grid(row=5, column=0, columnspan=5, sticky=tk.W, pady=(6, 0))
         ttk.Button(table_btns, text="新增表角色", command=add_table_entry).pack(side=tk.LEFT, padx=3)
         ttk.Button(table_btns, text="保存表设置", command=save_table_entry).pack(side=tk.LEFT, padx=3)
         ttk.Button(table_btns, text="删除表角色", command=delete_table_entry).pack(side=tk.LEFT, padx=3)
@@ -7155,11 +7558,12 @@ class PlanWorkflowWindow:
         ttk.Button(table_btns, text="预览影响", command=preview_impact).pack(side=tk.LEFT, padx=3)
 
         field_btns = ttk.Frame(field_form)
-        field_btns.grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=(6, 0))
+        field_btns.grid(row=3, column=0, columnspan=4, sticky=tk.W, pady=(6, 0))
         ttk.Button(field_btns, text="新增字段", command=add_field_entry).pack(side=tk.LEFT, padx=3)
         ttk.Button(field_btns, text="保存字段", command=save_field_entry).pack(side=tk.LEFT, padx=3)
         ttk.Button(field_btns, text="删除字段", command=delete_field_entry).pack(side=tk.LEFT, padx=3)
         ttk.Button(field_btns, text="自动字段匹配", command=auto_match_fields).pack(side=tk.LEFT, padx=3)
+        ttk.Button(field_btns, text="按顺序匹配", command=auto_match_fields_by_order).pack(side=tk.LEFT, padx=3)
         ttk.Button(field_btns, text="清空字段", command=clear_fields).pack(side=tk.LEFT, padx=3)
 
         bottom = ttk.Frame(win, padding=(8, 0, 8, 8))
@@ -7180,6 +7584,10 @@ class PlanWorkflowWindow:
 
     def get_table_manager(self, context=None, node=None, node_type="", node_name=""):
         db_path = self.get_workflow_db_path(context)
+        if isinstance(context, dict) and "table_access_policy" not in context:
+            snapshot = context.get("workflow_snapshot") or {}
+            if isinstance(snapshot, dict) and snapshot.get("table_access_policy") is not None:
+                context["table_access_policy"] = TableAccessManager.normalize_permission_policy(snapshot.get("table_access_policy"))
         current = (context or {}).get("current_node_info", {}) if isinstance(context, dict) else {}
         table_access = None
         if isinstance(node, dict):
@@ -7203,32 +7611,10 @@ class PlanWorkflowWindow:
         )
 
     def transit_write_permissions_for_mode(self, exists=False, write_mode="", partial=False):
-        text = str(write_mode or "").strip()
-        text_lower = text.lower()
-        required = ["write_table"]
-        is_append = text_lower == "append" or "追加" in text
-        is_timestamp = text_lower in {"timestamp", "auto_timestamp"} or "时间戳" in text or "新建" in text
-        is_clear = "清空" in text
-        is_partial = bool(partial) or "局部" in text or "字段" in text
-        is_replace = text_lower in {"replace", "overwrite"} or "覆盖" in text or "重建" in text
-
-        if is_append:
-            required.append("append_rows")
-            if not exists:
-                required.append("create_table")
-        elif is_partial:
-            required.extend(["update_rows", "alter_schema"])
-            if is_clear:
-                required.append("clear_table")
-            if not exists:
-                required.append("create_table")
-        elif is_timestamp:
-            required.append("create_table")
-        elif is_replace:
-            required.append("replace_table" if exists else "create_table")
-        else:
-            required.append("replace_table" if exists else "create_table")
-
+        required = TableAccessManager.required_permissions_for_write_mode(write_mode or "replace_table", exists=exists, partial=partial)
+        standard = TableAccessManager.normalize_write_mode(write_mode)
+        if standard in {"overlay_by_order", "write_fields_only", "fill_blank_fields", "clear_keep_schema"}:
+            required.append("alter_schema")
         result = []
         for perm in required:
             if perm not in result:
@@ -14080,6 +14466,10 @@ class PlanWorkflowWindow:
         context.setdefault("transit_tables", {})
         context.setdefault("loop_states", {})
         context.setdefault("loop_results", {})
+        if isinstance(snapshot, dict) and snapshot.get("table_access_policy") is not None:
+            context["table_access_policy"] = TableAccessManager.normalize_permission_policy(snapshot.get("table_access_policy"))
+        else:
+            context.setdefault("table_access_policy", self.normalize_table_access_policy())
         if snapshot:
             context["workflow_snapshot"] = snapshot
         if progress_callback is not None:
@@ -18716,6 +19106,7 @@ class PlanWorkflowWindow:
             "output_mode": self.output_mode_var.get(),
             "output_table": self.output_table_var.get(),
             "backup_before_overwrite": self.backup_before_overwrite_var.get(),
+            "table_access_policy": self.normalize_table_access_policy(),
         }
 
     def validate_plan_template_data(self, data):
@@ -18744,6 +19135,7 @@ class PlanWorkflowWindow:
         self.output_mode_var.set(data.get("output_mode", "输出到主界面预览区"))
         self.output_table_var.set(data.get("output_table", self.make_default_output_table_name()))
         self.backup_before_overwrite_var.set(bool(data.get("backup_before_overwrite", True)))
+        self.set_table_access_policy(data.get("table_access_policy", "audit"))
         self.refresh_node_list()
         self.rebuild_current_config()
 
@@ -18954,6 +19346,7 @@ class PlanWorkflowWindow:
             "output_table": self.output_table_var.get().strip(),
             "output_mode": self.output_mode_var.get(),
             "backup_before_overwrite": bool(self.backup_before_overwrite_var.get()),
+            "table_access_policy": self.normalize_table_access_policy(),
             "headers": copy.deepcopy(self.app.headers),
             "rows": copy.deepcopy(self.app.rows),
             "nodes": copy.deepcopy(self.nodes),
