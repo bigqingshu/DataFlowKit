@@ -14170,6 +14170,25 @@ class PlanWorkflowWindow:
         )
         ttk.Label(frame, text=note, foreground="gray", wraplength=1050).grid(row=0, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
 
+        risk_var = tk.StringVar()
+        risk_label = ttk.Label(frame, textvariable=risk_var, wraplength=1050)
+        risk_label.grid(row=1, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
+
+        def refresh_filter_risk_text():
+            warnings = self.get_plan_filter_config_warnings(
+                headers,
+                config.get("extra_tables", []),
+                config.get("conditions", []),
+                config.get("join_rules", []),
+                config.get("join_logic", "AND"),
+            )
+            if warnings:
+                risk_var.set("风险提示：" + "；".join(warnings))
+                risk_label.configure(foreground="#9a5a00")
+            else:
+                risk_var.set("状态：当前多表筛选未发现明显全组合风险。")
+                risk_label.configure(foreground="gray")
+
         selected_tables = list(config.get("extra_tables", []))
         transit_context = transit_context or {"transit_tables": {}}
         all_fields = self.get_plan_filter_available_fields(headers, selected_tables, transit_context)
@@ -14178,7 +14197,7 @@ class PlanWorkflowWindow:
 
         # 1. 副表选择区
         source_frame = ttk.LabelFrame(frame, text="1. 副表选择（主输入固定为：上一步结果 / 当前表）", padding=6)
-        source_frame.grid(row=1, column=0, columnspan=8, sticky="nsew", pady=6)
+        source_frame.grid(row=2, column=0, columnspan=8, sticky="nsew", pady=6)
         ttk.Label(source_frame, text=f"当前表字段数：{len(headers)}").grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
         ttk.Label(source_frame, text="可选数据库表：").grid(row=1, column=0, sticky=tk.NW, padx=4, pady=4)
         table_list = tk.Listbox(source_frame, selectmode=tk.MULTIPLE, height=5, exportselection=False, width=36)
@@ -14212,7 +14231,7 @@ class PlanWorkflowWindow:
 
         # 2. 筛选条件区
         condition_frame = ttk.LabelFrame(frame, text="2. 筛选条件（可筛选字段，并支持固定值或字段值匹配）", padding=6)
-        condition_frame.grid(row=2, column=0, columnspan=8, sticky="nsew", pady=6)
+        condition_frame.grid(row=3, column=0, columnspan=8, sticky="nsew", pady=6)
         logic_var = self.add_labeled_combo(condition_frame, "条件关系：", config.get("logic", "AND"), self.LOGIC_TYPES, 0, 0, 8)
         self.sync_var_to_config(logic_var, config, "logic")
         field_var = tk.StringVar(value=all_fields[0] if all_fields else "")
@@ -14297,6 +14316,7 @@ class PlanWorkflowWindow:
                     "value": v,
                 })
             config["conditions"] = result
+            refresh_filter_risk_text()
 
         def add_cond():
             if not field_var.get().strip():
@@ -14368,7 +14388,7 @@ class PlanWorkflowWindow:
 
         # 3. 多表匹配规则区
         join_frame = ttk.LabelFrame(frame, text="3. 多表匹配规则（没有副表时可不填；有副表时建议至少添加一条匹配规则）", padding=6)
-        join_frame.grid(row=3, column=0, columnspan=8, sticky="nsew", pady=6)
+        join_frame.grid(row=4, column=0, columnspan=8, sticky="nsew", pady=6)
         left_var = tk.StringVar(value=current_fields[0] if current_fields else (all_fields[0] if all_fields else ""))
         join_op_var = tk.StringVar(value="等于")
         right_default = ""
@@ -14390,6 +14410,7 @@ class PlanWorkflowWindow:
         join_logic_var = tk.StringVar(value=config.get("join_logic", "AND"))
         ttk.Combobox(join_frame, textvariable=join_logic_var, values=self.LOGIC_TYPES, width=8, state="readonly").grid(row=1, column=0, padx=4, pady=4, sticky=tk.W)
         self.sync_var_to_config(join_logic_var, config, "join_logic")
+        join_logic_var.trace_add("write", lambda *_: refresh_filter_risk_text())
         left_combo = ttk.Combobox(join_frame, textvariable=left_var, values=all_fields, width=28, state="normal")
         left_combo.grid(row=1, column=1, padx=4, pady=4)
         ttk.Combobox(join_frame, textvariable=join_op_var, values=join_ops, width=12, state="readonly").grid(row=1, column=2, padx=4, pady=4)
@@ -14418,6 +14439,7 @@ class PlanWorkflowWindow:
                 left, op, right = join_tree.item(iid, "values")
                 rules.append({"left": left, "op": op, "right": right})
             config["join_rules"] = rules
+            refresh_filter_risk_text()
 
         def add_join():
             if not left_var.get().strip() or not right_var.get().strip():
@@ -14436,7 +14458,7 @@ class PlanWorkflowWindow:
 
         # 4. 输出字段区
         output_frame = ttk.LabelFrame(frame, text="4. 输出字段（不选择则输出全部可用字段）", padding=6)
-        output_frame.grid(row=4, column=0, columnspan=8, sticky="nsew", pady=6)
+        output_frame.grid(row=5, column=0, columnspan=8, sticky="nsew", pady=6)
         out_wrap = ttk.Frame(output_frame)
         out_wrap.pack(fill=tk.BOTH, expand=True)
         out_list = tk.Listbox(out_wrap, selectmode=tk.MULTIPLE, height=9, exportselection=False)
@@ -14476,6 +14498,7 @@ class PlanWorkflowWindow:
             self.refresh_listbox_values(out_list, all_values, selected_output)
             sync_output_fields()
             refresh_condition_value_input()
+            refresh_filter_risk_text()
             self.status_var.set(f"高级筛选字段已局部刷新：{len(config.get('extra_tables', []))} 个副表，{len(all_values)} 个可用字段。")
 
         out_list.bind("<<ListboxSelect>>", lambda e: sync_output_fields())
@@ -14494,6 +14517,7 @@ class PlanWorkflowWindow:
 
         ttk.Button(btns, textvariable=dedupe_text, command=toggle_filter_dedupe).pack(side=tk.LEFT, padx=(12, 2))
         ttk.Label(btns, text="按最终输出整行去重，保留第一条。", foreground="gray").pack(side=tk.LEFT, padx=4)
+        refresh_filter_risk_text()
 
     def select_all_output_fields(self, listbox, config):
         listbox.selection_set(0, tk.END)
@@ -18256,6 +18280,69 @@ class PlanWorkflowWindow:
     def plan_filter_field_belongs_to_table(self, field, table_name):
         return str(field or "").startswith(f"{table_name}.")
 
+    def get_plan_filter_field_owner(self, field, headers, extra_tables):
+        field = str(field or "").strip()
+        if not field:
+            return ""
+        if field.startswith("当前表.") or field in set(headers or []):
+            return "当前表"
+        for table in extra_tables or []:
+            if self.plan_filter_field_belongs_to_table(field, table):
+                return table
+        return ""
+
+    def get_plan_filter_hash_join_availability(self, headers, extra_tables, join_rules, join_logic):
+        availability = {}
+        available_sources = {"当前表"}
+        if join_logic != "AND":
+            for table in extra_tables or []:
+                availability[table] = False
+                available_sources.add(table)
+            return availability
+
+        for table in extra_tables or []:
+            table_has_link = False
+            for rule in join_rules or []:
+                if rule.get("op", "等于") != "等于":
+                    continue
+                left_owner = self.get_plan_filter_field_owner(rule.get("left", ""), headers, extra_tables)
+                right_owner = self.get_plan_filter_field_owner(rule.get("right", ""), headers, extra_tables)
+                if left_owner == table and right_owner in available_sources:
+                    table_has_link = True
+                    break
+                if right_owner == table and left_owner in available_sources:
+                    table_has_link = True
+                    break
+            availability[table] = table_has_link
+            available_sources.add(table)
+        return availability
+
+    def get_plan_filter_config_warnings(self, headers, extra_tables, conditions, join_rules, join_logic):
+        extra_tables = list(extra_tables or [])
+        if not extra_tables:
+            return []
+
+        warnings = []
+        if not conditions:
+            warnings.append("未设置筛选条件，副表会先按匹配规则读取全部可用行")
+        if not join_rules:
+            warnings.append("已选择副表但没有多表匹配规则，正式运行可能形成全组合")
+            return warnings
+        if join_logic != "AND":
+            warnings.append("匹配关系为 OR 时无法使用等值索引优化，数据量大时可能较慢")
+
+        availability = self.get_plan_filter_hash_join_availability(
+            headers, extra_tables, join_rules, join_logic
+        )
+        weak_tables = [table for table in extra_tables if not availability.get(table)]
+        if weak_tables:
+            warnings.append(
+                "以下副表缺少可提前索引的“等于”匹配规则："
+                + "、".join(weak_tables)
+                + "；建议使用 当前表/已匹配表字段 等于 该副表字段"
+            )
+        return warnings
+
     def add_plan_filter_required_field(self, field, headers, extra_tables, current_headers, table_fields):
         field = str(field or "").strip()
         if not field:
@@ -19330,6 +19417,12 @@ class PlanWorkflowWindow:
         else:
             fields = list(headers)
 
+        if (context or {}).get("is_config_probe") and extra_tables:
+            return fields, [], (
+                f"配置探测：跳过高级筛选多表匹配，仅返回字段结构 "
+                f"{len(fields)} 列；正式预览/执行时会按规则计算。"
+            )
+
         current_required, table_required = self.collect_plan_filter_required_fields(
             headers, extra_tables, conditions, join_rules, output_fields, fields
         )
@@ -19359,6 +19452,16 @@ class PlanWorkflowWindow:
             if hash_rules:
                 right_index, missing_key_records = self.build_plan_filter_right_index(right_records, hash_rules)
                 hash_join_tables += 1
+            elif not conditions and records and right_records:
+                estimated_pairs = len(records) * len(right_records)
+                if estimated_pairs > max_intermediate:
+                    raise RuntimeError(
+                        f"高级筛选节点可能形成全组合：当前中间结果 {len(records)} 行 × "
+                        f"副表 {table} {len(right_records)} 行 = {estimated_pairs} 组，"
+                        f"超过中间组合上限 {max_intermediate}。"
+                        "请添加筛选条件，或为该副表添加可索引的“等于”匹配规则"
+                        "（当前表/已匹配表字段 等于 该副表字段）。"
+                    )
             new_records = []
             for left_record in records:
                 candidates = self.iter_plan_filter_join_candidates(
