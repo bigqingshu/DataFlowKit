@@ -32,6 +32,22 @@ PLUGIN_INFO = {
 SETTINGS_FILE = "visual_mapping_write_plan_settings.json"
 FEATURE_ANY_LABEL = "不限制"
 SHEET_ALL_LABEL = "所有表"
+BATCH_TARGET_CONDITION_VALUE = "条件命中值"
+BATCH_TARGET_FULL_TEXT = "原文整格"
+BATCH_TARGET_FULL_MATCH = "完整正则匹配"
+BATCH_TARGET_CHOICES = [BATCH_TARGET_CONDITION_VALUE, BATCH_TARGET_FULL_TEXT, BATCH_TARGET_FULL_MATCH]
+REPLACE_ROW_MATCH_INDEX = "按匹配行号"
+REPLACE_ROW_CONTENT_ROW = "当前内容行"
+REPLACE_ROW_FIRST = "第一行"
+REPLACE_ROW_FIXED = "固定行号"
+REPLACE_ROW_HIT_INDEX = "按命中序号"
+REPLACE_ROW_POLICY_CHOICES = [
+    REPLACE_ROW_MATCH_INDEX,
+    REPLACE_ROW_CONTENT_ROW,
+    REPLACE_ROW_FIRST,
+    REPLACE_ROW_FIXED,
+    REPLACE_ROW_HIT_INDEX,
+]
 CONFIG_WINDOW_WIDTH = 1360
 CONFIG_WINDOW_HEIGHT = 820
 CONFIG_WINDOW_MIN_WIDTH = 1120
@@ -598,6 +614,7 @@ def _condition_extract_items(text, conditions, default_logic="AND"):
                     "span": (start, end),
                     "value": extracted_value,
                     "note": f"正则条件提取{match_index} 组{used_group}",
+                    "full_span": match.span(0),
                     "full_match": _as_text(match.group(0)),
                     "group": used_group,
                 })
@@ -606,6 +623,53 @@ def _condition_extract_items(text, conditions, default_logic="AND"):
         if regex_items:
             return True, detail, regex_items
     return True, detail, [{"span": (0, len(text)), "value": text, "note": "条件命中，使用全文"}]
+
+
+def _target_items_for_batch_scope(text, condition_items, scope):
+    text = _as_text(text)
+    scope = _normalize_batch_target_scope(scope)
+    condition_items = [item for item in (condition_items or []) if isinstance(item, dict)]
+    if scope == BATCH_TARGET_FULL_TEXT:
+        seed = condition_items[0] if condition_items else {}
+        condition_value = _as_text(seed.get("value"))
+        full_match = _as_text(seed.get("full_match", condition_value))
+        return [{
+            "span": (0, len(text)),
+            "value": text,
+            "note": BATCH_TARGET_FULL_TEXT,
+            "full_span": (0, len(text)),
+            "full_match": full_match,
+            "condition_value": condition_value,
+            "group": _as_text(seed.get("group", "")),
+        }]
+    if scope == BATCH_TARGET_FULL_MATCH:
+        targets = []
+        seen = set()
+        for item in condition_items:
+            try:
+                start, end = item.get("full_span", item.get("span", (0, len(text))))
+                start = int(start)
+                end = int(end)
+            except Exception:
+                start, end = 0, len(text)
+            start = max(0, min(start, len(text)))
+            end = max(start, min(end, len(text)))
+            key = (start, end)
+            if key in seen:
+                continue
+            seen.add(key)
+            value = _as_text(item.get("full_match", text[start:end]))
+            targets.append({
+                "span": (start, end),
+                "value": value,
+                "note": BATCH_TARGET_FULL_MATCH,
+                "full_span": (start, end),
+                "full_match": value,
+                "condition_value": _as_text(item.get("value")),
+                "group": _as_text(item.get("group", "")),
+            })
+        return targets
+    return condition_items
 
 
 def _feature_condition_pass(condition, source_records, source_file="", sheet_name=""):
@@ -748,6 +812,46 @@ def _batch_replace_source(rule, params=None):
     return _normalize_batch_table_source((rule or {}).get("replace_value_source") or _legacy_batch_replace_source(rule, params))
 
 
+def _normalize_batch_target_scope(value):
+    text = _as_text(value)
+    if text in ("原文整格", "原文", "整格", "全文", "full_text", "source_text"):
+        return BATCH_TARGET_FULL_TEXT
+    if text in ("完整正则匹配", "完整匹配", "正则完整匹配", "full_match", "regex_match"):
+        return BATCH_TARGET_FULL_MATCH
+    return BATCH_TARGET_CONDITION_VALUE
+
+
+def _batch_target_scope(rule):
+    return _normalize_batch_target_scope((rule or {}).get("batch_target_scope") or (rule or {}).get("target_scope"))
+
+
+def _normalize_replace_row_policy(value):
+    text = _as_text(value)
+    if text in ("当前内容行", "内容行", "当前新内容行", "content_row"):
+        return REPLACE_ROW_CONTENT_ROW
+    if text in ("第一行", "首行", "first"):
+        return REPLACE_ROW_FIRST
+    if text in ("固定行号", "固定行", "指定行", "fixed"):
+        return REPLACE_ROW_FIXED
+    if text in ("按命中序号", "命中序号", "hit_index"):
+        return REPLACE_ROW_HIT_INDEX
+    return REPLACE_ROW_MATCH_INDEX
+
+
+def _batch_replace_row_policy(rule):
+    return _normalize_replace_row_policy((rule or {}).get("replace_row_policy") or (rule or {}).get("row_policy"))
+
+
+def _batch_match_row_policy(rule):
+    return _normalize_replace_row_policy((rule or {}).get("match_row_policy") or (rule or {}).get("match_value_row_policy"))
+
+
+def _short_preview_text(value, limit=90):
+    text = _as_text(value).replace("\r", "\\r").replace("\n", "\\n")
+    limit = max(10, int(limit or 90))
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
 def _compare_batch_text(text, pattern, mode, case_sensitive=True):
     text = "" if text is None else str(text)
     pattern = "" if pattern is None else str(pattern)
@@ -843,6 +947,58 @@ def _batch_row_at(source, rows, index, content, table_context):
     return rows[index] if 0 <= index < len(rows or []) else {}
 
 
+def _batch_replace_row_at(source, rows, pair_index, content, table_context, extract, rule):
+    source = _normalize_batch_table_source(source)
+    if _is_manual_batch_source(source):
+        return None, "", True
+    policy = _batch_replace_row_policy(rule)
+    if source == _as_text((table_context or {}).get("content_alias")):
+        return content or {}, f"替换行策略={policy}：当前内容行", True
+    rows = rows or []
+    if policy == REPLACE_ROW_CONTENT_ROW:
+        row_index = max(0, _to_int((content or {}).get("__content_row__"), 1) - 1)
+    elif policy == REPLACE_ROW_FIRST:
+        row_index = 0
+    elif policy == REPLACE_ROW_FIXED:
+        row_index = max(0, _to_int((rule or {}).get("replace_row_index"), 1) - 1)
+    elif policy == REPLACE_ROW_HIT_INDEX:
+        row_index = max(0, _to_int((extract or {}).get("序号"), 1) - 1)
+    else:
+        row_index = pair_index
+    note = f"替换行策略={policy}：第{row_index + 1}行"
+    if policy == REPLACE_ROW_MATCH_INDEX:
+        return (rows[row_index] if 0 <= row_index < len(rows) else {}), note, True
+    if 0 <= row_index < len(rows):
+        return rows[row_index], note, True
+    return {}, f"{note}越界，可用{len(rows)}行", False
+
+
+def _batch_match_row_at(source, rows, pair_index, content, table_context, extract, rule):
+    source = _normalize_batch_table_source(source)
+    if _is_manual_batch_source(source):
+        return None, "", True
+    policy = _batch_match_row_policy(rule)
+    if source == _as_text((table_context or {}).get("content_alias")):
+        return content or {}, f"匹配行策略={policy}：当前内容行", True
+    rows = rows or []
+    if policy == REPLACE_ROW_CONTENT_ROW:
+        row_index = max(0, _to_int((content or {}).get("__content_row__"), 1) - 1)
+    elif policy == REPLACE_ROW_FIRST:
+        row_index = 0
+    elif policy == REPLACE_ROW_FIXED:
+        row_index = max(0, _to_int((rule or {}).get("match_row_index"), 1) - 1)
+    elif policy == REPLACE_ROW_HIT_INDEX:
+        row_index = max(0, _to_int((extract or {}).get("序号"), 1) - 1)
+    else:
+        row_index = pair_index
+    note = f"匹配行策略={policy}：第{row_index + 1}行"
+    if policy == REPLACE_ROW_MATCH_INDEX:
+        return (rows[row_index] if 0 <= row_index < len(rows) else {}), note, True
+    if 0 <= row_index < len(rows):
+        return rows[row_index], note, True
+    return {}, f"{note}越界，可用{len(rows)}行", False
+
+
 def _iter_batch_rule_pairs(rule, content, aux_rows, extract, table_context=None, params=None):
     match_source = _batch_match_source(rule, params)
     replace_source = _batch_replace_source(rule, params)
@@ -850,6 +1006,8 @@ def _iter_batch_rule_pairs(rule, content, aux_rows, extract, table_context=None,
     replace_field = _as_text(rule.get("replace_value_field"))
     match_is_manual = _is_manual_batch_source(match_source)
     replace_is_manual = _is_manual_batch_source(replace_source)
+    match_row_policy = _batch_match_row_policy(rule)
+    replace_row_policy = _batch_replace_row_policy(rule)
     table_context = table_context or {}
     if not table_context:
         table_context = {
@@ -864,16 +1022,32 @@ def _iter_batch_rule_pairs(rule, content, aux_rows, extract, table_context=None,
         raise ValueError(f"未设置替换值字段：{replace_source}")
     match_rows = [] if match_is_manual else _batch_source_rows(match_source, table_context, content)
     replace_rows = [] if replace_is_manual else _batch_source_rows(replace_source, table_context, content)
-    if not match_is_manual:
+    if not match_is_manual and match_row_policy == REPLACE_ROW_MATCH_INDEX:
         total_rows = len(match_rows)
-    elif not replace_is_manual:
+    elif not replace_is_manual and replace_row_policy == REPLACE_ROW_MATCH_INDEX:
         total_rows = len(replace_rows)
     else:
         total_rows = 1
     skipped = 0
     for index in range(total_rows):
-        match_row = _batch_row_at(match_source, match_rows, index, content, table_context)
-        replace_row = _batch_row_at(replace_source, replace_rows, index, content, table_context)
+        match_row, match_row_note, match_row_ok = _batch_match_row_at(
+            match_source,
+            match_rows,
+            index,
+            content,
+            table_context,
+            extract,
+            rule,
+        )
+        replace_row, replace_row_note, replace_row_ok = _batch_replace_row_at(
+            replace_source,
+            replace_rows,
+            index,
+            content,
+            table_context,
+            extract,
+            rule,
+        )
         source_rows = {}
         aux_alias = _as_text(table_context.get("aux_alias") or (params or {}).get("replace_aux_table_alias") or "替换辅助表")
         if isinstance(match_row, dict):
@@ -885,7 +1059,13 @@ def _iter_batch_rule_pairs(rule, content, aux_rows, extract, table_context=None,
             match_value = _expand_template(rule.get("match_value", ""), _batch_template_context(content, aux_row, extract, source_rows))
         else:
             match_value = _as_text((match_row or {}).get(match_field))
+        if not match_is_manual and not match_row_ok:
+            skipped += 1
+            continue
         if not match_value and bool(rule.get("skip_empty_match_value", True)):
+            skipped += 1
+            continue
+        if not replace_is_manual and not replace_row_ok:
             skipped += 1
             continue
         if replace_is_manual:
@@ -893,6 +1073,10 @@ def _iter_batch_rule_pairs(rule, content, aux_rows, extract, table_context=None,
         else:
             replace_value = _as_text((replace_row or {}).get(replace_field))
         source_note = f"匹配[{match_source}:{match_field or '手动'}]→替换[{replace_source}:{replace_field or '手动'}]"
+        if match_row_note:
+            source_note += f"，{match_row_note}"
+        if replace_row_note:
+            source_note += f"，{replace_row_note}"
         yield match_value, replace_value, source_note, skipped
 
 
@@ -943,9 +1127,11 @@ def _apply_batch_rules_to_value(value, rules, content, aux_rows, extract, table_
         replace_mode = _as_text(rule.get("replace_mode")) or "局部替换匹配字符串"
         case_sensitive = bool(rule.get("case_sensitive", True))
         count = _to_int(rule.get("count"), 0)
+        before_rule_text = text
         rule_changed = 0
         pair_count = 0
         skipped_empty = 0
+        match_samples = []
         try:
             pairs = list(_iter_batch_rule_pairs(rule, content, aux_rows, extract, table_context, params))
         except Exception as exc:
@@ -955,6 +1141,8 @@ def _apply_batch_rules_to_value(value, rules, content, aux_rows, extract, table_
             pair_count += 1
             source_note = current_source_note
             skipped_empty = max(skipped_empty, skipped)
+            if len(match_samples) < 3:
+                match_samples.append(f"{_short_preview_text(match_value, 40)}->{_short_preview_text(replace_value, 40)}")
             try:
                 if not _compare_batch_text(text, match_value, match_mode, case_sensitive):
                     continue
@@ -962,9 +1150,14 @@ def _apply_batch_rules_to_value(value, rules, content, aux_rows, extract, table_
             except Exception as exc:
                 return text, "；".join(details), f"批量替换规则{index}异常：{exc}"
             rule_changed += replaced
-        detail = f"批量规则{index} {match_mode}/{replace_mode}，来源{source_note}，替换{rule_changed}次"
+        detail = (
+            f"批量规则{index} {match_mode}/{replace_mode}，"
+            f"匹配对象={_short_preview_text(before_rule_text)}，来源{source_note}，替换{rule_changed}次"
+        )
+        if match_samples:
+            detail += "，匹配/替换样例=" + " | ".join(match_samples)
         if skipped_empty:
-            detail += f"，跳过空匹配值{skipped_empty}行"
+            detail += f"，跳过空匹配值或无效行{skipped_empty}行"
         if pair_count == 0:
             detail += "，无可用匹配值"
         details.append(detail)
@@ -975,6 +1168,7 @@ def _apply_replace_steps(old_text, rule, content, aux_rows=None, condition_items
     text = _as_text(old_text)
     rule = rule or {}
     batch_rules = _batch_rules_for_rule(rule)
+    target_scope = _batch_target_scope(rule)
     if condition_items is None:
         cond_ok, cond_detail, condition_items = _condition_extract_items(text, rule.get("conditions", []), rule.get("condition_logic", "AND"))
         if not cond_ok:
@@ -982,12 +1176,15 @@ def _apply_replace_steps(old_text, rule, content, aux_rows=None, condition_items
     condition_items = [item for item in (condition_items or []) if isinstance(item, dict)]
     if not condition_items:
         return text, "匹配条件未提取到可替换值", None
+    target_items = _target_items_for_batch_scope(text, condition_items, target_scope)
+    if not target_items:
+        return text, f"作用对象={target_scope}，未提取到可替换值", None
     parts = []
     last_pos = 0
     extracted = 0
     changed = 0
     detail_items = []
-    for item in condition_items:
+    for item in target_items:
         try:
             start, end = item.get("span", (0, len(text)))
             start = int(start)
@@ -1000,10 +1197,15 @@ def _apply_replace_steps(old_text, rule, content, aux_rows=None, condition_items
             continue
         extracted += 1
         value = _as_text(item.get("value"))
+        condition_value = _as_text(item.get("condition_value", value))
+        full_match = _as_text(item.get("full_match", value))
         extract = {
-            "提取内容": value,
-            "匹配值": value,
-            "完整匹配": _as_text(item.get("full_match", value)),
+            "提取内容": condition_value,
+            "匹配值": condition_value,
+            "条件命中值": condition_value,
+            "完整匹配": full_match,
+            "作用对象": value,
+            "批量匹配对象": value,
             "原文": text,
             "序号": extracted,
             "group": _as_text(item.get("group", "")),
@@ -1017,9 +1219,9 @@ def _apply_replace_steps(old_text, rule, content, aux_rows=None, condition_items
         last_pos = end
         if new_value != value:
             changed += 1
-        detail_items.append(f"{item.get('note', '条件命中值')}：{value} -> {new_value}；{batch_detail}")
+        detail_items.append(f"{item.get('note', target_scope)}：匹配对象={value} -> {new_value}；{batch_detail}")
     parts.append(text[last_pos:])
-    return "".join(parts), f"条件提取 {extracted} 条，回填变化 {changed} 条；" + "；".join(detail_items[:10]), None
+    return "".join(parts), f"作用对象={target_scope}；提取 {extracted} 条，回填变化 {changed} 条；" + "；".join(detail_items[:10]), None
 
 
 def _global_rule_fields(rule):
@@ -1966,11 +2168,36 @@ def open_config_window(parent, current_params, context):
 
         left_panel = ttk.Frame(body)
         left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        right_panel = ttk.Frame(body)
-        right_panel.grid(row=0, column=1, sticky="nsew")
+        editor_outer = ttk.Frame(body)
+        editor_outer.grid(row=0, column=1, sticky="nsew")
+        editor_outer.rowconfigure(0, weight=1)
+        editor_outer.columnconfigure(0, weight=1)
+        editor_canvas = tk.Canvas(editor_outer, highlightthickness=0)
+        editor_canvas.grid(row=0, column=0, sticky="nsew")
+        editor_scroll = ttk.Scrollbar(editor_outer, orient=tk.VERTICAL, command=editor_canvas.yview)
+        editor_scroll.grid(row=0, column=1, sticky="ns")
+        editor_canvas.configure(yscrollcommand=editor_scroll.set)
+        right_panel = ttk.Frame(editor_canvas)
+        right_panel_window = editor_canvas.create_window((0, 0), window=right_panel, anchor="nw")
         right_panel.columnconfigure(1, weight=1)
         right_panel.rowconfigure(7, weight=1)
         right_panel.rowconfigure(11, weight=1)
+
+        def refresh_editor_scroll(_event=None):
+            editor_canvas.configure(scrollregion=editor_canvas.bbox("all"))
+
+        def resize_editor_width(event=None):
+            if event is not None:
+                editor_canvas.itemconfigure(right_panel_window, width=max(1, event.width))
+            refresh_editor_scroll()
+
+        def on_editor_wheel(event):
+            delta = -1 if event.delta > 0 else 1
+            editor_canvas.yview_scroll(delta * 3, "units")
+
+        right_panel.bind("<Configure>", refresh_editor_scroll)
+        editor_canvas.bind("<Configure>", resize_editor_width)
+        editor_canvas.bind("<MouseWheel>", on_editor_wheel)
         preview_panel = ttk.Frame(body)
         preview_panel.grid(row=0, column=2, sticky="nsew", padx=(8, 0))
         preview_panel.columnconfigure(0, weight=1)
@@ -2002,7 +2229,7 @@ def open_config_window(parent, current_params, context):
         ttk.Combobox(right_panel, textvariable=logic_var, values=["AND", "OR"], width=8, state="readonly").grid(row=3, column=1, sticky=tk.W, pady=3)
 
         ttk.Label(preview_panel, text="匹配/替换预览").grid(row=0, column=0, sticky=tk.W, pady=(0, 4))
-        preview_text = tk.Text(preview_panel, height=28, width=34, wrap=tk.WORD)
+        preview_text = tk.Text(preview_panel, height=26, width=30, wrap=tk.WORD)
         preview_text.grid(row=1, column=0, sticky="nsew")
         preview_scroll = ttk.Scrollbar(preview_panel, orient=tk.VERTICAL, command=preview_text.yview)
         preview_scroll.grid(row=1, column=1, sticky="ns")
@@ -2014,7 +2241,7 @@ def open_config_window(parent, current_params, context):
         cond_tree_frame = ttk.Frame(right_panel)
         cond_tree_frame.rowconfigure(0, weight=1)
         cond_tree_frame.columnconfigure(0, weight=1)
-        cond_tree = ttk.Treeview(cond_tree_frame, columns=cond_columns, show="headings", height=6)
+        cond_tree = ttk.Treeview(cond_tree_frame, columns=cond_columns, show="headings", height=4)
         for col, text, width in [("join", "连接", 70), ("mode", "匹配", 120), ("value", "值/正则", 360)]:
             cond_tree.heading(col, text=text)
             cond_tree.column(col, width=width, anchor=tk.W)
@@ -2034,27 +2261,47 @@ def open_config_window(parent, current_params, context):
         ttk.Combobox(cond_input, textvariable=cond_mode_var, values=["包含", "等于", "不等于", "正则匹配", "正则不匹配", "为空", "非空"], width=14, state="readonly").pack(side=tk.LEFT, padx=2)
         ttk.Entry(cond_input, textvariable=cond_value_var, width=48).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
 
-        batch_columns = ("match_mode", "match_source", "match_value", "match_field", "replace_mode", "replace_source", "replace_value", "replace_field", "case", "skip", "count")
+        batch_columns = (
+            "match_mode",
+            "match_source",
+            "match_value",
+            "match_field",
+            "match_row_policy",
+            "match_row_index",
+            "replace_mode",
+            "replace_source",
+            "replace_value",
+            "replace_field",
+            "row_policy",
+            "row_index",
+            "case",
+            "skip",
+            "count",
+        )
         batch_tree_frame = ttk.Frame(right_panel)
         batch_tree_frame.rowconfigure(0, weight=1)
         batch_tree_frame.columnconfigure(0, weight=1)
-        batch_tree = ttk.Treeview(batch_tree_frame, columns=batch_columns, show="headings", height=6)
+        batch_tree = ttk.Treeview(batch_tree_frame, columns=batch_columns, show="headings", height=4)
         for col, text, width in [
             ("match_mode", "匹配方式", 90),
             ("match_source", "匹配值来源", 120),
             ("match_value", "匹配值", 130),
             ("match_field", "匹配值字段", 130),
+            ("match_row_policy", "匹配取行", 110),
+            ("match_row_index", "匹配固定行", 86),
             ("replace_mode", "替换方式", 150),
             ("replace_source", "替换值来源", 120),
             ("replace_value", "替换值/模板", 150),
             ("replace_field", "替换值字段", 130),
+            ("row_policy", "替换取行", 110),
+            ("row_index", "固定行", 70),
             ("case", "大小写", 70),
             ("skip", "空值跳过", 80),
             ("count", "次数", 60),
         ]:
             batch_tree.heading(col, text=text)
             batch_tree.column(col, width=width, anchor=tk.W, stretch=False)
-        ttk.Label(right_panel, text="批量替换规则列表（按顺序作用于匹配条件命中值）").grid(row=10, column=0, columnspan=4, sticky=tk.W, pady=(8, 0))
+        ttk.Label(right_panel, text="批量替换规则列表（按顺序作用于批量作用对象）").grid(row=10, column=0, columnspan=4, sticky=tk.W, pady=(8, 0))
         batch_tree_frame.grid(row=11, column=0, columnspan=4, sticky="nsew", pady=4)
         batch_tree.grid(row=0, column=0, sticky="nsew")
         batch_tree_y_scroll = ttk.Scrollbar(batch_tree_frame, orient=tk.VERTICAL, command=batch_tree.yview)
@@ -2073,20 +2320,33 @@ def open_config_window(parent, current_params, context):
         batch_replace_source_var = tk.StringVar(value="手动输入")
         batch_match_field_var = tk.StringVar(value="")
         batch_replace_field_var = tk.StringVar(value="")
+        batch_target_scope_var = tk.StringVar(value=BATCH_TARGET_FULL_TEXT)
+        batch_match_row_policy_var = tk.StringVar(value=REPLACE_ROW_MATCH_INDEX)
+        batch_match_row_index_var = tk.StringVar(value="1")
+        batch_replace_row_policy_var = tk.StringVar(value=REPLACE_ROW_CONTENT_ROW)
+        batch_replace_row_index_var = tk.StringVar(value="1")
         batch_case_var = tk.BooleanVar(value=True)
         batch_skip_empty_var = tk.BooleanVar(value=True)
         batch_count_var = tk.StringVar(value="0")
         batch_input.columnconfigure(0, weight=1)
         batch_input.columnconfigure(1, weight=1)
+        target_panel = ttk.Frame(batch_input)
+        target_panel.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 4))
         match_panel = ttk.LabelFrame(batch_input, text="1. 匹配命中值", padding=6)
-        match_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 4), pady=2)
+        match_panel.grid(row=1, column=0, sticky="nsew", padx=(0, 4), pady=2)
         replace_panel = ttk.LabelFrame(batch_input, text="2. 替换为", padding=6)
-        replace_panel.grid(row=0, column=1, sticky="nsew", padx=(4, 0), pady=2)
+        replace_panel.grid(row=1, column=1, sticky="nsew", padx=(4, 0), pady=2)
         option_panel = ttk.Frame(batch_input)
-        option_panel.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        option_panel.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        target_panel.columnconfigure(1, weight=0)
+        target_panel.columnconfigure(3, weight=1)
         match_panel.columnconfigure(1, weight=1)
         replace_panel.columnconfigure(1, weight=1)
         option_panel.columnconfigure(4, weight=1)
+
+        ttk.Label(target_panel, text="批量作用对象：").grid(row=0, column=0, sticky=tk.W, padx=4, pady=3)
+        ttk.Combobox(target_panel, textvariable=batch_target_scope_var, values=BATCH_TARGET_CHOICES, width=16, state="readonly").grid(row=0, column=1, sticky=tk.W, padx=4, pady=3)
+        ttk.Label(target_panel, text="先用上方条件初筛，再把这里选定的对象交给批量规则。", foreground="gray").grid(row=0, column=2, columnspan=2, sticky=tk.W, padx=12, pady=3)
 
         ttk.Label(match_panel, text="匹配方式：").grid(row=0, column=0, sticky=tk.W, padx=4, pady=3)
         ttk.Combobox(match_panel, textvariable=batch_match_mode_var, values=["包含", "完全相等", "不等于", "开头是", "结尾是", "正则匹配", "为空", "不为空"], width=14, state="readonly").grid(row=0, column=1, sticky="ew", padx=4, pady=3)
@@ -2099,6 +2359,12 @@ def open_config_window(parent, current_params, context):
         ttk.Label(match_panel, text="匹配值字段：").grid(row=3, column=0, sticky=tk.W, padx=4, pady=3)
         batch_match_field_combo = ttk.Combobox(match_panel, textvariable=batch_match_field_var, values=[], width=24, state="readonly")
         batch_match_field_combo.grid(row=3, column=1, sticky="ew", padx=4, pady=3)
+        ttk.Label(match_panel, text="匹配取行：").grid(row=4, column=0, sticky=tk.W, padx=4, pady=3)
+        batch_match_row_policy_combo = ttk.Combobox(match_panel, textvariable=batch_match_row_policy_var, values=REPLACE_ROW_POLICY_CHOICES, width=16, state="readonly")
+        batch_match_row_policy_combo.grid(row=4, column=1, sticky="ew", padx=4, pady=3)
+        ttk.Label(match_panel, text="固定行号：").grid(row=5, column=0, sticky=tk.W, padx=4, pady=3)
+        batch_match_row_index_entry = ttk.Entry(match_panel, textvariable=batch_match_row_index_var, width=10)
+        batch_match_row_index_entry.grid(row=5, column=1, sticky=tk.W, padx=4, pady=3)
 
         ttk.Label(replace_panel, text="替换方式：").grid(row=0, column=0, sticky=tk.W, padx=4, pady=3)
         ttk.Combobox(replace_panel, textvariable=batch_replace_mode_var, values=["局部替换匹配字符串", "整格替换为新值"], width=20, state="readonly").grid(row=0, column=1, sticky="ew", padx=4, pady=3)
@@ -2111,12 +2377,18 @@ def open_config_window(parent, current_params, context):
         ttk.Label(replace_panel, text="替换值字段：").grid(row=3, column=0, sticky=tk.W, padx=4, pady=3)
         batch_replace_field_combo = ttk.Combobox(replace_panel, textvariable=batch_replace_field_var, values=[], width=24, state="readonly")
         batch_replace_field_combo.grid(row=3, column=1, sticky="ew", padx=4, pady=3)
+        ttk.Label(replace_panel, text="替换取行：").grid(row=4, column=0, sticky=tk.W, padx=4, pady=3)
+        batch_replace_row_policy_combo = ttk.Combobox(replace_panel, textvariable=batch_replace_row_policy_var, values=REPLACE_ROW_POLICY_CHOICES, width=16, state="readonly")
+        batch_replace_row_policy_combo.grid(row=4, column=1, sticky="ew", padx=4, pady=3)
+        ttk.Label(replace_panel, text="固定行号：").grid(row=5, column=0, sticky=tk.W, padx=4, pady=3)
+        batch_replace_row_index_entry = ttk.Entry(replace_panel, textvariable=batch_replace_row_index_var, width=10)
+        batch_replace_row_index_entry.grid(row=5, column=1, sticky=tk.W, padx=4, pady=3)
 
         ttk.Checkbutton(option_panel, text="区分大小写", variable=batch_case_var).grid(row=0, column=0, sticky=tk.W, padx=4, pady=3)
         ttk.Checkbutton(option_panel, text="列匹配值为空时跳过", variable=batch_skip_empty_var).grid(row=0, column=1, sticky=tk.W, padx=12, pady=3)
         ttk.Label(option_panel, text="次数：").grid(row=0, column=2, sticky=tk.W, padx=(12, 4), pady=3)
         ttk.Entry(option_panel, textvariable=batch_count_var, width=8).grid(row=0, column=3, sticky=tk.W, padx=4, pady=3)
-        ttk.Label(option_panel, text="0 表示全部；规则只作用于匹配条件命中值。", foreground="gray").grid(row=0, column=4, sticky=tk.W, padx=12, pady=3)
+        ttk.Label(option_panel, text="0 表示全部；规则作用于上方选择的批量作用对象。", foreground="gray").grid(row=0, column=4, sticky=tk.W, padx=12, pady=3)
 
         def batch_source_choices():
             choices = ["手动输入"]
@@ -2143,6 +2415,16 @@ def open_config_window(parent, current_params, context):
             if batch_replace_source_var.get() not in choices:
                 batch_replace_source_var.set("手动输入")
 
+        def refresh_batch_row_controls():
+            match_is_manual = _is_manual_batch_source(batch_match_source_var.get())
+            replace_is_manual = _is_manual_batch_source(batch_replace_source_var.get())
+            batch_match_row_policy_combo.configure(state="disabled" if match_is_manual else "readonly")
+            match_fixed_enabled = (not match_is_manual) and _batch_match_row_policy({"match_row_policy": batch_match_row_policy_var.get()}) == REPLACE_ROW_FIXED
+            batch_match_row_index_entry.configure(state="normal" if match_fixed_enabled else "disabled")
+            batch_replace_row_policy_combo.configure(state="disabled" if replace_is_manual else "readonly")
+            fixed_enabled = (not replace_is_manual) and _batch_replace_row_policy({"replace_row_policy": batch_replace_row_policy_var.get()}) == REPLACE_ROW_FIXED
+            batch_replace_row_index_entry.configure(state="normal" if fixed_enabled else "disabled")
+
         def refresh_batch_field_combos(reset_invalid=True):
             refresh_batch_source_options()
             match_fields = batch_source_fields(batch_match_source_var.get())
@@ -2151,6 +2433,7 @@ def open_config_window(parent, current_params, context):
             batch_replace_field_combo.configure(values=replace_fields, state="readonly" if replace_fields else "disabled")
             batch_match_value_entry.configure(state="normal" if _is_manual_batch_source(batch_match_source_var.get()) else "disabled")
             batch_replace_value_entry.configure(state="normal" if _is_manual_batch_source(batch_replace_source_var.get()) else "disabled")
+            refresh_batch_row_controls()
             if reset_invalid and batch_match_field_var.get() not in match_fields:
                 batch_match_field_var.set("")
             if reset_invalid and batch_replace_field_var.get() not in replace_fields:
@@ -2158,6 +2441,8 @@ def open_config_window(parent, current_params, context):
 
         batch_match_source_combo.bind("<<ComboboxSelected>>", lambda _event=None: refresh_batch_field_combos(True))
         batch_replace_source_combo.bind("<<ComboboxSelected>>", lambda _event=None: refresh_batch_field_combos(True))
+        batch_match_row_policy_combo.bind("<<ComboboxSelected>>", lambda _event=None: refresh_batch_row_controls())
+        batch_replace_row_policy_combo.bind("<<ComboboxSelected>>", lambda _event=None: refresh_batch_row_controls())
 
         def rule_label(rule):
             prefix = "" if rule.get("enabled", True) else "[停用] "
@@ -2175,9 +2460,25 @@ def open_config_window(parent, current_params, context):
             rows = []
             for item_id in batch_tree.get_children():
                 values = list(batch_tree.item(item_id, "values"))
-                while len(values) < 11:
+                while len(values) < 15:
                     values.append("")
-                match_mode, match_source, match_value, match_field, replace_mode, replace_source, replace_value, replace_field, case_text, skip_text, count = values[:11]
+                (
+                    match_mode,
+                    match_source,
+                    match_value,
+                    match_field,
+                    match_row_policy,
+                    match_row_index,
+                    replace_mode,
+                    replace_source,
+                    replace_value,
+                    replace_field,
+                    row_policy,
+                    row_index,
+                    case_text,
+                    skip_text,
+                    count,
+                ) = values[:15]
                 rows.append({
                     "enabled": True,
                     "match_mode": _as_text(match_mode) or "包含",
@@ -2189,6 +2490,10 @@ def open_config_window(parent, current_params, context):
                     "value_source": "手动输入",
                     "match_value_field": _as_text(match_field),
                     "replace_value_field": _as_text(replace_field),
+                    "match_row_policy": _normalize_replace_row_policy(match_row_policy),
+                    "match_row_index": _as_text(match_row_index) or "1",
+                    "replace_row_policy": _normalize_replace_row_policy(row_policy),
+                    "replace_row_index": _as_text(row_index) or "1",
                     "case_sensitive": _as_text(case_text) not in ("否", "False", "false", "0"),
                     "skip_empty_match_value": _as_text(skip_text) not in ("否", "False", "false", "0"),
                     "count": _as_text(count) or "0",
@@ -2201,10 +2506,14 @@ def open_config_window(parent, current_params, context):
                 batch_match_source_var.get(),
                 batch_match_value_var.get(),
                 batch_match_field_var.get(),
+                _normalize_replace_row_policy(batch_match_row_policy_var.get()),
+                batch_match_row_index_var.get() or "1",
                 batch_replace_mode_var.get(),
                 batch_replace_source_var.get(),
                 batch_replace_value_var.get(),
                 batch_replace_field_var.get(),
+                _normalize_replace_row_policy(batch_replace_row_policy_var.get()),
+                batch_replace_row_index_var.get() or "1",
                 "是" if batch_case_var.get() else "否",
                 "是" if batch_skip_empty_var.get() else "否",
                 batch_count_var.get(),
@@ -2238,6 +2547,7 @@ def open_config_window(parent, current_params, context):
                 "sheet_name": _cfg_sheet_name(sheet_var.get()),
                 "condition_logic": logic_var.get() or "AND",
                 "conditions": serialize_conditions(),
+                "batch_target_scope": _normalize_batch_target_scope(batch_target_scope_var.get()),
                 "batch_rules": serialize_batch_rules(),
             }
 
@@ -2316,6 +2626,7 @@ def open_config_window(parent, current_params, context):
             scope_var.set(_as_text(rule.get("scope", "全部")) or "全部")
             sheet_var.set(_ui_sheet_name(rule.get("sheet_name")))
             logic_var.set(_as_text(rule.get("condition_logic", "AND")) or "AND")
+            batch_target_scope_var.set(_batch_target_scope(rule))
             cond_tree.delete(*cond_tree.get_children())
             for cond in rule.get("conditions", []) or []:
                 cond_tree.insert("", tk.END, values=(_as_text(cond.get("join") or "AND"), _as_text(cond.get("mode") or "包含"), _as_text(cond.get("value"))))
@@ -2326,10 +2637,14 @@ def open_config_window(parent, current_params, context):
                     _batch_match_source(item, params),
                     _as_text(item.get("match_value")),
                     _as_text(item.get("match_value_field")),
+                    _batch_match_row_policy(item),
+                    _as_text(item.get("match_row_index") or "1"),
                     _as_text(item.get("replace_mode") or "局部替换匹配字符串"),
                     _batch_replace_source(item, params),
                     _as_text(item.get("replace_value")),
                     _as_text(item.get("replace_value_field")),
+                    _batch_replace_row_policy(item),
+                    _as_text(item.get("replace_row_index") or "1"),
                     "是" if bool(item.get("case_sensitive", True)) else "否",
                     "是" if bool(item.get("skip_empty_match_value", True)) else "否",
                     _as_text(item.get("count") or "0"),
@@ -2375,6 +2690,7 @@ def open_config_window(parent, current_params, context):
                 "sheet_name": "",
                 "condition_logic": "AND",
                 "conditions": [{"join": "AND", "mode": "正则匹配", "value": ""}],
+                "batch_target_scope": BATCH_TARGET_FULL_TEXT,
                 "batch_rules": [{
                     "enabled": True,
                     "match_mode": "包含",
@@ -2385,7 +2701,11 @@ def open_config_window(parent, current_params, context):
                     "replace_value_source": "手动输入",
                     "value_source": "手动输入",
                     "match_value_field": "",
+                    "match_row_policy": REPLACE_ROW_MATCH_INDEX,
+                    "match_row_index": "1",
                     "replace_value_field": "",
+                    "replace_row_policy": REPLACE_ROW_CONTENT_ROW,
+                    "replace_row_index": "1",
                     "case_sensitive": True,
                     "skip_empty_match_value": True,
                     "count": "0",
@@ -2448,17 +2768,37 @@ def open_config_window(parent, current_params, context):
             if not sel:
                 return
             values = list(batch_tree.item(sel[0], "values"))
-            while len(values) < 11:
+            while len(values) < 15:
                 values.append("")
-            match_mode, match_source, match_value, match_field, replace_mode, replace_source, replace_value, replace_field, case_text, skip_text, count = values[:11]
+            (
+                match_mode,
+                match_source,
+                match_value,
+                match_field,
+                match_row_policy,
+                match_row_index,
+                replace_mode,
+                replace_source,
+                replace_value,
+                replace_field,
+                row_policy,
+                row_index,
+                case_text,
+                skip_text,
+                count,
+            ) = values[:15]
             batch_match_mode_var.set(match_mode or "包含")
             batch_match_source_var.set(_normalize_batch_table_source(match_source))
             batch_match_value_var.set(match_value)
             batch_match_field_var.set(match_field)
+            batch_match_row_policy_var.set(_normalize_replace_row_policy(match_row_policy))
+            batch_match_row_index_var.set(match_row_index or "1")
             batch_replace_mode_var.set(replace_mode or "局部替换匹配字符串")
             batch_replace_source_var.set(_normalize_batch_table_source(replace_source))
             batch_replace_value_var.set(replace_value)
             batch_replace_field_var.set(replace_field)
+            batch_replace_row_policy_var.set(_normalize_replace_row_policy(row_policy))
+            batch_replace_row_index_var.set(row_index or "1")
             batch_case_var.set(_as_text(case_text) not in ("否", "False", "false", "0"))
             batch_skip_empty_var.set(_as_text(skip_text) not in ("否", "False", "false", "0"))
             batch_count_var.set(count or "0")
@@ -2490,7 +2830,7 @@ def open_config_window(parent, current_params, context):
         ttk.Button(batch_buttons, text="关闭", command=dlg.destroy).pack(side=tk.RIGHT, padx=2)
 
         refresh_global_list(0)
-        dlg.after_idle(lambda: _show_centered_window(dlg, win, 1280, 680))
+        dlg.after_idle(lambda: _show_centered_window(dlg, win, 1120, 720))
 
     def current_content_fields():
         table = tables.get(content_alias_var.get(), {})

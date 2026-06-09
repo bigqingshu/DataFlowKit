@@ -4931,6 +4931,8 @@ class PlanWorkflowWindow:
     FILTER_VALUE_SOURCES = ["固定值", "字段值"]
     REPLACE_MATCH_MODES = ["包含", "完全相等", "开头是", "结尾是", "正则匹配", "为空", "不为空"]
     REPLACE_MODES = ["局部替换匹配字符串", "整格替换为新值"]
+    REPLACE_VALUE_SOURCES = ["手动输入", "列字段"]
+    REPLACE_ROW_POLICIES = ["当前行", "第一行", "固定行号", "按匹配行号", "按命中序号"]
     EXTRACT_METHODS = [
         "正则提取", "固定位置提取", "从左取N位", "从右取N位", "按分隔符提取",
         "前后关键字之间提取", "指定字符前提取", "指定字符后提取", "删除前缀", "删除后缀"
@@ -5129,7 +5131,7 @@ class PlanWorkflowWindow:
 
         node_btns3 = ttk.Frame(node_frame)
         node_btns3.pack(fill=tk.X)
-        ttk.Button(node_btns3, text="表节点映射", command=self.open_table_access_window).pack(side=tk.LEFT, padx=2, pady=2)
+        ttk.Button(node_btns3, text="字段权限层", command=self.open_table_access_window).pack(side=tk.LEFT, padx=2, pady=2)
         ttk.Button(node_btns3, text="权限预检", command=self.open_table_access_precheck_window).pack(side=tk.LEFT, padx=2, pady=2)
         ttk.Button(node_btns3, text="审计日志", command=self.open_table_access_audit_window).pack(side=tk.LEFT, padx=2, pady=2)
         ttk.Button(node_btns3, text="跳转管理", command=self.open_jump_manager_window).pack(side=tk.LEFT, padx=2, pady=2)
@@ -6630,7 +6632,7 @@ class PlanWorkflowWindow:
                 if expected.get("is_current_table") or table == "__CURRENT_TABLE__":
                     continue
                 if not table:
-                    self.add_table_access_precheck_issue(issues, "warning", node_label, node, expected, "节点配置会访问表，但表名为空。", "回到节点配置或表节点映射中补齐表名。")
+                    self.add_table_access_precheck_issue(issues, "warning", node_label, node, expected, "节点配置会访问表，但表名为空。", "回到节点配置或字段权限层中补齐表名。")
                     continue
 
                 actual = self.find_matching_table_access_entry(actual_tables, expected)
@@ -6638,7 +6640,7 @@ class PlanWorkflowWindow:
                     matched_actual_ids.add(id(actual))
                 if actual is None:
                     severity = "error" if any(key in write_permissions for key in required) else "warning"
-                    self.add_table_access_precheck_issue(issues, severity, node_label, node, expected, "当前 table_access 中缺少该表角色。", "打开表节点映射，重建默认映射或手动添加表角色。")
+                    self.add_table_access_precheck_issue(issues, severity, node_label, node, expected, "当前 table_access 中缺少该表角色。", "打开字段权限层，重建默认映射或手动添加表角色。")
                     actual_perms = {}
                 else:
                     actual_perms = actual.get("permissions") or {}
@@ -6647,7 +6649,7 @@ class PlanWorkflowWindow:
                         label_map = dict(self.table_access_permission_items())
                         missing_text = "、".join(label_map.get(key, key) for key in missing)
                         severity = "error" if any(key in write_permissions for key in missing) else "warning"
-                        self.add_table_access_precheck_issue(issues, severity, node_label, node, expected, f"实际授权缺少：{missing_text}。", "在表节点映射中补齐权限，或调整节点写入设置。")
+                        self.add_table_access_precheck_issue(issues, severity, node_label, node, expected, f"实际授权缺少：{missing_text}。", "在字段权限层中补齐权限，或调整节点写入设置。")
 
                     expected_fields = expected.get("field_mapping") or {}
                     actual_fields = actual.get("field_mapping") or {}
@@ -6816,7 +6818,7 @@ class PlanWorkflowWindow:
 
         bottom = ttk.Frame(win, padding=(8, 0, 8, 8))
         bottom.pack(fill=tk.X)
-        ttk.Button(bottom, text="打开表节点映射", command=lambda: (win.destroy(), self.open_table_access_window())).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bottom, text="打开字段权限层", command=lambda: (win.destroy(), self.open_table_access_window())).pack(side=tk.LEFT, padx=4)
         ttk.Button(bottom, text="详情", command=show_detail).pack(side=tk.LEFT, padx=4)
         if allow_continue:
             def continue_run():
@@ -7725,9 +7727,9 @@ class PlanWorkflowWindow:
             initial_index = 0
 
         win = tk.Toplevel(self.window)
-        win.title("表节点映射系统")
-        win.geometry("1420x760")
-        win.minsize(1050, 620)
+        win.title("字段权限层")
+        win.geometry("1180x720")
+        win.minsize(900, 560)
         win.transient(self.window)
 
         state = {"node_index": initial_index, "table_index": None, "field_keys": [], "refreshing_node_tree": False}
@@ -7735,12 +7737,20 @@ class PlanWorkflowWindow:
         main = ttk.Frame(win, padding=8)
         main.pack(fill=tk.BOTH, expand=True)
 
-        left = ttk.LabelFrame(main, text="节点层", padding=6)
-        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 6))
-        middle = ttk.LabelFrame(main, text="表权限层", padding=6)
-        middle.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=6)
-        right = ttk.LabelFrame(main, text="字段权限层", padding=6)
-        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 0))
+        panes = ttk.Panedwindow(main, orient=tk.HORIZONTAL)
+        panes.pack(fill=tk.BOTH, expand=True)
+
+        left = ttk.LabelFrame(panes, text="节点层", padding=6)
+        detail = ttk.Frame(panes)
+        panes.add(left, weight=1)
+        panes.add(detail, weight=3)
+
+        detail_tabs = ttk.Notebook(detail)
+        detail_tabs.pack(fill=tk.BOTH, expand=True)
+        middle = ttk.Frame(detail_tabs, padding=6)
+        right = ttk.Frame(detail_tabs, padding=6)
+        detail_tabs.add(middle, text="表权限层")
+        detail_tabs.add(right, text="字段权限层")
 
         node_tree = ttk.Treeview(left, columns=("index", "type", "name", "status"), show="headings", height=22)
         for col, text, width in [
@@ -7756,8 +7766,10 @@ class PlanWorkflowWindow:
         node_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         node_y.pack(side=tk.RIGHT, fill=tk.Y)
 
+        table_tree_frame = ttk.Frame(middle)
+        table_tree_frame.pack(fill=tk.BOTH, expand=True)
         table_tree = ttk.Treeview(
-            middle,
+            table_tree_frame,
             columns=("role", "table", "operation", "current", "permissions", "mode", "status"),
             show="headings",
             height=12,
@@ -7772,8 +7784,15 @@ class PlanWorkflowWindow:
             ("status", "状态", 75),
         ]:
             table_tree.heading(col, text=text)
-            table_tree.column(col, width=width, anchor=tk.W)
-        table_tree.pack(fill=tk.BOTH, expand=True)
+            table_tree.column(col, width=width, anchor=tk.W, stretch=False)
+        table_y = ttk.Scrollbar(table_tree_frame, orient=tk.VERTICAL, command=table_tree.yview)
+        table_x = ttk.Scrollbar(table_tree_frame, orient=tk.HORIZONTAL, command=table_tree.xview)
+        table_tree.configure(yscrollcommand=table_y.set, xscrollcommand=table_x.set)
+        table_tree.grid(row=0, column=0, sticky="nsew")
+        table_y.grid(row=0, column=1, sticky="ns")
+        table_x.grid(row=1, column=0, sticky="ew")
+        table_tree_frame.rowconfigure(0, weight=1)
+        table_tree_frame.columnconfigure(0, weight=1)
 
         table_form = ttk.LabelFrame(middle, text="表角色设置", padding=6)
         table_form.pack(fill=tk.X, pady=(6, 0))
@@ -7826,8 +7845,10 @@ class PlanWorkflowWindow:
         for idx, (key, label) in enumerate(self.table_access_permission_items()):
             ttk.Checkbutton(perm_frame, text=label, variable=permission_vars[key]).grid(row=idx // 5, column=idx % 5, sticky=tk.W, padx=4, pady=2)
 
+        field_tree_frame = ttk.Frame(right)
+        field_tree_frame.pack(fill=tk.BOTH, expand=True)
         field_tree = ttk.Treeview(
-            right,
+            field_tree_frame,
             columns=("source_index", "source", "target_index", "target", "read", "write", "create", "protect", "status"),
             show="headings",
             height=14,
@@ -7844,8 +7865,15 @@ class PlanWorkflowWindow:
             ("status", "状态", 70),
         ]:
             field_tree.heading(col, text=text)
-            field_tree.column(col, width=width, anchor=tk.W)
-        field_tree.pack(fill=tk.BOTH, expand=True)
+            field_tree.column(col, width=width, anchor=tk.W, stretch=False)
+        field_y = ttk.Scrollbar(field_tree_frame, orient=tk.VERTICAL, command=field_tree.yview)
+        field_x = ttk.Scrollbar(field_tree_frame, orient=tk.HORIZONTAL, command=field_tree.xview)
+        field_tree.configure(yscrollcommand=field_y.set, xscrollcommand=field_x.set)
+        field_tree.grid(row=0, column=0, sticky="nsew")
+        field_y.grid(row=0, column=1, sticky="ns")
+        field_x.grid(row=1, column=0, sticky="ew")
+        field_tree_frame.rowconfigure(0, weight=1)
+        field_tree_frame.columnconfigure(0, weight=1)
 
         field_form = ttk.LabelFrame(right, text="字段权限设置", padding=6)
         field_form.pack(fill=tk.X, pady=(6, 0))
@@ -10019,6 +10047,16 @@ class PlanWorkflowWindow:
                 "replace_value": "",
                 "replace_mode": "局部替换匹配字符串",
                 "case_sensitive": True,
+                "match_value_source": "手动输入",
+                "replace_value_source": "手动输入",
+                "match_value_field": first,
+                "replace_value_field": first,
+                "match_row_policy": "当前行",
+                "match_row_index": "1",
+                "replace_row_policy": "当前行",
+                "replace_row_index": "1",
+                "replace_count": "0",
+                "skip_empty_match_value": True,
             }
         if node_type == "数据提取":
             return {
@@ -10588,7 +10626,7 @@ class PlanWorkflowWindow:
         ttk.Entry(title, textvariable=name_var, width=28).pack(side=tk.LEFT, padx=4)
         ttk.Button(title, text="更新名称", command=lambda: self.update_node_name(idx, name_var)).pack(side=tk.LEFT, padx=4)
         ttk.Checkbutton(title, text="启用", variable=self.make_node_enabled_var(idx)).pack(side=tk.LEFT, padx=8)
-        ttk.Button(title, text="表节点映射", command=lambda idx=idx: self.open_table_access_window(initial_index=idx)).pack(side=tk.LEFT, padx=4)
+        ttk.Button(title, text="字段权限层", command=lambda idx=idx: self.open_table_access_window(initial_index=idx)).pack(side=tk.LEFT, padx=4)
 
         node_type = node.get("type")
         if node_type == "节点组 / 子工作流":
@@ -12049,42 +12087,69 @@ class PlanWorkflowWindow:
     def build_replace_config(self, config, headers):
         frame = ttk.LabelFrame(self.config_frame, text="批量替换节点", padding=8)
         frame.pack(fill=tk.X, pady=8)
+        frame.columnconfigure(1, weight=1)
+        frame.columnconfigure(3, weight=1)
         target_var = self.add_labeled_combo(frame, "目标字段：", config.get("target_field", ""), headers, 0, 0, 24, readonly=False)
-        mode_var = self.add_labeled_combo(frame, "匹配方式：", config.get("match_mode", "包含"), self.REPLACE_MATCH_MODES, 0, 2, 16)
-        match_var = self.add_labeled_entry(frame, "匹配值：", config.get("match_value", ""), 1, 0, 30)
-        repl_var = self.add_labeled_entry(frame, "替换值：", config.get("replace_value", ""), 1, 2, 30)
-        replace_mode_var = self.add_labeled_combo(frame, "替换方式：", config.get("replace_mode", "局部替换匹配字符串"), self.REPLACE_MODES, 2, 0, 22)
-        case_var = tk.BooleanVar(value=config.get("case_sensitive", True))
-        ttk.Checkbutton(frame, text="区分大小写", variable=case_var).grid(row=2, column=2, sticky=tk.W, padx=4, pady=4)
+        replace_mode_var = self.add_labeled_combo(frame, "替换方式：", config.get("replace_mode", "局部替换匹配字符串"), self.REPLACE_MODES, 0, 2, 22)
+        count_var = self.add_labeled_entry(frame, "次数：", config.get("replace_count", "0"), 0, 4, 8)
 
-        value_source_var = self.add_labeled_combo(
-            frame,
-            "替换值来源：",
-            config.get("value_source", "手动输入"),
-            ["手动输入", "列字段"],
-            3,
-            0,
-            14
-        )
+        legacy_source = config.get("value_source", "手动输入")
+        match_source_default = config.get("match_value_source") or legacy_source or "手动输入"
+        replace_source_default = config.get("replace_value_source") or legacy_source or "手动输入"
+        if match_source_default not in self.REPLACE_VALUE_SOURCES:
+            match_source_default = "手动输入"
+        if replace_source_default not in self.REPLACE_VALUE_SOURCES:
+            replace_source_default = "手动输入"
         match_field_default = config.get("match_value_field", "") if config.get("match_value_field", "") in headers else (headers[0] if headers else "")
         repl_field_default = config.get("replace_value_field", "") if config.get("replace_value_field", "") in headers else (headers[0] if headers else "")
-        match_field_var = self.add_labeled_combo(frame, "匹配值字段：", match_field_default, headers, 3, 2, 24, readonly=False)
-        repl_field_var = self.add_labeled_combo(frame, "替换值字段：", repl_field_default, headers, 4, 0, 24, readonly=False)
+
+        match_box = ttk.LabelFrame(frame, text="1. 匹配命中值", padding=6)
+        match_box.grid(row=1, column=0, columnspan=6, sticky="ew", padx=2, pady=(8, 2))
+        match_box.columnconfigure(1, weight=1)
+        match_box.columnconfigure(3, weight=1)
+        mode_var = self.add_labeled_combo(match_box, "匹配方式：", config.get("match_mode", "包含"), self.REPLACE_MATCH_MODES, 0, 0, 16)
+        match_source_var = self.add_labeled_combo(match_box, "匹配值来源：", match_source_default, self.REPLACE_VALUE_SOURCES, 0, 2, 12)
+        match_var = self.add_labeled_entry(match_box, "匹配值：", config.get("match_value", ""), 1, 0, 28)
+        match_field_var = self.add_labeled_combo(match_box, "匹配值字段：", match_field_default, headers, 1, 2, 24, readonly=False)
+        match_row_policy_var = self.add_labeled_combo(match_box, "匹配取行：", config.get("match_row_policy", "当前行"), self.REPLACE_ROW_POLICIES, 2, 0, 12)
+        match_row_index_var = self.add_labeled_entry(match_box, "固定行号：", config.get("match_row_index", "1"), 2, 2, 8)
+
+        replace_box = ttk.LabelFrame(frame, text="2. 替换为", padding=6)
+        replace_box.grid(row=2, column=0, columnspan=6, sticky="ew", padx=2, pady=2)
+        replace_box.columnconfigure(1, weight=1)
+        replace_box.columnconfigure(3, weight=1)
+        replace_source_var = self.add_labeled_combo(replace_box, "替换值来源：", replace_source_default, self.REPLACE_VALUE_SOURCES, 0, 0, 12)
+        repl_var = self.add_labeled_entry(replace_box, "替换值：", config.get("replace_value", ""), 0, 2, 28)
+        repl_field_var = self.add_labeled_combo(replace_box, "替换值字段：", repl_field_default, headers, 1, 0, 24, readonly=False)
+        replace_row_policy_var = self.add_labeled_combo(replace_box, "替换取行：", config.get("replace_row_policy", "当前行"), self.REPLACE_ROW_POLICIES, 1, 2, 12)
+        replace_row_index_var = self.add_labeled_entry(replace_box, "固定行号：", config.get("replace_row_index", "1"), 2, 0, 8)
+
+        case_var = tk.BooleanVar(value=config.get("case_sensitive", True))
+        ttk.Checkbutton(frame, text="区分大小写", variable=case_var).grid(row=3, column=0, sticky=tk.W, padx=4, pady=4)
         skip_empty_var = tk.BooleanVar(value=bool(config.get("skip_empty_match_value", True)))
-        ttk.Checkbutton(frame, text="列匹配值为空时跳过", variable=skip_empty_var).grid(row=4, column=2, columnspan=2, sticky=tk.W, padx=4, pady=4)
+        ttk.Checkbutton(frame, text="列匹配值为空时跳过", variable=skip_empty_var).grid(row=3, column=1, columnspan=2, sticky=tk.W, padx=4, pady=4)
         ttk.Label(
             frame,
-            text="说明：选择【列字段】后，每行使用本行的【匹配值字段】作为旧值、【替换值字段】作为新值；适合 A列文本中按 B列→C列逐行替换。",
+            text="说明：旧配置仍按“本行匹配字段→本行替换字段”执行；新配置可分别指定匹配值/替换值来源和取行策略。次数 0 表示全部替换。",
             foreground="gray",
             wraplength=980
-        ).grid(row=5, column=0, columnspan=4, sticky=tk.W, padx=4, pady=(2, 4))
+        ).grid(row=4, column=0, columnspan=6, sticky=tk.W, padx=4, pady=(2, 4))
 
         for var, key in [
             (target_var, "target_field"), (mode_var, "match_mode"), (match_var, "match_value"),
-            (repl_var, "replace_value"), (replace_mode_var, "replace_mode"), (value_source_var, "value_source"),
-            (match_field_var, "match_value_field"), (repl_field_var, "replace_value_field")
+            (repl_var, "replace_value"), (replace_mode_var, "replace_mode"), (count_var, "replace_count"),
+            (match_source_var, "match_value_source"), (replace_source_var, "replace_value_source"),
+            (match_field_var, "match_value_field"), (repl_field_var, "replace_value_field"),
+            (match_row_policy_var, "match_row_policy"), (match_row_index_var, "match_row_index"),
+            (replace_row_policy_var, "replace_row_policy"), (replace_row_index_var, "replace_row_index"),
         ]:
             self.sync_var_to_config(var, config, key)
+        # 保留旧字段，便于旧模板或外部读取仍能看到大致来源。
+        def sync_legacy_value_source(*_):
+            config["value_source"] = "列字段" if (match_source_var.get() == "列字段" or replace_source_var.get() == "列字段") else "手动输入"
+        match_source_var.trace_add("write", sync_legacy_value_source)
+        replace_source_var.trace_add("write", sync_legacy_value_source)
+        sync_legacy_value_source()
         self.sync_bool_to_config(case_var, config, "case_sensitive")
         self.sync_bool_to_config(skip_empty_var, config, "skip_empty_match_value")
 
@@ -15685,8 +15750,15 @@ class PlanWorkflowWindow:
 
         if node_type == "批量替换":
             self.add_group_field_ref(reads, cfg.get("target_field"))
+            legacy_source = cfg.get("value_source", "手动输入")
+            match_source = cfg.get("match_value_source") or legacy_source
+            replace_source = cfg.get("replace_value_source") or legacy_source
+            if match_source == "列字段":
+                self.add_group_field_ref(reads, cfg.get("match_value_field"))
+            if replace_source == "列字段":
+                self.add_group_field_ref(reads, cfg.get("replace_value_field"))
             self.add_group_field_ref(writes, cfg.get("target_field"))
-            note = "读取并覆盖目标字段"
+            note = "读取目标字段及匹配/替换来源字段，覆盖目标字段"
 
         elif node_type == "数据提取":
             src = cfg.get("source_field")
@@ -16840,55 +16912,99 @@ class PlanWorkflowWindow:
         match_mode = config.get("match_mode", "包含")
         replace_mode = config.get("replace_mode", "局部替换匹配字符串")
         case_sensitive = bool(config.get("case_sensitive", True))
-        value_source = config.get("value_source", "手动输入")
-        use_column_values = value_source == "列字段"
         skip_empty_match_value = bool(config.get("skip_empty_match_value", True))
+        legacy_value_source = config.get("value_source", "手动输入")
+        match_source = config.get("match_value_source") or legacy_value_source or "手动输入"
+        replace_source = config.get("replace_value_source") or legacy_value_source or "手动输入"
+        match_source = "列字段" if match_source in ("列字段", "字段", "当前表字段") else "手动输入"
+        replace_source = "列字段" if replace_source in ("列字段", "字段", "当前表字段") else "手动输入"
+        match_row_policy = config.get("match_row_policy") or ("当前行" if legacy_value_source == "列字段" else "当前行")
+        replace_row_policy = config.get("replace_row_policy") or ("当前行" if legacy_value_source == "列字段" else "当前行")
+        match_row_index = max(1, self.safe_int(config.get("match_row_index", 1), 1))
+        replace_row_index = max(1, self.safe_int(config.get("replace_row_index", 1), 1))
+        replace_count = max(0, self.safe_int(config.get("replace_count", 0), 0))
 
-        if use_column_values:
-            match_field_idx = self.field_index(headers, config.get("match_value_field", ""))
-            replace_field_idx = self.field_index(headers, config.get("replace_value_field", ""))
-        else:
-            match_field_idx = None
-            replace_field_idx = None
-            static_match_value = str(config.get("match_value", ""))
-            static_replace_value = str(config.get("replace_value", ""))
+        match_field_idx = self.field_index(headers, config.get("match_value_field", "")) if match_source == "列字段" else None
+        replace_field_idx = self.field_index(headers, config.get("replace_value_field", "")) if replace_source == "列字段" else None
+        static_match_value = str(config.get("match_value", ""))
+        static_replace_value = str(config.get("replace_value", ""))
 
         new_rows = self.normalize_rows(rows, len(headers))
         changed = 0
         skipped_empty = 0
-        for row in new_rows:
+        skipped_invalid_row = 0
+
+        def row_index_for_policy(policy, current_index, pair_index, fixed_index):
+            policy = str(policy or "当前行").strip()
+            if policy == "第一行":
+                return 0
+            if policy == "固定行号":
+                return fixed_index - 1
+            if policy in ("按匹配行号", "按命中序号"):
+                return pair_index
+            return current_index
+
+        def source_value(source, field_idx, fixed_value, policy, current_index, pair_index, fixed_index):
+            if source != "列字段":
+                return fixed_value, True
+            row_index = row_index_for_policy(policy, current_index, pair_index, fixed_index)
+            if row_index < 0 or row_index >= len(new_rows):
+                return "", False
+            return self.safe_cell(new_rows[row_index], field_idx), True
+
+        def pair_count_for_row():
+            counts = []
+            if match_source == "列字段" and match_row_policy in ("按匹配行号", "按命中序号"):
+                counts.append(len(new_rows))
+            if replace_source == "列字段" and replace_row_policy in ("按匹配行号", "按命中序号"):
+                counts.append(len(new_rows))
+            return max(counts) if counts else 1
+
+        def replace_text(old, match_value, replace_value):
+            if replace_mode == "整格替换为新值":
+                return replace_value
+            if match_mode == "正则匹配":
+                flags = 0 if case_sensitive else re.IGNORECASE
+                return re.sub(match_value, replace_value, old, count=replace_count, flags=flags)
+            if match_value == "":
+                return old
+            if case_sensitive:
+                return old.replace(match_value, replace_value, replace_count if replace_count else -1)
+            return re.sub(re.escape(match_value), replace_value, old, count=replace_count, flags=re.IGNORECASE)
+
+        for row_index, row in enumerate(new_rows):
             old = self.safe_cell(row, idx)
-            if use_column_values:
-                match_value = self.safe_cell(row, match_field_idx)
-                replace_value = self.safe_cell(row, replace_field_idx)
-                # 避免“包含空字符串”导致整列全部被替换。为空/不为空模式本身不依赖匹配值，所以不拦截。
+            new_value = old
+            row_changed = False
+            for pair_index in range(pair_count_for_row()):
+                match_value, match_row_ok = source_value(
+                    match_source, match_field_idx, static_match_value, match_row_policy, row_index, pair_index, match_row_index
+                )
+                replace_value, replace_row_ok = source_value(
+                    replace_source, replace_field_idx, static_replace_value, replace_row_policy, row_index, pair_index, replace_row_index
+                )
+                if not match_row_ok or not replace_row_ok:
+                    skipped_invalid_row += 1
+                    continue
                 if skip_empty_match_value and match_value == "" and match_mode not in ("为空", "不为空"):
                     skipped_empty += 1
                     continue
-            else:
-                match_value = static_match_value
-                replace_value = static_replace_value
-
-            if not self.compare_values(old, match_mode, match_value, case_sensitive):
-                continue
-            if replace_mode == "整格替换为新值":
-                new_value = replace_value
-            else:
-                if match_mode == "正则匹配":
-                    flags = 0 if case_sensitive else re.IGNORECASE
-                    new_value = re.sub(match_value, replace_value, old, flags=flags)
-                elif match_value == "":
-                    # 局部替换空字符串会在每个字符之间插入新值，通常不是用户想要的。
-                    # 此时保持原值，建议改用“整格替换为新值”或关闭“列匹配值为空时跳过”。
-                    new_value = old
-                elif case_sensitive:
-                    new_value = old.replace(match_value, replace_value)
-                else:
-                    new_value = re.sub(re.escape(match_value), replace_value, old, flags=re.IGNORECASE)
+                if not self.compare_values(new_value, match_mode, match_value, case_sensitive):
+                    continue
+                updated = replace_text(new_value, match_value, replace_value)
+                if updated != new_value:
+                    new_value = updated
+                    row_changed = True
             if new_value != old:
                 row[idx] = new_value
+            if row_changed:
                 changed += 1
-        extra = f"，跳过空匹配值 {skipped_empty} 行" if use_column_values and skipped_empty else ""
+        extras = []
+        if (match_source == "列字段" or replace_source == "列字段") and skipped_empty:
+            extras.append(f"跳过空匹配值 {skipped_empty} 次")
+        if skipped_invalid_row:
+            extras.append(f"跳过无效取行 {skipped_invalid_row} 次")
+        extra = "，" + "，".join(extras) if extras else ""
         return list(headers), new_rows, f"修改 {changed} 处{extra}"
 
     def parse_int(self, value, name):
@@ -16896,6 +17012,12 @@ class PlanWorkflowWindow:
             return int(str(value).strip())
         except Exception:
             raise ValueError(f"{name} 必须是整数。")
+
+    def safe_int(self, value, default=0):
+        try:
+            return int(str(value).strip())
+        except Exception:
+            return default
 
     def apply_unmatched_extract(self, text, status, config):
         mode = config.get("unmatched_mode", "留空")
