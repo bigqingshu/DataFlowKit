@@ -5381,17 +5381,23 @@ class PlanWorkflowWindow:
             return
         self.build_node_config(idx)
 
-    def refresh_node_list(self):
+    def refresh_node_list(self, select_index=None, reveal=True):
         self.ensure_node_tree_identity(self.nodes)
-        selected = self.get_selected_node_index()
+        selected = self.get_selected_node_index() if select_index is None else select_index
         self.node_listbox.delete(0, tk.END)
         for idx, node in enumerate(self.nodes, start=1):
             mark = "√" if node.get("enabled", True) else "×"
             self.node_listbox.insert(tk.END, f"[{mark}] {idx}. {node.get('type')}：{node.get('name', '')}")
         if selected is not None and self.nodes:
             selected = min(selected, len(self.nodes) - 1)
+            self.selected_node_index = selected
+            self.node_listbox.selection_clear(0, tk.END)
             self.node_listbox.selection_set(selected)
             self.node_listbox.activate(selected)
+            if reveal:
+                self.node_listbox.see(selected)
+        elif not self.nodes:
+            self.selected_node_index = None
 
 
     # ------------------------------------------------------------------
@@ -10391,13 +10397,15 @@ class PlanWorkflowWindow:
                 "config": self.default_config_for_type(node_type),
             }
         self.ensure_node_identity(node)
-        self.nodes.append(node)
-        self.refresh_node_list()
-        idx = len(self.nodes) - 1
-        self.node_listbox.selection_clear(0, tk.END)
-        self.node_listbox.selection_set(idx)
-        self.node_listbox.activate(idx)
-        self.build_node_config(idx)
+        selected = self.node_listbox.curselection()
+        insert_at = int(selected[0]) + 1 if len(selected) == 1 else len(self.nodes)
+        self.nodes.insert(insert_at, node)
+        self.refresh_node_list(select_index=insert_at, reveal=True)
+        self.build_node_config(insert_at)
+        if len(selected) == 1:
+            self.status_var.set(f"已在当前节点下方插入：{node.get('name', node.get('type', '节点'))}")
+        else:
+            self.status_var.set(f"已追加节点：{node.get('name', node.get('type', '节点'))}")
 
     def delete_node(self):
         idx = self.get_selected_node_index()
@@ -10412,9 +10420,7 @@ class PlanWorkflowWindow:
         if idx is None or idx <= 0:
             return
         self.nodes[idx - 1], self.nodes[idx] = self.nodes[idx], self.nodes[idx - 1]
-        self.refresh_node_list()
-        self.node_listbox.selection_clear(0, tk.END)
-        self.node_listbox.selection_set(idx - 1)
+        self.refresh_node_list(select_index=idx - 1, reveal=True)
         self.rebuild_current_config()
 
     def move_node_down(self):
@@ -10422,9 +10428,7 @@ class PlanWorkflowWindow:
         if idx is None or idx >= len(self.nodes) - 1:
             return
         self.nodes[idx + 1], self.nodes[idx] = self.nodes[idx], self.nodes[idx + 1]
-        self.refresh_node_list()
-        self.node_listbox.selection_clear(0, tk.END)
-        self.node_listbox.selection_set(idx + 1)
+        self.refresh_node_list(select_index=idx + 1, reveal=True)
         self.rebuild_current_config()
 
     def toggle_node_enabled(self):
@@ -10432,10 +10436,7 @@ class PlanWorkflowWindow:
         if idx is None:
             return
         self.nodes[idx]["enabled"] = not self.nodes[idx].get("enabled", True)
-        self.refresh_node_list()
-        self.node_listbox.selection_clear(0, tk.END)
-        self.node_listbox.selection_set(idx)
-        self.node_listbox.activate(idx)
+        self.refresh_node_list(select_index=idx, reveal=True)
 
     def copy_node(self):
         idx = self.get_selected_node_index()
@@ -10446,9 +10447,7 @@ class PlanWorkflowWindow:
         new_node["name"] = f"{new_node.get('name', new_node.get('type'))}_复制"
         self.ensure_node_tree_identity([new_node], force_new=True)
         self.nodes.insert(idx + 1, new_node)
-        self.refresh_node_list()
-        self.node_listbox.selection_clear(0, tk.END)
-        self.node_listbox.selection_set(idx + 1)
+        self.refresh_node_list(select_index=idx + 1, reveal=True)
         self.rebuild_current_config()
 
     def clear_nodes(self):
@@ -10461,7 +10460,7 @@ class PlanWorkflowWindow:
     def update_node_name(self, idx, name_var):
         if 0 <= idx < len(self.nodes):
             self.nodes[idx]["name"] = name_var.get().strip() or self.nodes[idx]["type"]
-            self.refresh_node_list()
+            self.refresh_node_list(select_index=idx, reveal=True)
 
     def make_config_preview_context(self):
         """
@@ -10606,7 +10605,7 @@ class PlanWorkflowWindow:
         def on_change(*_):
             if 0 <= idx < len(self.nodes):
                 self.nodes[idx]["enabled"] = bool(var.get())
-                self.refresh_node_list()
+                self.refresh_node_list(select_index=idx, reveal=True)
         var.trace_add("write", on_change)
         return var
 
@@ -11175,10 +11174,7 @@ class PlanWorkflowWindow:
         for i in reversed(sels):
             del self.nodes[i]
         self.nodes.insert(insert_at, group_node)
-        self.refresh_node_list()
-        self.node_listbox.selection_clear(0, tk.END)
-        self.node_listbox.selection_set(insert_at)
-        self.node_listbox.activate(insert_at)
+        self.refresh_node_list(select_index=insert_at, reveal=True)
         self.build_node_config(insert_at)
         self.status_var.set(f"已合并 {len(selected_nodes)} 个节点为组：{name}")
 
@@ -11197,10 +11193,7 @@ class PlanWorkflowWindow:
         if not messagebox.askyesno("确认展开", f"是否将节点组【{node.get('name','节点组')}】展开为 {len(inner_nodes)} 个普通节点？"):
             return
         self.nodes[idx:idx + 1] = inner_nodes
-        self.refresh_node_list()
-        self.node_listbox.selection_clear(0, tk.END)
-        self.node_listbox.selection_set(idx)
-        self.node_listbox.activate(idx)
+        self.refresh_node_list(select_index=idx, reveal=True)
         self.rebuild_current_config()
         self.status_var.set(f"已展开节点组：{node.get('name','节点组')}")
 
