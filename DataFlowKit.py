@@ -78,16 +78,27 @@ class TableAccessManager:
     第一阶段先统一 SQLite 读写、日志与进度事件；权限配置由工作流节点保存，
     后续映射窗口可以直接复用这里的权限检查和执行入口。
     """
-    def __init__(self, db_path, node_id="", node_name="", node_type="", context=None, progress_callback=None):
+    def __init__(self, db_path, node_id="", node_name="", node_type="", context=None, progress_callback=None,
+                 table_access=None, permission_policy=None):
         self.db_path = db_path or ""
         self.node_id = str(node_id or "")
         self.node_name = str(node_name or "")
         self.node_type = str(node_type or "")
         self.context = context if isinstance(context, dict) else None
         self.progress_callback = progress_callback or ((self.context or {}).get("progress_callback") if self.context else None)
+        current_info = (self.context or {}).get("current_node_info", {}) if self.context else {}
+        if not isinstance(table_access, dict) and isinstance(current_info, dict):
+            table_access = current_info.get("table_access")
+        self.table_access = table_access if isinstance(table_access, dict) else {}
+        self.permission_policy = str(
+            permission_policy
+            or ((self.context or {}).get("table_access_policy") if self.context else "")
+            or "audit"
+        ).strip().lower()
         self.events = []
 
     def _log_event(self, operation, table_name="", status="ok", **extra):
+        emit_progress = bool(extra.pop("emit_progress", True))
         event = {
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "node_id": self.node_id,
@@ -101,7 +112,7 @@ class TableAccessManager:
         self.events.append(event)
         if self.context is not None:
             self.context.setdefault("table_access_logs", []).append(event)
-        if callable(self.progress_callback):
+        if emit_progress and callable(self.progress_callback):
             message = extra.get("message") or f"{operation} {table_name}".strip()
             try:
                 self.progress_callback({
@@ -148,6 +159,195 @@ class TableAccessManager:
             result.append(name)
         return result
 
+    @staticmethod
+    def format_value(value):
+        if value is None:
+            return ""
+        if isinstance(value, bytes):
+            return f"<BLOB {len(value)} bytes>"
+        return str(value)
+
+    @staticmethod
+    def _sanitize_name_for_match(name):
+        name = str(name or "").strip()
+        if not name:
+            return ""
+        name = re.sub(r"\W+", "_", name, flags=re.UNICODE)
+        if re.match(r"^\d", name):
+            name = "t_" + name
+        return name
+
+    def is_permission_enforced(self):
+        return self.permission_policy in {"enforce", "strict", "强制", "拦截"}
+
+    def _access_tables(self):
+        tables = (self.table_access or {}).get("tables", [])
+        return tables if isinstance(tables, list) else []
+
+    def _match_table_entry(self, table_name, source_type=""):
+        wanted = {str(table_name or "").strip(), self._sanitize_name_for_match(table_name)}
+        wanted.discard("")
+        source_type = str(source_type or "").strip()
+        fallback = None
+        for entry in self._access_tables():
+            if not isinstance(entry, dict):
+                continue
+            entry_names = {
+                str(entry.get("table", "") or "").strip(),
+                self._sanitize_name_for_match(entry.get("table", "")),
+            }
+            entry_names.discard("")
+            if wanted and wanted.intersection(entry_names):
+                entry_source = str(entry.get("source_type", "") or "").strip()
+                if source_type:
+                    if entry_source == source_type:
+                        return entry
+                    if not entry_source and fallback is None:
+                        fallback = entry
+                    continue
+                return entry
+        return fallback
+
+    def _field_rules(self, entry):
+        mapping = (entry or {}).get("field_mapping") or {}
+        if isinstance(mapping, dict):
+            values = mapping.values()
+        elif isinstance(mapping, list):
+            values = mapping
+        else:
+            values = []
+        return [item for item in values if isinstance(item, dict)]
+
+    def _match_field_rule(self, entry, field_name):
+        field_name = str(field_name or "").strip()
+        if not field_name:
+            return None
+        for rule in self._field_rules(entry):
+            candidates = [
+                rule.get("target_field"),
+                rule.get("field"),
+                rule.get("name"),
+                rule.get("source_field"),
+            ]
+            if field_name in [str(v or "").strip() for v in candidates]:
+                return rule
+        return None
+
+    def _permission_message(self, operation, table_name, status, missing_permissions, missing_fields):
+        if status == "ok":
+            return f"权限检查通过：{operation} {table_name}".strip()
+        parts = [f"权限检查提示：{operation} {table_name}".strip()]
+        if missing_permissions:
+            parts.append("缺少表权限 " + ",".join(missing_permissions))
+        if missing_fields:
+            parts.append("字段受限 " + ",".join(missing_fields))
+        return "；".join(parts)
+
+    def check_table_permission(self, table_name, permissions, operation="table_access", fields=None,
+                               field_action=None, write_mode="", source_type=""):
+        """权限校验骨架：audit 模式只记录，enforce/strict 模式才拦截。"""
+        if self.permission_policy in {"off", "disabled", "none", "关闭"}:
+            return True
+        table_name = str(table_name or "").strip()
+        required = [p for p in (permissions or []) if p]
+        source_type = str(source_type or "").strip()
+        entry = self._match_table_entry(table_name, source_type=source_type)
+        missing_permissions = []
+        missing_fields = []
+
+        if entry is None:
+            if self.table_access:
+                missing_permissions.append("未配置表角色")
+            else:
+                status = "compat"
+        else:
+            status = "ok"
+            perms = entry.get("permissions") or {}
+            for perm in required:
+                if not bool(perms.get(perm)):
+                    missing_permissions.append(perm)
+
+            action = str(field_action or "").strip()
+            if action:
+                rules = self._field_rules(entry)
+                for field in fields or []:
+                    field = str(field or "").strip()
+                    if not field:
+                        continue
+                    rule = self._match_field_rule(entry, field)
+                    if rule is None:
+                        if rules:
+                            missing_fields.append(f"{field}:未配置")
+                        continue
+                    fperms = rule.get("permissions") or {}
+                    if action == "write" and bool(fperms.get("protect_field")):
+                        missing_fields.append(f"{field}:保护字段")
+                    key = "write_field" if action == "write" else "read_field"
+                    if key in fperms and not bool(fperms.get(key)):
+                        missing_fields.append(f"{field}:{key}")
+
+        if entry is None and self.table_access:
+            status = "missing"
+        elif entry is None:
+            status = "compat"
+        elif missing_permissions or missing_fields:
+            status = "denied" if self.is_permission_enforced() else "warning"
+        else:
+            status = "ok"
+
+        message = self._permission_message(operation, table_name, status, missing_permissions, missing_fields)
+        self._log_event(
+            "permission_check",
+            table_name,
+            status=status,
+            operation_checked=operation,
+            required_permissions=required,
+            missing_permissions=missing_permissions,
+            missing_fields=missing_fields,
+            write_mode=write_mode,
+            access_role=(entry or {}).get("role", ""),
+            access_source_type=(entry or {}).get("source_type", ""),
+            source_type=source_type,
+            policy=self.permission_policy,
+            message=message,
+            emit_progress=False,
+        )
+        if status in {"denied", "missing"} and self.is_permission_enforced():
+            raise PermissionError(message)
+        return status not in {"denied", "missing"} or not self.is_permission_enforced()
+
+    def validate_write_mode(self, table_name, mode, exists=None, fields=None):
+        mode = (mode or "replace").lower()
+        if mode == "overwrite":
+            mode = "replace"
+        if mode == "new":
+            mode = "fail"
+        if mode == "auto_timestamp":
+            mode = "timestamp"
+        if exists is None:
+            exists = self.table_exists(table_name)
+
+        required = ["write_table"]
+        if mode == "append":
+            required.append("append_rows")
+            if not exists:
+                required.append("create_table")
+        elif mode == "replace":
+            required.append("replace_table")
+        elif mode in {"fail", "timestamp"}:
+            required.append("create_table")
+
+        self.check_table_permission(
+            table_name,
+            required,
+            operation="write_table",
+            fields=fields,
+            field_action="write",
+            write_mode=mode,
+            source_type="SQLite表",
+        )
+        return mode
+
     def list_tables(self):
         """返回当前数据库中的普通表名列表。"""
         with self._connect() as conn:
@@ -178,6 +378,7 @@ class TableAccessManager:
         读取 SQLite 表为工作流 table 格式：{"type":"table", "headers":[], "rows":[]}。
         include_rowid=True 时，会在第一列增加 __rowid__。
         """
+        self.check_table_permission(table_name, ["read_table"], operation="read_table", fields=fields, field_action="read", source_type="SQLite表")
         all_columns = self.get_columns(table_name)
         if fields is None:
             columns = all_columns
@@ -207,7 +408,7 @@ class TableAccessManager:
         with self._connect() as conn:
             cur = conn.cursor()
             cur.execute(sql, params)
-            rows = [["" if v is None else str(v) for v in r] for r in cur.fetchall()]
+            rows = [[self.format_value(v) for v in r] for r in cur.fetchall()]
         self._log_event("read_table", table_name, rows=len(rows), columns=len(headers), message=f"读取表 {table_name}：{len(rows)} 行 × {len(headers)} 列")
         return {"type": "table", "headers": headers, "rows": rows, "source_name": table_name, "meta": {"db_path": self.db_path}}
 
@@ -234,6 +435,7 @@ class TableAccessManager:
         """复制指定表为备份表，返回实际备份表名。"""
         if not self.table_exists(table_name):
             raise ValueError(f"表不存在：{table_name}")
+        self.check_table_permission(table_name, ["read_table", "create_table"], operation="backup_table", source_type="SQLite表")
         if not backup_name:
             backup_name = f"{table_name}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         actual = backup_name
@@ -290,6 +492,7 @@ class TableAccessManager:
 
         actual_name = table_name
         exists = self.table_exists(table_name)
+        self.validate_write_mode(table_name, mode, exists=exists, fields=headers)
         if mode == "timestamp" and exists:
             actual_name = self._timestamp_table_name(table_name)
             exists = False
@@ -334,6 +537,14 @@ class TableAccessManager:
         return {"table_name": actual_name, "rows": len(rows), "columns": len(headers), "mode": mode}
 
     def clear_fields(self, table_name, fields):
+        self.check_table_permission(
+            table_name,
+            ["write_table", "clear_table"],
+            operation="clear_fields",
+            fields=fields,
+            field_action="write",
+            source_type="SQLite表",
+        )
         existing = set(self.get_columns(table_name))
         clean_fields = []
         for field in fields or []:
@@ -354,6 +565,25 @@ class TableAccessManager:
         write_actions = [a for a in (actions or []) if a.get("write")]
         if not write_actions:
             return 0
+        target_fields = []
+        has_new_rows = False
+        for action in write_actions:
+            field = action.get("target_field")
+            if field and field not in target_fields:
+                target_fields.append(field)
+            if action.get("is_new_row"):
+                has_new_rows = True
+        required = ["write_table", "update_rows"]
+        if has_new_rows:
+            required.append("append_rows")
+        self.check_table_permission(
+            table_name,
+            required,
+            operation="update_cells",
+            fields=target_fields,
+            field_action="write",
+            source_type="SQLite表",
+        )
         target_columns = self.get_columns(table_name)
         with self._connect() as conn:
             cur = conn.cursor()
@@ -398,9 +628,62 @@ class TableAccessManager:
             cur = conn.cursor()
             cur.execute(sql_text, params or [])
             headers = [d[0] for d in (cur.description or [])]
-            rows = [["" if v is None else str(v) for v in r] for r in cur.fetchall()]
+            rows = [[self.format_value(v) for v in r] for r in cur.fetchall()]
         self._log_event("execute_select", "execute_select", rows=len(rows), columns=len(headers), message=f"执行只读查询：{len(rows)} 行 × {len(headers)} 列")
         return {"type": "table", "headers": headers, "rows": rows, "source_name": "execute_select", "meta": {"db_path": self.db_path}}
+
+    def drop_table(self, table_name, backup=False):
+        """删除表；主页/管理窗口这类高风险操作也统一进入 manager。"""
+        table_name = str(table_name or "").strip()
+        if not table_name:
+            raise ValueError("table_name 不能为空")
+        if not self.table_exists(table_name):
+            raise ValueError(f"表不存在：{table_name}")
+        self.check_table_permission(table_name, ["drop_table"], operation="drop_table", source_type="SQLite表")
+        backup_name = self.backup_table(table_name) if backup else None
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute(f"DROP TABLE {self.quote_ident(table_name)}")
+            conn.commit()
+        self._log_event("drop_table", table_name, backup_name=backup_name, message=f"删除表 {table_name}")
+        return backup_name
+
+    def write_plugin_logs(self, log_items):
+        """插件日志表属于系统日志写入，保留专门入口但不再散落 sqlite3.connect。"""
+        if not log_items:
+            return 0
+        table_name = "_plugin_log"
+        self.check_table_permission(
+            table_name,
+            ["write_table", "append_rows", "create_table"],
+            operation="write_plugin_logs",
+            source_type="SQLite表",
+        )
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS _plugin_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    time TEXT,
+                    level TEXT,
+                    plugin_id TEXT,
+                    node_name TEXT,
+                    object TEXT,
+                    message TEXT,
+                    traceback TEXT
+                )
+            """)
+            data = [(
+                it.get("time", ""), it.get("level", "INFO"), it.get("plugin_id", ""),
+                it.get("node_name", ""), it.get("object", ""), it.get("message", ""), it.get("traceback", "")
+            ) for it in log_items]
+            cur.executemany("""
+                INSERT INTO _plugin_log(time, level, plugin_id, node_name, object, message, traceback)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, data)
+            conn.commit()
+        self._log_event("write_plugin_logs", table_name, rows=len(log_items), message=f"写入插件日志：{len(log_items)} 条")
+        return len(log_items)
 
 
 class PluginDatabaseAPI(TableAccessManager):
@@ -896,30 +1179,12 @@ class ClipboardTableApp:
 
         if not db_path or not os.path.exists(db_path):
             return []
-
-        conn = sqlite3.connect(db_path)
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT name
-            FROM sqlite_master
-            WHERE type='table'
-              AND name NOT LIKE 'sqlite_%'
-            ORDER BY name
-        """)
-        tables = [row[0] for row in cur.fetchall()]
-        conn.close()
-        return tables
+        return TableAccessManager(db_path, node_type="主界面").list_tables()
 
     def get_table_columns(self, table_name):
         db_path = self.get_db_path()
 
-        conn = sqlite3.connect(db_path)
-        cur = conn.cursor()
-        cur.execute(f"PRAGMA table_info({self.quote_ident(table_name)})")
-        info = cur.fetchall()
-        conn.close()
-
-        return [row[1] for row in info]
+        return TableAccessManager(db_path, node_type="主界面").get_columns(table_name)
 
     def refresh_table_list(self):
         try:
@@ -1316,28 +1581,17 @@ class ClipboardTableApp:
             return
 
         try:
-            conn = sqlite3.connect(db_path)
-            cur = conn.cursor()
-
-            if not self.table_exists(conn, table_name):
-                conn.close()
+            manager = TableAccessManager(db_path, node_type="主界面读取")
+            if not manager.table_exists(table_name):
                 messagebox.showwarning("提示", f"表不存在：{table_name}")
                 return
 
-            cur.execute(f"PRAGMA table_info({self.quote_ident(table_name)})")
-            table_info = cur.fetchall()
-
-            headers = [row[1] for row in table_info]
+            data = manager.read_table(table_name)
+            headers = list(data.get("headers", []))
 
             if not headers:
-                conn.close()
                 messagebox.showwarning("提示", f"表没有字段：{table_name}")
                 return
-
-            cur.execute(f"SELECT * FROM {self.quote_ident(table_name)}")
-            db_rows = cur.fetchall()
-
-            conn.close()
 
             if self.edit_entry is not None:
                 self.edit_entry.destroy()
@@ -1346,10 +1600,7 @@ class ClipboardTableApp:
             self.raw_data = ""
 
             self.headers = self.make_display_headers(headers)
-            self.rows = [
-                [self.format_db_value(value) for value in row]
-                for row in db_rows
-            ]
+            self.rows = [list(row) for row in data.get("rows", [])]
 
             self.refresh_tree()
 
@@ -1369,29 +1620,6 @@ class ClipboardTableApp:
         table_name = self.sanitize_sql_name(table_name_raw, "result_table")
         sql_columns = self.make_sql_columns(headers)
 
-        conn = sqlite3.connect(db_path)
-        cur = conn.cursor()
-
-        if recreate:
-            cur.execute(f"DROP TABLE IF EXISTS {self.quote_ident(table_name)}")
-        else:
-            table_name = self.get_available_table_name(conn, table_name)
-
-        col_defs = [f"{self.quote_ident(col)} TEXT" for col in sql_columns]
-        create_sql = (
-            f"CREATE TABLE IF NOT EXISTS {self.quote_ident(table_name)} "
-            f"({', '.join(col_defs)})"
-        )
-        cur.execute(create_sql)
-
-        placeholders = ", ".join(["?"] * len(sql_columns))
-        col_names = ", ".join(self.quote_ident(col) for col in sql_columns)
-
-        insert_sql = (
-            f"INSERT INTO {self.quote_ident(table_name)} "
-            f"({col_names}) VALUES ({placeholders})"
-        )
-
         normalized_rows = []
         for row in rows:
             fixed_row = list(row)
@@ -1401,14 +1629,16 @@ class ClipboardTableApp:
                 fixed_row = fixed_row[:len(sql_columns)]
             normalized_rows.append(fixed_row)
 
-        if normalized_rows:
-            cur.executemany(insert_sql, normalized_rows)
-
-        conn.commit()
-        conn.close()
+        mode = "replace" if recreate else "timestamp"
+        info = TableAccessManager(db_path, node_type="主界面保存").write_table(
+            table_name,
+            sql_columns,
+            normalized_rows,
+            mode=mode,
+        )
         self.refresh_table_list()
 
-        return table_name, len(normalized_rows)
+        return info.get("table_name", table_name), len(normalized_rows)
 
     def save_to_sqlite(self):
         if not self.headers or not self.rows:
@@ -1538,23 +1768,11 @@ class ClipboardTableApp:
             self.info_var.set("已取消删除当前表。")
             return
 
-        backup_name = None
         try:
-            conn = sqlite3.connect(db_path)
-            try:
-                if not self.table_exists(conn, table_name):
-                    raise ValueError(f"表不存在或已被删除：{table_name}")
-
-                if backup_choice:
-                    backup_name = self.backup_sqlite_table_before_delete(conn, table_name)
-
-                conn.execute(f"DROP TABLE {self.quote_ident(table_name)}")
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-            finally:
-                conn.close()
+            backup_name = TableAccessManager(db_path, node_type="主界面删除").drop_table(
+                table_name,
+                backup=bool(backup_choice),
+            )
 
             self.refresh_table_list()
 
@@ -3853,21 +4071,16 @@ class AdvancedFilterWindow:
                 return
 
             limit = self.get_int_setting(self.result_limit_var, 5000)
-
-            conn = sqlite3.connect(self.app.get_db_path())
-            cur = conn.cursor()
-            cur.execute(
-                f"SELECT * FROM {self.app.quote_ident(table_name)} LIMIT ?",
-                (limit,)
+            data = TableAccessManager(
+                self.app.get_db_path(),
+                node_type="高级筛选窗口预览",
+            ).read_table(
+                table_name,
+                limit=limit,
             )
-            rows = cur.fetchall()
-            conn.close()
 
-            self.preview_headers = columns[:]
-            self.preview_rows = [
-                [self.format_db_value(value) for value in row]
-                for row in rows
-            ]
+            self.preview_headers = list(data.get("headers", columns))
+            self.preview_rows = [list(row) for row in data.get("rows", [])]
 
             self.refresh_preview_tree()
 
@@ -4105,19 +4318,16 @@ class AdvancedFilterWindow:
         return self.app.format_db_value(value)
 
     def load_table_records(self, table_name):
-        db_path = self.app.get_db_path()
-
-        conn = sqlite3.connect(db_path)
-        cur = conn.cursor()
-
         columns = self.columns_cache.get(table_name)
         if columns is None:
             columns = self.app.get_table_columns(table_name)
             self.columns_cache[table_name] = columns
 
-        cur.execute(f"SELECT * FROM {self.app.quote_ident(table_name)}")
-        rows = cur.fetchall()
-        conn.close()
+        data = TableAccessManager(
+            self.app.get_db_path(),
+            node_type="高级筛选窗口读取",
+        ).read_table(table_name)
+        rows = [list(row) for row in data.get("rows", [])]
 
         records = []
         for row in rows:
@@ -4125,7 +4335,7 @@ class AdvancedFilterWindow:
             for idx, col in enumerate(columns):
                 key = f"{table_name}.{col}"
                 value = row[idx] if idx < len(row) else ""
-                record[key] = self.format_db_value(value)
+                record[key] = value
             records.append(record)
 
         return records
@@ -4582,6 +4792,9 @@ class PlanWorkflowWindow:
         self.preview_edit_btn_text = tk.StringVar(value="修改模式:关")
         self.preview_dirty = False
         self.current_transit_tables = {}
+        self.last_workflow_context = {}
+        self.last_table_access_logs = []
+        self.last_table_access_precheck = []
         # “当前预览结果”独立缓存：结果预览区临时载入 SQLite/中转/主界面表时，
         # 不应覆盖最后一次计划预览/执行得到的结果，否则下拉切换后会丢失原预览结果。
         self.plan_preview_headers = list(self.preview_headers)
@@ -4686,6 +4899,12 @@ class PlanWorkflowWindow:
         ttk.Button(node_btns2, text="合并为组", command=self.merge_selected_nodes_to_group).pack(side=tk.LEFT, padx=2, pady=2)
         ttk.Button(node_btns2, text="展开组", command=self.expand_selected_group).pack(side=tk.LEFT, padx=2, pady=2)
         ttk.Button(node_btns2, text="清空节点", command=self.clear_nodes).pack(side=tk.LEFT, padx=2, pady=2)
+
+        node_btns3 = ttk.Frame(node_frame)
+        node_btns3.pack(fill=tk.X)
+        ttk.Button(node_btns3, text="表节点映射", command=self.open_table_access_window).pack(side=tk.LEFT, padx=2, pady=2)
+        ttk.Button(node_btns3, text="权限预检", command=self.open_table_access_precheck_window).pack(side=tk.LEFT, padx=2, pady=2)
+        ttk.Button(node_btns3, text="审计日志", command=self.open_table_access_audit_window).pack(side=tk.LEFT, padx=2, pady=2)
 
         tpl_frame = ttk.LabelFrame(left, text="3. 计划模板", padding=8)
         tpl_frame.pack(fill=tk.X)
@@ -5371,11 +5590,41 @@ class PlanWorkflowWindow:
 
         if node_type == "高级筛选":
             for table in config.get("extra_tables", []) or []:
-                tables.append(self.make_table_access_entry("lookup", table, permissions=self.table_permission_set(read=True)))
+                table_text = str(table or "").strip()
+                if not table_text:
+                    continue
+                if table_text.startswith("中转:"):
+                    tables.append(self.make_table_access_entry(
+                        "lookup",
+                        table_text,
+                        source_type="中转副表",
+                        permissions=self.table_permission_set(read=True),
+                    ))
+                else:
+                    tables.append(self.make_table_access_entry("lookup", table_text, permissions=self.table_permission_set(read=True)))
+
+        elif node_type == "匹配值输出列名":
+            lookup_table = str(config.get("lookup_table", "") or "").strip()
+            lookup_source_type = str(config.get("lookup_source_type", "SQLite表") or "SQLite表").strip()
+            if lookup_table:
+                tables.append(self.make_table_access_entry(
+                    "lookup",
+                    lookup_table,
+                    source_type="中转副表" if lookup_source_type == "中转副表" else "SQLite表",
+                    permissions=self.table_permission_set(read=True),
+                    field_mapping={field: {"target_field": field, "permissions": {"read_field": True}} for field in (config.get("lookup_fields", []) or []) if str(field or "").strip()},
+                ))
 
         elif node_type == "选定列写入指定表":
             if config.get("source_type") == "SQLite表" and config.get("source_sqlite_table"):
                 tables.append(self.make_table_access_entry("source", config.get("source_sqlite_table"), permissions=self.table_permission_set(read=True)))
+            if config.get("source_type") == "中转副表" and config.get("source_transit_table"):
+                tables.append(self.make_table_access_entry(
+                    "source",
+                    config.get("source_transit_table"),
+                    source_type="中转副表",
+                    permissions=self.table_permission_set(read=True),
+                ))
             if config.get("target_type", "SQLite表") == "SQLite表":
                 can_write = bool(config.get("enable_write", False))
                 mode = self.normalize_selected_columns_write_mode(config.get("write_mode", "")) if hasattr(self, "normalize_selected_columns_write_mode") else config.get("write_mode", "")
@@ -5386,6 +5635,25 @@ class PlanWorkflowWindow:
                         read=True,
                         write=can_write,
                         create=can_write,
+                        update=can_write,
+                        clear=can_write and mode == "清空目标字段后覆盖，保留目标原行数",
+                        replace=can_write and mode in ("按来源完整结构覆盖", "覆盖重建目标表"),
+                        alter=can_write,
+                    ),
+                    write_mode=mode,
+                ))
+            if config.get("target_type", "SQLite表") == "中转副表":
+                can_write = bool(config.get("enable_write", False))
+                mode = self.normalize_selected_columns_write_mode(config.get("write_mode", "")) if hasattr(self, "normalize_selected_columns_write_mode") else config.get("write_mode", "")
+                tables.append(self.make_table_access_entry(
+                    "target",
+                    config.get("target_transit_table", "选定列结果"),
+                    source_type="中转副表",
+                    permissions=self.table_permission_set(
+                        read=True,
+                        write=can_write,
+                        create=can_write,
+                        append=can_write,
                         update=can_write,
                         clear=can_write and mode == "清空目标字段后覆盖，保留目标原行数",
                         replace=can_write and mode in ("按来源完整结构覆盖", "覆盖重建目标表"),
@@ -5413,22 +5681,53 @@ class PlanWorkflowWindow:
                     write_mode=mode,
                 ))
 
-        elif node_type == "保存中转数据" and config.get("save_sqlite"):
-            can_write = True
-            mode = config.get("sqlite_mode", "自动加时间戳")
-            tables.append(self.make_table_access_entry(
-                "output",
-                config.get("sqlite_table", config.get("transit_name", "")),
-                permissions=self.table_permission_set(read=True, write=can_write, create=can_write, append=mode == "追加写入", replace=mode == "覆盖同名表"),
-                write_mode=mode,
-            ))
+        elif node_type == "保存中转数据":
+            if config.get("save_memory", True):
+                append_memory = bool(config.get("append_memory", False))
+                tables.append(self.make_table_access_entry(
+                    "output",
+                    config.get("transit_name", "中转数据"),
+                    source_type="中转副表",
+                    permissions=self.table_permission_set(
+                        read=True,
+                        write=True,
+                        create=True,
+                        append=append_memory,
+                        replace=not append_memory,
+                    ),
+                    write_mode="追加" if append_memory else "覆盖",
+                ))
+            if config.get("save_sqlite"):
+                mode = config.get("sqlite_mode", "自动加时间戳")
+                tables.append(self.make_table_access_entry(
+                    "sqlite_output",
+                    config.get("sqlite_table", config.get("transit_name", "")),
+                    permissions=self.table_permission_set(read=True, write=True, create=True, append=mode == "追加写入", replace=mode == "覆盖同名表"),
+                    write_mode=mode,
+                ))
 
         elif node_type == "节点组 / 子工作流":
             if config.get("input_source_type") == "SQLite表" and config.get("input_sqlite_table"):
                 tables.append(self.make_table_access_entry("source", config.get("input_sqlite_table"), permissions=self.table_permission_set(read=True)))
-            if config.get("save_to_sqlite"):
+            if config.get("input_source_type") == "中转副表" and config.get("input_transit_table"):
+                tables.append(self.make_table_access_entry(
+                    "source",
+                    config.get("input_transit_table"),
+                    source_type="中转副表",
+                    permissions=self.table_permission_set(read=True),
+                ))
+            if config.get("save_to_transit"):
+                mode = self.normalize_group_transit_conflict_mode(config.get("output_transit_conflict_mode", "覆盖整表")) if hasattr(self, "normalize_group_transit_conflict_mode") else config.get("output_transit_conflict_mode", "")
                 tables.append(self.make_table_access_entry(
                     "output",
+                    config.get("output_transit_name") or config.get("group_name", "节点组结果"),
+                    source_type="中转副表",
+                    permissions=self.table_permission_set(read=True, write=True, create=True, append=mode == "追加", replace=mode != "追加"),
+                    write_mode=mode,
+                ))
+            if config.get("save_to_sqlite"):
+                tables.append(self.make_table_access_entry(
+                    "sqlite_output",
                     config.get("output_sqlite_table", config.get("group_name", "")),
                     permissions=self.table_permission_set(read=True, write=True, create=True, append=True, replace=True),
                     write_mode=config.get("output_sqlite_mode", ""),
@@ -5442,6 +5741,74 @@ class PlanWorkflowWindow:
                         spec.get("sqlite_table") or spec.get("table") or "",
                         permissions=self.table_permission_set(read=True),
                     ))
+                if (spec or {}).get("source_type") == "中转副表":
+                    tables.append(self.make_table_access_entry(
+                        spec.get("alias") or "input",
+                        spec.get("transit_table") or spec.get("table") or "",
+                        source_type="中转副表",
+                        permissions=self.table_permission_set(read=True),
+                    ))
+            output_mode = str(config.get("output_mode", "") or "").strip()
+            if bool(config.get("save_output_as_transit", False)) or output_mode.startswith("保存为中转副表"):
+                mode = config.get("transit_conflict_mode", "覆盖")
+                tables.append(self.make_table_access_entry(
+                    "output",
+                    config.get("transit_name", config.get("plugin_id", "插件输出")),
+                    source_type="中转副表",
+                    permissions=self.table_permission_set(read=True, write=True, create=True, append=mode == "追加", replace=mode != "追加"),
+                    write_mode=mode,
+                ))
+            if config.get("save_plugin_log_transit", False):
+                mode = config.get("transit_conflict_mode", "覆盖")
+                tables.append(self.make_table_access_entry(
+                    "log_output",
+                    config.get("plugin_log_transit_name", "插件日志"),
+                    source_type="中转副表",
+                    permissions=self.table_permission_set(read=True, write=True, create=True, append=mode == "追加", replace=mode != "追加"),
+                    write_mode=mode,
+                ))
+            if config.get("save_plugin_log_sqlite", False):
+                tables.append(self.make_table_access_entry(
+                    "sqlite_log",
+                    "_plugin_log",
+                    permissions=self.table_permission_set(read=True, write=True, create=True, append=True),
+                    write_mode="追加日志",
+                ))
+
+        elif node_type == "循环执行起点":
+            if config.get("source_type") == "SQLite表" and config.get("source_table"):
+                tables.append(self.make_table_access_entry("source", config.get("source_table"), permissions=self.table_permission_set(read=True)))
+            if config.get("source_type") == "中转副表" and config.get("transit_table"):
+                tables.append(self.make_table_access_entry(
+                    "source",
+                    config.get("transit_table"),
+                    source_type="中转副表",
+                    permissions=self.table_permission_set(read=True),
+                ))
+            tables.append(self.make_table_access_entry(
+                "loop_current",
+                config.get("current_table_name", "当前循环项"),
+                source_type="中转副表",
+                permissions=self.table_permission_set(read=True, write=True, create=True, replace=True),
+                write_mode="覆盖当前循环项",
+            ))
+
+        elif node_type == "循环判断回跳":
+            loop_id = config.get("loop_id", "") or "loop"
+            tables.append(self.make_table_access_entry(
+                "loop_result",
+                config.get("result_table_name", "循环结果") or "循环结果",
+                source_type="中转副表",
+                permissions=self.table_permission_set(read=True, write=True, create=True, replace=True),
+                write_mode="覆盖循环结果",
+            ))
+            tables.append(self.make_table_access_entry(
+                "loop_queue",
+                f"循环队列_{loop_id}",
+                source_type="中转副表",
+                permissions=self.table_permission_set(read=True, write=True, create=True, replace=True),
+                write_mode="覆盖循环队列",
+            ))
 
         return {"version": 1, "auto_generated": True, "tables": tables}
 
@@ -5479,25 +5846,1436 @@ class PlanWorkflowWindow:
             if isinstance(child_nodes, list):
                 self.refresh_node_tree_table_access(child_nodes)
 
+    def table_access_permission_items(self):
+        return [
+            ("read_table", "读表"),
+            ("write_table", "写表"),
+            ("create_table", "新建表"),
+            ("append_rows", "追加行"),
+            ("update_rows", "更新行"),
+            ("clear_table", "清空表"),
+            ("replace_table", "替换表"),
+            ("alter_schema", "改结构"),
+            ("delete_rows", "删行"),
+            ("drop_table", "删表"),
+        ]
+
+    def field_permission_items(self):
+        return [
+            ("read_field", "可读"),
+            ("write_field", "可写"),
+            ("create_field", "可创建"),
+            ("protect_field", "保护"),
+        ]
+
+    def get_node_table_access(self, node):
+        self.ensure_node_identity(node)
+        access = node.get("table_access")
+        if not isinstance(access, dict):
+            access = self.default_table_access_for_node(node)
+            node["table_access"] = access
+        access.setdefault("version", 1)
+        tables = access.get("tables")
+        if not isinstance(tables, list):
+            access["tables"] = []
+        return access
+
+    def mark_node_table_access_manual(self, node):
+        access = self.get_node_table_access(node)
+        access["auto_generated"] = False
+        return access
+
+    def table_access_table_choices(self, node=None):
+        values = ["__CURRENT_TABLE__"]
+        try:
+            values.extend(self.app.get_table_names())
+        except Exception:
+            pass
+        if isinstance(node, dict):
+            for entry in self.get_node_table_access(node).get("tables", []):
+                table = str((entry or {}).get("table", "") or "").strip()
+                if table:
+                    values.append(table)
+        result = []
+        for value in values:
+            if value not in result:
+                result.append(value)
+        return result
+
+    def table_permission_summary(self, entry):
+        perms = (entry or {}).get("permissions") or {}
+        labels = []
+        label_map = dict(self.table_access_permission_items())
+        for key, _ in self.table_access_permission_items():
+            if perms.get(key):
+                labels.append(label_map.get(key, key))
+        if not labels:
+            return "无权限"
+        return "/".join(labels[:4]) + ("..." if len(labels) > 4 else "")
+
+    def table_access_operation_summary(self, entry):
+        entry = entry or {}
+        table = str(entry.get("table", "") or "").strip()
+        perms = entry.get("permissions") or {}
+        mode = str(entry.get("write_mode", "") or "").strip()
+        ops = []
+        if entry.get("is_current_table") or table == "__CURRENT_TABLE__":
+            if perms.get("write_table") or perms.get("update_rows"):
+                return "当前表写入(只记录)" if entry.get("log_only") else "当前表写入"
+            if perms.get("read_table"):
+                return "当前表读取"
+            return "当前表"
+        if perms.get("read_table"):
+            ops.append("读表")
+        if perms.get("write_table"):
+            ops.append("写表")
+        if perms.get("create_table"):
+            ops.append("新建")
+        if perms.get("append_rows"):
+            ops.append("追加")
+        if perms.get("update_rows"):
+            ops.append("更新")
+        if perms.get("clear_table"):
+            ops.append("清空")
+        if perms.get("replace_table"):
+            ops.append("替换")
+        if perms.get("delete_rows"):
+            ops.append("删行")
+        if perms.get("drop_table"):
+            ops.append("删表")
+        if not ops:
+            return "无操作"
+        text = "/".join(ops)
+        return f"{text}；{mode}" if mode else text
+
+    def table_access_entry_status(self, entry):
+        entry = entry or {}
+        table = str(entry.get("table", "") or "").strip()
+        perms = entry.get("permissions") or {}
+        if not table:
+            return "未绑定"
+        if entry.get("is_current_table") or table == "__CURRENT_TABLE__":
+            if perms.get("write_table") or perms.get("update_rows"):
+                return "写入只记录" if entry.get("log_only") else "当前表写入"
+            return "当前表读取" if perms.get("read_table") else "当前表"
+        if not any(bool(v) for v in perms.values()):
+            return "未授权"
+        risky = [k for k in ("replace_table", "clear_table", "drop_table", "delete_rows", "alter_schema") if perms.get(k)]
+        if risky:
+            return "危险写入"
+        if perms.get("write_table") or perms.get("append_rows") or perms.get("update_rows"):
+            return "已授权"
+        if perms.get("read_table"):
+            return "只读"
+        return "待检查"
+
+    def table_access_node_status(self, node):
+        access = self.get_node_table_access(node)
+        tables = access.get("tables", [])
+        if not tables:
+            return "未配置"
+        statuses = [self.table_access_entry_status(entry) for entry in tables]
+        if any(s in ("未绑定", "未授权") for s in statuses):
+            return "待配置"
+        if any(s == "危险写入" for s in statuses):
+            return "需确认"
+        if any(s == "已授权" for s in statuses):
+            return "已授权"
+        if all(s in ("只读", "只记录", "当前表") for s in statuses):
+            return "只读/记录"
+        return "OK"
+
+    def table_access_field_items(self, entry):
+        mapping = (entry or {}).get("field_mapping") or {}
+        if isinstance(mapping, dict):
+            items = []
+            for key, value in mapping.items():
+                if isinstance(value, dict):
+                    items.append((str(key), value))
+            return items
+        if isinstance(mapping, list):
+            items = []
+            for idx, value in enumerate(mapping):
+                if isinstance(value, dict):
+                    key = value.get("key") or f"field_{idx + 1}"
+                    items.append((str(key), value))
+            return items
+        return []
+
+    def make_table_access_field_key(self, mapping, source_field, target_field):
+        base = str(target_field or source_field or "字段").strip() or "字段"
+        base = re.sub(r"\s+", "_", base)
+        key = base
+        counter = 2
+        while isinstance(mapping, dict) and key in mapping:
+            key = f"{base}_{counter}"
+            counter += 1
+        return key
+
+    def field_permission_status(self, item):
+        item = item or {}
+        perms = item.get("permissions") or {}
+        if perms.get("protect_field"):
+            return "保护"
+        if perms.get("write_field"):
+            return "可写"
+        if perms.get("read_field"):
+            return "只读"
+        return "未授权"
+
+    def field_bool_text(self, value):
+        return "是" if bool(value) else "否"
+
+    def get_table_access_field_choices(self, node_index, entry):
+        entry = entry or {}
+        table = str(entry.get("table", "") or "").strip()
+        choices = []
+        try:
+            headers, _ = self.get_headers_rows_before(node_index)
+            choices.extend(headers or [])
+        except Exception:
+            choices.extend(self.preview_headers or [])
+        if table and table != "__CURRENT_TABLE__" and entry.get("source_type", "SQLite表") == "SQLite表":
+            try:
+                choices.extend(self.app.get_table_columns(table))
+            except Exception:
+                pass
+        for _, item in self.table_access_field_items(entry):
+            for key in ("source_field", "target_field", "field", "name"):
+                value = str(item.get(key, "") or "").strip()
+                if value:
+                    choices.append(value)
+        result = []
+        for value in choices:
+            if value and value not in result:
+                result.append(value)
+        return result
+
+    def auto_match_table_access_fields(self, node_index, entry):
+        entry = entry or {}
+        source_fields = []
+        try:
+            source_fields, _ = self.get_headers_rows_before(node_index)
+        except Exception:
+            source_fields = list(self.preview_headers or [])
+
+        table = str(entry.get("table", "") or "").strip()
+        target_fields = []
+        if table and table != "__CURRENT_TABLE__" and entry.get("source_type", "SQLite表") == "SQLite表":
+            try:
+                target_fields = self.app.get_table_columns(table)
+            except Exception:
+                target_fields = []
+        if not target_fields:
+            target_fields = list(source_fields)
+
+        source_by_norm = {self.app.sanitize_sql_name(f, ""): f for f in source_fields}
+        mapping = {}
+        for target in target_fields:
+            norm = self.app.sanitize_sql_name(target, "")
+            source = target if target in source_fields else source_by_norm.get(norm, "")
+            if not source:
+                continue
+            key = self.make_table_access_field_key(mapping, source, target)
+            mapping[key] = {
+                "source_field": source,
+                "target_field": target,
+                "permissions": {
+                    "read_field": True,
+                    "write_field": bool((entry.get("permissions") or {}).get("write_table")),
+                    "create_field": bool((entry.get("permissions") or {}).get("alter_schema")),
+                    "protect_field": False,
+                },
+            }
+        entry["field_mapping"] = mapping
+        return len(mapping)
+
+    def apply_table_access_preset_to_vars(self, preset, permission_vars, log_only_var=None):
+        presets = {
+            "禁止访问": {},
+            "只读": {"read_table": True},
+            "默认读写只记录": {"read_table": True, "write_table": True, "update_rows": True},
+            "追加写入": {"read_table": True, "write_table": True, "create_table": True, "append_rows": True},
+            "更新写入": {"read_table": True, "write_table": True, "update_rows": True},
+            "追加或更新": {"read_table": True, "write_table": True, "create_table": True, "append_rows": True, "update_rows": True},
+            "覆盖/清空": {"read_table": True, "write_table": True, "create_table": True, "clear_table": True, "replace_table": True},
+            "新建表": {"read_table": True, "write_table": True, "create_table": True},
+            "危险全开": {key: True for key, _ in self.table_access_permission_items()},
+        }
+        selected = presets.get(preset)
+        if selected is None:
+            return
+        for key, var in permission_vars.items():
+            var.set(bool(selected.get(key)))
+        if log_only_var is not None:
+            log_only_var.set(preset == "默认读写只记录")
+
+    def table_access_entry_match_score(self, actual, expected):
+        actual = actual or {}
+        expected = expected or {}
+        actual_table = str(actual.get("table", "") or "").strip()
+        expected_table = str(expected.get("table", "") or "").strip()
+        if not expected_table:
+            return 0
+        actual_names = {actual_table, TableAccessManager._sanitize_name_for_match(actual_table)}
+        expected_names = {expected_table, TableAccessManager._sanitize_name_for_match(expected_table)}
+        actual_names.discard("")
+        expected_names.discard("")
+        if not actual_names.intersection(expected_names):
+            return 0
+        score = 1
+        actual_source = str(actual.get("source_type", "") or "").strip()
+        expected_source = str(expected.get("source_type", "") or "").strip()
+        if expected_source and actual_source == expected_source:
+            score += 2
+        elif expected_source and actual_source and actual_source != expected_source:
+            return 0
+        if str(actual.get("role", "") or "").strip() == str(expected.get("role", "") or "").strip():
+            score += 1
+        return score
+
+    def find_matching_table_access_entry(self, actual_tables, expected):
+        best = None
+        best_score = 0
+        for entry in actual_tables or []:
+            if not isinstance(entry, dict):
+                continue
+            score = self.table_access_entry_match_score(entry, expected)
+            if score > best_score:
+                best = entry
+                best_score = score
+        return best
+
+    def normalize_precheck_transit_name(self, table_name):
+        text = str(table_name or "").strip()
+        if text.startswith("中转:"):
+            return text.split(":", 1)[1].strip()
+        return text
+
+    def add_table_access_precheck_issue(self, issues, severity, node_label, node, entry, message, suggestion=""):
+        entry = entry or {}
+        issues.append({
+            "severity": severity,
+            "node": node_label,
+            "node_type": (node or {}).get("type", ""),
+            "node_name": (node or {}).get("name", ""),
+            "role": entry.get("role", ""),
+            "source_type": entry.get("source_type", ""),
+            "table": entry.get("table", ""),
+            "operation": self.table_access_operation_summary(entry),
+            "message": message,
+            "suggestion": suggestion,
+        })
+
+    def table_access_precheck_sort_key(self, issue):
+        order = {"error": 0, "warning": 1, "info": 2, "ok": 3}
+        return (order.get(issue.get("severity"), 9), str(issue.get("node", "")), str(issue.get("table", "")))
+
+    def table_access_precheck_summary_text(self, issues):
+        counts = {"error": 0, "warning": 0, "info": 0, "ok": 0}
+        for issue in issues or []:
+            sev = issue.get("severity", "info")
+            counts[sev] = counts.get(sev, 0) + 1
+        if not issues:
+            return "权限预检完成：未发现需要处理的表权限问题。"
+        return (
+            "权限预检完成："
+            f"错误 {counts.get('error', 0)} 项，"
+            f"警告 {counts.get('warning', 0)} 项，"
+            f"提示 {counts.get('info', 0)} 项。"
+        )
+
+    def table_access_precheck_actionable(self, issues):
+        return [issue for issue in (issues or []) if issue.get("severity") in ("error", "warning")]
+
+    def get_precheck_sqlite_tables(self):
+        db_path = self.get_workflow_db_path()
+        if not db_path or not os.path.exists(db_path):
+            return None
+        try:
+            return set(TableAccessManager(db_path, node_type="权限预检").list_tables())
+        except Exception:
+            return None
+
+    def iter_nodes_for_table_access_precheck(self, nodes=None, stop_index=None, prefix=""):
+        node_list = nodes if nodes is not None else self.nodes
+        for idx, node in enumerate(node_list or []):
+            if stop_index is not None and not prefix and idx > int(stop_index):
+                break
+            node_type = (node or {}).get("type", "")
+            label = f"{prefix}{idx + 1}.{node_type}"
+            yield label, node
+            cfg = (node or {}).get("config", {}) if isinstance(node, dict) else {}
+            child_nodes = cfg.get("nodes") if isinstance(cfg, dict) else None
+            if isinstance(child_nodes, list):
+                child_prefix = f"{label} > "
+                yield from self.iter_nodes_for_table_access_precheck(child_nodes, stop_index=None, prefix=child_prefix)
+
+    def build_table_access_precheck(self, execute_actions=True, stop_index=None, nodes=None):
+        """
+        执行前权限预检。
+
+        以节点配置重新推导“期望表访问”，再和当前保存的 table_access 对比。
+        这样既能发现默认映射遗漏，也能发现用户手动收窄权限后的运行风险。
+        """
+        node_list = nodes if nodes is not None else self.nodes
+        self.ensure_node_tree_identity(node_list)
+        self.refresh_node_tree_table_access(node_list)
+
+        issues = []
+        db_path = self.get_workflow_db_path()
+        sqlite_tables = self.get_precheck_sqlite_tables()
+        produced_transit = set((self.current_transit_tables or {}).keys())
+        risky_permissions = {
+            "replace_table": "替换整表",
+            "clear_table": "清空表/字段",
+            "drop_table": "删除表",
+            "delete_rows": "删除行",
+            "alter_schema": "改表结构",
+        }
+        write_permissions = {"write_table", "create_table", "append_rows", "update_rows", "clear_table", "replace_table", "alter_schema", "delete_rows", "drop_table"}
+
+        if execute_actions:
+            output_mode = self.output_mode_var.get()
+            output_table = self.output_table_var.get().strip()
+            if output_mode in ("保存为SQLite新表", "覆盖当前表"):
+                pseudo = self.make_table_access_entry(
+                    "workflow_output",
+                    output_table,
+                    permissions=self.table_permission_set(read=True, write=True, create=True, replace=output_mode == "覆盖当前表"),
+                    write_mode=output_mode,
+                )
+                if not db_path:
+                    self.add_table_access_precheck_issue(issues, "error", "工作流输出", {"type": "工作流输出"}, pseudo, "输出方式需要 SQLite 数据库，但当前未设置数据库路径。", "先在主界面选择或创建 SQLite 数据库。")
+                if not output_table:
+                    self.add_table_access_precheck_issue(issues, "error", "工作流输出", {"type": "工作流输出"}, pseudo, "输出方式需要表名，但输出表名为空。", "填写输出表名后再执行。")
+                if output_mode == "覆盖当前表":
+                    self.add_table_access_precheck_issue(issues, "warning", "工作流输出", {"type": "工作流输出"}, pseudo, f"执行后会覆盖 SQLite 表：{output_table}", "确认备份设置和目标表无误。")
+
+        for node_label, node in self.iter_nodes_for_table_access_precheck(node_list, stop_index=stop_index):
+            if not isinstance(node, dict):
+                continue
+            if not node.get("enabled", True):
+                continue
+
+            expected_access = self.default_table_access_for_node(node)
+            actual_access = self.get_node_table_access(node)
+            actual_tables = actual_access.get("tables", []) if isinstance(actual_access, dict) else []
+            matched_actual_ids = set()
+
+            for expected in expected_access.get("tables", []):
+                if not isinstance(expected, dict):
+                    continue
+                table = str(expected.get("table", "") or "").strip()
+                source_type = str(expected.get("source_type", "") or "").strip()
+                expected_perms = expected.get("permissions") or {}
+                required = [key for key, value in expected_perms.items() if value]
+
+                if expected.get("is_current_table") or table == "__CURRENT_TABLE__":
+                    continue
+                if not table:
+                    self.add_table_access_precheck_issue(issues, "warning", node_label, node, expected, "节点配置会访问表，但表名为空。", "回到节点配置或表节点映射中补齐表名。")
+                    continue
+
+                actual = self.find_matching_table_access_entry(actual_tables, expected)
+                if actual is not None:
+                    matched_actual_ids.add(id(actual))
+                if actual is None:
+                    severity = "error" if any(key in write_permissions for key in required) else "warning"
+                    self.add_table_access_precheck_issue(issues, severity, node_label, node, expected, "当前 table_access 中缺少该表角色。", "打开表节点映射，重建默认映射或手动添加表角色。")
+                    actual_perms = {}
+                else:
+                    actual_perms = actual.get("permissions") or {}
+                    missing = [key for key in required if not bool(actual_perms.get(key))]
+                    if missing:
+                        label_map = dict(self.table_access_permission_items())
+                        missing_text = "、".join(label_map.get(key, key) for key in missing)
+                        severity = "error" if any(key in write_permissions for key in missing) else "warning"
+                        self.add_table_access_precheck_issue(issues, severity, node_label, node, expected, f"实际授权缺少：{missing_text}。", "在表节点映射中补齐权限，或调整节点写入设置。")
+
+                    expected_fields = expected.get("field_mapping") or {}
+                    actual_fields = actual.get("field_mapping") or {}
+                    if isinstance(expected_fields, dict) and isinstance(actual_fields, dict):
+                        for _, field_rule in expected_fields.items():
+                            if not isinstance(field_rule, dict):
+                                continue
+                            target = str(field_rule.get("target_field") or field_rule.get("source_field") or "").strip()
+                            expected_fperms = field_rule.get("permissions") or {}
+                            if not target:
+                                continue
+                            actual_rule = None
+                            for _, item in actual_fields.items():
+                                if not isinstance(item, dict):
+                                    continue
+                                candidates = [
+                                    str(item.get("target_field", "") or "").strip(),
+                                    str(item.get("source_field", "") or "").strip(),
+                                ]
+                                if target in candidates:
+                                    actual_rule = item
+                                    break
+                            if actual_rule is None:
+                                continue
+                            actual_fperms = actual_rule.get("permissions") or {}
+                            if expected_fperms.get("write_field") and actual_fperms.get("protect_field"):
+                                self.add_table_access_precheck_issue(issues, "error", node_label, node, expected, f"字段被保护但节点需要写入：{target}", "取消字段保护，或调整节点输出字段。")
+                            if expected_fperms.get("read_field") and "read_field" in actual_fperms and not actual_fperms.get("read_field"):
+                                self.add_table_access_precheck_issue(issues, "warning", node_label, node, expected, f"字段读权限被关闭：{target}", "补齐字段读权限，或从节点配置中移除该字段。")
+
+                effective_perms = actual_perms or expected_perms
+                risky = [label for key, label in risky_permissions.items() if effective_perms.get(key)]
+                if risky and any(effective_perms.get(key) for key in write_permissions):
+                    severity = "warning" if execute_actions else "info"
+                    self.add_table_access_precheck_issue(issues, severity, node_label, node, expected, "包含高风险写入权限：" + "、".join(risky), "执行前确认目标表和备份策略。")
+
+                if source_type == "SQLite表":
+                    if any(expected_perms.get(key) for key in ("read_table", "write_table", "create_table", "append_rows", "update_rows", "replace_table")) and not db_path:
+                        self.add_table_access_precheck_issue(issues, "error", node_label, node, expected, "节点需要访问 SQLite 表，但当前未设置数据库路径。", "先在主界面选择或创建 SQLite 数据库。")
+                    if db_path and not os.path.exists(db_path) and expected_perms.get("read_table") and not any(expected_perms.get(key) for key in ("write_table", "create_table", "replace_table")):
+                        self.add_table_access_precheck_issue(issues, "error", node_label, node, expected, f"SQLite 数据库文件不存在，无法读取表：{table}", "检查数据库路径，或先创建/导入该数据库。")
+                    if sqlite_tables is not None and expected_perms.get("read_table") and not any(expected_perms.get(key) for key in ("write_table", "create_table", "replace_table")):
+                        if table not in sqlite_tables:
+                            self.add_table_access_precheck_issue(issues, "error", node_label, node, expected, f"SQLite 来源表不存在：{table}", "检查表名或先创建/导入该表。")
+
+                if source_type == "中转副表":
+                    transit_name = self.normalize_precheck_transit_name(table)
+                    is_writer = any(expected_perms.get(key) for key in ("write_table", "create_table", "append_rows", "update_rows", "replace_table"))
+                    is_reader = expected_perms.get("read_table") and not is_writer
+                    if is_reader and transit_name and transit_name not in produced_transit:
+                        self.add_table_access_precheck_issue(issues, "warning", node_label, node, expected, f"读取的中转副表在当前节点之前未看到生成者：{table}", "确认前面有保存中转/插件输出/循环结果节点，或先运行生成该中转副表。")
+                    if is_writer and transit_name:
+                        produced_transit.add(transit_name)
+
+            for actual in actual_tables:
+                if not isinstance(actual, dict) or id(actual) in matched_actual_ids:
+                    continue
+                if actual.get("is_current_table") or actual.get("table") == "__CURRENT_TABLE__":
+                    continue
+                status = self.table_access_entry_status(actual)
+                if status in ("未绑定", "未授权"):
+                    self.add_table_access_precheck_issue(issues, "warning", node_label, node, actual, f"手动表角色状态异常：{status}", "删除无效表角色，或补齐表名/权限。")
+                elif status == "危险写入":
+                    self.add_table_access_precheck_issue(issues, "warning", node_label, node, actual, "手动表角色包含高风险写入权限。", "确认这是节点真实需要的写入范围。")
+
+        issues.sort(key=self.table_access_precheck_sort_key)
+        self.last_table_access_precheck = issues
+        return issues
+
+    def show_table_access_precheck_dialog(self, issues, title="权限预检", allow_continue=False):
+        issues = list(issues or [])
+        result = {"continue": not allow_continue}
+        win = tk.Toplevel(self.window)
+        win.title(title)
+        win.geometry("1280x680")
+        win.minsize(980, 520)
+        win.transient(self.window)
+
+        main = ttk.Frame(win, padding=8)
+        main.pack(fill=tk.BOTH, expand=True)
+        summary_var = tk.StringVar(value=self.table_access_precheck_summary_text(issues))
+        ttk.Label(main, textvariable=summary_var, font=("TkDefaultFont", 10, "bold")).pack(anchor=tk.W, pady=(0, 6))
+
+        filter_frame = ttk.Frame(main)
+        filter_frame.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(filter_frame, text="级别：").pack(side=tk.LEFT, padx=(0, 4))
+        severity_var = tk.StringVar(value="全部")
+        severity_combo = ttk.Combobox(filter_frame, textvariable=severity_var, values=["全部", "error", "warning", "info"], width=10, state="readonly")
+        severity_combo.pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Label(filter_frame, text="搜索：").pack(side=tk.LEFT, padx=(0, 4))
+        search_var = tk.StringVar()
+        search_entry = ttk.Entry(filter_frame, textvariable=search_var, width=34)
+        search_entry.pack(side=tk.LEFT, padx=(0, 8))
+
+        tree_wrap = ttk.Frame(main)
+        tree_wrap.pack(fill=tk.BOTH, expand=True)
+        columns = ("severity", "node", "source", "table", "role", "operation", "message", "suggestion")
+        tree = ttk.Treeview(tree_wrap, columns=columns, show="headings", height=18)
+        for col, text, width in [
+            ("severity", "级别", 72),
+            ("node", "节点", 180),
+            ("source", "来源", 82),
+            ("table", "表", 150),
+            ("role", "角色", 82),
+            ("operation", "操作", 150),
+            ("message", "问题", 320),
+            ("suggestion", "建议", 260),
+        ]:
+            tree.heading(col, text=text)
+            tree.column(col, width=width, anchor=tk.W)
+        tree.tag_configure("error", foreground="#b00020")
+        tree.tag_configure("warning", foreground="#8a5a00")
+        tree.tag_configure("info", foreground="#335c99")
+        yscroll = ttk.Scrollbar(tree_wrap, orient=tk.VERTICAL, command=tree.yview)
+        xscroll = ttk.Scrollbar(tree_wrap, orient=tk.HORIZONTAL, command=tree.xview)
+        tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+        tree_wrap.rowconfigure(0, weight=1)
+        tree_wrap.columnconfigure(0, weight=1)
+
+        def row_text(issue):
+            return " ".join(str(issue.get(key, "") or "") for key in ["severity", "node", "source_type", "table", "role", "operation", "message", "suggestion"])
+
+        def refresh_tree(*_):
+            tree.delete(*tree.get_children())
+            selected_sev = severity_var.get()
+            keyword = search_var.get().strip().lower()
+            visible = 0
+            for idx, issue in enumerate(issues):
+                sev = issue.get("severity", "info")
+                if selected_sev != "全部" and sev != selected_sev:
+                    continue
+                if keyword and keyword not in row_text(issue).lower():
+                    continue
+                visible += 1
+                tree.insert(
+                    "",
+                    tk.END,
+                    iid=str(idx),
+                    values=(
+                        sev,
+                        issue.get("node", ""),
+                        issue.get("source_type", ""),
+                        issue.get("table", ""),
+                        issue.get("role", ""),
+                        issue.get("operation", ""),
+                        issue.get("message", ""),
+                        issue.get("suggestion", ""),
+                    ),
+                    tags=(sev,),
+                )
+            summary_var.set(self.table_access_precheck_summary_text(issues) + f" 当前显示 {visible} 项。")
+
+        def show_detail(event=None):
+            sel = tree.selection()
+            if not sel:
+                return
+            issue = issues[int(sel[0])]
+            detail = (
+                f"级别：{issue.get('severity', '')}\n"
+                f"节点：{issue.get('node', '')}\n"
+                f"表：{issue.get('source_type', '')} / {issue.get('table', '')}\n"
+                f"角色：{issue.get('role', '')}\n"
+                f"操作：{issue.get('operation', '')}\n\n"
+                f"问题：{issue.get('message', '')}\n\n"
+                f"建议：{issue.get('suggestion', '')}"
+            )
+            messagebox.showinfo("预检详情", detail, parent=win)
+
+        tree.bind("<Double-1>", show_detail)
+        severity_var.trace_add("write", refresh_tree)
+        search_var.trace_add("write", refresh_tree)
+
+        bottom = ttk.Frame(win, padding=(8, 0, 8, 8))
+        bottom.pack(fill=tk.X)
+        ttk.Button(bottom, text="打开表节点映射", command=lambda: (win.destroy(), self.open_table_access_window())).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bottom, text="详情", command=show_detail).pack(side=tk.LEFT, padx=4)
+        if allow_continue:
+            def continue_run():
+                result["continue"] = True
+                win.destroy()
+            def cancel_run():
+                result["continue"] = False
+                win.destroy()
+            ttk.Button(bottom, text="继续执行", command=continue_run).pack(side=tk.RIGHT, padx=4)
+            ttk.Button(bottom, text="取消执行", command=cancel_run).pack(side=tk.RIGHT, padx=4)
+            win.protocol("WM_DELETE_WINDOW", cancel_run)
+        else:
+            ttk.Button(bottom, text="关闭", command=win.destroy).pack(side=tk.RIGHT, padx=4)
+
+        refresh_tree()
+        self.center_toplevel(win, self.window, 1280, 680)
+        try:
+            win.grab_set()
+        except Exception:
+            pass
+        self.window.wait_window(win)
+        return bool(result.get("continue"))
+
+    def confirm_table_access_precheck(self, execute_actions=True, stop_index=None):
+        issues = self.build_table_access_precheck(execute_actions=execute_actions, stop_index=stop_index)
+        actionable = self.table_access_precheck_actionable(issues)
+        if not actionable:
+            self.status_var.set(self.table_access_precheck_summary_text(issues))
+            return True
+        return self.show_table_access_precheck_dialog(
+            actionable,
+            title="执行前权限预检",
+            allow_continue=True,
+        )
+
+    def open_table_access_precheck_window(self):
+        issues = self.build_table_access_precheck(execute_actions=True)
+        self.show_table_access_precheck_dialog(issues, title="权限预检", allow_continue=False)
+
+    def table_access_log_text(self, event):
+        try:
+            return json.dumps(event, ensure_ascii=False, default=str)
+        except Exception:
+            return str(event)
+
+    def open_table_access_audit_window(self):
+        logs_state = {"logs": list(self.last_table_access_logs or [])}
+        win = tk.Toplevel(self.window)
+        win.title("表访问权限审计日志")
+        win.geometry("1320x700")
+        win.minsize(980, 520)
+        win.transient(self.window)
+
+        main = ttk.Frame(win, padding=8)
+        main.pack(fill=tk.BOTH, expand=True)
+        summary_var = tk.StringVar()
+
+        filter_frame = ttk.Frame(main)
+        filter_frame.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(filter_frame, textvariable=summary_var, font=("TkDefaultFont", 10, "bold")).pack(side=tk.LEFT, padx=(0, 16))
+        ttk.Label(filter_frame, text="状态：").pack(side=tk.LEFT, padx=(0, 4))
+        status_var = tk.StringVar(value="全部")
+        status_combo = ttk.Combobox(filter_frame, textvariable=status_var, values=["全部", "ok", "warning", "denied", "missing", "compat"], width=10, state="readonly")
+        status_combo.pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Label(filter_frame, text="搜索：").pack(side=tk.LEFT, padx=(0, 4))
+        search_var = tk.StringVar()
+        ttk.Entry(filter_frame, textvariable=search_var, width=34).pack(side=tk.LEFT, padx=(0, 8))
+
+        tree_wrap = ttk.Frame(main)
+        tree_wrap.pack(fill=tk.BOTH, expand=True)
+        columns = ("time", "node", "source", "table", "operation", "status", "mode", "policy", "message")
+        tree = ttk.Treeview(tree_wrap, columns=columns, show="headings", height=20)
+        for col, text, width in [
+            ("time", "时间", 145),
+            ("node", "节点", 155),
+            ("source", "来源", 82),
+            ("table", "表", 150),
+            ("operation", "操作", 150),
+            ("status", "状态", 78),
+            ("mode", "模式", 110),
+            ("policy", "策略", 70),
+            ("message", "信息", 360),
+        ]:
+            tree.heading(col, text=text)
+            tree.column(col, width=width, anchor=tk.W)
+        tree.tag_configure("ok", foreground="#1b5e20")
+        tree.tag_configure("warning", foreground="#8a5a00")
+        tree.tag_configure("denied", foreground="#b00020")
+        tree.tag_configure("missing", foreground="#b00020")
+        tree.tag_configure("compat", foreground="#555555")
+        yscroll = ttk.Scrollbar(tree_wrap, orient=tk.VERTICAL, command=tree.yview)
+        xscroll = ttk.Scrollbar(tree_wrap, orient=tk.HORIZONTAL, command=tree.xview)
+        tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+        tree_wrap.rowconfigure(0, weight=1)
+        tree_wrap.columnconfigure(0, weight=1)
+
+        def log_row(event):
+            node = event.get("node_name") or event.get("node_type") or event.get("node_id") or ""
+            source = event.get("source_type") or event.get("access_source_type") or ""
+            mode = event.get("write_mode") or event.get("mode") or ""
+            return (
+                event.get("time", ""),
+                node,
+                source,
+                event.get("table_name", ""),
+                event.get("operation_checked") or event.get("operation", ""),
+                event.get("status", ""),
+                mode,
+                event.get("policy", ""),
+                event.get("message", ""),
+            )
+
+        def refresh_tree(*_):
+            tree.delete(*tree.get_children())
+            selected_status = status_var.get()
+            keyword = search_var.get().strip().lower()
+            visible = 0
+            counts = {}
+            for idx, event in enumerate(logs_state["logs"]):
+                status = str(event.get("status", "") or "")
+                counts[status] = counts.get(status, 0) + 1
+                if selected_status != "全部" and status != selected_status:
+                    continue
+                text = self.table_access_log_text(event).lower()
+                if keyword and keyword not in text:
+                    continue
+                visible += 1
+                row = log_row(event)
+                tag = status if status in ("ok", "warning", "denied", "missing", "compat") else ""
+                tree.insert("", tk.END, iid=str(idx), values=row, tags=(tag,))
+            count_text = "，".join(f"{k or '无状态'} {v}" for k, v in sorted(counts.items()))
+            summary_var.set(f"最近日志 {len(logs_state['logs'])} 条，当前显示 {visible} 条" + (f"（{count_text}）" if count_text else ""))
+
+        def reload_logs():
+            logs_state["logs"] = list(self.last_table_access_logs or [])
+            refresh_tree()
+
+        def clear_logs():
+            self.last_table_access_logs = []
+            logs_state["logs"] = []
+            refresh_tree()
+
+        def show_log_detail(event=None):
+            sel = tree.selection()
+            if not sel:
+                return
+            item = logs_state["logs"][int(sel[0])]
+            messagebox.showinfo("审计日志详情", self.table_access_log_text(item), parent=win)
+
+        def export_logs():
+            if not logs_state["logs"]:
+                messagebox.showwarning("提示", "当前没有可导出的审计日志。", parent=win)
+                return
+            path = filedialog.asksaveasfilename(
+                title="导出表访问审计日志",
+                defaultextension=".csv",
+                filetypes=[("CSV文件", "*.csv"), ("所有文件", "*.*")],
+                parent=win,
+            )
+            if not path:
+                return
+            fieldnames = sorted({key for event in logs_state["logs"] if isinstance(event, dict) for key in event.keys()})
+            with open(path, "w", encoding="utf-8-sig", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                for event in logs_state["logs"]:
+                    row = {}
+                    for key in fieldnames:
+                        value = event.get(key, "")
+                        if isinstance(value, (list, dict)):
+                            value = json.dumps(value, ensure_ascii=False)
+                        row[key] = value
+                    writer.writerow(row)
+            messagebox.showinfo("导出完成", f"已导出审计日志：\n{path}", parent=win)
+
+        tree.bind("<Double-1>", show_log_detail)
+        status_var.trace_add("write", refresh_tree)
+        search_var.trace_add("write", refresh_tree)
+
+        bottom = ttk.Frame(win, padding=(8, 0, 8, 8))
+        bottom.pack(fill=tk.X)
+        ttk.Button(bottom, text="刷新最近日志", command=reload_logs).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bottom, text="导出CSV", command=export_logs).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bottom, text="清空最近日志", command=clear_logs).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bottom, text="详情", command=show_log_detail).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bottom, text="关闭", command=win.destroy).pack(side=tk.RIGHT, padx=4)
+
+        refresh_tree()
+        if not logs_state["logs"]:
+            summary_var.set("最近日志 0 条。先预览或执行一次工作流后，这里会显示表访问审计。")
+        self.center_toplevel(win, self.window, 1320, 700)
+
+    def open_table_access_window(self, initial_index=None):
+        self.ensure_node_tree_identity(self.nodes)
+        if initial_index is None:
+            initial_index = self.get_selected_node_index()
+        if initial_index is None and self.nodes:
+            initial_index = 0
+
+        win = tk.Toplevel(self.window)
+        win.title("表节点映射系统")
+        win.geometry("1420x760")
+        win.minsize(1050, 620)
+        win.transient(self.window)
+
+        state = {"node_index": initial_index, "table_index": None, "field_keys": [], "refreshing_node_tree": False}
+
+        main = ttk.Frame(win, padding=8)
+        main.pack(fill=tk.BOTH, expand=True)
+
+        left = ttk.LabelFrame(main, text="节点层", padding=6)
+        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 6))
+        middle = ttk.LabelFrame(main, text="表权限层", padding=6)
+        middle.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=6)
+        right = ttk.LabelFrame(main, text="字段权限层", padding=6)
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 0))
+
+        node_tree = ttk.Treeview(left, columns=("index", "type", "name", "status"), show="headings", height=22)
+        for col, text, width in [
+            ("index", "#", 44),
+            ("type", "节点类型", 130),
+            ("name", "节点名称", 145),
+            ("status", "状态", 80),
+        ]:
+            node_tree.heading(col, text=text)
+            node_tree.column(col, width=width, anchor=tk.W)
+        node_y = ttk.Scrollbar(left, orient=tk.VERTICAL, command=node_tree.yview)
+        node_tree.configure(yscrollcommand=node_y.set)
+        node_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        node_y.pack(side=tk.RIGHT, fill=tk.Y)
+
+        table_tree = ttk.Treeview(
+            middle,
+            columns=("role", "table", "operation", "current", "permissions", "mode", "status"),
+            show="headings",
+            height=12,
+        )
+        for col, text, width in [
+            ("role", "表角色", 80),
+            ("table", "实际表", 150),
+            ("operation", "操作", 160),
+            ("current", "当前表", 58),
+            ("permissions", "权限摘要", 145),
+            ("mode", "写入模式", 120),
+            ("status", "状态", 75),
+        ]:
+            table_tree.heading(col, text=text)
+            table_tree.column(col, width=width, anchor=tk.W)
+        table_tree.pack(fill=tk.BOTH, expand=True)
+
+        table_form = ttk.LabelFrame(middle, text="表角色设置", padding=6)
+        table_form.pack(fill=tk.X, pady=(6, 0))
+        role_var = tk.StringVar()
+        source_type_var = tk.StringVar(value="SQLite表")
+        table_var = tk.StringVar()
+        write_mode_var = tk.StringVar()
+        preset_var = tk.StringVar(value="自定义")
+        is_current_var = tk.BooleanVar(value=False)
+        log_only_var = tk.BooleanVar(value=False)
+        permission_vars = {key: tk.BooleanVar(value=False) for key, _ in self.table_access_permission_items()}
+
+        ttk.Label(table_form, text="角色").grid(row=0, column=0, sticky=tk.W, padx=3, pady=3)
+        ttk.Combobox(table_form, textvariable=role_var, values=["current", "source", "target", "lookup", "transit", "output", "log"], width=12).grid(row=0, column=1, sticky=tk.W, padx=3, pady=3)
+        ttk.Label(table_form, text="来源").grid(row=0, column=2, sticky=tk.W, padx=3, pady=3)
+        ttk.Combobox(table_form, textvariable=source_type_var, values=["当前工作流表", "SQLite表", "中转副表"], width=12, state="readonly").grid(row=0, column=3, sticky=tk.W, padx=3, pady=3)
+        ttk.Label(table_form, text="实际表").grid(row=1, column=0, sticky=tk.W, padx=3, pady=3)
+        table_combo = ttk.Combobox(table_form, textvariable=table_var, values=self.table_access_table_choices(), width=25)
+        table_combo.grid(row=1, column=1, columnspan=2, sticky=tk.W, padx=3, pady=3)
+        ttk.Label(table_form, text="写入模式").grid(row=1, column=3, sticky=tk.W, padx=3, pady=3)
+        ttk.Combobox(
+            table_form,
+            textvariable=write_mode_var,
+            values=["", "current_table_default", "append", "overlay", "update_by_key", "upsert_by_key", "replace_table", "clear_keep_schema", "keep_schema_insert", "write_fields_only"],
+            width=19,
+        ).grid(row=1, column=4, sticky=tk.W, padx=3, pady=3)
+        ttk.Label(table_form, text="预设").grid(row=2, column=0, sticky=tk.W, padx=3, pady=3)
+        preset_combo = ttk.Combobox(
+            table_form,
+            textvariable=preset_var,
+            values=["自定义", "禁止访问", "只读", "默认读写只记录", "追加写入", "更新写入", "追加或更新", "覆盖/清空", "新建表", "危险全开"],
+            width=18,
+            state="readonly",
+        )
+        preset_combo.grid(row=2, column=1, sticky=tk.W, padx=3, pady=3)
+        ttk.Checkbutton(table_form, text="当前表", variable=is_current_var).grid(row=2, column=2, sticky=tk.W, padx=3, pady=3)
+        ttk.Checkbutton(table_form, text="只记录", variable=log_only_var).grid(row=2, column=3, sticky=tk.W, padx=3, pady=3)
+
+        perm_frame = ttk.Frame(table_form)
+        perm_frame.grid(row=3, column=0, columnspan=5, sticky=tk.W, pady=(4, 0))
+        for idx, (key, label) in enumerate(self.table_access_permission_items()):
+            ttk.Checkbutton(perm_frame, text=label, variable=permission_vars[key]).grid(row=idx // 5, column=idx % 5, sticky=tk.W, padx=4, pady=2)
+
+        field_tree = ttk.Treeview(
+            right,
+            columns=("source", "target", "read", "write", "create", "protect", "status"),
+            show="headings",
+            height=14,
+        )
+        for col, text, width in [
+            ("source", "来源字段", 110),
+            ("target", "目标字段", 110),
+            ("read", "读", 42),
+            ("write", "写", 42),
+            ("create", "建", 42),
+            ("protect", "保护", 52),
+            ("status", "状态", 70),
+        ]:
+            field_tree.heading(col, text=text)
+            field_tree.column(col, width=width, anchor=tk.W)
+        field_tree.pack(fill=tk.BOTH, expand=True)
+
+        field_form = ttk.LabelFrame(right, text="字段映射设置", padding=6)
+        field_form.pack(fill=tk.X, pady=(6, 0))
+        source_field_var = tk.StringVar()
+        target_field_var = tk.StringVar()
+        field_permission_vars = {key: tk.BooleanVar(value=False) for key, _ in self.field_permission_items()}
+
+        ttk.Label(field_form, text="来源字段").grid(row=0, column=0, sticky=tk.W, padx=3, pady=3)
+        source_field_combo = ttk.Combobox(field_form, textvariable=source_field_var, width=22)
+        source_field_combo.grid(row=0, column=1, sticky=tk.W, padx=3, pady=3)
+        ttk.Label(field_form, text="目标字段").grid(row=1, column=0, sticky=tk.W, padx=3, pady=3)
+        target_field_combo = ttk.Combobox(field_form, textvariable=target_field_var, width=22)
+        target_field_combo.grid(row=1, column=1, sticky=tk.W, padx=3, pady=3)
+        fp_frame = ttk.Frame(field_form)
+        fp_frame.grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=(4, 0))
+        for idx, (key, label) in enumerate(self.field_permission_items()):
+            ttk.Checkbutton(fp_frame, text=label, variable=field_permission_vars[key]).grid(row=0, column=idx, sticky=tk.W, padx=4, pady=2)
+
+        status_var = tk.StringVar(value="选择节点后可编辑表权限与字段映射。")
+        ttk.Label(win, textvariable=status_var, foreground="gray").pack(fill=tk.X, padx=8, pady=(0, 6))
+
+        def current_node():
+            idx = state.get("node_index")
+            if idx is None or idx < 0 or idx >= len(self.nodes):
+                return None
+            return self.nodes[idx]
+
+        def current_access():
+            node = current_node()
+            return self.get_node_table_access(node) if node is not None else {"tables": []}
+
+        def current_table_entry():
+            access = current_access()
+            idx = state.get("table_index")
+            tables = access.get("tables", [])
+            if idx is None or idx < 0 or idx >= len(tables):
+                return None
+            return tables[idx]
+
+        def refresh_node_tree():
+            state["refreshing_node_tree"] = True
+            try:
+                node_tree.delete(*node_tree.get_children())
+                for idx, node in enumerate(self.nodes):
+                    mark = "√" if node.get("enabled", True) else "×"
+                    node_tree.insert(
+                        "",
+                        tk.END,
+                        iid=str(idx),
+                        values=(idx + 1, f"{mark} {node.get('type', '')}", node.get("name", ""), self.table_access_node_status(node)),
+                    )
+                selected = state.get("node_index")
+                if selected is not None and 0 <= selected < len(self.nodes):
+                    node_tree.selection_set(str(selected))
+                    node_tree.focus(str(selected))
+            finally:
+                state["refreshing_node_tree"] = False
+
+        def load_table_form(entry):
+            entry = entry or {}
+            role_var.set(entry.get("role", "target"))
+            source_type_var.set(entry.get("source_type", "SQLite表"))
+            table_var.set(entry.get("table", ""))
+            write_mode_var.set(entry.get("write_mode", ""))
+            is_current_var.set(bool(entry.get("is_current_table")))
+            log_only_var.set(bool(entry.get("log_only")))
+            perms = entry.get("permissions") or {}
+            for key, var in permission_vars.items():
+                var.set(bool(perms.get(key)))
+            preset_var.set("自定义")
+            table_combo.configure(values=self.table_access_table_choices(current_node()))
+
+        def refresh_field_choices():
+            entry = current_table_entry()
+            choices = self.get_table_access_field_choices(state.get("node_index") or 0, entry or {})
+            source_field_combo.configure(values=choices)
+            target_field_combo.configure(values=choices)
+
+        def refresh_field_tree():
+            field_tree.delete(*field_tree.get_children())
+            state["field_keys"] = []
+            entry = current_table_entry()
+            if not entry:
+                refresh_field_choices()
+                return
+            for row_idx, (key, item) in enumerate(self.table_access_field_items(entry)):
+                state["field_keys"].append(key)
+                perms = item.get("permissions") or {}
+                field_tree.insert(
+                    "",
+                    tk.END,
+                    iid=str(row_idx),
+                    values=(
+                        item.get("source_field", ""),
+                        item.get("target_field", ""),
+                        self.field_bool_text(perms.get("read_field")),
+                        self.field_bool_text(perms.get("write_field")),
+                        self.field_bool_text(perms.get("create_field")),
+                        self.field_bool_text(perms.get("protect_field")),
+                        self.field_permission_status(item),
+                    ),
+                )
+            refresh_field_choices()
+
+        def refresh_table_tree(select_index=None):
+            table_tree.delete(*table_tree.get_children())
+            access = current_access()
+            tables = access.get("tables", [])
+            for idx, entry in enumerate(tables):
+                table_tree.insert(
+                    "",
+                    tk.END,
+                    iid=str(idx),
+                    values=(
+                        entry.get("role", ""),
+                        entry.get("table", ""),
+                        self.table_access_operation_summary(entry),
+                        "是" if entry.get("is_current_table") else "否",
+                        self.table_permission_summary(entry),
+                        entry.get("write_mode", ""),
+                        self.table_access_entry_status(entry),
+                    ),
+                )
+            if tables:
+                if select_index is None:
+                    select_index = state.get("table_index")
+                if select_index is None or select_index < 0 or select_index >= len(tables):
+                    select_index = 0
+                state["table_index"] = select_index
+                table_tree.selection_set(str(select_index))
+                table_tree.focus(str(select_index))
+                load_table_form(tables[select_index])
+            else:
+                state["table_index"] = None
+                load_table_form({})
+            refresh_field_tree()
+            refresh_node_tree()
+
+        def on_node_selected(event=None, force=False):
+            if state.get("refreshing_node_tree"):
+                return
+            sel = node_tree.selection()
+            if not sel:
+                return
+            selected_index = int(sel[0])
+            if not force and selected_index == state.get("node_index"):
+                return
+            state["node_index"] = selected_index
+            state["table_index"] = None
+            refresh_table_tree()
+            node = current_node()
+            if node:
+                status_var.set(f"当前节点：{state['node_index'] + 1}.{node.get('type')} / {node.get('name', '')}")
+
+        def on_table_selected(event=None):
+            sel = table_tree.selection()
+            if not sel:
+                return
+            state["table_index"] = int(sel[0])
+            entry = current_table_entry()
+            load_table_form(entry)
+            refresh_field_tree()
+
+        def on_field_selected(event=None):
+            sel = field_tree.selection()
+            if not sel:
+                return
+            row_idx = int(sel[0])
+            entry = current_table_entry()
+            if not entry or row_idx >= len(state["field_keys"]):
+                return
+            key = state["field_keys"][row_idx]
+            mapping = entry.get("field_mapping") or {}
+            item = mapping.get(key) if isinstance(mapping, dict) else None
+            if not isinstance(item, dict):
+                return
+            source_field_var.set(item.get("source_field", ""))
+            target_field_var.set(item.get("target_field", ""))
+            perms = item.get("permissions") or {}
+            for pkey, var in field_permission_vars.items():
+                var.set(bool(perms.get(pkey)))
+
+        def save_table_entry():
+            node = current_node()
+            if node is None:
+                return
+            access = self.mark_node_table_access_manual(node)
+            tables = access.setdefault("tables", [])
+            idx = state.get("table_index")
+            if idx is None or idx < 0 or idx >= len(tables):
+                entry = self.make_table_access_entry("target", "")
+                tables.append(entry)
+                idx = len(tables) - 1
+                state["table_index"] = idx
+            entry = tables[idx]
+            entry["role"] = role_var.get().strip() or "target"
+            entry["source_type"] = source_type_var.get().strip() or "SQLite表"
+            entry["table"] = table_var.get().strip()
+            entry["is_current_table"] = bool(is_current_var.get() or entry["table"] == "__CURRENT_TABLE__")
+            entry["log_only"] = bool(log_only_var.get())
+            entry["write_mode"] = write_mode_var.get().strip()
+            entry["permissions"] = {key: bool(var.get()) for key, var in permission_vars.items()}
+            if entry["is_current_table"] and not entry["table"]:
+                entry["table"] = "__CURRENT_TABLE__"
+            refresh_table_tree(select_index=idx)
+            status_var.set("表角色设置已保存。")
+
+        def add_table_entry():
+            node = current_node()
+            if node is None:
+                return
+            access = self.mark_node_table_access_manual(node)
+            entry = self.make_table_access_entry(
+                "target",
+                "",
+                permissions=self.table_permission_set(read=True),
+            )
+            access.setdefault("tables", []).append(entry)
+            state["table_index"] = len(access["tables"]) - 1
+            refresh_table_tree(select_index=state["table_index"])
+
+        def delete_table_entry():
+            node = current_node()
+            idx = state.get("table_index")
+            if node is None or idx is None:
+                return
+            access = self.mark_node_table_access_manual(node)
+            tables = access.get("tables", [])
+            if 0 <= idx < len(tables):
+                del tables[idx]
+            state["table_index"] = min(idx, len(tables) - 1) if tables else None
+            refresh_table_tree(select_index=state["table_index"])
+            status_var.set("表角色已删除。")
+
+        def rebuild_default_access():
+            node = current_node()
+            if node is None:
+                return
+            if not messagebox.askyesno("重建默认映射", "将根据当前节点配置重建 table_access，并覆盖手动设置。继续吗？", parent=win):
+                return
+            node["table_access"] = self.default_table_access_for_node(node)
+            state["table_index"] = None
+            refresh_table_tree()
+            status_var.set("已重建默认映射。")
+
+        def save_field_entry():
+            entry = current_table_entry()
+            node = current_node()
+            if entry is None or node is None:
+                return
+            self.mark_node_table_access_manual(node)
+            mapping = entry.get("field_mapping")
+            if not isinstance(mapping, dict):
+                mapping = {}
+                entry["field_mapping"] = mapping
+            sel = field_tree.selection()
+            key = None
+            if sel:
+                row_idx = int(sel[0])
+                if 0 <= row_idx < len(state["field_keys"]):
+                    key = state["field_keys"][row_idx]
+            if not key:
+                key = self.make_table_access_field_key(mapping, source_field_var.get(), target_field_var.get())
+            mapping[key] = {
+                "source_field": source_field_var.get().strip(),
+                "target_field": target_field_var.get().strip(),
+                "permissions": {pkey: bool(var.get()) for pkey, var in field_permission_vars.items()},
+            }
+            refresh_field_tree()
+            status_var.set("字段映射已保存。")
+
+        def add_field_entry():
+            source_field_var.set("")
+            target_field_var.set("")
+            field_permission_vars["read_field"].set(True)
+            field_permission_vars["write_field"].set(bool(permission_vars["write_table"].get()))
+            field_permission_vars["create_field"].set(False)
+            field_permission_vars["protect_field"].set(False)
+            field_tree.selection_remove(field_tree.selection())
+
+        def delete_field_entry():
+            entry = current_table_entry()
+            node = current_node()
+            sel = field_tree.selection()
+            if entry is None or node is None or not sel:
+                return
+            mapping = entry.get("field_mapping")
+            row_idx = int(sel[0])
+            if isinstance(mapping, dict) and 0 <= row_idx < len(state["field_keys"]):
+                self.mark_node_table_access_manual(node)
+                mapping.pop(state["field_keys"][row_idx], None)
+                refresh_field_tree()
+                status_var.set("字段映射已删除。")
+
+        def auto_match_fields():
+            entry = current_table_entry()
+            node = current_node()
+            if entry is None or node is None:
+                return
+            self.mark_node_table_access_manual(node)
+            count = self.auto_match_table_access_fields(state.get("node_index") or 0, entry)
+            refresh_field_tree()
+            status_var.set(f"自动字段匹配完成：{count} 个字段。")
+
+        def clear_fields():
+            entry = current_table_entry()
+            node = current_node()
+            if entry is None or node is None:
+                return
+            self.mark_node_table_access_manual(node)
+            entry["field_mapping"] = {}
+            refresh_field_tree()
+            status_var.set("字段映射已清空。")
+
+        def check_all_permissions():
+            total = 0
+            need_config = []
+            risky = []
+            for idx, node in enumerate(self.nodes):
+                access = self.get_node_table_access(node)
+                for entry in access.get("tables", []):
+                    total += 1
+                    status = self.table_access_entry_status(entry)
+                    label = f"{idx + 1}.{node.get('type')} / {entry.get('role')} / {entry.get('table')}"
+                    if status in ("未绑定", "未授权"):
+                        need_config.append(label)
+                    if status == "危险写入":
+                        risky.append(label)
+            message = f"检查完成：共 {len(self.nodes)} 个节点，{total} 个表角色。"
+            if need_config:
+                message += f"\n\n待配置：{len(need_config)} 项\n" + "\n".join(need_config[:8])
+            if risky:
+                message += f"\n\n危险写入：{len(risky)} 项\n" + "\n".join(risky[:8])
+            if not need_config and not risky:
+                message += "\n\n当前没有明显缺失或危险项。"
+            messagebox.showinfo("权限检查", message, parent=win)
+            status_var.set("权限检查完成。")
+
+        def preview_impact():
+            node = current_node()
+            entry = current_table_entry()
+            if node is None or entry is None:
+                messagebox.showwarning("预览影响", "请先选择节点和表角色。", parent=win)
+                return
+            fields = self.table_access_field_items(entry)
+            message = (
+                f"节点：{state['node_index'] + 1}.{node.get('type')} / {node.get('name', '')}\n"
+                f"表角色：{entry.get('role', '')}\n"
+                f"实际表：{entry.get('table', '')}\n"
+                f"操作：{self.table_access_operation_summary(entry)}\n"
+                f"状态：{self.table_access_entry_status(entry)}\n"
+                f"权限：{self.table_permission_summary(entry)}\n"
+                f"写入模式：{entry.get('write_mode', '') or '未设置'}\n"
+                f"字段映射：{len(fields)} 个"
+            )
+            messagebox.showinfo("预览影响", message, parent=win)
+
+        preset_combo.bind("<<ComboboxSelected>>", lambda event=None: self.apply_table_access_preset_to_vars(preset_var.get(), permission_vars, log_only_var))
+        node_tree.bind("<<TreeviewSelect>>", on_node_selected)
+        table_tree.bind("<<TreeviewSelect>>", on_table_selected)
+        field_tree.bind("<<TreeviewSelect>>", on_field_selected)
+
+        table_btns = ttk.Frame(table_form)
+        table_btns.grid(row=4, column=0, columnspan=5, sticky=tk.W, pady=(6, 0))
+        ttk.Button(table_btns, text="新增表角色", command=add_table_entry).pack(side=tk.LEFT, padx=3)
+        ttk.Button(table_btns, text="保存表设置", command=save_table_entry).pack(side=tk.LEFT, padx=3)
+        ttk.Button(table_btns, text="删除表角色", command=delete_table_entry).pack(side=tk.LEFT, padx=3)
+        ttk.Button(table_btns, text="重建默认", command=rebuild_default_access).pack(side=tk.LEFT, padx=3)
+        ttk.Button(table_btns, text="检查权限", command=check_all_permissions).pack(side=tk.LEFT, padx=3)
+        ttk.Button(table_btns, text="预览影响", command=preview_impact).pack(side=tk.LEFT, padx=3)
+
+        field_btns = ttk.Frame(field_form)
+        field_btns.grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=(6, 0))
+        ttk.Button(field_btns, text="新增字段", command=add_field_entry).pack(side=tk.LEFT, padx=3)
+        ttk.Button(field_btns, text="保存字段", command=save_field_entry).pack(side=tk.LEFT, padx=3)
+        ttk.Button(field_btns, text="删除字段", command=delete_field_entry).pack(side=tk.LEFT, padx=3)
+        ttk.Button(field_btns, text="自动字段匹配", command=auto_match_fields).pack(side=tk.LEFT, padx=3)
+        ttk.Button(field_btns, text="清空字段", command=clear_fields).pack(side=tk.LEFT, padx=3)
+
+        bottom = ttk.Frame(win, padding=(8, 0, 8, 8))
+        bottom.pack(fill=tk.X)
+        ttk.Button(bottom, text="刷新节点列表", command=lambda: (refresh_node_tree(), refresh_table_tree(state.get("table_index")))).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bottom, text="权限预检", command=self.open_table_access_precheck_window).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bottom, text="审计日志", command=self.open_table_access_audit_window).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bottom, text="关闭", command=win.destroy).pack(side=tk.RIGHT, padx=4)
+
+        refresh_node_tree()
+        if self.nodes:
+            initial_index = max(0, min(int(initial_index or 0), len(self.nodes) - 1))
+            node_tree.selection_set(str(initial_index))
+            node_tree.focus(str(initial_index))
+            on_node_selected(force=True)
+        else:
+            status_var.set("当前没有节点，请先添加工作流节点。")
+
     def get_table_manager(self, context=None, node=None, node_type="", node_name=""):
         db_path = self.get_workflow_db_path(context)
         current = (context or {}).get("current_node_info", {}) if isinstance(context, dict) else {}
+        table_access = None
         if isinstance(node, dict):
             self.ensure_node_identity(node)
             node_id = node.get("node_id", "")
             node_name = node.get("name", node_name)
             node_type = node.get("type", node_type)
+            table_access = node.get("table_access") if isinstance(node.get("table_access"), dict) else None
         else:
             node_id = current.get("node_id", "")
             node_name = current.get("node_name", node_name)
             node_type = current.get("node_type", node_type)
+            table_access = current.get("table_access") if isinstance(current.get("table_access"), dict) else None
         return TableAccessManager(
             db_path,
             node_id=node_id,
             node_name=node_name,
             node_type=node_type,
             context=context,
+            table_access=table_access,
         )
+
+    def transit_write_permissions_for_mode(self, exists=False, write_mode="", partial=False):
+        text = str(write_mode or "").strip()
+        text_lower = text.lower()
+        required = ["write_table"]
+        is_append = text_lower == "append" or "追加" in text
+        is_timestamp = text_lower in {"timestamp", "auto_timestamp"} or "时间戳" in text or "新建" in text
+        is_clear = "清空" in text
+        is_partial = bool(partial) or "局部" in text or "字段" in text
+        is_replace = text_lower in {"replace", "overwrite"} or "覆盖" in text or "重建" in text
+
+        if is_append:
+            required.append("append_rows")
+            if not exists:
+                required.append("create_table")
+        elif is_partial:
+            required.extend(["update_rows", "alter_schema"])
+            if is_clear:
+                required.append("clear_table")
+            if not exists:
+                required.append("create_table")
+        elif is_timestamp:
+            required.append("create_table")
+        elif is_replace:
+            required.append("replace_table" if exists else "create_table")
+        else:
+            required.append("replace_table" if exists else "create_table")
+
+        result = []
+        for perm in required:
+            if perm not in result:
+                result.append(perm)
+        return result
+
+    def check_transit_table_permission(self, context, table_name, permissions, operation="transit_table",
+                                       fields=None, field_action=None, write_mode="", node_type=""):
+        table_name = str(table_name or "").strip()
+        if not table_name:
+            return None
+        manager = self.get_table_manager(context if isinstance(context, dict) else None, node_type=node_type or "中转副表")
+        manager.check_table_permission(
+            table_name,
+            permissions,
+            operation=operation,
+            fields=fields,
+            field_action=field_action,
+            write_mode=write_mode,
+            source_type="中转副表",
+        )
+        return manager
+
+    def check_transit_table_write_permission(self, context, table_name, exists=False, write_mode="",
+                                             fields=None, partial=False, node_type="", operation="write_transit_table"):
+        return self.check_transit_table_permission(
+            context,
+            table_name,
+            self.transit_write_permissions_for_mode(exists=exists, write_mode=write_mode, partial=partial),
+            operation=operation,
+            fields=fields,
+            field_action="write",
+            write_mode=write_mode,
+            node_type=node_type,
+        )
+
+    def log_transit_table_event(self, manager, operation, table_name, headers=None, rows=None, message="", **extra):
+        if not isinstance(manager, TableAccessManager):
+            return
+        headers = list(headers or [])
+        row_count = len(rows or [])
+        extra.setdefault("source_type", "中转副表")
+        extra.setdefault("rows", row_count)
+        extra.setdefault("columns", len(headers))
+        if not message:
+            message = f"{operation} {table_name}：{row_count} 行 × {len(headers)} 列"
+        manager._log_event(operation, table_name, message=message, **extra)
 
     def get_workflow_output_mode(self, context=None):
         snapshot = self.get_workflow_snapshot(context)
@@ -5568,11 +7346,20 @@ class PlanWorkflowWindow:
             name = str(spec.get("transit_table") or spec.get("table") or "").strip()
             if not name:
                 raise ValueError("插件额外输入表未选择中转副表。")
+            manager = self.check_transit_table_permission(
+                context,
+                name,
+                ["read_table"],
+                operation="read_transit_table",
+                field_action="read",
+                node_type="插件节点",
+            )
             item = (context.get("transit_tables", {}) or {}).get(name)
             if not item:
                 raise ValueError(f"插件额外输入表未找到中转副表：{name}")
             headers = list(item.get("headers", []) or [])
             rows = [list(r) for r in (item.get("rows", []) or [])]
+            self.log_transit_table_event(manager, "read_transit_table", name, headers, rows, message=f"读取中转副表 {name}：{len(rows)} 行 × {len(headers)} 列")
             return {
                 "type": "table",
                 "headers": headers,
@@ -6274,41 +8061,28 @@ class PlanWorkflowWindow:
                     f.write(str(tb).rstrip() + "\n")
         return path
 
-    def save_plugin_logs_to_sqlite(self, log_items, db_path=None):
+    def save_plugin_logs_to_sqlite(self, log_items, db_path=None, context=None):
         if not log_items:
             return 0
         db_path = str(db_path or "").strip()
         if not db_path:
-            db_path = self.get_workflow_db_path(context if 'context' in locals() else None)
+            db_path = self.get_workflow_db_path(context)
         if not db_path:
             return 0
-        conn = sqlite3.connect(db_path)
-        try:
-            cur = conn.cursor()
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS _plugin_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    time TEXT,
-                    level TEXT,
-                    plugin_id TEXT,
-                    node_name TEXT,
-                    object TEXT,
-                    message TEXT,
-                    traceback TEXT
+        if isinstance(context, dict):
+            manager = self.get_table_manager(context, node_type="插件日志")
+            if not manager.db_path:
+                current = context.get("current_node_info", {}) if isinstance(context.get("current_node_info"), dict) else {}
+                manager = TableAccessManager(
+                    db_path,
+                    node_id=current.get("node_id", ""),
+                    node_name=current.get("node_name", ""),
+                    node_type=current.get("node_type", "插件日志"),
+                    context=context,
+                    table_access=current.get("table_access") if isinstance(current.get("table_access"), dict) else None,
                 )
-            """)
-            data = [(
-                it.get("time", ""), it.get("level", "INFO"), it.get("plugin_id", ""),
-                it.get("node_name", ""), it.get("object", ""), it.get("message", ""), it.get("traceback", "")
-            ) for it in log_items]
-            cur.executemany("""
-                INSERT INTO _plugin_log(time, level, plugin_id, node_name, object, message, traceback)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, data)
-            conn.commit()
-            return len(data)
-        finally:
-            conn.close()
+            return manager.write_plugin_logs(log_items)
+        return TableAccessManager(db_path, node_type="插件日志").write_plugin_logs(log_items)
 
     def plugin_log_items_to_table(self, log_items):
         headers = ["时间", "级别", "插件ID", "节点名称", "对象", "信息", "错误堆栈"]
@@ -6325,16 +8099,44 @@ class PlanWorkflowWindow:
         base_name = str(name or "插件输出").strip() or "插件输出"
         headers = list(headers or [])
         rows = [list(r) for r in (rows or [])]
+        exists_before = base_name in transit_tables
         if conflict_mode == "自动加时间戳":
+            manager = self.check_transit_table_write_permission(
+                context,
+                base_name,
+                exists=exists_before,
+                write_mode=conflict_mode,
+                fields=headers,
+                node_type="插件节点",
+            )
             final_name = self.make_unique_transit_name(base_name, transit_tables)
             transit_tables[final_name] = {"headers": headers, "rows": rows, "source": source}
+            self.log_transit_table_event(manager, "write_transit_table", final_name, headers, rows, write_mode=conflict_mode, message=f"写入中转副表 {final_name}：{len(rows)} 行 × {len(headers)} 列")
             return f"中转副表：{final_name}"
         if conflict_mode == "追加" and base_name in transit_tables:
+            manager = self.check_transit_table_write_permission(
+                context,
+                base_name,
+                exists=True,
+                write_mode=conflict_mode,
+                fields=headers,
+                node_type="插件节点",
+            )
             old = transit_tables.get(base_name, {}) or {}
             mh, mr = self.append_headers_rows(old.get("headers", []), old.get("rows", []), headers, rows)
             transit_tables[base_name] = {"headers": mh, "rows": mr, "source": f"{source}:追加"}
+            self.log_transit_table_event(manager, "append_transit_table", base_name, mh, mr, write_mode=conflict_mode, appended_rows=len(rows), message=f"追加中转副表 {base_name}：新增 {len(rows)} 行，累计 {len(mr)} 行")
             return f"中转副表追加：{base_name}（新增 {len(rows)} 行，累计 {len(mr)} 行）"
+        manager = self.check_transit_table_write_permission(
+            context,
+            base_name,
+            exists=exists_before,
+            write_mode=conflict_mode or "覆盖",
+            fields=headers,
+            node_type="插件节点",
+        )
         transit_tables[base_name] = {"headers": headers, "rows": rows, "source": source}
+        self.log_transit_table_event(manager, "write_transit_table", base_name, headers, rows, write_mode=conflict_mode or "覆盖", message=f"写入中转副表 {base_name}：{len(rows)} 行 × {len(headers)} 列")
         return f"中转副表：{base_name}"
 
     def merge_plugin_output_fields_to_current(self, cur_headers, cur_rows, out_headers, out_rows):
@@ -6879,7 +8681,7 @@ class PlanWorkflowWindow:
                         pass
                 if config.get("save_plugin_log_sqlite", False) and (execute_actions or config.get("plugin_log_in_preview", False)):
                     try:
-                        self.save_plugin_logs_to_sqlite(log_items, db_path=plugin_context.get("db_path"))
+                        self.save_plugin_logs_to_sqlite(log_items, db_path=plugin_context.get("db_path"), context=runtime_context)
                     except Exception:
                         pass
                 raise
@@ -6901,7 +8703,7 @@ class PlanWorkflowWindow:
                 log_saved_parts.append(f"日志文件保存失败：{e}")
         if config.get("save_plugin_log_sqlite", False) and (execute_actions or config.get("plugin_log_in_preview", False)):
             try:
-                cnt = self.save_plugin_logs_to_sqlite(log_items, db_path=plugin_context.get("db_path"))
+                cnt = self.save_plugin_logs_to_sqlite(log_items, db_path=plugin_context.get("db_path"), context=context)
                 if cnt:
                     log_saved_parts.append(f"SQLite日志：{cnt}条")
             except Exception as e:
@@ -7594,6 +9396,7 @@ class PlanWorkflowWindow:
         ttk.Entry(title, textvariable=name_var, width=28).pack(side=tk.LEFT, padx=4)
         ttk.Button(title, text="更新名称", command=lambda: self.update_node_name(idx, name_var)).pack(side=tk.LEFT, padx=4)
         ttk.Checkbutton(title, text="启用", variable=self.make_node_enabled_var(idx)).pack(side=tk.LEFT, padx=8)
+        ttk.Button(title, text="表节点映射", command=lambda idx=idx: self.open_table_access_window(initial_index=idx)).pack(side=tk.LEFT, padx=4)
 
         node_type = node.get("type")
         if node_type == "节点组 / 子工作流":
@@ -8532,11 +10335,22 @@ class PlanWorkflowWindow:
             return list(data.get("headers", [])), [list(r) for r in data.get("rows", [])], f"SQLite:{table_name}"
         if source_type == "中转副表":
             name = config.get("transit_table", "")
+            manager = self.check_transit_table_permission(
+                context,
+                name,
+                ["read_table"],
+                operation="read_transit_table",
+                field_action="read",
+                node_type="循环执行起点",
+            )
             tables = (context or {}).get("transit_tables", {})
             if name not in tables:
                 raise ValueError(f"未找到中转副表：{name}")
             data = tables[name]
-            return list(data.get("headers", [])), [list(r) for r in data.get("rows", [])], f"中转:{name}"
+            source_headers = list(data.get("headers", []))
+            source_rows = [list(r) for r in data.get("rows", [])]
+            self.log_transit_table_event(manager, "read_transit_table", name, source_headers, source_rows, message=f"循环执行起点读取中转副表 {name}：{len(source_rows)} 行 × {len(source_headers)} 列")
+            return source_headers, source_rows, f"中转:{name}"
         return list(headers), [list(r) for r in rows], "当前表"
 
     def loop_last_non_empty_row_index(self, headers, rows, field):
@@ -8617,7 +10431,19 @@ class PlanWorkflowWindow:
                 pending_idx = i
                 break
         if pending_idx is None:
-            context.setdefault("transit_tables", {})[state["current_table_name"]] = {"headers": state["queue_headers"][2:], "rows": [], "source": f"循环:{loop_id}:无待执行"}
+            table_name = state["current_table_name"]
+            transit_tables = context.setdefault("transit_tables", {})
+            current_headers = state["queue_headers"][2:]
+            manager = self.check_transit_table_write_permission(
+                context,
+                table_name,
+                exists=table_name in transit_tables,
+                write_mode="覆盖当前循环项",
+                fields=current_headers,
+                node_type="循环执行起点",
+            )
+            transit_tables[table_name] = {"headers": current_headers, "rows": [], "source": f"循环:{loop_id}:无待执行"}
+            self.log_transit_table_event(manager, "write_transit_table", table_name, current_headers, [], write_mode="覆盖当前循环项", message=f"循环执行起点写入空当前项中转副表 {table_name}")
             return headers, rows, f"循环 {loop_id} 无待执行项", {"no_pending": True}
 
         state["queue_rows"][pending_idx][flag_idx] = "1"
@@ -8625,11 +10451,22 @@ class PlanWorkflowWindow:
         state["iterations"] = state.get("iterations", 0) + 1
         current_headers = state["queue_headers"][2:]
         current_row = state["queue_rows"][pending_idx][2:]
-        context.setdefault("transit_tables", {})[state["current_table_name"]] = {
+        table_name = state["current_table_name"]
+        transit_tables = context.setdefault("transit_tables", {})
+        manager = self.check_transit_table_write_permission(
+            context,
+            table_name,
+            exists=table_name in transit_tables,
+            write_mode="覆盖当前循环项",
+            fields=current_headers,
+            node_type="循环执行起点",
+        )
+        transit_tables[table_name] = {
             "headers": list(current_headers),
             "rows": [list(current_row)],
             "source": f"循环:{loop_id}:当前项",
         }
+        self.log_transit_table_event(manager, "write_transit_table", table_name, current_headers, [current_row], write_mode="覆盖当前循环项", message=f"循环执行起点写入当前项中转副表 {table_name}：1 行 × {len(current_headers)} 列")
         if config.get("output_current_as_table", True):
             return list(current_headers), [list(current_row)], f"循环 {loop_id} 取第 {pending_idx + 1} 条，标志 0→1", {"no_pending": False}
         return headers, rows, f"循环 {loop_id} 取第 {pending_idx + 1} 条，标志 0→1，当前表保持不变", {"no_pending": False}
@@ -8717,8 +10554,30 @@ class PlanWorkflowWindow:
         results = context.setdefault("loop_results", {}).setdefault(loop_id, {"headers": result_headers, "rows": []})
         results["rows"].append(result_row)
         result_name = config.get("result_table_name", "循环结果") or "循环结果"
-        context.setdefault("transit_tables", {})[result_name] = {"headers": result_headers, "rows": [list(r) for r in results["rows"]], "source": f"循环:{loop_id}:结果"}
-        context.setdefault("transit_tables", {})[f"循环队列_{loop_id}"] = {"headers": list(state["queue_headers"]), "rows": [list(r) for r in state["queue_rows"]], "source": f"循环:{loop_id}:队列"}
+        transit_tables = context.setdefault("transit_tables", {})
+        result_rows = [list(r) for r in results["rows"]]
+        result_manager = self.check_transit_table_write_permission(
+            context,
+            result_name,
+            exists=result_name in transit_tables,
+            write_mode="覆盖循环结果",
+            fields=result_headers,
+            node_type="循环判断回跳",
+        )
+        transit_tables[result_name] = {"headers": result_headers, "rows": result_rows, "source": f"循环:{loop_id}:结果"}
+        self.log_transit_table_event(result_manager, "write_transit_table", result_name, result_headers, result_rows, write_mode="覆盖循环结果", message=f"循环判断回跳写入结果中转副表 {result_name}：{len(result_rows)} 行 × {len(result_headers)} 列")
+        queue_name = f"循环队列_{loop_id}"
+        queue_rows = [list(r) for r in state["queue_rows"]]
+        queue_manager = self.check_transit_table_write_permission(
+            context,
+            queue_name,
+            exists=queue_name in transit_tables,
+            write_mode="覆盖循环队列",
+            fields=state["queue_headers"],
+            node_type="循环判断回跳",
+        )
+        transit_tables[queue_name] = {"headers": list(state["queue_headers"]), "rows": queue_rows, "source": f"循环:{loop_id}:队列"}
+        self.log_transit_table_event(queue_manager, "write_transit_table", queue_name, state["queue_headers"], queue_rows, write_mode="覆盖循环队列", message=f"循环判断回跳写入队列中转副表 {queue_name}：{len(queue_rows)} 行 × {len(state['queue_headers'])} 列")
         state["current_index"] = None
 
         has_pending = any(str(r[0]).strip() == "0" for r in state["queue_rows"])
@@ -10384,11 +12243,20 @@ class PlanWorkflowWindow:
             name = str(config.get("source_transit_table", "")).strip()
             if not name:
                 raise ValueError("请选择中转来源表。")
+            manager = self.check_transit_table_permission(
+                context,
+                name,
+                ["read_table"],
+                operation="read_transit_table",
+                field_action="read",
+                node_type="选定列写入指定表",
+            )
             item = (context.get("transit_tables", {}) or {}).get(name)
             if not item:
                 raise ValueError(f"未找到中转来源表：{name}")
             headers = list(item.get("headers", []) or [])
             rows = [list(r) for r in (item.get("rows", []) or [])]
+            self.log_transit_table_event(manager, "read_transit_table", name, headers, rows, message=f"读取中转来源表 {name}：{len(rows)} 行 × {len(headers)} 列")
             return headers, rows, f"中转:{name}"
         raise ValueError(f"未知来源类型：{source_type}")
 
@@ -10416,10 +12284,22 @@ class PlanWorkflowWindow:
                 return [], [], f"SQLite:{table}"
         if target_type == "中转副表":
             name = str(config.get("target_transit_table", "")).strip() or "选定列结果"
+            manager = self.check_transit_table_permission(
+                context,
+                name,
+                ["read_table"],
+                operation="read_transit_table",
+                field_action="read",
+                node_type="选定列写入指定表",
+            )
             item = (context.get("transit_tables", {}) or {}).get(name)
             if not item:
+                self.log_transit_table_event(manager, "read_transit_table", name, [], [], message=f"读取中转目标表 {name}：目标尚不存在")
                 return [], [], f"中转:{name}"
-            return list(item.get("headers", []) or []), [list(r) for r in (item.get("rows", []) or [])], f"中转:{name}"
+            headers = list(item.get("headers", []) or [])
+            rows = [list(r) for r in (item.get("rows", []) or [])]
+            self.log_transit_table_event(manager, "read_transit_table", name, headers, rows, message=f"读取中转目标表 {name}：{len(rows)} 行 × {len(headers)} 列")
+            return headers, rows, f"中转:{name}"
         raise ValueError(f"未知目标类型：{target_type}")
 
     def selected_columns_should_write(self, old_value, new_value, overwrite_rule):
@@ -10619,6 +12499,17 @@ class PlanWorkflowWindow:
             return new_headers, new_rows, f"已写入当前工作表：{len(new_rows)} 行 × {len(new_headers)} 列，结果继续传给后续节点"
 
         if target_type == "中转副表":
+            mode = self.normalize_selected_columns_write_mode(config.get("write_mode", "局部覆盖，保留目标原行数"))
+            exists_before = target_name in context["transit_tables"]
+            manager = self.check_transit_table_write_permission(
+                context,
+                target_name,
+                exists=exists_before,
+                write_mode=mode,
+                fields=target_fields,
+                partial=mode in ("局部覆盖，保留目标原行数", "清空目标字段后覆盖，保留目标原行数"),
+                node_type="选定列写入指定表",
+            )
             old = context["transit_tables"].get(target_name, {}) or {}
             old_headers = list(old.get("headers", []) or [])
             old_rows = [list(r) for r in (old.get("rows", []) or [])]
@@ -10628,6 +12519,7 @@ class PlanWorkflowWindow:
                 "rows": [list(r) for r in new_rows],
                 "source": "选定列写入指定表"
             }
+            self.log_transit_table_event(manager, "write_transit_table", target_name, new_headers, new_rows, write_mode=mode, message=f"写入中转副表 {target_name}：{len(new_rows)} 行 × {len(new_headers)} 列，模式 {mode}")
             return headers, rows, f"已写入中转副表：{target_name}（{len(new_rows)} 行 × {len(new_headers)} 列），主流程数据透传"
 
         if target_type == "SQLite表":
@@ -12223,6 +14115,7 @@ class PlanWorkflowWindow:
                 "node_name": node.get("name", ""),
                 "node_type": node_type,
                 "node_index": idx,
+                "table_access": copy.deepcopy(node.get("table_access", {})),
             }
             if progress_callback is not None:
                 progress_callback({
@@ -12703,11 +14596,22 @@ class PlanWorkflowWindow:
             name = str(config.get("input_transit_table", "")).strip()
             if not name:
                 raise ValueError("节点组入口选择了中转副表，但没有填写中转副表名。")
+            manager = self.check_transit_table_permission(
+                context,
+                name,
+                ["read_table"],
+                operation="read_transit_table",
+                field_action="read",
+                node_type="节点组 / 子工作流",
+            )
             tables = (context or {}).get("transit_tables", {})
             if name not in tables:
                 raise ValueError(f"节点组入口未找到中转副表：{name}")
             item = tables.get(name, {}) or {}
-            return list(item.get("headers", [])), [list(r) for r in item.get("rows", [])], f"中转副表:{name}"
+            source_headers = list(item.get("headers", []))
+            source_rows = [list(r) for r in item.get("rows", [])]
+            self.log_transit_table_event(manager, "read_transit_table", name, source_headers, source_rows, message=f"节点组入口读取中转副表 {name}：{len(source_rows)} 行 × {len(source_headers)} 列")
+            return source_headers, source_rows, f"中转副表:{name}"
         if source_type == "SQLite表":
             name = str(config.get("input_sqlite_table", "")).strip()
             if not name:
@@ -12837,12 +14741,29 @@ class PlanWorkflowWindow:
 
         child_context = self.make_group_child_context(context, config)
         logs = []
+        def merge_child_audit_logs():
+            if child_context is context:
+                return
+            child_logs = child_context.get("table_access_logs", []) if isinstance(child_context, dict) else []
+            if child_logs:
+                context.setdefault("table_access_logs", []).extend(child_logs)
+                child_context["table_access_logs"] = []
+
         try:
             for i, node in enumerate(nodes):
                 if not node.get("enabled", True):
                     logs.append(f"{i+1}.{node.get('type')} 已禁用")
                     continue
                 node_type = node.get("type")
+                self.ensure_node_identity(node)
+                self.refresh_node_table_access(node)
+                child_context["current_node_info"] = {
+                    "node_id": node.get("node_id", ""),
+                    "node_name": node.get("name", ""),
+                    "node_type": node_type,
+                    "node_index": i,
+                    "table_access": copy.deepcopy(node.get("table_access", {})),
+                }
                 if node_type in ("循环执行起点", "循环判断回跳"):
                     raise ValueError("第一版节点组暂不支持组内循环执行起点 / 循环判断回跳。")
                 before_shape = (len(cur_rows), len(cur_headers))
@@ -12850,7 +14771,9 @@ class PlanWorkflowWindow:
                 after_shape = (len(cur_rows), len(cur_headers))
                 logs.append(f"{i+1}.{node_type} {before_shape[0]}×{before_shape[1]}→{after_shape[0]}×{after_shape[1]} {stat}")
         except Exception:
+            merge_child_audit_logs()
             raise
+        merge_child_audit_logs()
 
         # 2. 按输出配置保存副作用结果。即使组内中转私有，这里也写入父级 context。
         output_parts = self.write_group_outputs(cur_headers, cur_rows, config, context, execute_actions=execute_actions)
@@ -14909,6 +16832,15 @@ class PlanWorkflowWindow:
             item = transit_tables[name]
             all_columns = list(item.get("headers", []))
             columns = self.get_required_columns_for_plan_table(table_name, all_columns, required_fields)
+            manager = self.check_transit_table_permission(
+                context,
+                table_name,
+                ["read_table"],
+                operation="read_transit_table",
+                fields=columns,
+                field_action="read",
+                node_type="高级筛选",
+            )
             column_indexes = [(all_columns.index(col), col) for col in columns]
             db_rows = self.normalize_rows(item.get("rows", []), len(all_columns))
             records = []
@@ -14917,6 +16849,7 @@ class PlanWorkflowWindow:
                 for i, col in column_indexes:
                     record[f"{table_name}.{col}"] = self.safe_cell(row, i)
                 records.append(record)
+            self.log_transit_table_event(manager, "read_transit_table", table_name, columns, db_rows, message=f"高级筛选读取中转副表 {table_name}：{len(db_rows)} 行 × {len(columns)} 列")
             return records
 
         db_path = self.get_workflow_db_path(context)
@@ -15264,16 +17197,28 @@ class PlanWorkflowWindow:
         rows_copy = [list(row) for row in self.normalize_rows(rows, len(headers_copy))]
 
         if save_memory:
+            exists_before = base_name in transit_tables
+            write_mode = "追加" if append_memory else "覆盖"
+            manager = self.check_transit_table_write_permission(
+                context,
+                base_name,
+                exists=exists_before,
+                write_mode=write_mode,
+                fields=headers_copy,
+                node_type="保存中转数据",
+            )
             if append_memory and base_name in transit_tables:
                 old_item = transit_tables.get(base_name, {}) or {}
                 old_headers = old_item.get("headers", []) or []
                 old_rows = old_item.get("rows", []) or []
                 merged_headers, merged_rows = self.append_headers_rows(old_headers, old_rows, headers_copy, rows_copy)
                 transit_tables[base_name] = {"headers": merged_headers, "rows": [list(r) for r in merged_rows], "source": "保存中转数据:追加"}
+                self.log_transit_table_event(manager, "append_transit_table", base_name, merged_headers, merged_rows, write_mode=write_mode, appended_rows=len(rows_copy), message=f"保存中转数据追加内存副表 {base_name}：新增 {len(rows_copy)} 行，累计 {len(merged_rows)} 行")
                 saved_parts.append(f"内存副表追加：{base_name}（新增 {len(rows_copy)} 行，累计 {len(merged_rows)} 行）")
             else:
                 # 默认覆盖，保证后续节点引用的是最近一次执行结果。
                 transit_tables[base_name] = {"headers": headers_copy, "rows": [list(r) for r in rows_copy], "source": "保存中转数据:覆盖"}
+                self.log_transit_table_event(manager, "write_transit_table", base_name, headers_copy, rows_copy, write_mode=write_mode, message=f"保存中转数据写入内存副表 {base_name}：{len(rows_copy)} 行 × {len(headers_copy)} 列")
                 saved_parts.append(f"内存副表：{base_name}")
 
         if save_sqlite:
@@ -16003,6 +17948,15 @@ class PlanWorkflowWindow:
                 raise ValueError(f"中转副表不存在或尚未生成：{lookup_table}。请确认保存中转数据节点在当前节点之前执行。")
             item = transit_tables[lookup_table]
             columns = list(item.get("headers", []))
+            manager = self.check_transit_table_permission(
+                context,
+                lookup_table,
+                ["read_table"],
+                operation="read_transit_table",
+                fields=config.get("lookup_fields", []),
+                field_action="read",
+                node_type="匹配值输出列名",
+            )
             raw_rows = self.normalize_rows(item.get("rows", []), len(columns))
             records = []
             for index, row in enumerate(raw_rows, start=1):
@@ -16010,6 +17964,7 @@ class PlanWorkflowWindow:
                 for i, col in enumerate(columns):
                     record[col] = self.safe_cell(row, i)
                 records.append(record)
+            self.log_transit_table_event(manager, "read_transit_table", lookup_table, columns, raw_rows, message=f"匹配值输出列名读取中转副表 {lookup_table}：{len(raw_rows)} 行 × {len(columns)} 列")
             return columns, records
         return self.load_target_table_rows_for_writeback(lookup_table, context=context)
 
@@ -17083,6 +19038,9 @@ class PlanWorkflowWindow:
         if self.is_background_workflow_running():
             messagebox.showwarning("后台任务运行中", "当前已有工作流正在后台执行，请等待完成或先取消。")
             return
+        if execute_actions and not self.confirm_table_access_precheck(execute_actions=True, stop_index=stop_index):
+            self.status_var.set("执行计划已取消：权限预检未继续。")
+            return
         snapshot = self.build_workflow_task_snapshot(mode, stop_index=stop_index, execute_actions=execute_actions)
         self.workflow_worker_queue = queue.Queue()
         self.workflow_worker_cancel = threading.Event()
@@ -17306,6 +19264,8 @@ class PlanWorkflowWindow:
             context = msg.get("context", {}) or {}
             snapshot = msg.get("snapshot") or context.get("workflow_snapshot", {}) or {}
             self.current_transit_tables = context.get("transit_tables", {})
+            self.last_workflow_context = context
+            self.last_table_access_logs = list(context.get("table_access_logs", []) or [])
             # 后台节点如果写入了 SQLite 表，不直接刷新 UI，只在这里回到主线程后统一刷新表列表。
             refresh_requests = context.get("ui_refresh_requests", []) or []
             if context.get("needs_refresh_table_list") or "table_list" in refresh_requests:
