@@ -1522,7 +1522,7 @@ def open_config_window(parent, current_params, context):
     ttk.Button(action_row, text="全局搜索替换规则窗口", command=lambda: manage_global_rules()).pack(side=tk.LEFT, padx=4)
     ttk.Button(action_row, text="全局替换预览", command=lambda: show_global_replace_preview()).pack(side=tk.LEFT, padx=4)
 
-    status_var = tk.StringVar(value="")
+    status_var = tk.StringVar(value=_as_text((context or {}).get("plugin_config_data_note", "")))
     ttk.Label(action_row, textvariable=status_var, foreground="gray").pack(side=tk.LEFT, padx=10)
 
     top_fields = ttk.Frame(win, padding=(8, 0, 8, 4))

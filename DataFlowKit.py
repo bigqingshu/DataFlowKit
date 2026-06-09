@@ -8573,6 +8573,63 @@ class PlanWorkflowWindow:
         except Exception:
             pass
 
+    def plugin_config_context_with_live_transit(self, transit_context=None, include_rows=False):
+        """插件配置期复用上次真实预览生成的中转副表。
+
+        include_rows=False 时只补表名和字段，避免点选插件节点时复制大表；
+        打开插件自带设置窗口时再传入真实行数据。
+        """
+        config_context = copy.deepcopy(transit_context or {"transit_tables": {}})
+        transit_tables = config_context.setdefault("transit_tables", {})
+        reused = []
+
+        live_tables = {}
+        if isinstance(getattr(self, "last_workflow_context", None), dict):
+            live_tables.update(self.last_workflow_context.get("transit_tables", {}) or {})
+        live_tables.update(getattr(self, "current_transit_tables", {}) or {})
+
+        for name, live_item in live_tables.items():
+            if not isinstance(live_item, dict):
+                continue
+            live_rows = list(live_item.get("rows", []) or [])
+            if not live_rows:
+                continue
+            existing = transit_tables.get(name)
+            existing_rows = []
+            if isinstance(existing, dict):
+                existing_rows = list(existing.get("rows", []) or [])
+            if existing_rows:
+                continue
+            if include_rows:
+                transit_tables[name] = copy.deepcopy(live_item)
+            else:
+                headers = list(live_item.get("headers", []) or [])
+                source = live_item.get("source", "上次真实预览")
+                if isinstance(existing, dict):
+                    merged = copy.deepcopy(existing)
+                    if not merged.get("headers") and headers:
+                        merged["headers"] = headers
+                    merged.setdefault("rows", [])
+                    merged.setdefault("source", source)
+                    transit_tables[name] = merged
+                else:
+                    transit_tables[name] = {"headers": headers, "rows": [], "source": source}
+            if name not in reused:
+                reused.append(name)
+
+        if reused:
+            config_context["_reused_preview_transit_tables"] = reused
+        return config_context
+
+    def plugin_config_transit_reuse_note(self, transit_context=None):
+        reused = list((transit_context or {}).get("_reused_preview_transit_tables", []) or [])
+        if not reused:
+            return ""
+        names = "、".join(str(name) for name in reused[:5])
+        if len(reused) > 5:
+            names += f" 等 {len(reused)} 个"
+        return f"插件设置窗口将复用上次真实预览/执行生成的中转副表数据：{names}"
+
     def build_plugin_node_config(self, config, headers, transit_context=None, current_rows=None):
         frame = ttk.LabelFrame(self.config_frame, text="外部插件节点", padding=8)
         frame.pack(fill=tk.BOTH, expand=True, pady=8)
@@ -8657,7 +8714,11 @@ class PlanWorkflowWindow:
         if not isinstance(input_specs, list):
             input_specs = []
             config["input_tables"] = input_specs
-        transit_context = transit_context or {"transit_tables": {}}
+        transit_context = self.plugin_config_context_with_live_transit(transit_context, include_rows=False)
+        reuse_note = self.plugin_config_transit_reuse_note(transit_context)
+        if reuse_note:
+            ttk.Label(frame, text=reuse_note, foreground="#0f766e", wraplength=1050).grid(row=row, column=0, columnspan=4, sticky=tk.W, padx=4, pady=(2, 6))
+            row += 1
         transit_names = sorted((transit_context.get("transit_tables", {}) or {}).keys())
         try:
             sqlite_tables = self.app.get_table_names()
@@ -9087,11 +9148,16 @@ class PlanWorkflowWindow:
         if callable(getattr(item.get("module"), "open_config_window", None)):
             def open_custom_config():
                 try:
-                    plugin_context = self.make_plugin_context(config, transit_context or {}, execute_actions=False)
+                    window_transit_context = self.plugin_config_context_with_live_transit(transit_context, include_rows=True)
+                    plugin_context = self.make_plugin_context(config, window_transit_context or {}, execute_actions=False)
                     try:
-                        input_tables = self.build_plugin_input_tables(config, headers, current_rows or [], transit_context or {})
+                        input_tables = self.build_plugin_input_tables(config, headers, current_rows or [], window_transit_context or {})
                         plugin_context["input_tables"] = input_tables
                         plugin_context["plugin_input_table_specs"] = copy.deepcopy(config.get("input_tables", []))
+                        reuse_note_for_window = self.plugin_config_transit_reuse_note(window_transit_context)
+                        if reuse_note_for_window:
+                            plugin_context["plugin_config_data_note"] = reuse_note_for_window
+                            self.status_var.set(reuse_note_for_window)
                     except Exception as table_exc:
                         plugin_context["input_tables_error"] = str(table_exc)
                         plugin_context["plugin_input_table_specs"] = copy.deepcopy(config.get("input_tables", []))
