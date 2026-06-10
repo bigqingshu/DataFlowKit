@@ -128,6 +128,10 @@ def _as_text(value):
     return "" if value is None else str(value).strip()
 
 
+def _cell_text(value):
+    return "" if value is None else str(value)
+
+
 def _ui_feature_name(value):
     value = _as_text(value)
     return value if value and value != FEATURE_ANY_LABEL else FEATURE_ANY_LABEL
@@ -363,7 +367,7 @@ def _normalize_doc_record(headers, row, row_no, params=None):
     row_index = _to_int(d.get("row_index"), 0)
     col_index = _to_int(d.get("col_index"), 0)
     cell_address = _as_text(d.get("cell_address") or d.get("地址"))
-    text = _as_text(d.get("text") if "text" in d else d.get("内容"))
+    text = _cell_text(d.get("text") if "text" in d else d.get("内容"))
     meta = _parse_meta_json(d.get("meta_json"))
     is_merged = _truthy(d.get("is_merged", meta.get("is_merged", False)))
     is_merge_origin = not is_merged or _truthy(d.get("is_merge_origin", meta.get("is_merge_origin", True)))
@@ -449,7 +453,7 @@ def _match_text(text, match_cfg):
         return True, "未启用输入源匹配"
     mode = _as_text(cfg.get("mode") or cfg.get("operator") or "包含") or "包含"
     value = _as_text(cfg.get("value"))
-    text = _as_text(text)
+    text = _cell_text(text)
     if cfg.get("regex", False) and mode in ("包含", "contains"):
         mode = "regex"
     try:
@@ -574,25 +578,25 @@ def _match_condition_chain(text, conditions, default_logic="AND"):
 def _extract_group_span(match, group_index=1):
     group_index = _to_int(group_index, 1)
     if group_index <= 0:
-        return match.span(0), _as_text(match.group(0)), "0"
+        return match.span(0), _cell_text(match.group(0)), "0"
     try:
         if match.lastindex and group_index <= match.lastindex and match.start(group_index) >= 0:
-            return match.span(group_index), _as_text(match.group(group_index)), str(group_index)
+            return match.span(group_index), _cell_text(match.group(group_index)), str(group_index)
     except Exception:
         pass
     try:
         if match.lastindex:
             for index in range(1, match.lastindex + 1):
                 if match.start(index) >= 0:
-                    return match.span(index), _as_text(match.group(index)), str(index)
+                    return match.span(index), _cell_text(match.group(index)), str(index)
     except Exception:
         pass
-    return match.span(0), _as_text(match.group(0)), "0"
+    return match.span(0), _cell_text(match.group(0)), "0"
 
 
 def _condition_extract_items(text, conditions, default_logic="AND"):
     ok, detail = _match_condition_chain(text, conditions, default_logic)
-    text = _as_text(text)
+    text = _cell_text(text)
     if not ok:
         return False, detail, []
     valid_conditions = [c for c in (conditions or []) if isinstance(c, dict)]
@@ -615,7 +619,7 @@ def _condition_extract_items(text, conditions, default_logic="AND"):
                     "value": extracted_value,
                     "note": f"正则条件提取{match_index} 组{used_group}",
                     "full_span": match.span(0),
-                    "full_match": _as_text(match.group(0)),
+                    "full_match": _cell_text(match.group(0)),
                     "group": used_group,
                 })
         except Exception as exc:
@@ -626,13 +630,13 @@ def _condition_extract_items(text, conditions, default_logic="AND"):
 
 
 def _target_items_for_batch_scope(text, condition_items, scope):
-    text = _as_text(text)
+    text = _cell_text(text)
     scope = _normalize_batch_target_scope(scope)
     condition_items = [item for item in (condition_items or []) if isinstance(item, dict)]
     if scope == BATCH_TARGET_FULL_TEXT:
         seed = condition_items[0] if condition_items else {}
-        condition_value = _as_text(seed.get("value"))
-        full_match = _as_text(seed.get("full_match", condition_value))
+        condition_value = _cell_text(seed.get("value"))
+        full_match = _cell_text(seed.get("full_match", condition_value))
         return [{
             "span": (0, len(text)),
             "value": text,
@@ -658,14 +662,14 @@ def _target_items_for_batch_scope(text, condition_items, scope):
             if key in seen:
                 continue
             seen.add(key)
-            value = _as_text(item.get("full_match", text[start:end]))
+            value = _cell_text(item.get("full_match", text[start:end]))
             targets.append({
                 "span": (start, end),
                 "value": value,
                 "note": BATCH_TARGET_FULL_MATCH,
                 "full_span": (start, end),
                 "full_match": value,
-                "condition_value": _as_text(item.get("value")),
+                "condition_value": _cell_text(item.get("value")),
                 "group": _as_text(item.get("group", "")),
             })
         return targets
@@ -753,11 +757,11 @@ def _global_rule_records(rule, source_records):
 
 
 def _expand_template(text, content):
-    template = _as_text(text)
+    template = _cell_text(text)
 
     def replace_match(match):
         key = _as_text(match.group(1))
-        return _as_text(content.get(key, match.group(0)))
+        return _cell_text(content.get(key, match.group(0)))
 
     return re.sub(r"\{([^{}]+)\}", replace_match, template)
 
@@ -847,9 +851,18 @@ def _batch_match_row_policy(rule):
 
 
 def _short_preview_text(value, limit=90):
-    text = _as_text(value).replace("\r", "\\r").replace("\n", "\\n")
+    text = _cell_text(value).replace("\r", "\\r").replace("\n", "\\n")
     limit = max(10, int(limit or 90))
     return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _canvas_preview_text(value):
+    text = _cell_text(value)
+    if text == "":
+        return "[空字符串]"
+    if text.strip() == "":
+        return f"[空格 x {len(text)}]"
+    return text
 
 
 def _compare_batch_text(text, pattern, mode, case_sensitive=True):
@@ -1058,7 +1071,7 @@ def _iter_batch_rule_pairs(rule, content, aux_rows, extract, table_context=None,
         if match_is_manual:
             match_value = _expand_template(rule.get("match_value", ""), _batch_template_context(content, aux_row, extract, source_rows))
         else:
-            match_value = _as_text((match_row or {}).get(match_field))
+            match_value = _cell_text((match_row or {}).get(match_field))
         if not match_is_manual and not match_row_ok:
             skipped += 1
             continue
@@ -1071,7 +1084,7 @@ def _iter_batch_rule_pairs(rule, content, aux_rows, extract, table_context=None,
         if replace_is_manual:
             replace_value = _expand_template(rule.get("replace_value", ""), _batch_template_context(content, aux_row, extract, source_rows))
         else:
-            replace_value = _as_text((replace_row or {}).get(replace_field))
+            replace_value = _cell_text((replace_row or {}).get(replace_field))
         source_note = f"匹配[{match_source}:{match_field or '手动'}]→替换[{replace_source}:{replace_field or '手动'}]"
         if match_row_note:
             source_note += f"，{match_row_note}"
@@ -1117,7 +1130,7 @@ def _batch_rules_for_rule(rule):
 
 
 def _apply_batch_rules_to_value(value, rules, content, aux_rows, extract, table_context=None, params=None):
-    text = _as_text(value)
+    text = _cell_text(value)
     valid_rules = [r for r in (rules or []) if isinstance(r, dict) and r.get("enabled", True)]
     if not valid_rules:
         return text, "未设置批量替换规则", None
@@ -1165,7 +1178,7 @@ def _apply_batch_rules_to_value(value, rules, content, aux_rows, extract, table_
 
 
 def _apply_replace_steps(old_text, rule, content, aux_rows=None, condition_items=None, table_context=None, params=None):
-    text = _as_text(old_text)
+    text = _cell_text(old_text)
     rule = rule or {}
     batch_rules = _batch_rules_for_rule(rule)
     target_scope = _batch_target_scope(rule)
@@ -1196,9 +1209,9 @@ def _apply_replace_steps(old_text, rule, content, aux_rows=None, condition_items
         if start < last_pos:
             continue
         extracted += 1
-        value = _as_text(item.get("value"))
-        condition_value = _as_text(item.get("condition_value", value))
-        full_match = _as_text(item.get("full_match", value))
+        value = _cell_text(item.get("value"))
+        condition_value = _cell_text(item.get("condition_value", value))
+        full_match = _cell_text(item.get("full_match", value))
         extract = {
             "提取内容": condition_value,
             "匹配值": condition_value,
@@ -1298,10 +1311,15 @@ def _preview_global_match_rows(global_rules, records, features, limit=500):
                     continue
                 total_matched += 1
                 if len(preview_rows) < limit:
-                    values = "；".join([_as_text(item.get("value")) for item in condition_items[:8]]) or rec.get("text", "")
+                    values = "；".join([_cell_text(item.get("value")) for item in condition_items[:8]]) or rec.get("text", "")
                     preview_rows.append({
                         "rule_name": _as_text(rule.get("name")),
                         "source_file": source_file,
+                        "block_type": rec.get("block_type", ""),
+                        "sheet_name": rec.get("sheet_name", ""),
+                        "row_index": rec.get("row_index", ""),
+                        "col_index": rec.get("col_index", ""),
+                        "cell_address": rec.get("cell_address", ""),
                         "location": f"{rec.get('sheet_name','')} R{rec.get('row_index')}C{rec.get('col_index')}",
                         "old_text": rec.get("text", ""),
                         "new_text": values,
@@ -1333,6 +1351,11 @@ def _preview_global_replace_rows(global_rules, records, features, contents, aux_
         preview_rows.append({
             "rule_name": _as_text(rule.get("name")),
             "source_file": source_file,
+            "block_type": rec.get("block_type", "") if rec else "",
+            "sheet_name": rec.get("sheet_name", "") if rec else "",
+            "row_index": rec.get("row_index", "") if rec else "",
+            "col_index": rec.get("col_index", "") if rec else "",
+            "cell_address": rec.get("cell_address", "") if rec else "",
             "location": f"{rec.get('sheet_name','')} R{rec.get('row_index')}C{rec.get('col_index')}" if rec else "",
             "old_text": rec.get("text", "") if rec else "",
             "new_text": rec.get("text", "") if rec else "",
@@ -1374,6 +1397,11 @@ def _preview_global_replace_rows(global_rules, records, features, contents, aux_
                         preview_rows.append({
                             "rule_name": _as_text(rule.get("name")),
                             "source_file": source_file,
+                            "block_type": rec.get("block_type", ""),
+                            "sheet_name": rec.get("sheet_name", ""),
+                            "row_index": rec.get("row_index", ""),
+                            "col_index": rec.get("col_index", ""),
+                            "cell_address": rec.get("cell_address", ""),
                             "location": f"{rec.get('sheet_name','')} R{rec.get('row_index')}C{rec.get('col_index')}",
                             "old_text": rec.get("text", ""),
                             "new_text": rec.get("text", ""),
@@ -1387,6 +1415,11 @@ def _preview_global_replace_rows(global_rules, records, features, contents, aux_
                         preview_rows.append({
                             "rule_name": _as_text(rule.get("name")),
                             "source_file": source_file,
+                            "block_type": rec.get("block_type", ""),
+                            "sheet_name": rec.get("sheet_name", ""),
+                            "row_index": rec.get("row_index", ""),
+                            "col_index": rec.get("col_index", ""),
+                            "cell_address": rec.get("cell_address", ""),
                             "location": f"{rec.get('sheet_name','')} R{rec.get('row_index')}C{rec.get('col_index')}",
                             "old_text": rec.get("text", ""),
                             "new_text": new_text,
@@ -1400,6 +1433,11 @@ def _preview_global_replace_rows(global_rules, records, features, contents, aux_
                     preview_rows.append({
                         "rule_name": _as_text(rule.get("name")),
                         "source_file": source_file,
+                        "block_type": rec.get("block_type", ""),
+                        "sheet_name": rec.get("sheet_name", ""),
+                        "row_index": rec.get("row_index", ""),
+                        "col_index": rec.get("col_index", ""),
+                        "cell_address": rec.get("cell_address", ""),
                         "location": f"{rec.get('sheet_name','')} R{rec.get('row_index')}C{rec.get('col_index')}",
                         "old_text": rec.get("text", ""),
                         "new_text": new_text,
@@ -1533,7 +1571,7 @@ def run(input_data, params, context):
                 skipped += 1
                 add_debug_row("未选择映射字段", rule, content, source_file, rec)
                 continue
-            value = _as_text(content.get(field))
+            value = _cell_text(content.get(field))
             if value == "" and empty_policy == "跳过":
                 skipped += 1
                 add_debug_row("映射字段为空，按策略跳过", rule, content, source_file, rec)
@@ -1763,6 +1801,7 @@ def open_config_window(parent, current_params, context):
     ttk.Button(rule_button_row, text="启用/停用", command=lambda: toggle_selected_rule()).pack(side=tk.LEFT, padx=2)
     ttk.Button(rule_button_row, text="上移", command=lambda: move_selected_rule(-1)).pack(side=tk.LEFT, padx=2)
     ttk.Button(rule_button_row, text="下移", command=lambda: move_selected_rule(1)).pack(side=tk.LEFT, padx=2)
+    ttk.Button(rule_button_row, text="编辑规则", command=lambda: edit_selected_rule()).pack(side=tk.LEFT, padx=2)
 
     grid_col_w = 180
     grid_row_h = 82
@@ -1801,7 +1840,7 @@ def open_config_window(parent, current_params, context):
     center.rowconfigure(1, weight=1)
     center.columnconfigure(1, weight=1)
 
-    state = {"records": [], "groups": {}, "selected_group": "", "selected_rec": None, "cell_regions": []}
+    state = {"records": [], "groups": {}, "selected_group": "", "selected_rec": None, "cell_regions": [], "preview_changes": {}, "focused_cell_key": ""}
 
     def config_names():
         return sorted((_load_settings(context).get("configs") or {"default": {}}).keys()) or ["default"]
@@ -1838,6 +1877,8 @@ def open_config_window(parent, current_params, context):
         cfg = copy.deepcopy(settings["configs"].get(name, _empty_config()))
         _ensure_config(cfg)
         params["config_name"] = name
+        state["preview_changes"] = {}
+        state["focused_cell_key"] = ""
         if config_name_var.get() != name:
             config_name_var.set(name)
         refresh_rules()
@@ -2157,7 +2198,7 @@ def open_config_window(parent, current_params, context):
         refresh_feature_list(0)
         dlg.after_idle(lambda: _show_centered_window(dlg, win, 860, 520))
 
-    def manage_global_rules():
+    def manage_global_rules(initial_index=None):
         sync_params_from_ui()
         cfg.setdefault("global_rules", [])
         dlg = _make_floating_child(win, "全局搜索替换规则窗口")
@@ -2829,7 +2870,7 @@ def open_config_window(parent, current_params, context):
         ttk.Button(batch_buttons, text="执行替换预览", command=refresh_match_preview).pack(side=tk.LEFT, padx=12)
         ttk.Button(batch_buttons, text="关闭", command=dlg.destroy).pack(side=tk.RIGHT, padx=2)
 
-        refresh_global_list(0)
+        refresh_global_list(initial_index)
         dlg.after_idle(lambda: _show_centered_window(dlg, win, 1120, 720))
 
     def current_content_fields():
@@ -2854,6 +2895,132 @@ def open_config_window(parent, current_params, context):
 
     def current_table_context():
         return _table_row_context(tables, content_alias_var.get(), aux_alias_var.get())
+
+    def _put_visual_change(changes, rec, new_text, kind, rule_name="", content_row="", detail=""):
+        if not isinstance(rec, dict):
+            return False
+        old_text = _cell_text(rec.get("text", rec.get("old_text", "")))
+        new_text = _cell_text(new_text)
+        if new_text == old_text:
+            return False
+        key = _cell_key(rec)
+        changes[key] = {
+            "kind": kind,
+            "rule_name": _as_text(rule_name),
+            "content_row": content_row,
+            "old_text": old_text,
+            "new_text": new_text,
+            "detail": _as_text(detail),
+        }
+        return True
+
+    def build_visual_preview_changes():
+        sync_params_from_ui()
+        if not state.get("records"):
+            reload_data()
+        records = list(state.get("records", []) or [])
+        contents = current_content_rows()
+        changes = {}
+        normal_changed = 0
+        global_changed = 0
+        skipped = 0
+        if not records:
+            return changes, normal_changed, global_changed, skipped
+
+        by_file = {}
+        for item in records:
+            by_file.setdefault(item.get("source_file", ""), []).append(item)
+        source_files = _source_files(records, params)
+        empty_policy = _as_text(params.get("empty_policy", "跳过")) or "跳过"
+        normal_rules = [r for r in cfg.get("rules", []) if isinstance(r, dict) and r.get("enabled", True)]
+        if contents and normal_rules:
+            for content_index, content in enumerate(contents):
+                source_file, source_note = _source_file_for_content(content, source_files, content_index, len(contents), params)
+                if not source_file and source_files != [""]:
+                    skipped += len(normal_rules)
+                    continue
+                target_file = _target_file_for_content(content, params, source_file)
+                if not target_file:
+                    skipped += len(normal_rules)
+                    continue
+                source_records = by_file.get(source_file, [])
+                for rule in normal_rules:
+                    locator = rule.get("source_locator", {}) or {}
+                    feature_ok, feature_detail = _feature_pass(rule.get("feature_name", ""), cfg.get("features", []), source_records, source_file, _as_text(locator.get("sheet_name")))
+                    if not feature_ok:
+                        skipped += 1
+                        continue
+                    rec, anchor_detail = _locate_target_record(rule, source_records, source_file)
+                    if rec is None:
+                        skipped += 1
+                        continue
+                    ok, match_detail = _match_text(rec.get("text", ""), rule.get("source_match", {}))
+                    if not ok:
+                        skipped += 1
+                        continue
+                    mapping = rule.get("mapping", {}) or {}
+                    field = _as_text(mapping.get("content_field") or mapping.get("field"))
+                    if not field:
+                        skipped += 1
+                        continue
+                    value = _cell_text(content.get(field))
+                    if value == "" and empty_policy in ("跳过", "报错"):
+                        skipped += 1
+                        continue
+                    if _put_visual_change(
+                        changes,
+                        rec,
+                        value,
+                        "普通映射",
+                        rule.get("name", ""),
+                        content.get("__content_row__", ""),
+                        f"源文件选择={source_note}；{feature_detail}；{match_detail}；{anchor_detail}",
+                    ):
+                        normal_changed += 1
+
+        global_rules = [r for r in cfg.get("global_rules", []) if isinstance(r, dict) and r.get("enabled", True)]
+        if global_rules:
+            preview_rows, total_changed, total_errors = _preview_global_replace_rows(
+                global_rules,
+                records,
+                cfg.get("features", []),
+                contents,
+                current_aux_rows(),
+                params,
+                limit=20000,
+                include_unchanged=False,
+                table_context=current_table_context(),
+            )
+            global_changed = total_changed
+            skipped += total_errors
+            for item in preview_rows:
+                if item.get("status") != "替换":
+                    continue
+                _put_visual_change(
+                    changes,
+                    item,
+                    item.get("new_text", ""),
+                    "全局替换",
+                    item.get("rule_name", ""),
+                    item.get("content_row", ""),
+                    item.get("detail", ""),
+                )
+        return changes, normal_changed, global_changed, skipped
+
+    def apply_visual_preview_highlight():
+        changes, normal_changed, global_changed, skipped = build_visual_preview_changes()
+        state["preview_changes"] = changes
+        if state.get("selected_group"):
+            render_group(state["selected_group"])
+        status_var.set(
+            f"替换预览高亮 {len(changes)} 格；普通映射变化 {normal_changed} 条；全局替换变化 {global_changed} 条；跳过/错误 {skipped} 条"
+        )
+
+    def clear_visual_preview_highlight():
+        state["preview_changes"] = {}
+        if state.get("selected_group"):
+            render_group(state["selected_group"])
+        status_var.set("已清除替换预览高亮")
 
     def show_global_replace_preview():
         sync_params_from_ui()
@@ -3012,6 +3179,8 @@ def open_config_window(parent, current_params, context):
         return int(index)
 
     def after_rule_manage(kind, index, message):
+        state["preview_changes"] = {}
+        state["focused_cell_key"] = ""
         refresh_rules()
         select_rule_list_index(rule_list_index(kind, index))
         if state.get("selected_group"):
@@ -3059,7 +3228,11 @@ def open_config_window(parent, current_params, context):
     def show_info(rec):
         state["selected_rec"] = rec
         info_text.delete("1.0", tk.END)
-        info_text.insert(tk.END, json.dumps(rec, ensure_ascii=False, indent=2))
+        payload = dict(rec)
+        preview_change = state.get("preview_changes", {}).get(_cell_key(rec))
+        if preview_change:
+            payload["preview_change"] = preview_change
+        info_text.insert(tk.END, json.dumps(payload, ensure_ascii=False, indent=2))
 
     def edit_source(rec):
         dlg = _make_floating_child(win, "输入源信息")
@@ -3072,8 +3245,8 @@ def open_config_window(parent, current_params, context):
         ttk.Button(body, text="关闭", command=dlg.destroy).pack(anchor=tk.E, pady=(8, 0))
         dlg.after_idle(lambda: _show_centered_window(dlg, win))
 
-    def edit_rule(rec):
-        rule = find_rule(rec)
+    def edit_rule(rec, rule_override=None):
+        rule = rule_override or find_rule(rec)
         dlg = _make_floating_child(win, "输入源匹配 / 锚点设置")
         body = ttk.Frame(dlg, padding=10)
         body.pack(fill=tk.BOTH, expand=True)
@@ -3268,6 +3441,7 @@ def open_config_window(parent, current_params, context):
                 "row_offset": row_offset.get(),
                 "col_offset": col_offset.get(),
             })
+            state["preview_changes"] = {}
             refresh_rules()
             dlg.destroy()
 
@@ -3294,6 +3468,7 @@ def open_config_window(parent, current_params, context):
 
         def on_ok():
             mapping["content_field"] = field_var.get().strip()
+            state["preview_changes"] = {}
             refresh_rules()
             dlg.destroy()
 
@@ -3365,9 +3540,16 @@ def open_config_window(parent, current_params, context):
             x2 = (c - 1 + cs) * col_w
             y2 = (r - 1 + rs) * row_h
             is_merged = bool(rec.get("is_merged", False)) or rs > 1 or cs > 1
-            fill = "#fff7df" if is_merged else "#ffffff"
-            outline = "#f59e0b" if is_merged else "#cbd5e1"
-            canvas.create_rectangle(x1, y1, x2, y2, fill=fill, outline=outline, width=2 if is_merged else 1)
+            preview_change = state.get("preview_changes", {}).get(_cell_key(rec))
+            if preview_change:
+                fill = "#dcfce7"
+                outline = "#16a34a"
+                border_width = 3
+            else:
+                fill = "#fff7df" if is_merged else "#ffffff"
+                outline = "#f59e0b" if is_merged else "#cbd5e1"
+                border_width = 2 if is_merged else 1
+            canvas.create_rectangle(x1, y1, x2, y2, fill=fill, outline=outline, width=border_width)
             btn_y1 = y1 + 4
             btn_y2 = y1 + 24
             buttons = [("source", "源"), ("rule", "规则"), ("mapping", "字段")]
@@ -3378,11 +3560,16 @@ def open_config_window(parent, current_params, context):
                 canvas.create_text(bx + bw / 2, (btn_y1 + btn_y2) / 2, text=text, fill="#0f172a", font=("TkDefaultFont", 9))
                 _add_region(kind, (bx, btn_y1, bx + bw, btn_y2), rec)
                 bx += bw + 4
-            display_text = _as_text(rec.get("text", ""))
+            display_text = _cell_text(rec.get("text", ""))
+            if preview_change:
+                label = _as_text(preview_change.get("kind")) or "替换预览"
+                display_text = f"[{label}]\n{_canvas_preview_text(preview_change.get('new_text', ''))}"
             if is_merged:
                 merge_note = rec.get("merged_range") or f"{rs}行x{cs}列"
                 display_text = f"[合并 {merge_note}]\n{display_text}"
             canvas.create_text(x1 + 8, y1 + 32, anchor=tk.NW, text=display_text[:120], width=max(80, (x2 - x1) - 16), fill="#111827")
+            if state.get("focused_cell_key") == _cell_key(rec):
+                canvas.create_rectangle(x1 + 3, y1 + 3, x2 - 3, y2 - 3, outline="#2563eb", width=3)
             _add_region("cell", (x1, y1, x2, y2), rec)
 
         body_w = max_col * col_w + 20
@@ -3396,6 +3583,109 @@ def open_config_window(parent, current_params, context):
         col_header_canvas.xview_moveto(canvas.xview()[0])
         row_header_canvas.yview_moveto(canvas.yview()[0])
         state["selected_group"] = group_name
+
+    def _scroll_canvas_to_record(rec):
+        try:
+            r = int(rec.get("row_index") or 0)
+            c = int(rec.get("col_index") or 0)
+            rs, cs = _record_span(rec)
+            canvas.update_idletasks()
+            region = [float(v) for v in str(canvas.cget("scrollregion")).split()]
+            if len(region) != 4:
+                return
+            _x0, _y0, body_w, body_h = region
+            view_w = max(1, canvas.winfo_width())
+            view_h = max(1, canvas.winfo_height())
+            x_center = (c - 1 + cs / 2) * grid_col_w
+            y_center = (r - 1 + rs / 2) * grid_row_h
+            if body_w > view_w:
+                x_frac = (x_center - view_w / 2) / max(1, body_w - view_w)
+                x_frac = max(0.0, min(1.0, x_frac))
+                canvas.xview_moveto(x_frac)
+                col_header_canvas.xview_moveto(x_frac)
+            if body_h > view_h:
+                y_frac = (y_center - view_h / 2) / max(1, body_h - view_h)
+                y_frac = max(0.0, min(1.0, y_frac))
+                canvas.yview_moveto(y_frac)
+                row_header_canvas.yview_moveto(y_frac)
+        except Exception:
+            pass
+
+    def _select_group_in_list(group_name):
+        for index in range(group_lb.size()):
+            if group_lb.get(index) == group_name:
+                group_lb.selection_clear(0, tk.END)
+                group_lb.selection_set(index)
+                group_lb.see(index)
+                return True
+        return False
+
+    def _locate_rule_record_for_edit(rule):
+        if not state.get("records"):
+            reload_data()
+        records = list(state.get("records", []) or [])
+        if not records:
+            return None, "当前文档读取表没有可定位记录"
+        locator = rule.get("source_locator", {}) or {}
+        source_file = _as_text(locator.get("source_file"))
+        source_files = _source_files(records, params)
+        if not source_file and len(source_files) == 1:
+            source_file = source_files[0]
+        by_file = {}
+        for item in records:
+            by_file.setdefault(item.get("source_file", ""), []).append(item)
+        source_records = by_file.get(source_file, records if not source_file else [])
+        rec, detail = _locate_target_record(rule, source_records, source_file)
+        if rec is not None:
+            return rec, detail
+        sheet_name = _as_text(locator.get("sheet_name"))
+        row_index = _to_int(locator.get("row_index"), 0)
+        col_index = _to_int(locator.get("col_index"), 0)
+        for item in records:
+            if source_file and item.get("source_file", "") != source_file:
+                continue
+            if sheet_name and item.get("sheet_name", "") != sheet_name:
+                continue
+            if row_index > 0 and int(item.get("row_index") or 0) != row_index:
+                continue
+            if col_index > 0 and int(item.get("col_index") or 0) != col_index:
+                continue
+            return item, f"{detail}；已按原始坐标回退定位"
+        return None, detail
+
+    def _focus_record_in_canvas(rec):
+        group_name = rec.get("sheet_name") or "table_1"
+        if group_name not in state.get("groups", {}):
+            return False, f"目标表格/Sheet 不存在：{group_name}"
+        state["focused_cell_key"] = _cell_key(rec)
+        _select_group_in_list(group_name)
+        render_group(group_name)
+        _scroll_canvas_to_record(rec)
+        show_info(rec)
+        return True, ""
+
+    def edit_selected_rule():
+        ref = selected_rule_ref()
+        if not ref:
+            return
+        if ref["kind"] == "global_rules":
+            manage_global_rules(ref["index"])
+            return
+        rule = ref["rule"]
+        rec, detail = _locate_rule_record_for_edit(rule)
+        if rec is None:
+            name = _as_text(rule.get("name")) or _as_text(rule.get("id")) or "未命名规则"
+            status_var.set(f"规则定位失败：{name}；{detail}")
+            messagebox.showwarning("定位失败", f"无法定位这条普通映射规则对应的格子。\n\n{name}\n{detail}", parent=win)
+            return
+        ok, focus_msg = _focus_record_in_canvas(rec)
+        if not ok:
+            status_var.set(f"规则定位失败：{focus_msg}")
+            messagebox.showwarning("定位失败", focus_msg, parent=win)
+            return
+        name = _as_text(rule.get("name")) or _as_text(rule.get("id")) or "未命名规则"
+        status_var.set(f"已跳转并打开规则：{name}；{detail}")
+        win.after_idle(lambda rec=rec, rule=rule: edit_rule(rec, rule))
 
     def on_canvas_click(event):
         x = canvas.canvasx(event.x)
@@ -3462,6 +3752,8 @@ def open_config_window(parent, current_params, context):
         params["planned_file_field"] = planned_file_field_var.get().strip() or "target_file"
         refresh_field_combos()
         doc_table = tables.get(params["doc_table_alias"], {})
+        state["preview_changes"] = {}
+        state["focused_cell_key"] = ""
         state["records"] = _doc_records(doc_table, params)
         state["groups"] = _group_doc_grid(state["records"])
         group_lb.delete(0, tk.END)
@@ -3582,7 +3874,7 @@ def open_config_window(parent, current_params, context):
                         add_skip(rule, content, "未选择映射字段", source_file, rec)
                         continue
                     field_exists = field in content
-                    value = _as_text(content.get(field))
+                    value = _cell_text(content.get(field))
                     if value == "" and empty_policy == "跳过":
                         note = "映射字段为空，按策略跳过"
                         if not field_exists:
@@ -3672,6 +3964,8 @@ def open_config_window(parent, current_params, context):
     ttk.Button(bottom, text="确定", command=save_and_close).pack(side=tk.RIGHT, padx=4)
     ttk.Button(bottom, text="取消", command=win.destroy).pack(side=tk.RIGHT, padx=4)
     ttk.Button(bottom, text="规则替换预览", command=show_rule_replace_preview).pack(side=tk.RIGHT, padx=4)
+    ttk.Button(bottom, text="高亮替换预览", command=apply_visual_preview_highlight).pack(side=tk.RIGHT, padx=4)
+    ttk.Button(bottom, text="清除高亮", command=clear_visual_preview_highlight).pack(side=tk.RIGHT, padx=4)
 
     reload_data()
     _show_centered_window(win, parent, CONFIG_WINDOW_WIDTH, CONFIG_WINDOW_HEIGHT)

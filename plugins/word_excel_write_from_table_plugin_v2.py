@@ -86,7 +86,7 @@ def get_parameter_schema():
             "label": "Word文字写入方式",
             "type": "select",
             "choices": [WORD_MODE_PRESERVE_FORMAT, WORD_MODE_OVERWRITE, WORD_MODE_FIND_REPLACE],
-            "default": WORD_MODE_PRESERVE_FORMAT,
+            "default": WORD_MODE_FIND_REPLACE,
             "help": "win32 写入 Word 时可按定位范围整段写入，也可在定位范围内按 old_text 查找替换。",
         },
         {
@@ -154,6 +154,20 @@ def get_output_schema(params=None, input_data=None, context=None):
 
 def _as_text(v):
     return "" if v is None else str(v).strip()
+
+
+def _default_word_text_write_mode(write_engine="win32"):
+    engine = _as_text(write_engine).lower() or "win32"
+    return WORD_MODE_FIND_REPLACE if engine == "win32" else WORD_MODE_PRESERVE_FORMAT
+
+
+def _word_text_mode_from_params(params):
+    params = params or {}
+    write_engine = _as_text(params.get("write_engine", "win32")).lower() or "win32"
+    mode = _as_text(params.get("word_text_write_mode", "")) or _default_word_text_write_mode(write_engine)
+    if mode not in (WORD_MODE_PRESERVE_FORMAT, WORD_MODE_OVERWRITE, WORD_MODE_FIND_REPLACE):
+        return _default_word_text_write_mode(write_engine)
+    return mode
 
 
 def _safe_cell(row, idx):
@@ -326,8 +340,8 @@ def validate_params(params, input_data, context):
     target_path_field = _as_text(p.get("target_path_field", "target_file")) or "target_file"
     value_field = _as_text(p.get("value_field", "text")) or "text"
     old_text_field = _as_text(p.get("old_text_field", "old_text")) or "old_text"
-    word_text_write_mode = _as_text(p.get("word_text_write_mode", WORD_MODE_PRESERVE_FORMAT)) or WORD_MODE_PRESERVE_FORMAT
     write_engine = _as_text(p.get("write_engine", "win32")).lower() or "win32"
+    word_text_write_mode = _word_text_mode_from_params(p)
 
     if path_field not in headers:
         return False, f"文件路径字段不存在：{path_field}"
@@ -415,10 +429,7 @@ def _collect_ops(input_data, params, context):
 
 def _word_text_write_mode(context):
     params = (context or {}).get("params") or {}
-    mode = _as_text(params.get("word_text_write_mode", WORD_MODE_PRESERVE_FORMAT)) or WORD_MODE_PRESERVE_FORMAT
-    if mode not in (WORD_MODE_PRESERVE_FORMAT, WORD_MODE_OVERWRITE, WORD_MODE_FIND_REPLACE):
-        return WORD_MODE_PRESERVE_FORMAT
-    return mode
+    return _word_text_mode_from_params(params)
 
 
 def _word_preserve_format_enabled(context):
@@ -1248,7 +1259,7 @@ def run(input_data, params, context):
             "win32_retry_interval_ms": win32_retry_interval_ms,
             "win32_close_settle_ms": win32_close_settle_ms,
             "target_path_field": _as_text(p.get("target_path_field", "target_file")) or "target_file",
-            "word_text_write_mode": _as_text(p.get("word_text_write_mode", WORD_MODE_PRESERVE_FORMAT)) or WORD_MODE_PRESERVE_FORMAT,
+            "word_text_write_mode": _word_text_mode_from_params(p),
             "old_text_field": _as_text(p.get("old_text_field", "old_text")) or "old_text",
             "target_missing_policy": _as_text(p.get("target_missing_policy", "从源文件复制")) or "从源文件复制",
             "target_existing_policy": _as_text(p.get("target_existing_policy", "直接写入")) or "直接写入",
