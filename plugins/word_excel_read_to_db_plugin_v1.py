@@ -16,10 +16,10 @@ from xml.etree import ElementTree as ET
 PLUGIN_INFO = {
     "id": "word_excel_read_to_db_v1",
     "name": "Word/Excel读取入库V1",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "api_version": "1.0",
     "category": "文件处理",
-    "description": "读取Word/Excel文件并按“每文件一表”写入数据库，输出处理摘要。",
+    "description": "按统一读取策略读取 Word/Excel，并按“每文件一表”写入数据库。",
     "input_type": "table",
     "output_type": "table",
     "danger_level": "db_write",
@@ -47,6 +47,21 @@ DETAIL_HEADERS = [
 
 SUMMARY_HEADERS = ["source_row", "source_mode", "file_name", "file_path", "table_name", "read_rows", "write_rows", "status", "error"]
 
+DEFAULT_READ_STRATEGY = "win32文本段落+精确表格"
+READ_STRATEGY_CONVERT_XML = "转换docx后XML读取"
+READ_STRATEGY_CONVERT_WIN32 = "转换docx后用win32读取"
+READ_STRATEGY_CONVERT_WIN32_COMPAT = "保留旧格式转换docx后用win32读取"
+READ_STRATEGIES = [
+    DEFAULT_READ_STRATEGY,
+    "win32快速读取",
+    "win32文本反推表格",
+    "win32纯文本快速读取",
+    READ_STRATEGY_CONVERT_XML,
+    READ_STRATEGY_CONVERT_WIN32,
+    READ_STRATEGY_CONVERT_WIN32_COMPAT,
+    "win32完整读取",
+]
+
 
 def get_parameter_schema():
     return [
@@ -68,11 +83,11 @@ def get_parameter_schema():
         },
         {
             "name": "doc_read_strategy",
-            "label": ".doc读取策略",
+            "label": "读取策略",
             "type": "select",
-            "choices": ["win32文本段落+精确表格", "win32快速读取", "win32文本反推表格", "win32纯文本快速读取", "转换docx后XML读取", "win32完整读取"],
-            "default": "win32文本段落+精确表格",
-            "help": ".doc 专用。win32文本段落+精确表格跳过慢速逐段读取，但保留精确 table_x/R行C列；win32文本反推表格为更快近似。",
+            "choices": list(READ_STRATEGIES),
+            "default": DEFAULT_READ_STRATEGY,
+            "help": "适用于 .doc/.docx/.docm。转换策略只使用临时 docx，不修改源文件；“保留旧格式”会保留源文档当前兼容模式。",
         },
         {
             "name": "path_source",
@@ -414,7 +429,7 @@ def _parse_params_hash(params):
     data = {
         "read_engine": _as_text(params.get("read_engine", "win32")) or "win32",
         "word_merge_mode": _as_text(params.get("word_merge_mode", "关闭")) or "关闭",
-        "doc_read_strategy": _as_text(params.get("doc_read_strategy", "win32文本段落+精确表格")) or "win32文本段落+精确表格",
+        "doc_read_strategy": _as_text(params.get("doc_read_strategy", DEFAULT_READ_STRATEGY)) or DEFAULT_READ_STRATEGY,
     }
     txt = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(txt.encode("utf-8")).hexdigest()
@@ -782,16 +797,17 @@ def _read_docx_like(file_path, word_merge_mode="关闭", context=None, progress_
     return rows
 
 
-def _read_doc_via_com(file_path, word_merge_mode="关闭", context=None, progress_current=None, progress_total=None, timings=None):
+def _convert_word_to_temp_docx(file_path, preserve_compatibility=False, timings=None):
     try:
         import pythoncom
         import win32com.client
     except Exception as exc:
-        raise RuntimeError("读取 .doc 需要 pywin32 + Word") from exc
+        raise RuntimeError("转换 Word 文档需要 pywin32 + Word") from exc
 
     temp_docx = None
     temp_dir = None
     word = None
+    doc = None
     try:
         step_start = time.perf_counter()
         pythoncom.CoInitialize()
@@ -804,27 +820,45 @@ def _read_doc_via_com(file_path, word_merge_mode="关闭", context=None, progres
         doc = word.Documents.Open(str(file_path), ReadOnly=True, AddToRecentFiles=False, ConfirmConversions=False, Visible=False)
         _timing_add(timings, "打开文档", step_start)
         try:
-            # 使用临时目录文件，避免 mkstemp 文件句柄在 Windows 上占用导致 WinError 32。
             temp_dir = Path(tempfile.mkdtemp(prefix="word_doc_convert_"))
             temp_docx = temp_dir / f"{file_path.stem}_converted.docx"
-            # 12 = wdFormatXMLDocument
             step_start = time.perf_counter()
-            doc.SaveAs2(str(temp_docx), FileFormat=12)
-            _timing_add(timings, "转换docx", step_start)
+            compatibility_mode = 0 if preserve_compatibility else 15
+            try:
+                # 12 = wdFormatXMLDocument；0 = 保留当前兼容模式；15 = 当前 Word 模式。
+                doc.SaveAs2(
+                    str(temp_docx),
+                    FileFormat=12,
+                    CompatibilityMode=compatibility_mode,
+                )
+            except Exception:
+                if preserve_compatibility:
+                    raise
+                if temp_docx.exists():
+                    temp_docx.unlink()
+                doc.SaveAs2(str(temp_docx), FileFormat=12)
+            _timing_add(
+                timings,
+                "转换docx",
+                step_start,
+                strategy="保留旧格式" if preserve_compatibility else "当前格式",
+            )
         finally:
             doc.Close(False)
+            doc = None
 
-        # 某些 Word 版本 SaveAs2 后会短暂占用文件，这里做轻量重试。
-        last_err = None
-        for _ in range(5):
-            try:
-                return _read_docx_like(temp_docx, word_merge_mode, context, progress_current, progress_total, timings)
-            except Exception as exc:
-                last_err = exc
-                time.sleep(0.15)
-        raise last_err if last_err else RuntimeError("读取临时 docx 失败")
+        return temp_dir, temp_docx
+    except Exception:
+        if temp_dir is not None and temp_dir.exists():
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
     finally:
         step_start = time.perf_counter()
+        if doc is not None:
+            try:
+                doc.Close(False)
+            except Exception:
+                pass
         if word is not None:
             try:
                 word.Quit()
@@ -835,8 +869,66 @@ def _read_doc_via_com(file_path, word_merge_mode="关闭", context=None, progres
         except Exception:
             pass
         _timing_add(timings, "关闭Word", step_start)
+
+
+def _read_word_converted(
+    file_path,
+    read_mode,
+    word_merge_mode="关闭",
+    preserve_compatibility=False,
+    context=None,
+    progress_current=None,
+    progress_total=None,
+    timings=None,
+):
+    temp_dir = None
+    temp_docx = None
+    try:
+        temp_dir, temp_docx = _convert_word_to_temp_docx(
+            file_path,
+            preserve_compatibility=preserve_compatibility,
+            timings=timings,
+        )
+        last_err = None
+        for _ in range(5):
+            try:
+                if read_mode == "xml":
+                    return _read_docx_like(
+                        temp_docx,
+                        word_merge_mode,
+                        context,
+                        progress_current,
+                        progress_total,
+                        timings,
+                    )
+                return _read_word_via_com(
+                    temp_docx,
+                    word_merge_mode,
+                    context,
+                    progress_current,
+                    progress_total,
+                    timings,
+                )
+            except Exception as exc:
+                last_err = exc
+                time.sleep(0.15)
+        raise last_err if last_err else RuntimeError("读取临时 docx 失败")
+    finally:
         if temp_dir is not None and temp_dir.exists():
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _read_doc_via_com(file_path, word_merge_mode="关闭", context=None, progress_current=None, progress_total=None, timings=None):
+    return _read_word_converted(
+        file_path,
+        "xml",
+        word_merge_mode,
+        preserve_compatibility=False,
+        context=context,
+        progress_current=progress_current,
+        progress_total=progress_total,
+        timings=timings,
+    )
 
 
 def _read_word_text_via_com(file_path, context=None, progress_current=None, progress_total=None, timings=None):
@@ -1340,24 +1432,54 @@ def _read_file_rows(file_path, read_engine, params=None, context=None, progress_
     word_merge_mode = _as_text(params.get("word_merge_mode", "关闭")) or "关闭"
     if word_merge_mode not in ("关闭", "简化", "完整"):
         word_merge_mode = "关闭"
-    doc_strategy = _as_text(params.get("doc_read_strategy", "win32文本段落+精确表格")) or "win32文本段落+精确表格"
+    doc_strategy = _as_text(params.get("doc_read_strategy", DEFAULT_READ_STRATEGY)) or DEFAULT_READ_STRATEGY
+    if doc_strategy not in READ_STRATEGIES:
+        doc_strategy = DEFAULT_READ_STRATEGY
 
     if ext in (".doc", ".docx", ".docm"):
-        if ext == ".doc":
-            if doc_strategy == "win32文本段落+精确表格":
-                return _read_word_text_exact_tables_via_com(file_path, word_merge_mode, context, progress_current, progress_total, timings)
-            if doc_strategy == "win32文本反推表格":
-                return _read_word_text_table_map_via_com(file_path, context, progress_current, progress_total, timings)
-            if doc_strategy == "win32纯文本快速读取":
-                return _read_word_text_via_com(file_path, context, progress_current, progress_total, timings)
-            if doc_strategy == "转换docx后XML读取":
-                return _read_doc_via_com(file_path, word_merge_mode, context, progress_current, progress_total, timings)
-            if doc_strategy == "win32完整读取":
-                return _read_word_via_com(file_path, "完整", context, progress_current, progress_total, timings)
+        if doc_strategy == DEFAULT_READ_STRATEGY:
+            return _read_word_text_exact_tables_via_com(file_path, word_merge_mode, context, progress_current, progress_total, timings)
+        if doc_strategy == "win32文本反推表格":
+            return _read_word_text_table_map_via_com(file_path, context, progress_current, progress_total, timings)
+        if doc_strategy == "win32纯文本快速读取":
+            return _read_word_text_via_com(file_path, context, progress_current, progress_total, timings)
+        if doc_strategy == READ_STRATEGY_CONVERT_XML:
+            return _read_word_converted(
+                file_path,
+                "xml",
+                word_merge_mode,
+                preserve_compatibility=False,
+                context=context,
+                progress_current=progress_current,
+                progress_total=progress_total,
+                timings=timings,
+            )
+        if doc_strategy == READ_STRATEGY_CONVERT_WIN32:
+            return _read_word_converted(
+                file_path,
+                "win32",
+                word_merge_mode,
+                preserve_compatibility=False,
+                context=context,
+                progress_current=progress_current,
+                progress_total=progress_total,
+                timings=timings,
+            )
+        if doc_strategy == READ_STRATEGY_CONVERT_WIN32_COMPAT:
+            return _read_word_converted(
+                file_path,
+                "win32",
+                word_merge_mode,
+                preserve_compatibility=True,
+                context=context,
+                progress_current=progress_current,
+                progress_total=progress_total,
+                timings=timings,
+            )
+        if doc_strategy == "win32完整读取":
+            return _read_word_via_com(file_path, "完整", context, progress_current, progress_total, timings)
+        if doc_strategy == "win32快速读取":
             return _read_word_via_com(file_path, word_merge_mode, context, progress_current, progress_total, timings)
-        if engine == "win32":
-            return _read_word_via_com(file_path, word_merge_mode, context, progress_current, progress_total, timings)
-        return _read_docx_like(file_path, word_merge_mode, context, progress_current, progress_total, timings)
 
     if ext in (".xlsx", ".xlsm", ".xls"):
         if engine == "win32":
@@ -1402,9 +1524,9 @@ def run(input_data, params, context):
     word_merge_mode = _as_text(p.get("word_merge_mode", "关闭")) or "关闭"
     if word_merge_mode not in ("关闭", "简化", "完整"):
         word_merge_mode = "关闭"
-    doc_read_strategy = _as_text(p.get("doc_read_strategy", "win32文本段落+精确表格")) or "win32文本段落+精确表格"
-    if doc_read_strategy not in ("win32快速读取", "win32文本段落+精确表格", "win32文本反推表格", "win32纯文本快速读取", "转换docx后XML读取", "win32完整读取"):
-        doc_read_strategy = "win32文本段落+精确表格"
+    doc_read_strategy = _as_text(p.get("doc_read_strategy", DEFAULT_READ_STRATEGY)) or DEFAULT_READ_STRATEGY
+    if doc_read_strategy not in READ_STRATEGIES:
+        doc_read_strategy = DEFAULT_READ_STRATEGY
     p["read_engine"] = read_engine
     p["word_merge_mode"] = word_merge_mode
     p["doc_read_strategy"] = doc_read_strategy
@@ -1512,7 +1634,7 @@ def run(input_data, params, context):
                 logs.append({
                     "level": "INFO",
                     "object": str(file_path),
-                    "message": f"READ_TIMING：读取耗时 {read_seconds:.2f}s，Word合并解析={word_merge_mode}，doc策略={doc_read_strategy}",
+                    "message": f"READ_TIMING：读取耗时 {read_seconds:.2f}s，Word合并解析={word_merge_mode}，读取策略={doc_read_strategy}",
                 })
                 timing_detail = _format_timing_detail(read_timings)
                 if timing_detail:

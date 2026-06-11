@@ -1853,6 +1853,7 @@ def _preview_global_replace_rows(global_rules, records, features, contents, aux_
                     preview_rows.append({
                         "rule_name": _as_text(rule.get("name")),
                         "source_file": source_file,
+                        "target_file": target_file,
                         "block_type": rec.get("block_type", ""),
                         "sheet_name": rec.get("sheet_name", ""),
                         "row_index": rec.get("row_index", ""),
@@ -1862,6 +1863,8 @@ def _preview_global_replace_rows(global_rules, records, features, contents, aux_
                         "old_text": rec.get("text", ""),
                         "new_text": new_text,
                         "content_row": content.get("__content_row__", ""),
+                        "content": content,
+                        "source_note": source_note,
                         "detail": f"{feature_detail}；{cond_detail}；{replace_detail}；目标文件={target_file}；源文件选择={source_note}",
                         "status": "替换",
                     })
@@ -3871,22 +3874,29 @@ def open_config_window(parent, current_params, context):
     def current_table_context():
         return _table_row_context(tables, content_alias_var.get(), aux_alias_var.get())
 
-    def _put_visual_change(changes, rec, new_text, kind, rule_name="", content_row="", detail=""):
+    def _put_visual_change(changes, rec, new_text, kind, rule_name="", content_row="", detail="", force=False):
         if not isinstance(rec, dict):
             return False
         old_text = _cell_text(rec.get("text", rec.get("old_text", "")))
         new_text = _cell_text(new_text)
-        if new_text == old_text:
-            return False
         key = _cell_key(rec)
-        changes[key] = {
+        previous = changes.get(key)
+        if new_text == old_text and not force and previous is None:
+            return False
+        change = {
             "kind": kind,
             "rule_name": _as_text(rule_name),
             "content_row": content_row,
             "old_text": old_text,
             "new_text": new_text,
             "detail": _as_text(detail),
+            "record": dict(rec),
         }
+        if previous:
+            history = list(previous.get("history", []))
+            history.append({k: v for k, v in previous.items() if k not in ("record", "history")})
+            change["history"] = history
+        changes[key] = change
         return True
 
     def build_visual_preview_changes():
@@ -3898,15 +3908,17 @@ def open_config_window(parent, current_params, context):
         changes = {}
         normal_changed = 0
         global_changed = 0
+        linked_changed = 0
         skipped = 0
         if not records:
-            return changes, normal_changed, global_changed, skipped
+            return changes, normal_changed, global_changed, linked_changed, skipped
 
         by_file = {}
         for item in records:
             by_file.setdefault(item.get("source_file", ""), []).append(item)
         source_files = _source_files(records, params)
         empty_policy = _as_text(params.get("empty_policy", "跳过")) or "跳过"
+        trigger_events = []
         normal_rules = [r for r in cfg.get("rules", []) if isinstance(r, dict) and r.get("enabled", True)]
         if contents and normal_rules:
             for content_index, content in enumerate(contents):
@@ -3959,10 +3971,27 @@ def open_config_window(parent, current_params, context):
                         f"源文件选择={source_note}；{feature_detail}；{match_detail}；{anchor_detail}",
                     ):
                         normal_changed += 1
+                        trigger_events.append({
+                            "kind": "普通映射",
+                            "rule_name": rule.get("name", ""),
+                            "match_rule": rule.get("name", ""),
+                            "source_file": source_file,
+                            "target_file": target_file,
+                            "rec": rec,
+                            "sheet_name": rec.get("sheet_name", ""),
+                            "row_index": rec.get("row_index", ""),
+                            "col_index": rec.get("col_index", ""),
+                            "old_text": rec.get("text", ""),
+                            "new_text": value,
+                            "mapping_field": field,
+                            "content": content,
+                            "content_row": content.get("__content_row__", ""),
+                            "source_note": source_note,
+                        })
 
         global_rules = [r for r in cfg.get("global_rules", []) if isinstance(r, dict) and r.get("enabled", True)]
         if global_rules:
-            preview_rows, total_changed, total_errors = _preview_global_replace_rows(
+            preview_rows, _total_changed, total_errors = _preview_global_replace_rows(
                 global_rules,
                 records,
                 cfg.get("features", []),
@@ -3973,29 +4002,102 @@ def open_config_window(parent, current_params, context):
                 include_unchanged=False,
                 table_context=current_table_context(),
             )
-            global_changed = total_changed
             skipped += total_errors
             for item in preview_rows:
                 if item.get("status") != "替换":
                     continue
-                _put_visual_change(
+                if item.get("new_text", "") == "" and empty_policy in ("跳过", "报错"):
+                    skipped += 1
+                    continue
+                rec = _record_at_position(
+                    by_file.get(item.get("source_file", ""), []),
+                    item.get("source_file", ""),
+                    item.get("sheet_name", ""),
+                    item.get("row_index", ""),
+                    item.get("col_index", ""),
+                ) or item
+                if not _put_visual_change(
                     changes,
-                    item,
+                    rec,
                     item.get("new_text", ""),
                     "全局替换",
                     item.get("rule_name", ""),
                     item.get("content_row", ""),
                     item.get("detail", ""),
+                ):
+                    continue
+                global_changed += 1
+                trigger_events.append({
+                    "kind": "全局替换",
+                    "rule_name": item.get("rule_name", ""),
+                    "match_rule": f"全局:{item.get('rule_name', '')}",
+                    "source_file": item.get("source_file", ""),
+                    "target_file": item.get("target_file", ""),
+                    "rec": rec,
+                    "sheet_name": item.get("sheet_name", ""),
+                    "row_index": item.get("row_index", ""),
+                    "col_index": item.get("col_index", ""),
+                    "old_text": item.get("old_text", ""),
+                    "new_text": item.get("new_text", ""),
+                    "mapping_field": "",
+                    "content": item.get("content") or {},
+                    "content_row": item.get("content_row", ""),
+                    "source_note": item.get("source_note", ""),
+                })
+
+        linked_rules = [r for r in cfg.get("linked_rules", []) if isinstance(r, dict) and r.get("enabled", True)]
+        if linked_rules and trigger_events:
+            _assign_link_event_counts(trigger_events)
+            linked_rows, linked_changed, linked_skipped, _linked_reasons = _build_linked_plan_rows(
+                linked_rules,
+                trigger_events,
+                by_file,
+                params,
+            )
+            skipped += linked_skipped
+            for row_values in linked_rows:
+                source_file = row_values[0]
+                source_records = by_file.get(source_file, [])
+                rec = _record_at_position(
+                    source_records,
+                    source_file,
+                    row_values[3],
+                    row_values[4],
+                    row_values[5],
                 )
-        return changes, normal_changed, global_changed, skipped
+                if rec is None:
+                    rec = {
+                        "source_file": source_file,
+                        "block_type": row_values[2],
+                        "sheet_name": row_values[3],
+                        "row_index": _to_int(row_values[4], 0),
+                        "col_index": _to_int(row_values[5], 0),
+                        "cell_address": row_values[6],
+                        "text": row_values[8],
+                        "is_merge_origin": True,
+                        "is_merged": False,
+                        "row_span": 1,
+                        "col_span": 1,
+                    }
+                _put_visual_change(
+                    changes,
+                    rec,
+                    row_values[7],
+                    "联动写入",
+                    row_values[9],
+                    row_values[10],
+                    row_values[16],
+                    force=_cell_key(rec) in changes,
+                )
+        return changes, normal_changed, global_changed, linked_changed, skipped
 
     def apply_visual_preview_highlight():
-        changes, normal_changed, global_changed, skipped = build_visual_preview_changes()
+        changes, normal_changed, global_changed, linked_changed, skipped = build_visual_preview_changes()
         state["preview_changes"] = changes
         if state.get("selected_group"):
             render_group(state["selected_group"])
         status_var.set(
-            f"替换预览高亮 {len(changes)} 格；普通映射变化 {normal_changed} 条；全局替换变化 {global_changed} 条；跳过/错误 {skipped} 条"
+            f"替换预览高亮 {len(changes)} 格；普通映射变化 {normal_changed} 条；全局替换变化 {global_changed} 条；联动写入 {linked_changed} 条；跳过/错误 {skipped} 条"
         )
 
     def clear_visual_preview_highlight():
@@ -4721,6 +4823,21 @@ def open_config_window(parent, current_params, context):
         state["cell_regions"] = []
         group = state["groups"].get(group_name, {})
         records = [r for r in group.values() if r.get("is_merge_origin", True)]
+        occupied_positions = {
+            (_to_int(rec.get("row_index"), 0), _to_int(rec.get("col_index"), 0))
+            for rec in records
+        }
+        for preview_change in state.get("preview_changes", {}).values():
+            rec = preview_change.get("record") or {}
+            position = (_to_int(rec.get("row_index"), 0), _to_int(rec.get("col_index"), 0))
+            if (
+                (rec.get("sheet_name") or "table_1") == group_name
+                and position[0] > 0
+                and position[1] > 0
+                and position not in occupied_positions
+            ):
+                records.append(rec)
+                occupied_positions.add(position)
         col_w = grid_col_w
         row_h = grid_row_h
         head_w = grid_head_w
@@ -4771,8 +4888,12 @@ def open_config_window(parent, current_params, context):
             is_merged = bool(rec.get("is_merged", False)) or rs > 1 or cs > 1
             preview_change = state.get("preview_changes", {}).get(_cell_key(rec))
             if preview_change:
-                fill = "#dcfce7"
-                outline = "#16a34a"
+                if preview_change.get("kind") == "联动写入":
+                    fill = "#e0f2fe"
+                    outline = "#0284c7"
+                else:
+                    fill = "#dcfce7"
+                    outline = "#16a34a"
                 border_width = 3
             else:
                 fill = "#fff7df" if is_merged else "#ffffff"

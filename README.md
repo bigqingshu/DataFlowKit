@@ -29,8 +29,8 @@ It is designed for Windows desktop workflows where clipboard tables, SQLite tabl
 ## 已包含插件 / Included Plugins
 
 - `plugins/word_excel_read_to_db_plugin_v1.py`
-  - 中文：读取 Word/Excel 文件，输出明细表，并可写入 SQLite。
-  - English: Reads Word/Excel files, outputs detail rows, and can write results to SQLite.
+  - 中文：按统一策略读取 `.doc/.docx/.docm` 与 Excel 文件，输出明细表，并可写入 SQLite。
+  - English: Reads `.doc/.docx/.docm` and Excel files through selectable strategies, outputs detail rows, and can write results to SQLite.
 
 - `plugins/word_excel_write_from_table_plugin_v2.py`
   - 中文：按输入表数据写回 Word/Excel，支持范围定位、原子文件替换、失败恢复、特殊 Word 对象替换和 Win32 Office 进程复用。
