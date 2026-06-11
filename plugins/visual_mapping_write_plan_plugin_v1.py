@@ -612,6 +612,29 @@ def _cell_key(record):
     return f"{record.get('source_file','')}|{record.get('sheet_name','')}|{record.get('row_index','')}|{record.get('col_index','')}"
 
 
+def _plan_object_key(target_file, record):
+    if not isinstance(record, dict):
+        return ""
+    parts = [
+        _as_text(target_file),
+        _as_text(record.get("source_file")),
+        _as_text(record.get("block_type")),
+        _as_text(record.get("sheet_name")),
+        _as_text(record.get("row_index")),
+        _as_text(record.get("col_index")),
+        _as_text(record.get("cell_address")),
+    ]
+    if not any(parts[1:]):
+        return ""
+    return "|".join(parts)
+
+
+def _append_unique(values, value):
+    value = _as_text(value)
+    if value and value not in values:
+        values.append(value)
+
+
 def _build_doc_index(records):
     index = {}
     by_file_sheet = {}
@@ -1432,6 +1455,99 @@ def _source_file_for_content(_content, source_files, content_index, total_conten
     return "", "无法确定源文件：请保证只有一个源文件，或源文件数量与新内容行数一致"
 
 
+def _plan_state_for(states, order, source_file, target_file, rec, content=None):
+    key = _plan_object_key(target_file, rec)
+    if not key:
+        key = f"{_as_text(target_file)}|{_as_text(source_file)}|{id(rec)}"
+    state = states.get(key)
+    if state is None:
+        record = dict(rec or {})
+        if not record.get("source_file"):
+            record["source_file"] = source_file
+        state = {
+            "key": key,
+            "source_file": source_file,
+            "target_file": target_file,
+            "record": record,
+            "original_text": _cell_text(record.get("text", record.get("old_text", ""))),
+            "current_text": _cell_text(record.get("text", record.get("old_text", ""))),
+            "mapping_fields": [],
+            "content_rows": [],
+            "match_rules": [],
+            "anchor_rules": [],
+            "source_details": [],
+            "anchor_details": [],
+            "write_notes": [],
+            "write_strategy": "",
+            "content": content or {},
+            "touched": False,
+        }
+        states[key] = state
+        order.append(key)
+    elif content:
+        state["content"] = content
+    return state
+
+
+def _plan_state_record(state):
+    rec = dict((state or {}).get("record") or {})
+    rec["text"] = _cell_text((state or {}).get("current_text"))
+    return rec
+
+
+def _update_plan_state(
+    state,
+    new_text,
+    *,
+    rule_name="",
+    mapping_field="",
+    content_row="",
+    source_detail="",
+    anchor_detail="",
+    write_note="",
+    anchor_rule="",
+    write_strategy="",
+):
+    before = _cell_text(state.get("current_text"))
+    after = _cell_text(new_text)
+    state["current_text"] = after
+    state["touched"] = True
+    _append_unique(state["mapping_fields"], mapping_field)
+    _append_unique(state["content_rows"], content_row)
+    _append_unique(state["match_rules"], rule_name)
+    _append_unique(state["anchor_rules"], anchor_rule)
+    _append_unique(state["source_details"], source_detail)
+    _append_unique(state["anchor_details"], anchor_detail)
+    _append_unique(state["write_notes"], write_note)
+    if write_strategy:
+        state["write_strategy"] = write_strategy
+    return before, after
+
+
+def _plan_state_to_output_row(state):
+    rec = (state or {}).get("record") or {}
+    return [
+        state.get("source_file", ""),
+        state.get("target_file", ""),
+        rec.get("block_type", ""),
+        rec.get("sheet_name", ""),
+        rec.get("row_index", ""),
+        rec.get("col_index", ""),
+        rec.get("cell_address", ""),
+        state.get("current_text", ""),
+        state.get("original_text", ""),
+        ",".join(state.get("mapping_fields", []) or []),
+        ",".join(state.get("content_rows", []) or []),
+        "通过",
+        " -> ".join(state.get("match_rules", []) or []),
+        " | ".join(state.get("anchor_rules", []) or []),
+        "；".join(state.get("source_details", []) or []),
+        "；".join(state.get("anchor_details", []) or []),
+        "；".join(state.get("write_notes", []) or []),
+        state.get("write_strategy", ""),
+    ]
+
+
 def _circled_number(value):
     chars = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳㉑㉒㉓㉔㉕㉖㉗㉘㉙㉚㉛㉜㉝㉞㉟㊱㊲㊳㊴㊵㊶㊷㊸㊹㊺㊻㊼㊽㊾㊿"
     index = _to_int(value, 0)
@@ -1731,6 +1847,87 @@ def _build_linked_plan_rows(linked_rules, events, by_file, params, table_context
     return rows, matched, skipped, skip_reasons
 
 
+def _apply_linked_rules_to_plan_states(linked_rules, events, by_file, params, states, order, table_context=None):
+    matched = 0
+    skipped = 0
+    skip_reasons = {}
+    enabled_rules = [r for r in (linked_rules or []) if isinstance(r, dict) and r.get("enabled", True)]
+    if not enabled_rules or not events:
+        return matched, skipped, skip_reasons
+    for rule in enabled_rules:
+        for event in events:
+            if not _linked_rule_matches_event(rule, event):
+                continue
+            source_records = by_file.get(event.get("source_file", ""), [])
+            event_content = event.get("content") or {}
+            base_rec, locate_detail = _linked_locate_base_target(
+                rule,
+                event,
+                source_records,
+                table_context=table_context,
+            )
+            if base_rec is None:
+                skipped += 1
+                skip_reasons[locate_detail] = skip_reasons.get(locate_detail, 0) + 1
+                continue
+            target_rec, area_detail = _linked_select_area_target(rule, base_rec, event, source_records)
+            if target_rec is None:
+                skipped += 1
+                skip_reasons[area_detail] = skip_reasons.get(area_detail, 0) + 1
+                continue
+            target_state = _plan_state_for(
+                states,
+                order,
+                event.get("source_file", ""),
+                event.get("target_file", ""),
+                target_rec,
+                event_content,
+            )
+            current_rec = _plan_state_record(target_state)
+            target_match = rule.get("target_match") or {}
+            ok, match_detail = _match_text_with_sources(
+                current_rec.get("text", ""),
+                target_match,
+                content=event_content,
+                table_context=table_context,
+                doc_record=current_rec,
+                source_records=source_records,
+                match_index=event.get("page_change_index") or event.get("content_row") or 1,
+            )
+            if not ok:
+                skipped += 1
+                note = f"目标格匹配未通过：{match_detail}"
+                skip_reasons[note] = skip_reasons.get(note, 0) + 1
+                continue
+            raw_value = _linked_rule_value(rule, event)
+            value = _linked_apply_write_mode(rule, current_rec.get("text", ""), raw_value)
+            if value == "" and _as_text(rule.get("empty_policy") or "允许") == "跳过":
+                skipped += 1
+                skip_reasons["联动写入结果为空，按策略跳过"] = skip_reasons.get("联动写入结果为空，按策略跳过", 0) + 1
+                continue
+            before, after = _update_plan_state(
+                target_state,
+                value,
+                rule_name=f"联动:{_as_text(rule.get('name')) or '未命名'}",
+                mapping_field=_as_text(rule.get("name")) or "联动写入规则",
+                content_row=event.get("content_row", ""),
+                source_detail=f"触发={event.get('match_rule', '')}；{match_detail}",
+                anchor_detail=locate_detail,
+                write_note=f"联动写入；{area_detail}；触发格 {event.get('sheet_name', '')} R{event.get('row_index')}C{event.get('col_index')}；本页变化 {event.get('page_change_index')}/{event.get('page_change_total')}",
+                anchor_rule=json.dumps(rule.get("anchor", {}), ensure_ascii=False),
+                write_strategy=DIRECT_WRITE_STRATEGY,
+            )
+            matched += 1
+            if after != before:
+                event.setdefault("linked_results", []).append({
+                    "rule_name": rule.get("name", ""),
+                    "old_text": before,
+                    "new_text": after,
+                    "target_key": target_state.get("key", ""),
+                })
+    return matched, skipped, skip_reasons
+
+
 def _preview_global_match_rows(global_rules, records, features, limit=500):
     rules = [r for r in (global_rules or []) if isinstance(r, dict) and r.get("enabled", True)]
     records = list(records or [])
@@ -1769,7 +1966,17 @@ def _preview_global_match_rows(global_rules, records, features, limit=500):
     return preview_rows, total_matched, 0
 
 
-def _preview_global_replace_rows(global_rules, records, features, contents, aux_rows, params, limit=500, include_unchanged=True, table_context=None):
+def _preview_global_replace_rows(
+    global_rules,
+    records,
+    features,
+    contents,
+    aux_rows,
+    params,
+    limit=500,
+    include_unchanged=True,
+    table_context=None,
+):
     rules = [r for r in (global_rules or []) if isinstance(r, dict) and r.get("enabled", True)]
     contents = list(contents or []) or [{"__content_row__": ""}]
     records = list(records or [])
@@ -1989,6 +2196,9 @@ def run(input_data, params, context):
             "",
         ])
 
+    plan_states = {}
+    plan_order = []
+    special_rows = []
     for content_index, content in enumerate(contents):
         source_file, source_note = _source_file_for_content(content, source_files, content_index, len(contents), params)
         if not source_file and source_files != [""]:
@@ -2046,27 +2256,19 @@ def run(input_data, params, context):
             if value == "" and empty_policy == "报错":
                 raise ValueError(f"映射字段为空：{field}，新内容行 {content.get('__content_row__')}")
             matched += 1
-            out_rows.append([
-                source_file,
-                target_file,
-                rec.get("block_type", ""),
-                rec.get("sheet_name", ""),
-                rec.get("row_index", ""),
-                rec.get("col_index", ""),
-                rec.get("cell_address", ""),
+            state = _plan_state_for(plan_states, plan_order, source_file, target_file, rec, content)
+            before_text, after_text = _update_plan_state(
+                state,
                 value,
-                rec.get("text", ""),
-                field,
-                content.get("__content_row__", ""),
-                "通过",
-                rule.get("name", ""),
-                json.dumps(rule.get("anchor", {}), ensure_ascii=False),
-                f"{feature_detail}；{match_detail}",
-                anchor_detail,
-                f"已生成写入计划；源文件选择={source_note}",
-                "",
-            ])
-            if value != rec.get("text", ""):
+                rule_name=rule.get("name", ""),
+                mapping_field=field,
+                content_row=content.get("__content_row__", ""),
+                source_detail=f"{feature_detail}；{match_detail}",
+                anchor_detail=anchor_detail,
+                write_note=f"普通映射；源文件选择={source_note}",
+                anchor_rule=json.dumps(rule.get("anchor", {}), ensure_ascii=False),
+            )
+            if after_text != before_text:
                 trigger_events.append({
                     "kind": "普通映射",
                     "rule_name": rule.get("name", ""),
@@ -2077,8 +2279,8 @@ def run(input_data, params, context):
                     "sheet_name": rec.get("sheet_name", ""),
                     "row_index": rec.get("row_index", ""),
                     "col_index": rec.get("col_index", ""),
-                    "old_text": rec.get("text", ""),
-                    "new_text": value,
+                    "old_text": before_text,
+                    "new_text": after_text,
                     "mapping_field": field,
                     "content": content,
                     "content_row": content.get("__content_row__", ""),
@@ -2099,15 +2301,18 @@ def run(input_data, params, context):
                 feature_ok, feature_detail = _feature_pass(global_rule.get("feature_name", ""), features, source_records, source_file, rec.get("sheet_name", ""))
                 if not feature_ok:
                     continue
-                cond_ok, cond_detail, condition_items = _condition_extract_items(rec.get("text", ""), global_rule.get("conditions", []), global_rule.get("condition_logic", "AND"))
+                state = _plan_state_for(plan_states, plan_order, source_file, target_file, rec, content)
+                current_rec = _plan_state_record(state)
+                current_text = current_rec.get("text", "")
+                cond_ok, cond_detail, condition_items = _condition_extract_items(current_text, global_rule.get("conditions", []), global_rule.get("condition_logic", "AND"))
                 if not cond_ok:
                     continue
-                value, replace_detail, replace_error = _apply_replace_steps(rec.get("text", ""), global_rule, content, aux_rows, condition_items, table_context, params)
+                value, replace_detail, replace_error = _apply_replace_steps(current_text, global_rule, content, aux_rows, condition_items, table_context, params)
                 if replace_error:
                     skipped += 1
                     add_debug_row(replace_error, global_rule, content, source_file, rec)
                     continue
-                if value == rec.get("text", ""):
+                if value == current_text:
                     skipped += 1
                     add_debug_row("全局规则命中但替换后内容无变化", global_rule, content, source_file, rec)
                     continue
@@ -2120,26 +2325,43 @@ def run(input_data, params, context):
                 rule_hit += 1
                 matched += 1
                 special_scope = _as_text(global_rule.get("scope")) == GLOBAL_SCOPE_SPECIAL_OBJECTS
-                out_rows.append([
-                    source_file,
-                    target_file,
-                    "word_global_replace" if special_scope else rec.get("block_type", ""),
-                    "" if special_scope else rec.get("sheet_name", ""),
-                    "" if special_scope else rec.get("row_index", ""),
-                    "" if special_scope else rec.get("col_index", ""),
-                    "" if special_scope else rec.get("cell_address", ""),
-                    value,
-                    rec.get("text", ""),
-                    _global_rule_fields(global_rule),
-                    content.get("__content_row__", ""),
-                    "通过",
-                    f"全局:{global_rule.get('name', '')}",
-                    "",
-                    f"{feature_detail}；{cond_detail}",
-                    "",
-                    f"全局搜索替换；{replace_detail}；源文件选择={source_note}",
-                    "按old_text查找替换" if special_scope else "",
-                ])
+                state_was_touched = bool(state.get("touched"))
+                if special_scope and not state_was_touched:
+                    before_text = current_text
+                    after_text = _cell_text(value)
+                    state["current_text"] = after_text
+                else:
+                    before_text, after_text = _update_plan_state(
+                        state,
+                        value,
+                        rule_name=f"全局:{global_rule.get('name', '')}",
+                        mapping_field=_global_rule_fields(global_rule),
+                        content_row=content.get("__content_row__", ""),
+                        source_detail=f"{feature_detail}；{cond_detail}",
+                        anchor_detail="",
+                        write_note=f"全局搜索替换；{replace_detail}；源文件选择={source_note}",
+                    )
+                if special_scope:
+                    special_rows.append([
+                        source_file,
+                        target_file,
+                        "word_global_replace",
+                        "",
+                        "",
+                        "",
+                        "",
+                        after_text,
+                        before_text,
+                        _global_rule_fields(global_rule),
+                        content.get("__content_row__", ""),
+                        "通过",
+                        f"全局:{global_rule.get('name', '')}",
+                        "",
+                        f"{feature_detail}；{cond_detail}",
+                        "",
+                        f"全局搜索替换；{replace_detail}；源文件选择={source_note}",
+                        "按old_text查找替换",
+                    ])
                 trigger_events.append({
                     "kind": "全局替换",
                     "rule_name": global_rule.get("name", ""),
@@ -2150,8 +2372,8 @@ def run(input_data, params, context):
                     "sheet_name": rec.get("sheet_name", ""),
                     "row_index": rec.get("row_index", ""),
                     "col_index": rec.get("col_index", ""),
-                    "old_text": rec.get("text", ""),
-                    "new_text": value,
+                    "old_text": before_text,
+                    "new_text": after_text,
                     "mapping_field": _global_rule_fields(global_rule),
                     "content": content,
                     "content_row": content.get("__content_row__", ""),
@@ -2162,19 +2384,25 @@ def run(input_data, params, context):
                 add_debug_row("全局规则未命中任何可替换记录", global_rule, content, source_file, status="跳过")
 
     _assign_link_event_counts(trigger_events)
-    linked_rows, linked_matched, linked_skipped, linked_skip_reasons = _build_linked_plan_rows(
+    linked_matched, linked_skipped, linked_skip_reasons = _apply_linked_rules_to_plan_states(
         linked_rules,
         trigger_events,
         by_file,
         params,
+        plan_states,
+        plan_order,
         table_context=table_context,
     )
-    if linked_rows:
-        out_rows.extend(linked_rows)
     matched += linked_matched
     skipped += linked_skipped
     for reason, count in linked_skip_reasons.items():
         skip_reasons[reason] = skip_reasons.get(reason, 0) + count
+
+    for key in plan_order:
+        state = plan_states.get(key)
+        if state and state.get("touched"):
+            out_rows.append(_plan_state_to_output_row(state))
+    out_rows.extend(special_rows)
 
     logs.append({"level": "INFO", "message": f"配置={config_name}，单元格规则 {len(rules)} 条，全局规则 {len(global_rules)} 条，联动规则 {len(linked_rules)} 条，生成 {matched} 条，跳过 {skipped} 条"})
     if skipped and skip_reasons:
@@ -2297,6 +2525,11 @@ def open_config_window(parent, current_params, context):
     selector_row.pack(fill=tk.X)
     action_row = ttk.Frame(top)
     action_row.pack(fill=tk.X, pady=(6, 0))
+    ttk.Label(
+        top,
+        text="执行流程：普通映射规则顺序 -> 全局替换规则顺序 -> 联动写入规则顺序；后续阶段处理前一阶段的计划内当前值。",
+        foreground="gray",
+    ).pack(fill=tk.X, pady=(4, 0))
     ttk.Label(selector_row, text="文档读取表：").pack(side=tk.LEFT)
     doc_alias_var = tk.StringVar(value=params.get("doc_table_alias", "当前表"))
     doc_alias_combo = ttk.Combobox(selector_row, textvariable=doc_alias_var, values=table_aliases, width=18, state="readonly")
@@ -2831,7 +3064,6 @@ def open_config_window(parent, current_params, context):
         sheet_combo.grid(row=2, column=3, sticky=tk.W, pady=3)
         ttk.Label(right_panel, text="条件默认连接：").grid(row=3, column=0, sticky=tk.W, pady=3)
         ttk.Combobox(right_panel, textvariable=logic_var, values=["AND", "OR"], width=8, state="readonly").grid(row=3, column=1, sticky=tk.W, pady=3)
-
         ttk.Label(preview_panel, text="匹配/替换预览").grid(row=0, column=0, sticky=tk.W, pady=(0, 4))
         preview_text = tk.Text(preview_panel, height=26, width=30, wrap=tk.WORD)
         preview_text.grid(row=1, column=0, sticky="nsew")
@@ -3192,11 +3424,12 @@ def open_config_window(parent, current_params, context):
                 preview_status_var.set("可替换 0 条")
                 return
             sync_params_from_ui()
+            contents = current_content_rows()
             preview_rows, total_changed, total_errors = _preview_global_replace_rows(
                 [rule],
                 records,
                 cfg.get("features", []),
-                current_content_rows(),
+                contents,
                 current_aux_rows(),
                 params,
                 limit=500,
@@ -3733,6 +3966,8 @@ def open_config_window(parent, current_params, context):
             aux_rows = current_aux_rows()
             table_context = current_table_context()
             events = []
+            plan_states = {}
+            plan_order = []
             empty_policy = _as_text(params.get("empty_policy", "跳过")) or "跳过"
             for content_index, content in enumerate(contents):
                 source_file, source_note = _source_file_for_content(content, source_files, content_index, len(contents), params)
@@ -3766,7 +4001,16 @@ def open_config_window(parent, current_params, context):
                     value = _cell_text(content.get(field))
                     if value == "" and empty_policy in ("跳过", "报错"):
                         continue
-                    if value != rec.get("text", ""):
+                    plan_state = _plan_state_for(plan_states, plan_order, source_file, target_file, rec, content)
+                    before_text, after_text = _update_plan_state(
+                        plan_state,
+                        value,
+                        rule_name=rule.get("name", ""),
+                        mapping_field=field,
+                        content_row=content.get("__content_row__", ""),
+                        write_note=f"普通映射；源文件选择={source_note}",
+                    )
+                    if after_text != before_text:
                         events.append({
                             "kind": "普通映射",
                             "rule_name": rule.get("name", ""),
@@ -3777,8 +4021,8 @@ def open_config_window(parent, current_params, context):
                             "sheet_name": rec.get("sheet_name", ""),
                             "row_index": rec.get("row_index", ""),
                             "col_index": rec.get("col_index", ""),
-                            "old_text": rec.get("text", ""),
-                            "new_text": value,
+                            "old_text": before_text,
+                            "new_text": after_text,
                             "mapping_field": field,
                             "content": content,
                             "content_row": content.get("__content_row__", ""),
@@ -3789,12 +4033,23 @@ def open_config_window(parent, current_params, context):
                         feature_ok, _feature_detail = _feature_pass(global_rule.get("feature_name", ""), cfg.get("features", []), source_records, source_file, rec.get("sheet_name", ""))
                         if not feature_ok:
                             continue
-                        cond_ok, _cond_detail, condition_items = _condition_extract_items(rec.get("text", ""), global_rule.get("conditions", []), global_rule.get("condition_logic", "AND"))
+                        plan_state = _plan_state_for(plan_states, plan_order, source_file, target_file, rec, content)
+                        current_rec = _plan_state_record(plan_state)
+                        current_text = current_rec.get("text", "")
+                        cond_ok, _cond_detail, condition_items = _condition_extract_items(current_text, global_rule.get("conditions", []), global_rule.get("condition_logic", "AND"))
                         if not cond_ok:
                             continue
-                        value, _replace_detail, replace_error = _apply_replace_steps(rec.get("text", ""), global_rule, content, aux_rows, condition_items, table_context, params)
-                        if replace_error or value == rec.get("text", ""):
+                        value, _replace_detail, replace_error = _apply_replace_steps(current_text, global_rule, content, aux_rows, condition_items, table_context, params)
+                        if replace_error or value == current_text:
                             continue
+                        before_text, after_text = _update_plan_state(
+                            plan_state,
+                            value,
+                            rule_name=f"全局:{global_rule.get('name', '')}",
+                            mapping_field=_global_rule_fields(global_rule),
+                            content_row=content.get("__content_row__", ""),
+                            write_note=f"全局搜索替换；源文件选择={source_note}",
+                        )
                         events.append({
                             "kind": "全局替换",
                             "rule_name": global_rule.get("name", ""),
@@ -3805,8 +4060,8 @@ def open_config_window(parent, current_params, context):
                             "sheet_name": rec.get("sheet_name", ""),
                             "row_index": rec.get("row_index", ""),
                             "col_index": rec.get("col_index", ""),
-                            "old_text": rec.get("text", ""),
-                            "new_text": value,
+                            "old_text": before_text,
+                            "new_text": after_text,
                             "mapping_field": _global_rule_fields(global_rule),
                             "content": content,
                             "content_row": content.get("__content_row__", ""),
@@ -3964,6 +4219,8 @@ def open_config_window(parent, current_params, context):
             by_file.setdefault(item.get("source_file", ""), []).append(item)
         source_files = _source_files(records, params)
         empty_policy = _as_text(params.get("empty_policy", "跳过")) or "跳过"
+        plan_states = {}
+        plan_order = []
         trigger_events = []
         normal_rules = [r for r in cfg.get("rules", []) if isinstance(r, dict) and r.get("enabled", True)]
         if contents and normal_rules:
@@ -4007,15 +4264,19 @@ def open_config_window(parent, current_params, context):
                     if value == "" and empty_policy in ("跳过", "报错"):
                         skipped += 1
                         continue
-                    if _put_visual_change(
-                        changes,
-                        rec,
+                    plan_state = _plan_state_for(plan_states, plan_order, source_file, target_file, rec, content)
+                    before_text, after_text = _update_plan_state(
+                        plan_state,
                         value,
-                        "普通映射",
-                        rule.get("name", ""),
-                        content.get("__content_row__", ""),
-                        f"源文件选择={source_note}；{feature_detail}；{match_detail}；{anchor_detail}",
-                    ):
+                        rule_name=rule.get("name", ""),
+                        mapping_field=field,
+                        content_row=content.get("__content_row__", ""),
+                        source_detail=f"{feature_detail}；{match_detail}",
+                        anchor_detail=anchor_detail,
+                        write_note=f"普通映射；源文件选择={source_note}",
+                        anchor_rule=json.dumps(rule.get("anchor", {}), ensure_ascii=False),
+                    )
+                    if after_text != before_text:
                         normal_changed += 1
                         trigger_events.append({
                             "kind": "普通映射",
@@ -4027,8 +4288,8 @@ def open_config_window(parent, current_params, context):
                             "sheet_name": rec.get("sheet_name", ""),
                             "row_index": rec.get("row_index", ""),
                             "col_index": rec.get("col_index", ""),
-                            "old_text": rec.get("text", ""),
-                            "new_text": value,
+                            "old_text": before_text,
+                            "new_text": after_text,
                             "mapping_field": field,
                             "content": content,
                             "content_row": content.get("__content_row__", ""),
@@ -4037,105 +4298,110 @@ def open_config_window(parent, current_params, context):
 
         global_rules = [r for r in cfg.get("global_rules", []) if isinstance(r, dict) and r.get("enabled", True)]
         if global_rules:
-            preview_rows, _total_changed, total_errors = _preview_global_replace_rows(
-                global_rules,
-                records,
-                cfg.get("features", []),
-                contents,
-                current_aux_rows(),
-                params,
-                limit=20000,
-                include_unchanged=False,
-                table_context=current_table_context(),
-            )
-            skipped += total_errors
-            for item in preview_rows:
-                if item.get("status") != "替换":
+            aux_rows = current_aux_rows()
+            table_context = current_table_context()
+            for content_index, content in enumerate(contents):
+                source_file, source_note = _source_file_for_content(content, source_files, content_index, len(contents), params)
+                if not source_file and source_files != [""]:
+                    skipped += len(global_rules)
                     continue
-                if item.get("new_text", "") == "" and empty_policy in ("跳过", "报错"):
-                    skipped += 1
+                target_file = _target_file_for_content(content, params, source_file)
+                if not target_file:
+                    skipped += len(global_rules)
                     continue
-                rec = _record_at_position(
-                    by_file.get(item.get("source_file", ""), []),
-                    item.get("source_file", ""),
-                    item.get("sheet_name", ""),
-                    item.get("row_index", ""),
-                    item.get("col_index", ""),
-                ) or item
-                if not _put_visual_change(
-                    changes,
-                    rec,
-                    item.get("new_text", ""),
-                    "全局替换",
-                    item.get("rule_name", ""),
-                    item.get("content_row", ""),
-                    item.get("detail", ""),
-                ):
-                    continue
-                global_changed += 1
-                trigger_events.append({
-                    "kind": "全局替换",
-                    "rule_name": item.get("rule_name", ""),
-                    "match_rule": f"全局:{item.get('rule_name', '')}",
-                    "source_file": item.get("source_file", ""),
-                    "target_file": item.get("target_file", ""),
-                    "rec": rec,
-                    "sheet_name": item.get("sheet_name", ""),
-                    "row_index": item.get("row_index", ""),
-                    "col_index": item.get("col_index", ""),
-                    "old_text": item.get("old_text", ""),
-                    "new_text": item.get("new_text", ""),
-                    "mapping_field": "",
-                    "content": item.get("content") or {},
-                    "content_row": item.get("content_row", ""),
-                    "source_note": item.get("source_note", ""),
-                })
+                source_records = by_file.get(source_file, [])
+                for global_rule in global_rules:
+                    candidates = _global_rule_records(global_rule, source_records)
+                    if not candidates:
+                        skipped += 1
+                        continue
+                    rule_hit = 0
+                    for rec in candidates:
+                        feature_ok, feature_detail = _feature_pass(global_rule.get("feature_name", ""), cfg.get("features", []), source_records, source_file, rec.get("sheet_name", ""))
+                        if not feature_ok:
+                            continue
+                        plan_state = _plan_state_for(plan_states, plan_order, source_file, target_file, rec, content)
+                        current_rec = _plan_state_record(plan_state)
+                        current_text = current_rec.get("text", "")
+                        cond_ok, cond_detail, condition_items = _condition_extract_items(current_text, global_rule.get("conditions", []), global_rule.get("condition_logic", "AND"))
+                        if not cond_ok:
+                            continue
+                        value, replace_detail, replace_error = _apply_replace_steps(current_text, global_rule, content, aux_rows, condition_items, table_context, params)
+                        if replace_error or value == current_text:
+                            if replace_error:
+                                skipped += 1
+                            continue
+                        if value == "" and empty_policy in ("跳过", "报错"):
+                            skipped += 1
+                            continue
+                        before_text, after_text = _update_plan_state(
+                            plan_state,
+                            value,
+                            rule_name=f"全局:{global_rule.get('name', '')}",
+                            mapping_field=_global_rule_fields(global_rule),
+                            content_row=content.get("__content_row__", ""),
+                            source_detail=f"{feature_detail}；{cond_detail}",
+                            write_note=f"全局搜索替换；{replace_detail}；源文件选择={source_note}",
+                        )
+                        rule_hit += 1
+                        if after_text != before_text:
+                            global_changed += 1
+                            trigger_events.append({
+                                "kind": "全局替换",
+                                "rule_name": global_rule.get("name", ""),
+                                "match_rule": f"全局:{global_rule.get('name', '')}",
+                                "source_file": source_file,
+                                "target_file": target_file,
+                                "rec": rec,
+                                "sheet_name": rec.get("sheet_name", ""),
+                                "row_index": rec.get("row_index", ""),
+                                "col_index": rec.get("col_index", ""),
+                                "old_text": before_text,
+                                "new_text": after_text,
+                                "mapping_field": _global_rule_fields(global_rule),
+                                "content": content,
+                                "content_row": content.get("__content_row__", ""),
+                                "source_note": source_note,
+                            })
+                    if rule_hit == 0:
+                        skipped += 1
 
         linked_rules = [r for r in cfg.get("linked_rules", []) if isinstance(r, dict) and r.get("enabled", True)]
         if linked_rules and trigger_events:
             _assign_link_event_counts(trigger_events)
-            linked_rows, linked_changed, linked_skipped, _linked_reasons = _build_linked_plan_rows(
+            linked_changed, linked_skipped, _linked_reasons = _apply_linked_rules_to_plan_states(
                 linked_rules,
                 trigger_events,
                 by_file,
                 params,
+                plan_states,
+                plan_order,
                 table_context=current_table_context(),
             )
             skipped += linked_skipped
-            for row_values in linked_rows:
-                source_file = row_values[0]
-                source_records = by_file.get(source_file, [])
-                rec = _record_at_position(
-                    source_records,
-                    source_file,
-                    row_values[3],
-                    row_values[4],
-                    row_values[5],
-                )
-                if rec is None:
-                    rec = {
-                        "source_file": source_file,
-                        "block_type": row_values[2],
-                        "sheet_name": row_values[3],
-                        "row_index": _to_int(row_values[4], 0),
-                        "col_index": _to_int(row_values[5], 0),
-                        "cell_address": row_values[6],
-                        "text": row_values[8],
-                        "is_merge_origin": True,
-                        "is_merged": False,
-                        "row_span": 1,
-                        "col_span": 1,
-                    }
-                _put_visual_change(
-                    changes,
-                    rec,
-                    row_values[7],
-                    "联动写入",
-                    row_values[9],
-                    row_values[10],
-                    row_values[16],
-                    force=_cell_key(rec) in changes,
-                )
+        for key in plan_order:
+            plan_state = plan_states.get(key)
+            if not plan_state or not plan_state.get("touched"):
+                continue
+            rec = _plan_state_record(plan_state)
+            kind = "流程预览"
+            rules_text = " -> ".join(plan_state.get("match_rules", []) or [])
+            if rules_text.startswith("联动:") or " -> 联动:" in rules_text:
+                kind = "联动写入"
+            elif "全局:" in rules_text:
+                kind = "全局替换"
+            elif rules_text:
+                kind = "普通映射"
+            _put_visual_change(
+                changes,
+                rec,
+                plan_state.get("current_text", ""),
+                kind,
+                rules_text,
+                ",".join(plan_state.get("content_rows", []) or []),
+                "；".join(plan_state.get("write_notes", []) or []),
+                force=True,
+            )
         return changes, normal_changed, global_changed, linked_changed, skipped
 
     def apply_visual_preview_highlight():
@@ -4187,11 +4453,12 @@ def open_config_window(parent, current_params, context):
                 preview_text.insert(tk.END, "当前配置没有启用的全局搜索替换规则。")
                 preview_text.configure(state="disabled")
                 return
+            contents = current_content_rows()
             preview_rows, total_changed, total_errors = _preview_global_replace_rows(
                 global_rules,
                 records,
                 cfg.get("features", []),
-                current_content_rows(),
+                contents,
                 current_aux_rows(),
                 params,
                 limit=800,

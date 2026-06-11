@@ -5069,6 +5069,9 @@ class PlanWorkflowWindow:
         # 结果预览区表格选择：用于快速查看当前预览、主界面表、SQLite表和中转副表。
         self.preview_table_var = tk.StringVar(value="当前预览结果")
         self.preview_table_map = {}
+        self.preview_search_var = tk.StringVar(value="")
+        self.preview_search_matches = []
+        self.preview_search_index = -1
 
         # 循环单步调试缓存：在“循环判断回跳”节点点击“执行循环一次”时复用。
         # 用于逐次运行循环体，后续预览节点可接着这个 N 次循环后的上下文继续执行。
@@ -5358,15 +5361,37 @@ class PlanWorkflowWindow:
             foreground="gray"
         ).pack(side=tk.LEFT, padx=6)
 
+        preview_search_frame = ttk.Frame(preview_frame)
+        preview_search_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+        ttk.Label(preview_search_frame, text="搜索：").pack(side=tk.LEFT, padx=(4, 4))
+        preview_search_entry = ttk.Entry(preview_search_frame, textvariable=self.preview_search_var, width=38)
+        preview_search_entry.pack(side=tk.LEFT, padx=(4, 4))
+        preview_search_entry.bind("<Return>", lambda e: self.search_preview_table(reset=True))
+        ttk.Button(
+            preview_search_frame,
+            text="搜索",
+            command=lambda: self.search_preview_table(reset=True)
+        ).pack(side=tk.LEFT, padx=(12, 8))
+        ttk.Button(
+            preview_search_frame,
+            text="上一个",
+            command=self.search_preview_prev
+        ).pack(side=tk.LEFT, padx=(12, 8))
+        ttk.Button(
+            preview_search_frame,
+            text="下一个",
+            command=self.search_preview_next
+        ).pack(side=tk.LEFT, padx=(12, 8))
+
         self.preview_tree = ttk.Treeview(preview_frame, show="headings")
         y_scroll = ttk.Scrollbar(preview_frame, orient=tk.VERTICAL, command=self.preview_tree.yview)
         x_scroll = ttk.Scrollbar(preview_frame, orient=tk.HORIZONTAL, command=self.preview_tree.xview)
         self.preview_tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
-        self.preview_tree.grid(row=1, column=0, sticky="nsew")
-        y_scroll.grid(row=1, column=1, sticky="ns")
-        x_scroll.grid(row=2, column=0, sticky="ew")
+        self.preview_tree.grid(row=2, column=0, sticky="nsew")
+        y_scroll.grid(row=2, column=1, sticky="ns")
+        x_scroll.grid(row=3, column=0, sticky="ew")
         self.preview_tree.bind("<Double-1>", self.on_preview_tree_double_click)
-        preview_frame.rowconfigure(1, weight=1)
+        preview_frame.rowconfigure(2, weight=1)
         preview_frame.columnconfigure(0, weight=1)
 
         ttk.Label(right, textvariable=self.status_var, padding=(0, 4)).pack(fill=tk.X)
@@ -15607,12 +15632,16 @@ class PlanWorkflowWindow:
         if self.preview_edit_entry is not None:
             self.preview_edit_entry.destroy()
             self.preview_edit_entry = None
+        self.preview_search_matches = []
+        self.preview_search_index = -1
         self.preview_dirty = False
         self.preview_tree.delete(*self.preview_tree.get_children())
         self.preview_tree["columns"] = headers
         for h in headers:
             self.preview_tree.heading(h, text=h)
             self.preview_tree.column(h, width=140, minwidth=80, anchor=tk.W, stretch=False)
+        self.preview_tree.tag_configure("search_match", background="#fff7cc")
+        self.preview_tree.tag_configure("search_current", background="#ffd580")
         for row in rows[:limit]:
             fixed = list(row)
             if len(fixed) < len(headers):
@@ -15624,6 +15653,63 @@ class PlanWorkflowWindow:
             self.refresh_preview_table_choices(show_status=False)
         except Exception:
             pass
+
+    def clear_preview_search_marks(self):
+        for iid in self.preview_tree.get_children():
+            self.preview_tree.item(iid, tags=())
+        self.preview_search_matches = []
+        self.preview_search_index = -1
+
+    def search_preview_table(self, reset=True):
+        keyword = self.preview_search_var.get().strip()
+        if not keyword:
+            messagebox.showwarning("提示", "请输入搜索关键词。")
+            return
+
+        keyword_lower = keyword.lower()
+        self.clear_preview_search_marks()
+
+        for iid in self.preview_tree.get_children():
+            values = self.preview_tree.item(iid, "values")
+            row_text = "\t".join(str(v) for v in values)
+            if keyword_lower in row_text.lower():
+                self.preview_search_matches.append(iid)
+                self.preview_tree.item(iid, tags=("search_match",))
+
+        if not self.preview_search_matches:
+            self.status_var.set(f"搜索完成：未找到包含『{keyword}』的结果预览行。")
+            return
+
+        self.preview_search_index = 0 if reset else max(self.preview_search_index, 0)
+        self.goto_preview_search_result()
+        self.status_var.set(f"搜索完成：找到 {len(self.preview_search_matches)} 行匹配『{keyword}』。")
+
+    def goto_preview_search_result(self):
+        if not self.preview_search_matches:
+            return
+        self.preview_search_index %= len(self.preview_search_matches)
+        current_iid = self.preview_search_matches[self.preview_search_index]
+        for iid in self.preview_search_matches:
+            self.preview_tree.item(iid, tags=("search_match",))
+        self.preview_tree.item(current_iid, tags=("search_current",))
+        self.preview_tree.selection_set(current_iid)
+        self.preview_tree.focus(current_iid)
+        self.preview_tree.see(current_iid)
+        self.status_var.set(f"当前搜索结果：{self.preview_search_index + 1}/{len(self.preview_search_matches)}")
+
+    def search_preview_next(self):
+        if not self.preview_search_matches:
+            self.search_preview_table(reset=True)
+            return
+        self.preview_search_index += 1
+        self.goto_preview_search_result()
+
+    def search_preview_prev(self):
+        if not self.preview_search_matches:
+            self.search_preview_table(reset=True)
+            return
+        self.preview_search_index -= 1
+        self.goto_preview_search_result()
 
     def refresh_preview_table_choices(self, show_status=False):
         """刷新结果预览区的表格下拉菜单。
