@@ -5928,6 +5928,24 @@ class PlanWorkflowWindow:
             specs = specs.get("tables") or [specs]
         return [spec for spec in (specs or []) if isinstance(spec, dict)]
 
+    def plugin_has_table_access_declaration(self, config):
+        config = config or {}
+        plugin_id = str(config.get("plugin_id", "") or "").strip()
+        item = self.plugin_registry.get(plugin_id, {}) if hasattr(self, "plugin_registry") else {}
+        module = item.get("module")
+        if callable(getattr(module, "get_table_access_spec", None)):
+            return True
+        info = item.get("info", {}) or {}
+        return bool(info.get("table_access") or info.get("table_access_spec"))
+
+    def plugin_needs_table_access_declaration(self, config):
+        config = config or {}
+        plugin_id = str(config.get("plugin_id", "") or "").strip()
+        item = self.plugin_registry.get(plugin_id, {}) if hasattr(self, "plugin_registry") else {}
+        info = item.get("info", {}) or {}
+        danger = str(info.get("danger_level", "") or "").strip().lower()
+        return danger in {"db_write", "database_write"} or bool(info.get("database_requests"))
+
     def make_plugin_declared_access_entry(self, plugin_id, spec):
         spec = spec or {}
         permissions = {key: False for key, _ in self.table_access_permission_items()}
@@ -6787,6 +6805,28 @@ class PlanWorkflowWindow:
             if not node.get("enabled", True):
                 continue
 
+            node_type = node.get("type", "")
+            config = node.get("config", {}) or {}
+            if (
+                node_type == "插件节点"
+                and self.plugin_needs_table_access_declaration(config)
+                and not self.plugin_has_table_access_declaration(config)
+            ):
+                plugin_id = str(config.get("plugin_id", "") or "").strip()
+                self.add_table_access_precheck_issue(
+                    issues,
+                    "warning",
+                    node_label,
+                    node,
+                    {
+                        "role": "plugin_declared",
+                        "source_type": "SQLite表",
+                        "table": plugin_id,
+                    },
+                    "插件标记为数据库写入风险，但未声明表权限规格。",
+                    "为插件补充 get_table_access_spec() 或 PLUGIN_INFO.table_access_spec，便于执行前确认写库范围。",
+                )
+
             expected_access = self.default_table_access_for_node(node)
             actual_access = self.get_node_table_access(node)
             actual_tables = actual_access.get("tables", []) if isinstance(actual_access, dict) else []
@@ -6854,6 +6894,23 @@ class PlanWorkflowWindow:
                         "包含高风险写入权限：" + "、".join(risky),
                         "执行前确认目标表和备份策略。",
                         category="risk", blocking=False,
+                    )
+                if (
+                    expected.get("declared_by")
+                    and source_type == "SQLite表"
+                    and table_pattern in {"*", "%"}
+                    and any(effective_perms.get(key) for key in write_permissions)
+                ):
+                    self.add_table_access_precheck_issue(
+                        issues,
+                        "warning" if execute_actions else "info",
+                        node_label,
+                        node,
+                        expected,
+                        "插件声明的动态写表范围过宽。",
+                        "尽量设置表名前缀或更窄的 table_pattern，避免插件写入任意 SQLite 表。",
+                        category="risk",
+                        blocking=False,
                     )
 
                 if source_type == "SQLite表":
@@ -11209,7 +11266,10 @@ class PlanWorkflowWindow:
                 if not name:
                     return []
                 try:
-                    return self.get_table_manager(context if 'context' in locals() else None).get_columns(name)
+                    return self.get_workflow_sqlite_columns(
+                        name,
+                        context=transit_context if isinstance(transit_context, dict) else None,
+                    )
                 except Exception:
                     return []
             return list(headers)
@@ -12023,7 +12083,7 @@ class PlanWorkflowWindow:
             table_name = config.get("source_table", "")
             if not table_name:
                 raise ValueError("循环执行起点未选择 SQLite 来源表。")
-            db = self.get_table_manager(context if 'context' in locals() else None, node_type="循环执行起点")
+            db = self.get_table_manager(context if isinstance(context, dict) else None, node_type="循环执行起点")
             data = db.read_table(table_name)
             return list(data.get("headers", [])), [list(r) for r in data.get("rows", [])], f"SQLite:{table_name}"
         if source_type == "中转副表":
@@ -16423,7 +16483,7 @@ class PlanWorkflowWindow:
             name = str(config.get("input_sqlite_table", "")).strip()
             if not name:
                 raise ValueError("节点组入口选择了 SQLite 表，但没有填写表名。")
-            db = self.get_table_manager(context if 'context' in locals() else None, node_type="节点组 / 子工作流")
+            db = self.get_table_manager(context if isinstance(context, dict) else None, node_type="节点组 / 子工作流")
             data = db.read_table(name)
             return list(data.get("headers", [])), [list(r) for r in data.get("rows", [])], f"SQLite:{name}"
         return list(headers), [list(r) for r in rows], "当前工作表"
@@ -19318,7 +19378,7 @@ class PlanWorkflowWindow:
             self.app.raw_data = old_raw
 
     def sqlite_table_exists_by_name(self, table_name, context=None):
-        db_path = self.get_workflow_db_path(context if 'context' in locals() else None)
+        db_path = self.get_workflow_db_path(context)
         if not db_path or not os.path.exists(db_path):
             return False
         try:
@@ -19417,7 +19477,7 @@ class PlanWorkflowWindow:
         return left == right
 
     def load_target_table_rows_for_writeback(self, table_name, context=None):
-        db_path = self.get_workflow_db_path(context if 'context' in locals() else None)
+        db_path = self.get_workflow_db_path(context)
         if not db_path or not os.path.exists(db_path):
             raise ValueError("SQLite 数据库路径不存在，请先选择数据库。")
         columns, records = self.get_table_manager(context, node_type="字段映射写入表").read_records(
@@ -19431,7 +19491,7 @@ class PlanWorkflowWindow:
         return self.get_table_manager(context, node_type="字段映射写入表").backup_table(table_name)
 
     def apply_writeback_updates_to_sqlite(self, table_name, actions, context=None):
-        db_path = self.get_workflow_db_path(context if 'context' in locals() else None)
+        db_path = self.get_workflow_db_path(context)
         if not db_path or not os.path.exists(db_path):
             raise ValueError("SQLite 数据库路径不存在，请先选择数据库。")
         return self.get_table_manager(context, node_type="字段映射写入表").apply_cell_actions(table_name, actions)
@@ -20841,7 +20901,7 @@ class PlanWorkflowWindow:
             return
 
     def save_result_to_sqlite(self, headers, rows, table_name_raw, overwrite=False, backup=True, context=None):
-        db_path = self.get_workflow_db_path(context if 'context' in locals() else None)
+        db_path = self.get_workflow_db_path(context)
         if not db_path:
             raise ValueError("请先设置 SQLite 数据库路径。")
         table_name = self.app.sanitize_sql_name(table_name_raw, "计划结果")

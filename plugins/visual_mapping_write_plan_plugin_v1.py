@@ -1573,7 +1573,7 @@ def _linked_apply_write_mode(rule, old_text, value):
     return value
 
 
-def _linked_locate_base_target(rule, event, source_records):
+def _linked_locate_base_target(rule, event, source_records, table_context=None):
     base = event.get("rec") or {}
     mode = _as_text(rule.get("target_mode") or LINK_TARGET_TRIGGER_OFFSET) or LINK_TARGET_TRIGGER_OFFSET
     source_file = event.get("source_file", "")
@@ -1587,7 +1587,12 @@ def _linked_locate_base_target(rule, event, source_records):
         anchor = copy.deepcopy(rule.get("anchor") or {})
         anchor["enabled"] = True
         anchor_records = [r for r in source_records if (not sheet_name or r.get("sheet_name", "") == sheet_name)]
-        anchor_rec, anchor_detail = _match_anchor(anchor_records, anchor)
+        anchor_rec, anchor_detail = _match_anchor(
+            anchor_records,
+            anchor,
+            content=event.get("content") or {},
+            table_context=table_context,
+        )
         if anchor_rec is None:
             return None, f"锚点未定位：{anchor_detail}"
         row_index = int(anchor_rec.get("row_index") or 0) + _to_int(rule.get("row_offset"), 0)
@@ -1652,7 +1657,7 @@ def _linked_select_area_target(rule, base_rec, event, source_records):
     return rec, f"区域已满：替换最小圈号 {_circled_number(best[0])} 所在行 R{best[1]}C{write_col}"
 
 
-def _build_linked_plan_rows(linked_rules, events, by_file, params):
+def _build_linked_plan_rows(linked_rules, events, by_file, params, table_context=None):
     rows = []
     matched = 0
     skipped = 0
@@ -1665,7 +1670,13 @@ def _build_linked_plan_rows(linked_rules, events, by_file, params):
             if not _linked_rule_matches_event(rule, event):
                 continue
             source_records = by_file.get(event.get("source_file", ""), [])
-            base_rec, locate_detail = _linked_locate_base_target(rule, event, source_records)
+            event_content = event.get("content") or {}
+            base_rec, locate_detail = _linked_locate_base_target(
+                rule,
+                event,
+                source_records,
+                table_context=table_context,
+            )
             if base_rec is None:
                 skipped += 1
                 skip_reasons[locate_detail] = skip_reasons.get(locate_detail, 0) + 1
@@ -1676,7 +1687,15 @@ def _build_linked_plan_rows(linked_rules, events, by_file, params):
                 skip_reasons[area_detail] = skip_reasons.get(area_detail, 0) + 1
                 continue
             target_match = rule.get("target_match") or {}
-            ok, match_detail = _match_text(target_rec.get("text", ""), target_match)
+            ok, match_detail = _match_text_with_sources(
+                target_rec.get("text", ""),
+                target_match,
+                content=event_content,
+                table_context=table_context,
+                doc_record=target_rec,
+                source_records=source_records,
+                match_index=event.get("page_change_index") or event.get("content_row") or 1,
+            )
             if not ok:
                 skipped += 1
                 note = f"目标格匹配未通过：{match_detail}"
@@ -1883,11 +1902,26 @@ def validate_params(params, input_data, context):
         return False, f"未找到文档读取表别名：{doc_alias}"
     if content_alias not in tables:
         return False, f"未找到新内容表别名：{content_alias}"
+    doc_headers = {_as_text(item) for item in (tables.get(doc_alias, {}).get("headers") or [])}
+    if not doc_headers.intersection({"text", "内容"}):
+        return False, "文档读取表缺少文本字段：text/内容"
+    content_headers = [_as_text(item) for item in (tables.get(content_alias, {}).get("headers") or []) if _as_text(item)]
+    if not content_headers:
+        return False, "新内容表没有可用字段"
     return True, ""
 
 
 def run(input_data, params, context):
     params = dict(params or {})
+    valid, message = validate_params(params, input_data, context)
+    if not valid:
+        return {
+            "ok": False,
+            "message": message,
+            "output": {"type": "table", "headers": list(OUTPUT_HEADERS), "rows": [], "meta": {"plugin": PLUGIN_INFO["id"]}},
+            "logs": [{"level": "ERROR", "message": message}],
+            "summary": {"output_rows": 0, "matched": 0, "skipped": 0},
+        }
     all_tables = _all_tables(input_data, context)
     doc_table, doc_alias = _pick_table(input_data, context, params.get("doc_table_alias", "当前表"), "当前表")
     content_table, content_alias = _pick_table(input_data, context, params.get("content_table_alias", "新内容表"), "")
@@ -2128,7 +2162,13 @@ def run(input_data, params, context):
                 add_debug_row("全局规则未命中任何可替换记录", global_rule, content, source_file, status="跳过")
 
     _assign_link_event_counts(trigger_events)
-    linked_rows, linked_matched, linked_skipped, linked_skip_reasons = _build_linked_plan_rows(linked_rules, trigger_events, by_file, params)
+    linked_rows, linked_matched, linked_skipped, linked_skip_reasons = _build_linked_plan_rows(
+        linked_rules,
+        trigger_events,
+        by_file,
+        params,
+        table_context=table_context,
+    )
     if linked_rows:
         out_rows.extend(linked_rows)
     matched += linked_matched
@@ -3778,7 +3818,13 @@ def open_config_window(parent, current_params, context):
         def preview_current_rule():
             rule = build_rule_from_editor()
             events, by_file = collect_preview_events()
-            rows, matched_count, skipped_count, reasons = _build_linked_plan_rows([rule], events, by_file, params)
+            rows, matched_count, skipped_count, reasons = _build_linked_plan_rows(
+                [rule],
+                events,
+                by_file,
+                params,
+                table_context=current_table_context(),
+            )
             preview_text.configure(state="normal")
             preview_text.delete("1.0", tk.END)
             preview_status_var.set(f"触发事件 {len(events)} 条；联动生成 {matched_count} 条；跳过 {skipped_count} 条")
@@ -4053,6 +4099,7 @@ def open_config_window(parent, current_params, context):
                 trigger_events,
                 by_file,
                 params,
+                table_context=current_table_context(),
             )
             skipped += linked_skipped
             for row_values in linked_rows:
