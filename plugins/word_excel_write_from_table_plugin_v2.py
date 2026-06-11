@@ -23,6 +23,8 @@ PLUGIN_INFO = {
 WORD_MODE_PRESERVE_FORMAT = "保留原格式，仅改文字值"
 WORD_MODE_OVERWRITE = "整段覆盖"
 WORD_MODE_FIND_REPLACE = "按old_text查找替换"
+WRITE_STRATEGY_FOLLOW_NODE = "跟随节点设置"
+WRITE_STRATEGY_DIRECT = "直接定位写入"
 
 OUTPUT_HEADERS = [
     "source_file",
@@ -139,6 +141,7 @@ def get_parameter_schema():
         {"name": "cell_address_field", "label": "地址字段", "type": "field_select", "default": "cell_address"},
         {"name": "value_field", "label": "写入值字段", "type": "field_select", "default": "text"},
         {"name": "old_text_field", "label": "原文匹配字段", "type": "field_select", "default": "old_text"},
+        {"name": "write_strategy_field", "label": "单行写入策略字段", "type": "field_select", "default": "write_strategy"},
         {"name": "meta_json_field", "label": "meta字段", "type": "field_select", "default": "meta_json"},
     ]
 
@@ -374,6 +377,7 @@ def _collect_ops(input_data, params, context):
     cell_address_field = _as_text(params.get("cell_address_field", "cell_address")) or "cell_address"
     value_field = _as_text(params.get("value_field", "text")) or "text"
     old_text_field = _as_text(params.get("old_text_field", "old_text")) or "old_text"
+    write_strategy_field = _as_text(params.get("write_strategy_field", "write_strategy")) or "write_strategy"
     meta_json_field = _as_text(params.get("meta_json_field", "meta_json")) or "meta_json"
     allow_empty = bool(params.get("allow_empty_text_write", False))
 
@@ -412,6 +416,7 @@ def _collect_ops(input_data, params, context):
             "cell_address": _as_text(cell_by_field(row, cell_address_field)),
             "value": value_text,
             "old_text": str(cell_by_field(row, old_text_field) or ""),
+            "write_strategy": _as_text(cell_by_field(row, write_strategy_field)),
             "meta_json": _as_text(cell_by_field(row, meta_json_field)),
         }
         key = str(target_path).lower()
@@ -438,6 +443,17 @@ def _word_preserve_format_enabled(context):
 
 def _word_find_replace_enabled(context):
     return _word_text_write_mode(context) == WORD_MODE_FIND_REPLACE
+
+
+def _op_write_strategy(op):
+    text = _as_text((op or {}).get("write_strategy"))
+    if text in ("", WRITE_STRATEGY_FOLLOW_NODE, "follow", "node"):
+        return WRITE_STRATEGY_FOLLOW_NODE
+    if text in (WRITE_STRATEGY_DIRECT, "direct", "direct_write", "直接写入", "定位写入"):
+        return WRITE_STRATEGY_DIRECT
+    if text in (WORD_MODE_FIND_REPLACE, "find_replace", "old_text", "按 old_text 查找替换"):
+        return WORD_MODE_FIND_REPLACE
+    return text
 
 
 def _word_body_range(range_obj):
@@ -548,7 +564,10 @@ def _word_find_replace_visible_text(range_obj, old_text, value):
 
 
 def _word_write_range_by_mode(range_obj, op, context=None):
-    if _word_find_replace_enabled(context):
+    strategy = _op_write_strategy(op)
+    if strategy == WRITE_STRATEGY_DIRECT:
+        _word_write_visible_text(range_obj, op.get("value", ""), _word_preserve_format_enabled(context))
+    elif strategy == WORD_MODE_FIND_REPLACE or (strategy == WRITE_STRATEGY_FOLLOW_NODE and _word_find_replace_enabled(context)):
         _word_find_replace_visible_text(range_obj, op.get("old_text", ""), op.get("value", ""))
     else:
         _word_write_visible_text(range_obj, op.get("value", ""), _word_preserve_format_enabled(context))
@@ -1261,6 +1280,7 @@ def run(input_data, params, context):
             "target_path_field": _as_text(p.get("target_path_field", "target_file")) or "target_file",
             "word_text_write_mode": _word_text_mode_from_params(p),
             "old_text_field": _as_text(p.get("old_text_field", "old_text")) or "old_text",
+            "write_strategy_field": _as_text(p.get("write_strategy_field", "write_strategy")) or "write_strategy",
             "target_missing_policy": _as_text(p.get("target_missing_policy", "从源文件复制")) or "从源文件复制",
             "target_existing_policy": _as_text(p.get("target_existing_policy", "直接写入")) or "直接写入",
             "same_path_policy": _as_text(p.get("same_path_policy", "修改源文件")) or "修改源文件",

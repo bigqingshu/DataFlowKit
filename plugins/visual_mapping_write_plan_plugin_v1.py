@@ -48,6 +48,26 @@ REPLACE_ROW_POLICY_CHOICES = [
     REPLACE_ROW_FIXED,
     REPLACE_ROW_HIT_INDEX,
 ]
+LINKED_RULE_ANY = "任意已变化规则"
+LINK_TARGET_TRIGGER_OFFSET = "触发格偏移"
+LINK_TARGET_FIXED_CELL = "指定坐标"
+LINK_TARGET_ANCHOR_OFFSET = "锚点偏移"
+LINK_TARGET_MODES = [LINK_TARGET_TRIGGER_OFFSET, LINK_TARGET_FIXED_CELL, LINK_TARGET_ANCHOR_OFFSET]
+LINK_VALUE_FIXED = "固定值"
+LINK_VALUE_TRIGGER_NEW = "触发新值"
+LINK_VALUE_TRIGGER_OLD = "触发旧值"
+LINK_VALUE_CONTENT_FIELD = "新内容字段"
+LINK_VALUE_TEMPLATE = "模板"
+LINK_VALUE_SOURCES = [LINK_VALUE_FIXED, LINK_VALUE_TRIGGER_NEW, LINK_VALUE_TRIGGER_OLD, LINK_VALUE_CONTENT_FIELD, LINK_VALUE_TEMPLATE]
+LINK_WRITE_REPLACE = "值替换"
+LINK_WRITE_APPEND = "值追加"
+LINK_WRITE_PREPEND = "值前置"
+LINK_WRITE_REGEX = "正则替换"
+LINK_WRITE_MODES = [LINK_WRITE_REPLACE, LINK_WRITE_APPEND, LINK_WRITE_PREPEND, LINK_WRITE_REGEX]
+LINK_OVERFLOW_SKIP = "区域满时跳过"
+LINK_OVERFLOW_MIN_MARKER_ROW = "区域满时替换最小圈号行"
+LINK_OVERFLOW_POLICIES = [LINK_OVERFLOW_SKIP, LINK_OVERFLOW_MIN_MARKER_ROW]
+DIRECT_WRITE_STRATEGY = "直接定位写入"
 CONFIG_WINDOW_WIDTH = 1360
 CONFIG_WINDOW_HEIGHT = 820
 CONFIG_WINDOW_MIN_WIDTH = 1120
@@ -71,6 +91,7 @@ OUTPUT_HEADERS = [
     "source_match_detail",
     "anchor_match_detail",
     "write_note",
+    "write_strategy",
 ]
 
 
@@ -250,7 +271,7 @@ def _settings_path(context):
 
 
 def _empty_config():
-    return {"rules": [], "features": [], "global_rules": []}
+    return {"rules": [], "features": [], "global_rules": [], "linked_rules": []}
 
 
 def _ensure_config(cfg):
@@ -259,6 +280,7 @@ def _ensure_config(cfg):
     cfg.setdefault("rules", [])
     cfg.setdefault("features", [])
     cfg.setdefault("global_rules", [])
+    cfg.setdefault("linked_rules", [])
     return cfg
 
 
@@ -476,6 +498,115 @@ def _match_text(text, match_cfg):
     return True, f"未知匹配方式按通过处理：{mode}"
 
 
+def _legacy_conditions_from_match_cfg(cfg, mode_key="mode", value_key="value"):
+    cfg = cfg or {}
+    conditions = [item for item in (cfg.get("conditions") or []) if isinstance(item, dict)]
+    if conditions:
+        return conditions
+    mode = _as_text(cfg.get(mode_key) or cfg.get("operator") or "包含") or "包含"
+    value = _as_text(cfg.get(value_key))
+    return [{
+        "join": "AND",
+        "mode": mode,
+        "value_source": "手动输入",
+        "value": value,
+        "value_field": "",
+        "row_policy": REPLACE_ROW_CONTENT_ROW,
+        "row_index": "1",
+    }]
+
+
+def _doc_record_field_value(record, field):
+    field = _as_text(field)
+    if not field:
+        return ""
+    if isinstance(record, dict) and field in record:
+        return record.get(field)
+    raw = (record or {}).get("raw") if isinstance(record, dict) else {}
+    if isinstance(raw, dict) and field in raw:
+        return raw.get(field)
+    return ""
+
+
+def _condition_value_from_source(cond, content=None, table_context=None, doc_record=None, source_records=None, match_index=0):
+    cond = cond or {}
+    source = _normalize_batch_table_source(cond.get("value_source") or cond.get("match_value_source") or "手动输入")
+    field = _as_text(cond.get("value_field") or cond.get("match_value_field") or cond.get("field"))
+    if _is_manual_batch_source(source):
+        return _cell_text(cond.get("value") or cond.get("match_value")), "手动输入", True
+    if source in ("文档读取表字段", "当前格字段", "doc_field"):
+        if not field:
+            return "", "文档读取表字段未设置字段", False
+        return _cell_text(_doc_record_field_value(doc_record, field)), f"文档读取表字段 {field}", True
+
+    table_context = table_context or {}
+    rows_by_alias = table_context.get("rows_by_alias") or {}
+    content_alias = _as_text(table_context.get("content_alias"))
+    rows = rows_by_alias.get(source)
+    if rows is None and source == content_alias:
+        rows = [content or {}]
+    if rows is None:
+        return "", f"未找到来源表：{source}", False
+    if not field:
+        return "", f"未设置来源字段：{source}", False
+
+    policy = _normalize_replace_row_policy(cond.get("row_policy") or cond.get("match_row_policy") or cond.get("match_value_row_policy"))
+    rows = rows or []
+    if policy == REPLACE_ROW_CONTENT_ROW:
+        row_index = max(0, _to_int((content or {}).get("__content_row__"), 1) - 1)
+        row = (content or {}) if source == content_alias else (rows[row_index] if 0 <= row_index < len(rows) else {})
+        note = f"{source}.{field} 当前内容行第{row_index + 1}行"
+    elif policy == REPLACE_ROW_FIRST:
+        row_index = 0
+        row = rows[0] if rows else {}
+        note = f"{source}.{field} 第一行"
+    elif policy == REPLACE_ROW_FIXED:
+        row_index = max(0, _to_int(cond.get("row_index") or cond.get("match_row_index"), 1) - 1)
+        row = rows[row_index] if 0 <= row_index < len(rows) else {}
+        note = f"{source}.{field} 固定第{row_index + 1}行"
+    elif policy == REPLACE_ROW_HIT_INDEX:
+        row_index = max(0, int(match_index or 1) - 1)
+        row = rows[row_index] if 0 <= row_index < len(rows) else {}
+        note = f"{source}.{field} 按命中序号第{row_index + 1}行"
+    else:
+        row_index = max(0, int(match_index or 1) - 1)
+        row = rows[row_index] if 0 <= row_index < len(rows) else {}
+        note = f"{source}.{field} 按匹配行号第{row_index + 1}行"
+    if not row:
+        return "", f"{note}越界，可用{len(rows)}行", False
+    return _cell_text(row.get(field)), note, True
+
+
+def _match_text_with_sources(text, match_cfg, content=None, table_context=None, doc_record=None, source_records=None, match_index=0, mode_key="mode", value_key="value"):
+    cfg = match_cfg or {}
+    if not cfg.get("enabled", False):
+        return True, "未启用输入源匹配"
+    conditions = _legacy_conditions_from_match_cfg(cfg, mode_key, value_key)
+    default_logic = _as_text(cfg.get("logic") or "AND") or "AND"
+    text = _cell_text(text)
+    result = None
+    details = []
+    for index, cond in enumerate(conditions):
+        join = _condition_join(cond, index, default_logic)
+        value, source_detail, source_ok = _condition_value_from_source(cond, content, table_context, doc_record, source_records, match_index)
+        mode = _as_text(cond.get("mode") or "包含") or "包含"
+        if source_ok:
+            ok, detail = _match_text(text, {"enabled": True, "mode": mode, "value": value})
+            detail = f"{detail}；来源={source_detail}"
+        else:
+            ok, detail = False, source_detail
+        if result is None:
+            result = ok
+            details.append(f"{detail}=>{ok}")
+        elif join == "OR":
+            result = bool(result) or ok
+            details.append(f"OR {detail}=>{ok}")
+        else:
+            result = bool(result) and ok
+            details.append(f"AND {detail}=>{ok}")
+    return bool(result), "；".join(details) if details else "未设置匹配条件"
+
+
 def _cell_key(record):
     return f"{record.get('source_file','')}|{record.get('sheet_name','')}|{record.get('row_index','')}|{record.get('col_index','')}"
 
@@ -490,7 +621,7 @@ def _build_doc_index(records):
     return index, by_file_sheet
 
 
-def _match_anchor(records, anchor_cfg):
+def _match_anchor(records, anchor_cfg, content=None, table_context=None):
     cfg = anchor_cfg or {}
     if not cfg.get("enabled", False):
         return None, "未启用锚点"
@@ -499,16 +630,24 @@ def _match_anchor(records, anchor_cfg):
     if index <= 0:
         return None, "锚点行/列未设置"
     candidates = []
+    match_index = 0
     for rec in records:
         if axis in ("列", "column") and int(rec.get("col_index") or 0) != index:
             continue
         if axis in ("行", "row") and int(rec.get("row_index") or 0) != index:
             continue
-        ok, detail = _match_text(rec.get("text", ""), {
-            "enabled": True,
-            "mode": cfg.get("match_mode", "等于"),
-            "value": cfg.get("value", ""),
-        })
+        match_index += 1
+        ok, detail = _match_text_with_sources(
+            rec.get("text", ""),
+            cfg,
+            content=content,
+            table_context=table_context,
+            doc_record=rec,
+            source_records=records,
+            match_index=match_index,
+            mode_key="match_mode",
+            value_key="value",
+        )
         if ok:
             candidates.append(rec)
     if not candidates:
@@ -516,7 +655,7 @@ def _match_anchor(records, anchor_cfg):
     return candidates[0], f"锚点命中 {len(candidates)} 个，使用第一个"
 
 
-def _locate_target_record(rule, source_records, source_file):
+def _locate_target_record(rule, source_records, source_file, content=None, table_context=None):
     locator = rule.get("source_locator", {}) or {}
     sheet_name = _as_text(locator.get("sheet_name"))
     base_row = _to_int(locator.get("row_index"), 0)
@@ -525,7 +664,7 @@ def _locate_target_record(rule, source_records, source_file):
     anchor_cfg = rule.get("anchor", {}) or {}
     anchor_detail = "未启用锚点"
     if anchor_cfg.get("enabled", False):
-        anchor_rec, anchor_detail = _match_anchor(records, anchor_cfg)
+        anchor_rec, anchor_detail = _match_anchor(records, anchor_cfg, content=content, table_context=table_context)
         if anchor_rec is None:
             return None, anchor_detail
         row_offset = _to_int(anchor_cfg.get("row_offset"), 0)
@@ -1292,6 +1431,286 @@ def _source_file_for_content(_content, source_files, content_index, total_conten
     return "", "无法确定源文件：请保证只有一个源文件，或源文件数量与新内容行数一致"
 
 
+def _circled_number(value):
+    chars = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳㉑㉒㉓㉔㉕㉖㉗㉘㉙㉚㉛㉜㉝㉞㉟㊱㊲㊳㊴㊵㊶㊷㊸㊹㊺㊻㊼㊽㊾㊿"
+    index = _to_int(value, 0)
+    if 1 <= index <= len(chars):
+        return chars[index - 1]
+    return f"({index})" if index > 0 else ""
+
+
+def _circled_number_value(text):
+    chars = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳㉑㉒㉓㉔㉕㉖㉗㉘㉙㉚㉛㉜㉝㉞㉟㊱㊲㊳㊴㊵㊶㊷㊸㊹㊺㊻㊼㊽㊾㊿"
+    value = _cell_text(text)
+    best = None
+    for index, char in enumerate(chars, start=1):
+        if char in value and (best is None or index < best):
+            best = index
+    return best
+
+
+def _linked_trigger_options(cfg):
+    values = [LINKED_RULE_ANY]
+    for rule in cfg.get("rules", []) or []:
+        if isinstance(rule, dict):
+            name = _as_text(rule.get("name")) or _as_text(rule.get("id"))
+            if name and name not in values:
+                values.append(name)
+    for rule in cfg.get("global_rules", []) or []:
+        if isinstance(rule, dict):
+            name = _as_text(rule.get("name")) or _as_text(rule.get("id"))
+            label = f"全局:{name}" if name else ""
+            if label and label not in values:
+                values.append(label)
+    return values
+
+
+def _event_template_context(event, content=None):
+    data = dict(content or event.get("content") or {})
+    data.update({
+        "触发规则": event.get("match_rule", ""),
+        "规则类型": event.get("kind", ""),
+        "源文件": event.get("source_file", ""),
+        "目标文件": event.get("target_file", ""),
+        "表格": event.get("sheet_name", ""),
+        "Sheet": event.get("sheet_name", ""),
+        "行": event.get("row_index", ""),
+        "列": event.get("col_index", ""),
+        "原文": event.get("old_text", ""),
+        "旧值": event.get("old_text", ""),
+        "新值": event.get("new_text", ""),
+        "触发新值": event.get("new_text", ""),
+        "内容行": event.get("content_row", ""),
+        "本页变化序号": event.get("page_change_index", ""),
+        "本页变化总数": event.get("page_change_total", ""),
+        "圈号": _circled_number(event.get("page_change_index", 0)),
+    })
+    return data
+
+
+def _assign_link_event_counts(events):
+    grouped = {}
+    for event in events:
+        key = (event.get("source_file", ""), event.get("sheet_name", ""), event.get("match_rule", ""))
+        grouped.setdefault(key, []).append(event)
+    for items in grouped.values():
+        total = len(items)
+        for index, event in enumerate(items, start=1):
+            event["page_change_index"] = index
+            event["page_change_total"] = total
+            event["circled_index"] = _circled_number(index)
+
+
+def _record_at_position(records, source_file, sheet_name, row_index, col_index):
+    row_index = _to_int(row_index, 0)
+    col_index = _to_int(col_index, 0)
+    for rec in records or []:
+        if source_file and rec.get("source_file", "") != source_file:
+            continue
+        if sheet_name and rec.get("sheet_name", "") != sheet_name:
+            continue
+        if int(rec.get("row_index") or 0) == row_index and int(rec.get("col_index") or 0) == col_index:
+            return rec
+    return None
+
+
+def _synthetic_target_record(event, sheet_name, row_index, col_index):
+    base = event.get("rec") or {}
+    return {
+        "source_file": event.get("source_file", ""),
+        "block_type": base.get("block_type", "word_table_cell"),
+        "sheet_name": sheet_name or base.get("sheet_name", ""),
+        "row_index": _to_int(row_index, 0),
+        "col_index": _to_int(col_index, 0),
+        "cell_address": f"R{_to_int(row_index, 0)}C{_to_int(col_index, 0)}",
+        "text": "",
+        "is_merge_origin": True,
+        "is_merged": False,
+        "row_span": 1,
+        "col_span": 1,
+    }
+
+
+def _linked_rule_matches_event(rule, event):
+    trigger = _as_text(rule.get("trigger_rule") or LINKED_RULE_ANY)
+    if not trigger or trigger == LINKED_RULE_ANY:
+        return True
+    return trigger == _as_text(event.get("match_rule")) or trigger == _as_text(event.get("rule_name"))
+
+
+def _linked_rule_value(rule, event):
+    source = _as_text(rule.get("value_source") or LINK_VALUE_FIXED) or LINK_VALUE_FIXED
+    content = event.get("content") or {}
+    if source == LINK_VALUE_TRIGGER_NEW:
+        return _cell_text(event.get("new_text"))
+    if source == LINK_VALUE_TRIGGER_OLD:
+        return _cell_text(event.get("old_text"))
+    if source == LINK_VALUE_CONTENT_FIELD:
+        field = _as_text(rule.get("value_field"))
+        return _cell_text(content.get(field)) if field else ""
+    if source == LINK_VALUE_TEMPLATE:
+        return _expand_template(rule.get("value_template", ""), _event_template_context(event, content))
+    return _cell_text(rule.get("fixed_value", ""))
+
+
+def _linked_apply_write_mode(rule, old_text, value):
+    mode = _as_text(rule.get("write_mode") or LINK_WRITE_REPLACE) or LINK_WRITE_REPLACE
+    old_text = _cell_text(old_text)
+    value = _cell_text(value)
+    separator = _cell_text(rule.get("append_separator", ""))
+    if mode == LINK_WRITE_APPEND:
+        return old_text + (separator if old_text and value else "") + value
+    if mode == LINK_WRITE_PREPEND:
+        return value + (separator if old_text and value else "") + old_text
+    if mode == LINK_WRITE_REGEX:
+        pattern = _cell_text(rule.get("regex_pattern", ""))
+        if not pattern:
+            return old_text
+        repl = value
+        flags = 0 if bool(rule.get("case_sensitive", True)) else re.IGNORECASE
+        return re.sub(pattern, repl, old_text, count=max(0, _to_int(rule.get("replace_count"), 0)), flags=flags)
+    return value
+
+
+def _linked_locate_base_target(rule, event, source_records):
+    base = event.get("rec") or {}
+    mode = _as_text(rule.get("target_mode") or LINK_TARGET_TRIGGER_OFFSET) or LINK_TARGET_TRIGGER_OFFSET
+    source_file = event.get("source_file", "")
+    sheet_name = _cfg_sheet_name(rule.get("sheet_name")) or event.get("sheet_name", "")
+    if mode == LINK_TARGET_FIXED_CELL:
+        row_index = _to_int(rule.get("row_index"), 0)
+        col_index = _to_int(rule.get("col_index"), 0)
+        if row_index <= 0 or col_index <= 0:
+            return None, "指定坐标缺少行号或列号"
+    elif mode == LINK_TARGET_ANCHOR_OFFSET:
+        anchor = copy.deepcopy(rule.get("anchor") or {})
+        anchor["enabled"] = True
+        anchor_records = [r for r in source_records if (not sheet_name or r.get("sheet_name", "") == sheet_name)]
+        anchor_rec, anchor_detail = _match_anchor(anchor_records, anchor)
+        if anchor_rec is None:
+            return None, f"锚点未定位：{anchor_detail}"
+        row_index = int(anchor_rec.get("row_index") or 0) + _to_int(rule.get("row_offset"), 0)
+        col_index = int(anchor_rec.get("col_index") or 0) + _to_int(rule.get("col_offset"), 0)
+        sheet_name = anchor_rec.get("sheet_name", sheet_name)
+    else:
+        row_index = int(base.get("row_index") or 0) + _to_int(rule.get("row_offset"), 0)
+        col_index = int(base.get("col_index") or 0) + _to_int(rule.get("col_offset"), 0)
+        sheet_name = sheet_name or base.get("sheet_name", "")
+    if row_index <= 0 or col_index <= 0:
+        return None, f"目标坐标无效：R{row_index}C{col_index}"
+    rec = _record_at_position(source_records, source_file, sheet_name, row_index, col_index)
+    if rec is None:
+        rec = _synthetic_target_record(event, sheet_name, row_index, col_index)
+        return rec, f"{mode}：目标记录未在读取表中出现，按空格子生成写入计划 R{row_index}C{col_index}"
+    return rec, f"{mode}：定位到 {sheet_name} R{row_index}C{col_index}"
+
+
+def _linked_select_area_target(rule, base_rec, event, source_records):
+    if not bool(rule.get("area_enabled", False)):
+        return base_rec, "未启用区域槽位"
+    source_file = event.get("source_file", "")
+    sheet_name = base_rec.get("sheet_name", event.get("sheet_name", ""))
+    base_row = int(base_rec.get("row_index") or 0)
+    base_col = int(base_rec.get("col_index") or 0)
+    row_start = base_row + _to_int(rule.get("area_row_start_offset"), 0)
+    row_end = base_row + _to_int(rule.get("area_row_end_offset"), 0)
+    col_start = base_col + _to_int(rule.get("area_col_start_offset"), 0)
+    col_end = base_col + _to_int(rule.get("area_col_end_offset"), 0)
+    if row_start > row_end:
+        row_start, row_end = row_end, row_start
+    if col_start > col_end:
+        col_start, col_end = col_end, col_start
+    row_start = max(1, row_start)
+    col_start = max(1, col_start)
+    candidates = []
+    for row_index in range(row_start, row_end + 1):
+        for col_index in range(col_start, col_end + 1):
+            rec = _record_at_position(source_records, source_file, sheet_name, row_index, col_index)
+            if rec is None:
+                rec = _synthetic_target_record(event, sheet_name, row_index, col_index)
+            candidates.append(rec)
+            if _cell_text(rec.get("text", "")) == "":
+                return rec, f"区域槽位：使用第一个空格子 R{row_index}C{col_index}"
+    if _as_text(rule.get("overflow_policy") or LINK_OVERFLOW_SKIP) != LINK_OVERFLOW_MIN_MARKER_ROW:
+        return None, f"区域 R{row_start}C{col_start}:R{row_end}C{col_end} 已满"
+    marker_col = base_col + _to_int(rule.get("marker_col_offset"), 0)
+    write_col = base_col + _to_int(rule.get("area_write_col_offset"), _to_int(rule.get("area_col_start_offset"), 0))
+    best = None
+    for row_index in range(row_start, row_end + 1):
+        marker_rec = _record_at_position(source_records, source_file, sheet_name, row_index, marker_col)
+        marker_value = _circled_number_value(marker_rec.get("text", "") if marker_rec else "")
+        if marker_value is None:
+            continue
+        if best is None or marker_value < best[0]:
+            best = (marker_value, row_index)
+    if best is None:
+        return None, "区域已满，且未找到可替换的圈号行"
+    rec = _record_at_position(source_records, source_file, sheet_name, best[1], write_col)
+    if rec is None:
+        rec = _synthetic_target_record(event, sheet_name, best[1], write_col)
+    return rec, f"区域已满：替换最小圈号 {_circled_number(best[0])} 所在行 R{best[1]}C{write_col}"
+
+
+def _build_linked_plan_rows(linked_rules, events, by_file, params):
+    rows = []
+    matched = 0
+    skipped = 0
+    skip_reasons = {}
+    enabled_rules = [r for r in (linked_rules or []) if isinstance(r, dict) and r.get("enabled", True)]
+    if not enabled_rules or not events:
+        return rows, matched, skipped, skip_reasons
+    for rule in enabled_rules:
+        for event in events:
+            if not _linked_rule_matches_event(rule, event):
+                continue
+            source_records = by_file.get(event.get("source_file", ""), [])
+            base_rec, locate_detail = _linked_locate_base_target(rule, event, source_records)
+            if base_rec is None:
+                skipped += 1
+                skip_reasons[locate_detail] = skip_reasons.get(locate_detail, 0) + 1
+                continue
+            target_rec, area_detail = _linked_select_area_target(rule, base_rec, event, source_records)
+            if target_rec is None:
+                skipped += 1
+                skip_reasons[area_detail] = skip_reasons.get(area_detail, 0) + 1
+                continue
+            target_match = rule.get("target_match") or {}
+            ok, match_detail = _match_text(target_rec.get("text", ""), target_match)
+            if not ok:
+                skipped += 1
+                note = f"目标格匹配未通过：{match_detail}"
+                skip_reasons[note] = skip_reasons.get(note, 0) + 1
+                continue
+            raw_value = _linked_rule_value(rule, event)
+            value = _linked_apply_write_mode(rule, target_rec.get("text", ""), raw_value)
+            if value == "" and _as_text(rule.get("empty_policy") or "允许") == "跳过":
+                skipped += 1
+                skip_reasons["联动写入结果为空，按策略跳过"] = skip_reasons.get("联动写入结果为空，按策略跳过", 0) + 1
+                continue
+            matched += 1
+            rows.append([
+                event.get("source_file", ""),
+                event.get("target_file", ""),
+                target_rec.get("block_type", ""),
+                target_rec.get("sheet_name", ""),
+                target_rec.get("row_index", ""),
+                target_rec.get("col_index", ""),
+                target_rec.get("cell_address", ""),
+                value,
+                target_rec.get("text", ""),
+                _as_text(rule.get("name")) or "联动写入规则",
+                event.get("content_row", ""),
+                "通过",
+                f"联动:{_as_text(rule.get('name')) or '未命名'}",
+                json.dumps(rule.get("anchor", {}), ensure_ascii=False),
+                f"触发={event.get('match_rule', '')}；{match_detail}",
+                locate_detail,
+                f"联动写入；{area_detail}；触发格 {event.get('sheet_name', '')} R{event.get('row_index')}C{event.get('col_index')}；本页变化 {event.get('page_change_index')}/{event.get('page_change_total')}",
+                DIRECT_WRITE_STRATEGY,
+            ])
+    return rows, matched, skipped, skip_reasons
+
+
 def _preview_global_match_rows(global_rules, records, features, limit=500):
     rules = [r for r in (global_rules or []) if isinstance(r, dict) and r.get("enabled", True)]
     records = list(records or [])
@@ -1473,6 +1892,7 @@ def run(input_data, params, context):
     rules = [r for r in cfg.get("rules", []) if isinstance(r, dict) and r.get("enabled", True)]
     features = [f for f in cfg.get("features", []) if isinstance(f, dict)]
     global_rules = [r for r in cfg.get("global_rules", []) if isinstance(r, dict) and r.get("enabled", True)]
+    linked_rules = [r for r in cfg.get("linked_rules", []) if isinstance(r, dict) and r.get("enabled", True)]
     debug_output = bool(params.get("debug_output", False))
     empty_policy = _as_text(params.get("empty_policy", "跳过")) or "跳过"
     content_fields, contents = _content_rows(content_table)
@@ -1490,14 +1910,15 @@ def run(input_data, params, context):
     skipped = 0
     matched = 0
     skip_reasons = {}
+    trigger_events = []
 
-    if not rules and not global_rules:
+    if not rules and not global_rules and not linked_rules:
         return {
             "ok": True,
-            "message": "未配置映射规则或全局搜索替换规则，未生成写入计划",
+            "message": "未配置映射规则、全局搜索替换规则或联动写入规则，未生成写入计划",
             "output": {"type": "table", "headers": out_headers, "rows": [], "meta": {"plugin": PLUGIN_INFO["id"]}},
-            "logs": [{"level": "WARNING", "message": "请先打开插件自带设置窗口配置单元格映射规则或全局搜索替换规则"}],
-            "summary": {"rules": 0, "global_rules": 0, "output_rows": 0, "doc_table": doc_alias, "content_table": content_alias},
+            "logs": [{"level": "WARNING", "message": "请先打开插件自带设置窗口配置单元格映射规则、全局搜索替换规则或联动写入规则"}],
+            "summary": {"rules": 0, "global_rules": 0, "linked_rules": 0, "output_rows": 0, "doc_table": doc_alias, "content_table": content_alias},
         }
 
     total = max(1, len(contents) * max(1, len(rules) + len(global_rules)))
@@ -1527,6 +1948,7 @@ def run(input_data, params, context):
             "",
             "",
             note,
+            "",
         ])
 
     for content_index, content in enumerate(contents):
@@ -1555,12 +1977,19 @@ def run(input_data, params, context):
                 skipped += 1
                 add_debug_row(feature_detail, rule, content, source_file)
                 continue
-            rec, anchor_detail = _locate_target_record(rule, source_records, source_file)
+            rec, anchor_detail = _locate_target_record(rule, source_records, source_file, content=content, table_context=table_context)
             if rec is None:
                 skipped += 1
                 add_debug_row(anchor_detail, rule, content, source_file)
                 continue
-            ok, match_detail = _match_text(rec.get("text", ""), rule.get("source_match", {}))
+            ok, match_detail = _match_text_with_sources(
+                rec.get("text", ""),
+                rule.get("source_match", {}),
+                content=content,
+                table_context=table_context,
+                doc_record=rec,
+                source_records=source_records,
+            )
             if not ok:
                 skipped += 1
                 add_debug_row("输入源内容匹配未通过", rule, content, source_file, rec)
@@ -1597,7 +2026,26 @@ def run(input_data, params, context):
                 f"{feature_detail}；{match_detail}",
                 anchor_detail,
                 f"已生成写入计划；源文件选择={source_note}",
+                "",
             ])
+            if value != rec.get("text", ""):
+                trigger_events.append({
+                    "kind": "普通映射",
+                    "rule_name": rule.get("name", ""),
+                    "match_rule": rule.get("name", ""),
+                    "source_file": source_file,
+                    "target_file": target_file,
+                    "rec": rec,
+                    "sheet_name": rec.get("sheet_name", ""),
+                    "row_index": rec.get("row_index", ""),
+                    "col_index": rec.get("col_index", ""),
+                    "old_text": rec.get("text", ""),
+                    "new_text": value,
+                    "mapping_field": field,
+                    "content": content,
+                    "content_row": content.get("__content_row__", ""),
+                    "source_note": source_note,
+                })
 
         for global_rule in global_rules:
             current += 1
@@ -1651,12 +2099,39 @@ def run(input_data, params, context):
                     f"{feature_detail}；{cond_detail}",
                     "",
                     f"全局搜索替换；{replace_detail}；源文件选择={source_note}",
+                    "",
                 ])
+                trigger_events.append({
+                    "kind": "全局替换",
+                    "rule_name": global_rule.get("name", ""),
+                    "match_rule": f"全局:{global_rule.get('name', '')}",
+                    "source_file": source_file,
+                    "target_file": target_file,
+                    "rec": rec,
+                    "sheet_name": rec.get("sheet_name", ""),
+                    "row_index": rec.get("row_index", ""),
+                    "col_index": rec.get("col_index", ""),
+                    "old_text": rec.get("text", ""),
+                    "new_text": value,
+                    "mapping_field": _global_rule_fields(global_rule),
+                    "content": content,
+                    "content_row": content.get("__content_row__", ""),
+                    "source_note": source_note,
+                })
             if rule_hit == 0:
                 skipped += 1
                 add_debug_row("全局规则未命中任何可替换记录", global_rule, content, source_file, status="跳过")
 
-    logs.append({"level": "INFO", "message": f"配置={config_name}，单元格规则 {len(rules)} 条，全局规则 {len(global_rules)} 条，生成 {matched} 条，跳过 {skipped} 条"})
+    _assign_link_event_counts(trigger_events)
+    linked_rows, linked_matched, linked_skipped, linked_skip_reasons = _build_linked_plan_rows(linked_rules, trigger_events, by_file, params)
+    if linked_rows:
+        out_rows.extend(linked_rows)
+    matched += linked_matched
+    skipped += linked_skipped
+    for reason, count in linked_skip_reasons.items():
+        skip_reasons[reason] = skip_reasons.get(reason, 0) + count
+
+    logs.append({"level": "INFO", "message": f"配置={config_name}，单元格规则 {len(rules)} 条，全局规则 {len(global_rules)} 条，联动规则 {len(linked_rules)} 条，生成 {matched} 条，跳过 {skipped} 条"})
     if skipped and skip_reasons:
         reason_text = "；".join([f"{reason}×{count}" for reason, count in sorted(skip_reasons.items(), key=lambda item: item[1], reverse=True)[:8]])
         level = "WARNING" if matched == 0 else "INFO"
@@ -1673,12 +2148,14 @@ def run(input_data, params, context):
             "rules": len(rules),
             "features": len(features),
             "global_rules": len(global_rules),
+            "linked_rules": len(linked_rules),
             "content_rows": len(contents),
             "replace_aux_rows": len(aux_rows),
             "source_files": len(source_files),
             "output_rows": len(out_rows),
             "matched": matched,
             "skipped": skipped,
+            "trigger_events": len(trigger_events),
             "debug_output": debug_output,
         },
     }
@@ -1709,6 +2186,40 @@ def _default_rule_for_cell(rec):
         "source_match": {"enabled": False, "mode": "包含", "value": rec.get("text", "")},
         "anchor": {"enabled": False, "axis": "列", "index": 1, "match_mode": "等于", "value": "", "row_offset": 0, "col_offset": 0},
         "mapping": {"content_field": "", "empty_policy": "跟随节点设置"},
+    }
+
+
+def _default_linked_rule(index=1):
+    return {
+        "name": f"linked_{index}",
+        "enabled": True,
+        "trigger_rule": LINKED_RULE_ANY,
+        "target_mode": LINK_TARGET_TRIGGER_OFFSET,
+        "sheet_name": "",
+        "row_offset": 0,
+        "col_offset": 0,
+        "row_index": "",
+        "col_index": "",
+        "target_match": {"enabled": False, "mode": "包含", "value": ""},
+        "anchor": {"enabled": False, "axis": "列", "index": 1, "match_mode": "等于", "value": ""},
+        "value_source": LINK_VALUE_TEMPLATE,
+        "fixed_value": "",
+        "value_field": "",
+        "value_template": "{触发新值}",
+        "write_mode": LINK_WRITE_REPLACE,
+        "append_separator": "",
+        "regex_pattern": "",
+        "replace_count": "0",
+        "case_sensitive": True,
+        "empty_policy": "允许",
+        "area_enabled": False,
+        "area_row_start_offset": 0,
+        "area_row_end_offset": 0,
+        "area_col_start_offset": 0,
+        "area_col_end_offset": 0,
+        "area_write_col_offset": 0,
+        "marker_col_offset": 0,
+        "overflow_policy": LINK_OVERFLOW_SKIP,
     }
 
 
@@ -1760,6 +2271,7 @@ def open_config_window(parent, current_params, context):
     ttk.Button(action_row, text="管理配置", command=lambda: manage_configs()).pack(side=tk.LEFT, padx=4)
     ttk.Button(action_row, text="管理表特征", command=lambda: manage_features()).pack(side=tk.LEFT, padx=4)
     ttk.Button(action_row, text="全局搜索替换规则窗口", command=lambda: manage_global_rules()).pack(side=tk.LEFT, padx=4)
+    ttk.Button(action_row, text="联动写入规则", command=lambda: manage_linked_rules()).pack(side=tk.LEFT, padx=4)
     ttk.Button(action_row, text="全局替换预览", command=lambda: show_global_replace_preview()).pack(side=tk.LEFT, padx=4)
 
     status_var = tk.StringVar(value=_as_text((context or {}).get("plugin_config_data_note", "")))
@@ -2873,6 +3385,461 @@ def open_config_window(parent, current_params, context):
         refresh_global_list(initial_index)
         dlg.after_idle(lambda: _show_centered_window(dlg, win, 1120, 720))
 
+    def manage_linked_rules(initial_index=None):
+        sync_params_from_ui()
+        cfg.setdefault("linked_rules", [])
+        dlg = _make_floating_child(win, "联动写入规则窗口")
+        body = ttk.Frame(dlg, padding=10)
+        body.pack(fill=tk.BOTH, expand=True)
+        body.columnconfigure(1, weight=1)
+        body.columnconfigure(2, weight=1)
+        body.rowconfigure(0, weight=1)
+
+        left_panel = ttk.Frame(body)
+        left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        editor_outer = ttk.Frame(body)
+        editor_outer.grid(row=0, column=1, sticky="nsew")
+        editor_outer.rowconfigure(0, weight=1)
+        editor_outer.columnconfigure(0, weight=1)
+        editor_canvas = tk.Canvas(editor_outer, highlightthickness=0)
+        editor_canvas.grid(row=0, column=0, sticky="nsew")
+        editor_scroll = ttk.Scrollbar(editor_outer, orient=tk.VERTICAL, command=editor_canvas.yview)
+        editor_scroll.grid(row=0, column=1, sticky="ns")
+        editor_canvas.configure(yscrollcommand=editor_scroll.set)
+        editor = ttk.Frame(editor_canvas)
+        editor_window = editor_canvas.create_window((0, 0), window=editor, anchor="nw")
+        editor.columnconfigure(1, weight=1)
+        editor.columnconfigure(3, weight=1)
+
+        def refresh_editor_scroll(_event=None):
+            editor_canvas.configure(scrollregion=editor_canvas.bbox("all"))
+
+        def resize_editor_width(event=None):
+            if event is not None:
+                editor_canvas.itemconfigure(editor_window, width=max(1, event.width))
+            refresh_editor_scroll()
+
+        editor.bind("<Configure>", refresh_editor_scroll)
+        editor_canvas.bind("<Configure>", resize_editor_width)
+        editor_canvas.bind("<MouseWheel>", lambda event: editor_canvas.yview_scroll((-1 if event.delta > 0 else 1) * 3, "units"))
+
+        preview_panel = ttk.Frame(body)
+        preview_panel.grid(row=0, column=2, sticky="nsew", padx=(8, 0))
+        preview_panel.rowconfigure(1, weight=1)
+        preview_panel.columnconfigure(0, weight=1)
+
+        rule_list_frame, rule_list = _make_scrollable_listbox(left_panel, height=22, width=32, exportselection=False)
+        rule_list_frame.pack(fill=tk.BOTH, expand=True)
+        selected_idx = {"value": None}
+
+        name_var = tk.StringVar(value="")
+        enabled_var = tk.BooleanVar(value=True)
+        trigger_var = tk.StringVar(value=LINKED_RULE_ANY)
+        target_mode_var = tk.StringVar(value=LINK_TARGET_TRIGGER_OFFSET)
+        sheet_var = tk.StringVar(value=SHEET_ALL_LABEL)
+        row_offset_var = tk.StringVar(value="0")
+        col_offset_var = tk.StringVar(value="0")
+        row_index_var = tk.StringVar(value="")
+        col_index_var = tk.StringVar(value="")
+        target_match_enabled_var = tk.BooleanVar(value=False)
+        target_match_mode_var = tk.StringVar(value="包含")
+        target_match_value_var = tk.StringVar(value="")
+        anchor_enabled_var = tk.BooleanVar(value=False)
+        anchor_axis_var = tk.StringVar(value="列")
+        anchor_index_var = tk.StringVar(value="1")
+        anchor_match_mode_var = tk.StringVar(value="等于")
+        anchor_value_var = tk.StringVar(value="")
+        value_source_var = tk.StringVar(value=LINK_VALUE_TEMPLATE)
+        fixed_value_var = tk.StringVar(value="")
+        value_field_var = tk.StringVar(value="")
+        value_template_var = tk.StringVar(value="{触发新值}")
+        write_mode_var = tk.StringVar(value=LINK_WRITE_REPLACE)
+        append_separator_var = tk.StringVar(value="")
+        regex_pattern_var = tk.StringVar(value="")
+        replace_count_var = tk.StringVar(value="0")
+        case_sensitive_var = tk.BooleanVar(value=True)
+        empty_policy_var = tk.StringVar(value="允许")
+        area_enabled_var = tk.BooleanVar(value=False)
+        area_row_start_var = tk.StringVar(value="0")
+        area_row_end_var = tk.StringVar(value="0")
+        area_col_start_var = tk.StringVar(value="0")
+        area_col_end_var = tk.StringVar(value="0")
+        area_write_col_var = tk.StringVar(value="0")
+        marker_col_var = tk.StringVar(value="0")
+        overflow_var = tk.StringVar(value=LINK_OVERFLOW_SKIP)
+
+        row = 0
+        ttk.Label(editor, text="规则名称：").grid(row=row, column=0, sticky=tk.W, pady=3)
+        ttk.Entry(editor, textvariable=name_var, width=24).grid(row=row, column=1, sticky="ew", pady=3)
+        ttk.Checkbutton(editor, text="启用", variable=enabled_var).grid(row=row, column=2, sticky=tk.W, padx=6)
+        row += 1
+        ttk.Label(editor, text="触发规则：").grid(row=row, column=0, sticky=tk.W, pady=3)
+        trigger_combo = ttk.Combobox(editor, textvariable=trigger_var, values=[], width=28, state="readonly")
+        trigger_combo.grid(row=row, column=1, columnspan=3, sticky="ew", pady=3)
+        row += 1
+        ttk.Separator(editor).grid(row=row, column=0, columnspan=4, sticky="ew", pady=8)
+        row += 1
+        ttk.Label(editor, text="目标定位：").grid(row=row, column=0, sticky=tk.W, pady=3)
+        ttk.Combobox(editor, textvariable=target_mode_var, values=LINK_TARGET_MODES, width=16, state="readonly").grid(row=row, column=1, sticky=tk.W, pady=3)
+        ttk.Label(editor, text="表格/Sheet：").grid(row=row, column=2, sticky=tk.E, pady=3)
+        sheet_combo = ttk.Combobox(editor, textvariable=sheet_var, values=[], width=18, state="normal")
+        sheet_combo.grid(row=row, column=3, sticky="ew", pady=3)
+        row += 1
+        ttk.Label(editor, text="行偏移：").grid(row=row, column=0, sticky=tk.W, pady=3)
+        ttk.Entry(editor, textvariable=row_offset_var, width=10).grid(row=row, column=1, sticky=tk.W, pady=3)
+        ttk.Label(editor, text="列偏移：").grid(row=row, column=2, sticky=tk.E, pady=3)
+        ttk.Entry(editor, textvariable=col_offset_var, width=10).grid(row=row, column=3, sticky=tk.W, pady=3)
+        row += 1
+        ttk.Label(editor, text="指定行：").grid(row=row, column=0, sticky=tk.W, pady=3)
+        ttk.Entry(editor, textvariable=row_index_var, width=10).grid(row=row, column=1, sticky=tk.W, pady=3)
+        ttk.Label(editor, text="指定列：").grid(row=row, column=2, sticky=tk.E, pady=3)
+        ttk.Entry(editor, textvariable=col_index_var, width=10).grid(row=row, column=3, sticky=tk.W, pady=3)
+        row += 1
+        ttk.Checkbutton(editor, text="启用目标格匹配", variable=target_match_enabled_var).grid(row=row, column=0, sticky=tk.W, pady=3)
+        ttk.Combobox(editor, textvariable=target_match_mode_var, values=["包含", "等于", "不等于", "正则匹配", "正则不匹配", "为空", "非空"], width=14, state="readonly").grid(row=row, column=1, sticky=tk.W, pady=3)
+        ttk.Entry(editor, textvariable=target_match_value_var, width=24).grid(row=row, column=2, columnspan=2, sticky="ew", pady=3)
+        row += 1
+        ttk.Label(editor, text="锚点：").grid(row=row, column=0, sticky=tk.W, pady=3)
+        ttk.Checkbutton(editor, text="启用", variable=anchor_enabled_var).grid(row=row, column=1, sticky=tk.W, pady=3)
+        ttk.Combobox(editor, textvariable=anchor_axis_var, values=["列", "行"], width=8, state="readonly").grid(row=row, column=2, sticky=tk.E, pady=3)
+        ttk.Entry(editor, textvariable=anchor_index_var, width=10).grid(row=row, column=3, sticky=tk.W, pady=3)
+        row += 1
+        ttk.Label(editor, text="锚点匹配：").grid(row=row, column=0, sticky=tk.W, pady=3)
+        ttk.Combobox(editor, textvariable=anchor_match_mode_var, values=["包含", "等于", "不等于", "正则匹配", "正则不匹配", "为空", "非空"], width=14, state="readonly").grid(row=row, column=1, sticky=tk.W, pady=3)
+        ttk.Entry(editor, textvariable=anchor_value_var, width=24).grid(row=row, column=2, columnspan=2, sticky="ew", pady=3)
+        row += 1
+        ttk.Separator(editor).grid(row=row, column=0, columnspan=4, sticky="ew", pady=8)
+        row += 1
+        ttk.Label(editor, text="写入来源：").grid(row=row, column=0, sticky=tk.W, pady=3)
+        ttk.Combobox(editor, textvariable=value_source_var, values=LINK_VALUE_SOURCES, width=16, state="readonly").grid(row=row, column=1, sticky=tk.W, pady=3)
+        ttk.Label(editor, text="新内容字段：").grid(row=row, column=2, sticky=tk.E, pady=3)
+        value_field_combo = ttk.Combobox(editor, textvariable=value_field_var, values=[], width=18, state="normal")
+        value_field_combo.grid(row=row, column=3, sticky="ew", pady=3)
+        row += 1
+        ttk.Label(editor, text="固定值：").grid(row=row, column=0, sticky=tk.W, pady=3)
+        ttk.Entry(editor, textvariable=fixed_value_var, width=24).grid(row=row, column=1, sticky="ew", pady=3)
+        ttk.Label(editor, text="写入方式：").grid(row=row, column=2, sticky=tk.E, pady=3)
+        ttk.Combobox(editor, textvariable=write_mode_var, values=LINK_WRITE_MODES, width=16, state="readonly").grid(row=row, column=3, sticky=tk.W, pady=3)
+        row += 1
+        ttk.Label(editor, text="模板：").grid(row=row, column=0, sticky=tk.W, pady=3)
+        ttk.Entry(editor, textvariable=value_template_var, width=42).grid(row=row, column=1, columnspan=3, sticky="ew", pady=3)
+        row += 1
+        ttk.Label(editor, text="追加分隔：").grid(row=row, column=0, sticky=tk.W, pady=3)
+        ttk.Entry(editor, textvariable=append_separator_var, width=10).grid(row=row, column=1, sticky=tk.W, pady=3)
+        ttk.Label(editor, text="空值策略：").grid(row=row, column=2, sticky=tk.E, pady=3)
+        ttk.Combobox(editor, textvariable=empty_policy_var, values=["允许", "跳过"], width=10, state="readonly").grid(row=row, column=3, sticky=tk.W, pady=3)
+        row += 1
+        ttk.Label(editor, text="正则模式：").grid(row=row, column=0, sticky=tk.W, pady=3)
+        ttk.Entry(editor, textvariable=regex_pattern_var, width=24).grid(row=row, column=1, sticky="ew", pady=3)
+        ttk.Label(editor, text="次数：").grid(row=row, column=2, sticky=tk.E, pady=3)
+        ttk.Entry(editor, textvariable=replace_count_var, width=10).grid(row=row, column=3, sticky=tk.W, pady=3)
+        row += 1
+        ttk.Checkbutton(editor, text="正则区分大小写", variable=case_sensitive_var).grid(row=row, column=1, columnspan=3, sticky=tk.W, pady=3)
+        row += 1
+        ttk.Label(editor, text="模板可用：{触发新值} {原文} {本页变化序号} {本页变化总数} {圈号}").grid(row=row, column=0, columnspan=4, sticky=tk.W, pady=(0, 6))
+        row += 1
+        ttk.Separator(editor).grid(row=row, column=0, columnspan=4, sticky="ew", pady=8)
+        row += 1
+        ttk.Checkbutton(editor, text="启用区域槽位", variable=area_enabled_var).grid(row=row, column=0, sticky=tk.W, pady=3)
+        ttk.Label(editor, text="满区策略：").grid(row=row, column=2, sticky=tk.E, pady=3)
+        ttk.Combobox(editor, textvariable=overflow_var, values=LINK_OVERFLOW_POLICIES, width=18, state="readonly").grid(row=row, column=3, sticky=tk.W, pady=3)
+        row += 1
+        ttk.Label(editor, text="区域行偏移：").grid(row=row, column=0, sticky=tk.W, pady=3)
+        ttk.Entry(editor, textvariable=area_row_start_var, width=6).grid(row=row, column=1, sticky=tk.W, pady=3)
+        ttk.Entry(editor, textvariable=area_row_end_var, width=6).grid(row=row, column=1, sticky=tk.E, pady=3)
+        ttk.Label(editor, text="区域列偏移：").grid(row=row, column=2, sticky=tk.E, pady=3)
+        ttk.Entry(editor, textvariable=area_col_start_var, width=6).grid(row=row, column=3, sticky=tk.W, pady=3)
+        ttk.Entry(editor, textvariable=area_col_end_var, width=6).grid(row=row, column=3, sticky=tk.E, pady=3)
+        row += 1
+        ttk.Label(editor, text="写入列偏移：").grid(row=row, column=0, sticky=tk.W, pady=3)
+        ttk.Entry(editor, textvariable=area_write_col_var, width=10).grid(row=row, column=1, sticky=tk.W, pady=3)
+        ttk.Label(editor, text="圈号列偏移：").grid(row=row, column=2, sticky=tk.E, pady=3)
+        ttk.Entry(editor, textvariable=marker_col_var, width=10).grid(row=row, column=3, sticky=tk.W, pady=3)
+
+        ttk.Label(preview_panel, text="联动预览").grid(row=0, column=0, sticky=tk.W, pady=(0, 4))
+        preview_text = tk.Text(preview_panel, height=30, width=48, wrap=tk.WORD)
+        preview_text.grid(row=1, column=0, sticky="nsew")
+        preview_scroll = ttk.Scrollbar(preview_panel, orient=tk.VERTICAL, command=preview_text.yview)
+        preview_scroll.grid(row=1, column=1, sticky="ns")
+        preview_text.configure(yscrollcommand=preview_scroll.set)
+        preview_status_var = tk.StringVar(value="未刷新")
+        ttk.Label(preview_panel, textvariable=preview_status_var, foreground="gray").grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=(4, 0))
+
+        def linked_label(rule):
+            prefix = "" if rule.get("enabled", True) else "[停用] "
+            return f"{prefix}{_as_text(rule.get('name')) or '未命名'} <= {_as_text(rule.get('trigger_rule') or LINKED_RULE_ANY)}"
+
+        def build_rule_from_editor():
+            return {
+                "name": _as_text(name_var.get()) or "未命名联动规则",
+                "enabled": bool(enabled_var.get()),
+                "trigger_rule": _as_text(trigger_var.get()) or LINKED_RULE_ANY,
+                "target_mode": _as_text(target_mode_var.get()) or LINK_TARGET_TRIGGER_OFFSET,
+                "sheet_name": _cfg_sheet_name(sheet_var.get()),
+                "row_offset": _as_text(row_offset_var.get()) or "0",
+                "col_offset": _as_text(col_offset_var.get()) or "0",
+                "row_index": _as_text(row_index_var.get()),
+                "col_index": _as_text(col_index_var.get()),
+                "target_match": {
+                    "enabled": bool(target_match_enabled_var.get()),
+                    "mode": _as_text(target_match_mode_var.get()) or "包含",
+                    "value": _as_text(target_match_value_var.get()),
+                },
+                "anchor": {
+                    "enabled": bool(anchor_enabled_var.get()),
+                    "axis": _as_text(anchor_axis_var.get()) or "列",
+                    "index": _as_text(anchor_index_var.get()) or "1",
+                    "match_mode": _as_text(anchor_match_mode_var.get()) or "等于",
+                    "value": _as_text(anchor_value_var.get()),
+                },
+                "value_source": _as_text(value_source_var.get()) or LINK_VALUE_FIXED,
+                "fixed_value": fixed_value_var.get(),
+                "value_field": _as_text(value_field_var.get()),
+                "value_template": value_template_var.get(),
+                "write_mode": _as_text(write_mode_var.get()) or LINK_WRITE_REPLACE,
+                "append_separator": append_separator_var.get(),
+                "regex_pattern": regex_pattern_var.get(),
+                "replace_count": _as_text(replace_count_var.get()) or "0",
+                "case_sensitive": bool(case_sensitive_var.get()),
+                "empty_policy": _as_text(empty_policy_var.get()) or "允许",
+                "area_enabled": bool(area_enabled_var.get()),
+                "area_row_start_offset": _as_text(area_row_start_var.get()) or "0",
+                "area_row_end_offset": _as_text(area_row_end_var.get()) or "0",
+                "area_col_start_offset": _as_text(area_col_start_var.get()) or "0",
+                "area_col_end_offset": _as_text(area_col_end_var.get()) or "0",
+                "area_write_col_offset": _as_text(area_write_col_var.get()) or "0",
+                "marker_col_offset": _as_text(marker_col_var.get()) or "0",
+                "overflow_policy": _as_text(overflow_var.get()) or LINK_OVERFLOW_SKIP,
+            }
+
+        def load_rule(index):
+            if index is None or index < 0 or index >= len(cfg.get("linked_rules", [])):
+                selected_idx["value"] = None
+                return
+            selected_idx["value"] = index
+            rule = cfg["linked_rules"][index]
+            name_var.set(_as_text(rule.get("name")))
+            enabled_var.set(bool(rule.get("enabled", True)))
+            trigger_var.set(_as_text(rule.get("trigger_rule") or LINKED_RULE_ANY))
+            target_mode_var.set(_as_text(rule.get("target_mode") or LINK_TARGET_TRIGGER_OFFSET))
+            sheet_var.set(_ui_sheet_name(rule.get("sheet_name", "")))
+            row_offset_var.set(_as_text(rule.get("row_offset") or "0"))
+            col_offset_var.set(_as_text(rule.get("col_offset") or "0"))
+            row_index_var.set(_as_text(rule.get("row_index")))
+            col_index_var.set(_as_text(rule.get("col_index")))
+            target_match = rule.get("target_match") or {}
+            target_match_enabled_var.set(bool(target_match.get("enabled", False)))
+            target_match_mode_var.set(_as_text(target_match.get("mode") or "包含"))
+            target_match_value_var.set(_as_text(target_match.get("value")))
+            anchor = rule.get("anchor") or {}
+            anchor_enabled_var.set(bool(anchor.get("enabled", False)))
+            anchor_axis_var.set(_as_text(anchor.get("axis") or "列"))
+            anchor_index_var.set(_as_text(anchor.get("index") or "1"))
+            anchor_match_mode_var.set(_as_text(anchor.get("match_mode") or "等于"))
+            anchor_value_var.set(_as_text(anchor.get("value")))
+            value_source_var.set(_as_text(rule.get("value_source") or LINK_VALUE_FIXED))
+            fixed_value_var.set(_cell_text(rule.get("fixed_value", "")))
+            value_field_var.set(_as_text(rule.get("value_field")))
+            value_template_var.set(_cell_text(rule.get("value_template", "{触发新值}")))
+            write_mode_var.set(_as_text(rule.get("write_mode") or LINK_WRITE_REPLACE))
+            append_separator_var.set(_cell_text(rule.get("append_separator", "")))
+            regex_pattern_var.set(_cell_text(rule.get("regex_pattern", "")))
+            replace_count_var.set(_as_text(rule.get("replace_count") or "0"))
+            case_sensitive_var.set(bool(rule.get("case_sensitive", True)))
+            empty_policy_var.set(_as_text(rule.get("empty_policy") or "允许"))
+            area_enabled_var.set(bool(rule.get("area_enabled", False)))
+            area_row_start_var.set(_as_text(rule.get("area_row_start_offset") or "0"))
+            area_row_end_var.set(_as_text(rule.get("area_row_end_offset") or "0"))
+            area_col_start_var.set(_as_text(rule.get("area_col_start_offset") or "0"))
+            area_col_end_var.set(_as_text(rule.get("area_col_end_offset") or "0"))
+            area_write_col_var.set(_as_text(rule.get("area_write_col_offset") or "0"))
+            marker_col_var.set(_as_text(rule.get("marker_col_offset") or "0"))
+            overflow_var.set(_as_text(rule.get("overflow_policy") or LINK_OVERFLOW_SKIP))
+
+        def refresh_linked_list(select_index=None):
+            rule_list.delete(0, tk.END)
+            for rule in cfg.get("linked_rules", []) or []:
+                rule_list.insert(tk.END, linked_label(rule))
+            trigger_combo.configure(values=_linked_trigger_options(cfg))
+            sheet_combo.configure(values=current_sheet_names(True))
+            value_field_combo.configure(values=current_content_fields())
+            if cfg.get("linked_rules"):
+                idx = 0 if select_index is None else max(0, min(int(select_index), len(cfg["linked_rules"]) - 1))
+                rule_list.selection_clear(0, tk.END)
+                rule_list.selection_set(idx)
+                rule_list.see(idx)
+                load_rule(idx)
+
+        def collect_preview_events():
+            if not state.get("records"):
+                reload_data()
+            records = list(state.get("records", []) or [])
+            contents = current_content_rows()
+            by_file = {}
+            for item in records:
+                by_file.setdefault(item.get("source_file", ""), []).append(item)
+            source_files = _source_files(records, params)
+            aux_rows = current_aux_rows()
+            table_context = current_table_context()
+            events = []
+            empty_policy = _as_text(params.get("empty_policy", "跳过")) or "跳过"
+            for content_index, content in enumerate(contents):
+                source_file, source_note = _source_file_for_content(content, source_files, content_index, len(contents), params)
+                if not source_file and source_files != [""]:
+                    continue
+                target_file = _target_file_for_content(content, params, source_file)
+                if not target_file:
+                    continue
+                source_records = by_file.get(source_file, [])
+                for rule in [r for r in cfg.get("rules", []) if isinstance(r, dict) and r.get("enabled", True)]:
+                    locator = rule.get("source_locator", {}) or {}
+                    feature_ok, _feature_detail = _feature_pass(rule.get("feature_name", ""), cfg.get("features", []), source_records, source_file, _as_text(locator.get("sheet_name")))
+                    if not feature_ok:
+                        continue
+                    rec, _anchor_detail = _locate_target_record(rule, source_records, source_file, content=content, table_context=table_context)
+                    if rec is None:
+                        continue
+                    ok, _match_detail = _match_text_with_sources(
+                        rec.get("text", ""),
+                        rule.get("source_match", {}),
+                        content=content,
+                        table_context=table_context,
+                        doc_record=rec,
+                        source_records=source_records,
+                    )
+                    if not ok:
+                        continue
+                    field = _as_text((rule.get("mapping") or {}).get("content_field") or (rule.get("mapping") or {}).get("field"))
+                    if not field:
+                        continue
+                    value = _cell_text(content.get(field))
+                    if value == "" and empty_policy in ("跳过", "报错"):
+                        continue
+                    if value != rec.get("text", ""):
+                        events.append({
+                            "kind": "普通映射",
+                            "rule_name": rule.get("name", ""),
+                            "match_rule": rule.get("name", ""),
+                            "source_file": source_file,
+                            "target_file": target_file,
+                            "rec": rec,
+                            "sheet_name": rec.get("sheet_name", ""),
+                            "row_index": rec.get("row_index", ""),
+                            "col_index": rec.get("col_index", ""),
+                            "old_text": rec.get("text", ""),
+                            "new_text": value,
+                            "mapping_field": field,
+                            "content": content,
+                            "content_row": content.get("__content_row__", ""),
+                            "source_note": source_note,
+                        })
+                for global_rule in [r for r in cfg.get("global_rules", []) if isinstance(r, dict) and r.get("enabled", True)]:
+                    for rec in _global_rule_records(global_rule, source_records):
+                        feature_ok, _feature_detail = _feature_pass(global_rule.get("feature_name", ""), cfg.get("features", []), source_records, source_file, rec.get("sheet_name", ""))
+                        if not feature_ok:
+                            continue
+                        cond_ok, _cond_detail, condition_items = _condition_extract_items(rec.get("text", ""), global_rule.get("conditions", []), global_rule.get("condition_logic", "AND"))
+                        if not cond_ok:
+                            continue
+                        value, _replace_detail, replace_error = _apply_replace_steps(rec.get("text", ""), global_rule, content, aux_rows, condition_items, table_context, params)
+                        if replace_error or value == rec.get("text", ""):
+                            continue
+                        events.append({
+                            "kind": "全局替换",
+                            "rule_name": global_rule.get("name", ""),
+                            "match_rule": f"全局:{global_rule.get('name', '')}",
+                            "source_file": source_file,
+                            "target_file": target_file,
+                            "rec": rec,
+                            "sheet_name": rec.get("sheet_name", ""),
+                            "row_index": rec.get("row_index", ""),
+                            "col_index": rec.get("col_index", ""),
+                            "old_text": rec.get("text", ""),
+                            "new_text": value,
+                            "mapping_field": _global_rule_fields(global_rule),
+                            "content": content,
+                            "content_row": content.get("__content_row__", ""),
+                            "source_note": source_note,
+                        })
+            _assign_link_event_counts(events)
+            return events, by_file
+
+        def preview_current_rule():
+            rule = build_rule_from_editor()
+            events, by_file = collect_preview_events()
+            rows, matched_count, skipped_count, reasons = _build_linked_plan_rows([rule], events, by_file, params)
+            preview_text.configure(state="normal")
+            preview_text.delete("1.0", tk.END)
+            preview_status_var.set(f"触发事件 {len(events)} 条；联动生成 {matched_count} 条；跳过 {skipped_count} 条")
+            for row_values in rows[:300]:
+                preview_text.insert(
+                    tk.END,
+                    f"[联动] {row_values[3]} R{row_values[4]}C{row_values[5]}\n"
+                    f"原文：{row_values[8]}\n"
+                    f"写入：{row_values[7]}\n"
+                    f"规则：{row_values[12]}\n"
+                    f"明细：{row_values[16]}\n\n"
+                )
+            if len(rows) > 300:
+                preview_text.insert(tk.END, f"... 还有 {len(rows) - 300} 条未显示。\n")
+            if not rows:
+                preview_text.insert(tk.END, "当前联动规则没有生成写入计划。\n")
+            if reasons:
+                preview_text.insert(tk.END, "\n跳过原因：\n")
+                for reason, count in sorted(reasons.items(), key=lambda item: item[1], reverse=True)[:10]:
+                    preview_text.insert(tk.END, f"- {reason} x {count}\n")
+            preview_text.configure(state="disabled")
+
+        def save_rule(show_msg=False):
+            idx = selected_idx.get("value")
+            if idx is None:
+                return
+            rule = build_rule_from_editor()
+            cfg["linked_rules"][idx] = rule
+            _save_config(params, context, cfg)
+            refresh_linked_list(idx)
+            refresh_rules()
+            status_var.set(f"已保存联动写入规则：{rule.get('name')}")
+            if show_msg:
+                messagebox.showinfo("保存完成", "联动写入规则已保存。", parent=dlg)
+
+        def add_rule():
+            cfg.setdefault("linked_rules", []).append(_default_linked_rule(len(cfg.get("linked_rules", [])) + 1))
+            refresh_linked_list(len(cfg["linked_rules"]) - 1)
+
+        def delete_rule():
+            idx = selected_idx.get("value")
+            if idx is None:
+                return
+            if not messagebox.askyesno("确认删除", "删除当前联动写入规则？", parent=dlg):
+                return
+            cfg["linked_rules"].pop(idx)
+            _save_config(params, context, cfg)
+            selected_idx["value"] = None
+            refresh_linked_list(0)
+            refresh_rules()
+
+        def on_rule_select(_event=None):
+            sel = rule_list.curselection()
+            if sel:
+                load_rule(int(sel[0]))
+
+        rule_list.bind("<<ListboxSelect>>", on_rule_select)
+
+        left_buttons = ttk.Frame(left_panel)
+        left_buttons.pack(fill=tk.X, pady=(8, 0))
+        ttk.Button(left_buttons, text="增加", command=add_rule).pack(side=tk.LEFT, padx=2)
+        ttk.Button(left_buttons, text="删除", command=delete_rule).pack(side=tk.LEFT, padx=2)
+        ttk.Button(left_buttons, text="保存修改", command=lambda: save_rule(True)).pack(side=tk.LEFT, padx=2)
+
+        preview_buttons = ttk.Frame(preview_panel)
+        preview_buttons.grid(row=3, column=0, columnspan=2, sticky=tk.E, pady=(8, 0))
+        ttk.Button(preview_buttons, text="刷新预览", command=preview_current_rule).pack(side=tk.LEFT, padx=4)
+        ttk.Button(preview_buttons, text="关闭", command=dlg.destroy).pack(side=tk.LEFT, padx=4)
+
+        refresh_linked_list(initial_index)
+        dlg.after_idle(lambda: _show_centered_window(dlg, win, 1120, 720))
+
     def current_content_fields():
         table = tables.get(content_alias_var.get(), {})
         fields, _ = _content_rows(table)
@@ -2950,11 +3917,18 @@ def open_config_window(parent, current_params, context):
                     if not feature_ok:
                         skipped += 1
                         continue
-                    rec, anchor_detail = _locate_target_record(rule, source_records, source_file)
+                    rec, anchor_detail = _locate_target_record(rule, source_records, source_file, content=content, table_context=current_table_context())
                     if rec is None:
                         skipped += 1
                         continue
-                    ok, match_detail = _match_text(rec.get("text", ""), rule.get("source_match", {}))
+                    ok, match_detail = _match_text_with_sources(
+                        rec.get("text", ""),
+                        rule.get("source_match", {}),
+                        content=content,
+                        table_context=current_table_context(),
+                        doc_record=rec,
+                        source_records=source_records,
+                    )
                     if not ok:
                         skipped += 1
                         continue
@@ -3131,6 +4105,10 @@ def open_config_window(parent, current_params, context):
             feature_name = _cfg_feature_name(rule.get("feature_name"))
             feature_note = f" [特征:{feature_name}]" if feature_name else ""
             rule_lb.insert(tk.END, f"{prefix}[全局] {rule.get('name','')}{feature_note}")
+        for rule in cfg.get("linked_rules", []) or []:
+            prefix = "" if rule.get("enabled", True) else "[停用] "
+            trigger = _as_text(rule.get("trigger_rule") or LINKED_RULE_ANY)
+            rule_lb.insert(tk.END, f"{prefix}[联动] {rule.get('name','')} <= {trigger}")
 
     def select_rule_list_index(index):
         total = rule_lb.size()
@@ -3169,6 +4147,17 @@ def open_config_window(parent, current_params, context):
                 "list_index": list_index,
                 "rule": global_rules[global_index],
             }
+        linked_rules = cfg.setdefault("linked_rules", [])
+        linked_index = list_index - len(normal_rules) - len(global_rules)
+        if 0 <= linked_index < len(linked_rules):
+            return {
+                "kind": "linked_rules",
+                "label": "联动写入规则",
+                "rules": linked_rules,
+                "index": linked_index,
+                "list_index": list_index,
+                "rule": linked_rules[linked_index],
+            }
         if show_warning:
             messagebox.showwarning("规则不存在", "当前选中的规则已经不存在，请刷新列表后重试。", parent=win)
         return None
@@ -3176,6 +4165,8 @@ def open_config_window(parent, current_params, context):
     def rule_list_index(kind, index):
         if kind == "global_rules":
             return len(cfg.get("rules", []) or []) + int(index)
+        if kind == "linked_rules":
+            return len(cfg.get("rules", []) or []) + len(cfg.get("global_rules", []) or []) + int(index)
         return int(index)
 
     def after_rule_manage(kind, index, message):
@@ -3247,43 +4238,59 @@ def open_config_window(parent, current_params, context):
 
     def edit_rule(rec, rule_override=None):
         rule = rule_override or find_rule(rec)
-        dlg = _make_floating_child(win, "输入源匹配 / 锚点设置")
+        dlg = _make_floating_child(win, "输入源匹配 / 锚点定位规则")
         body = ttk.Frame(dlg, padding=10)
         body.pack(fill=tk.BOTH, expand=True)
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(1, weight=1)
+        body.rowconfigure(2, weight=1)
         source_match = rule.setdefault("source_match", {})
         anchor = rule.setdefault("anchor", {})
         sm_enabled = tk.BooleanVar(value=bool(source_match.get("enabled", False)))
-        sm_mode = tk.StringVar(value=source_match.get("mode", "包含"))
-        sm_value = tk.StringVar(value=source_match.get("value", rec.get("text", "")))
+        sm_logic = tk.StringVar(value=_as_text(source_match.get("logic") or "AND") or "AND")
         feature_var = tk.StringVar(value=_ui_feature_name(rule.get("feature_name", "")))
         anchor_enabled = tk.BooleanVar(value=bool(anchor.get("enabled", False)))
         anchor_axis = tk.StringVar(value=anchor.get("axis", "列"))
         anchor_index = tk.StringVar(value=str(anchor.get("index", rec.get("col_index", 1))))
-        anchor_match_mode = tk.StringVar(value=anchor.get("match_mode", "等于"))
-        anchor_value = tk.StringVar(value=anchor.get("value", ""))
+        anchor_logic = tk.StringVar(value=_as_text(anchor.get("logic") or "AND") or "AND")
         row_offset = tk.StringVar(value=str(anchor.get("row_offset", 0)))
         col_offset = tk.StringVar(value=str(anchor.get("col_offset", 0)))
 
-        ttk.Label(body, text="输入源内容匹配", font=("TkDefaultFont", 10, "bold")).grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 4))
-        ttk.Label(body, text="表特征：").grid(row=0, column=2, sticky=tk.E, padx=4)
-        ttk.Combobox(body, textvariable=feature_var, values=current_feature_names(True), width=18, state="normal").grid(row=0, column=3, sticky=tk.W, padx=4)
-        ttk.Checkbutton(body, text="启用", variable=sm_enabled).grid(row=1, column=0, sticky=tk.W)
-        ttk.Combobox(body, textvariable=sm_mode, values=["包含", "等于", "不等于", "正则匹配", "正则不匹配", "为空", "非空"], width=16, state="readonly").grid(row=1, column=1, padx=4, pady=4)
-        ttk.Entry(body, textvariable=sm_value, width=36).grid(row=1, column=2, columnspan=2, sticky=tk.W, padx=4, pady=4)
+        top = ttk.Frame(body)
+        top.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        top.columnconfigure(3, weight=1)
+        ttk.Label(top, text=f"当前格：{rec.get('sheet_name','')} R{rec.get('row_index')}C{rec.get('col_index')}").grid(row=0, column=0, sticky=tk.W, padx=4)
+        ttk.Label(top, text="表特征：").grid(row=0, column=1, sticky=tk.E, padx=4)
+        ttk.Combobox(top, textvariable=feature_var, values=current_feature_names(True), width=20, state="normal").grid(row=0, column=2, sticky=tk.W, padx=4)
+        ttk.Label(top, text=f"原文：{_short_preview_text(rec.get('text',''), 80)}", foreground="gray").grid(row=0, column=3, sticky=tk.W, padx=8)
 
-        ttk.Separator(body).grid(row=2, column=0, columnspan=4, sticky="ew", pady=8)
-        ttk.Label(body, text="锚点功能", font=("TkDefaultFont", 10, "bold")).grid(row=3, column=0, columnspan=4, sticky=tk.W, pady=(0, 4))
-        ttk.Checkbutton(body, text="启用锚点", variable=anchor_enabled).grid(row=4, column=0, sticky=tk.W)
-        ttk.Label(body, text="方向：").grid(row=4, column=1, sticky=tk.E)
-        ttk.Combobox(body, textvariable=anchor_axis, values=["行", "列"], width=8, state="readonly").grid(row=4, column=2, sticky=tk.W, padx=4)
-        ttk.Label(body, text="行/列序号：").grid(row=5, column=0, sticky=tk.W)
-        ttk.Entry(body, textvariable=anchor_index, width=10).grid(row=5, column=1, sticky=tk.W, padx=4)
-        ttk.Combobox(body, textvariable=anchor_match_mode, values=["包含", "等于", "不等于", "正则匹配"], width=16, state="readonly").grid(row=5, column=2, sticky=tk.W, padx=4)
-        ttk.Entry(body, textvariable=anchor_value, width=28).grid(row=5, column=3, sticky=tk.W, padx=4)
-        ttk.Label(body, text="偏移行：").grid(row=6, column=0, sticky=tk.W)
-        ttk.Entry(body, textvariable=row_offset, width=10).grid(row=6, column=1, sticky=tk.W, padx=4)
-        ttk.Label(body, text="偏移列：").grid(row=6, column=2, sticky=tk.E)
-        ttk.Entry(body, textvariable=col_offset, width=10).grid(row=6, column=3, sticky=tk.W, padx=4)
+        def match_source_choices():
+            choices = ["手动输入", "文档读取表字段"]
+            for alias in table_aliases:
+                alias = _as_text(alias)
+                if alias and alias not in choices:
+                    choices.append(alias)
+            return choices
+
+        def doc_match_fields():
+            fields = ["text", "source_file", "block_type", "sheet_name", "row_index", "col_index", "cell_address"]
+            for field in current_doc_fields():
+                field = _as_text(field)
+                if field and field not in fields:
+                    fields.append(field)
+            return fields
+
+        def source_fields(source):
+            source = _normalize_batch_table_source(source)
+            if _is_manual_batch_source(source):
+                return []
+            if source in ("文档读取表字段", "当前格字段", "doc_field"):
+                return doc_match_fields()
+            return (current_table_context().get("fields_by_alias") or {}).get(source, [])
+
+        def preview_content_row():
+            rows = current_content_rows()
+            return rows[0] if rows else {}
 
         def same_scope_records():
             sheet = rec.get("sheet_name", "")
@@ -3297,20 +4304,307 @@ def open_config_window(parent, current_params, context):
                 result.append(item)
             return result
 
+        def make_condition_section(parent, title, conditions, default_logic):
+            frame = ttk.LabelFrame(parent, text=title, padding=8)
+            frame.columnconfigure(0, weight=1)
+            frame.rowconfigure(1, weight=1)
+            logic_var = tk.StringVar(value=_as_text(default_logic or "AND") or "AND")
+            head = ttk.Frame(frame)
+            head.grid(row=0, column=0, sticky="ew")
+            ttk.Label(head, text="默认连接：").pack(side=tk.LEFT)
+            ttk.Combobox(head, textvariable=logic_var, values=["AND", "OR"], width=8, state="readonly").pack(side=tk.LEFT, padx=4)
+
+            columns = ("join", "mode", "source", "value", "field", "row_policy", "row_index")
+            tree_frame = ttk.Frame(frame)
+            tree_frame.grid(row=1, column=0, sticky="nsew", pady=4)
+            tree_frame.rowconfigure(0, weight=1)
+            tree_frame.columnconfigure(0, weight=1)
+            tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=5)
+            specs = [
+                ("join", "连接", 70),
+                ("mode", "匹配", 110),
+                ("source", "值来源", 140),
+                ("value", "手动值", 190),
+                ("field", "字段", 150),
+                ("row_policy", "行策略", 120),
+                ("row_index", "固定行", 70),
+            ]
+            for col, text, width in specs:
+                tree.heading(col, text=text)
+                tree.column(col, width=width, anchor=tk.W, stretch=False)
+            tree.grid(row=0, column=0, sticky="nsew")
+            yscroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=tree.yview)
+            yscroll.grid(row=0, column=1, sticky="ns")
+            xscroll = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=tree.xview)
+            xscroll.grid(row=1, column=0, sticky="ew")
+            tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+
+            editor = ttk.Frame(frame)
+            editor.grid(row=2, column=0, sticky="ew", pady=(4, 0))
+            join_var = tk.StringVar(value="AND")
+            mode_var = tk.StringVar(value="包含")
+            source_var = tk.StringVar(value="手动输入")
+            value_var = tk.StringVar(value="")
+            field_var = tk.StringVar(value="")
+            row_policy_var = tk.StringVar(value=REPLACE_ROW_CONTENT_ROW)
+            row_index_var = tk.StringVar(value="1")
+            ttk.Combobox(editor, textvariable=join_var, values=["AND", "OR"], width=7, state="readonly").pack(side=tk.LEFT, padx=2)
+            ttk.Combobox(editor, textvariable=mode_var, values=["包含", "等于", "不等于", "正则匹配", "正则不匹配", "为空", "非空"], width=12, state="readonly").pack(side=tk.LEFT, padx=2)
+            source_combo = ttk.Combobox(editor, textvariable=source_var, values=match_source_choices(), width=16, state="readonly")
+            source_combo.pack(side=tk.LEFT, padx=2)
+            value_entry = ttk.Entry(editor, textvariable=value_var, width=22)
+            value_entry.pack(side=tk.LEFT, padx=2, fill=tk.X, expand=True)
+            field_combo = ttk.Combobox(editor, textvariable=field_var, values=[], width=18, state="normal")
+            field_combo.pack(side=tk.LEFT, padx=2)
+            ttk.Combobox(editor, textvariable=row_policy_var, values=REPLACE_ROW_POLICY_CHOICES, width=13, state="readonly").pack(side=tk.LEFT, padx=2)
+            ttk.Entry(editor, textvariable=row_index_var, width=7).pack(side=tk.LEFT, padx=2)
+
+            def refresh_source_fields(_event=None):
+                field_combo.configure(values=source_fields(source_var.get()))
+                if _is_manual_batch_source(source_var.get()):
+                    value_entry.configure(state="normal")
+                else:
+                    value_entry.configure(state="disabled")
+
+            def values_from_editor():
+                return (
+                    join_var.get() or "AND",
+                    mode_var.get() or "包含",
+                    source_var.get() or "手动输入",
+                    value_var.get(),
+                    field_var.get(),
+                    row_policy_var.get() or REPLACE_ROW_CONTENT_ROW,
+                    row_index_var.get() or "1",
+                )
+
+            def load_to_editor(values):
+                values = list(values or [])
+                while len(values) < 7:
+                    values.append("")
+                join, mode, source, value, field, row_policy, row_index = values[:7]
+                join_var.set(join or "AND")
+                mode_var.set(mode or "包含")
+                source_var.set(source or "手动输入")
+                value_var.set(value)
+                field_var.set(field)
+                row_policy_var.set(row_policy or REPLACE_ROW_CONTENT_ROW)
+                row_index_var.set(row_index or "1")
+                refresh_source_fields()
+
+            def insert_condition(cond):
+                source = _normalize_batch_table_source(cond.get("value_source") or cond.get("match_value_source") or "手动输入")
+                tree.insert("", tk.END, values=(
+                    _as_text(cond.get("join") or "AND"),
+                    _as_text(cond.get("mode") or "包含"),
+                    source,
+                    _as_text(cond.get("value") or cond.get("match_value")),
+                    _as_text(cond.get("value_field") or cond.get("match_value_field") or cond.get("field")),
+                    _normalize_replace_row_policy(cond.get("row_policy") or cond.get("match_row_policy") or cond.get("match_value_row_policy")),
+                    _as_text(cond.get("row_index") or cond.get("match_row_index") or "1"),
+                ))
+
+            def get_conditions():
+                rows = []
+                for item_id in tree.get_children():
+                    join, mode, source, value, field, row_policy, row_index = tree.item(item_id, "values")
+                    rows.append({
+                        "join": _as_text(join) or "AND",
+                        "mode": _as_text(mode) or "包含",
+                        "value_source": _normalize_batch_table_source(source),
+                        "value": value,
+                        "value_field": _as_text(field),
+                        "row_policy": _normalize_replace_row_policy(row_policy),
+                        "row_index": _as_text(row_index) or "1",
+                    })
+                return rows
+
+            def add_condition():
+                tree.insert("", tk.END, values=values_from_editor())
+
+            def update_condition():
+                sel = tree.selection()
+                if sel:
+                    tree.item(sel[0], values=values_from_editor())
+
+            def delete_condition():
+                for item_id in tree.selection():
+                    tree.delete(item_id)
+
+            def on_select(_event=None):
+                sel = tree.selection()
+                if sel:
+                    load_to_editor(tree.item(sel[0], "values"))
+
+            buttons = ttk.Frame(frame)
+            buttons.grid(row=3, column=0, sticky=tk.E, pady=(4, 0))
+            ttk.Button(buttons, text="增加条件", command=add_condition).pack(side=tk.LEFT, padx=2)
+            ttk.Button(buttons, text="更新条件", command=update_condition).pack(side=tk.LEFT, padx=2)
+            ttk.Button(buttons, text="删除条件", command=delete_condition).pack(side=tk.LEFT, padx=2)
+            tree.bind("<<TreeviewSelect>>", on_select)
+            source_combo.bind("<<ComboboxSelected>>", refresh_source_fields)
+            for cond in conditions:
+                insert_condition(cond)
+            if not tree.get_children():
+                insert_condition({"join": "AND", "mode": "包含", "value_source": "手动输入", "value": ""})
+            first = tree.get_children()
+            if first:
+                tree.selection_set(first[0])
+                load_to_editor(tree.item(first[0], "values"))
+            return {
+                "frame": frame,
+                "logic_var": logic_var,
+                "tree": tree,
+                "get_conditions": get_conditions,
+            }
+
+        source_frame = ttk.Frame(body)
+        source_frame.grid(row=1, column=0, sticky="nsew", pady=(0, 8))
+        source_frame.columnconfigure(0, weight=1)
+        source_frame.rowconfigure(1, weight=1)
+        source_controls = ttk.Frame(source_frame)
+        source_controls.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        ttk.Checkbutton(source_controls, text="启用输入源匹配", variable=sm_enabled).pack(side=tk.LEFT, padx=4)
+        source_section = make_condition_section(
+            source_frame,
+            "输入源匹配规则设置",
+            _legacy_conditions_from_match_cfg(source_match, "mode", "value"),
+            source_match.get("logic", "AND"),
+        )
+        source_section["frame"].grid(row=1, column=0, sticky="nsew")
+
+        anchor_frame = ttk.Frame(body)
+        anchor_frame.grid(row=2, column=0, sticky="nsew", pady=(0, 8))
+        anchor_frame.columnconfigure(0, weight=1)
+        anchor_frame.rowconfigure(1, weight=1)
+        anchor_controls = ttk.Frame(anchor_frame)
+        anchor_controls.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        ttk.Checkbutton(anchor_controls, text="启用锚点", variable=anchor_enabled).pack(side=tk.LEFT, padx=4)
+        ttk.Label(anchor_controls, text="方向：").pack(side=tk.LEFT, padx=(12, 2))
+        ttk.Combobox(anchor_controls, textvariable=anchor_axis, values=["行", "列"], width=8, state="readonly").pack(side=tk.LEFT, padx=2)
+        ttk.Label(anchor_controls, text="行/列序号：").pack(side=tk.LEFT, padx=(12, 2))
+        ttk.Entry(anchor_controls, textvariable=anchor_index, width=8).pack(side=tk.LEFT, padx=2)
+        ttk.Label(anchor_controls, text="偏移行：").pack(side=tk.LEFT, padx=(12, 2))
+        ttk.Entry(anchor_controls, textvariable=row_offset, width=8).pack(side=tk.LEFT, padx=2)
+        ttk.Label(anchor_controls, text="偏移列：").pack(side=tk.LEFT, padx=(12, 2))
+        ttk.Entry(anchor_controls, textvariable=col_offset, width=8).pack(side=tk.LEFT, padx=2)
+        anchor_section = make_condition_section(
+            anchor_frame,
+            "锚点候选匹配规则设置",
+            _legacy_conditions_from_match_cfg(anchor, "match_mode", "value"),
+            anchor.get("logic", "AND"),
+        )
+        anchor_section["frame"].grid(row=1, column=0, sticky="nsew")
+
+        def current_source_match_cfg():
+            conditions = source_section["get_conditions"]()
+            first = conditions[0] if conditions else {}
+            return {
+                "enabled": bool(sm_enabled.get()),
+                "logic": source_section["logic_var"].get(),
+                "conditions": conditions,
+                "mode": first.get("mode", "包含"),
+                "value": first.get("value", ""),
+            }
+
+        def current_anchor_cfg():
+            conditions = anchor_section["get_conditions"]()
+            first = conditions[0] if conditions else {}
+            return {
+                "enabled": bool(anchor_enabled.get()),
+                "axis": anchor_axis.get(),
+                "index": anchor_index.get(),
+                "logic": anchor_section["logic_var"].get(),
+                "conditions": conditions,
+                "match_mode": first.get("mode", "等于"),
+                "value": first.get("value", ""),
+                "row_offset": row_offset.get(),
+                "col_offset": col_offset.get(),
+            }
+
+        def evaluate_record(item, match_cfg, match_index=1):
+            return _match_text_with_sources(
+                item.get("text", ""),
+                match_cfg,
+                content=preview_content_row(),
+                table_context=current_table_context(),
+                doc_record=item,
+                source_records=same_scope_records(),
+                match_index=match_index,
+            )
+
+        def preview_match(title, match_cfg, axis_filter=False):
+            records = same_scope_records()
+            matched_records = []
+            failed_records = []
+            seen = 0
+            for item in records:
+                if axis_filter:
+                    axis = anchor_axis.get()
+                    index = _to_int(anchor_index.get(), 0)
+                    if index <= 0:
+                        continue
+                    if axis in ("列", "column") and int(item.get("col_index") or 0) != index:
+                        continue
+                    if axis in ("行", "row") and int(item.get("row_index") or 0) != index:
+                        continue
+                seen += 1
+                ok, detail = evaluate_record(item, match_cfg, seen)
+                row = (item, detail)
+                if ok:
+                    matched_records.append(row)
+                else:
+                    failed_records.append(row)
+            current_ok, current_detail = evaluate_record(rec, match_cfg, 1)
+            preview = _make_floating_child(dlg, title)
+            preview_body = ttk.Frame(preview, padding=10)
+            preview_body.pack(fill=tk.BOTH, expand=True)
+            preview_body.rowconfigure(1, weight=1)
+            preview_body.columnconfigure(0, weight=1)
+            header = f"当前格：{'通过' if current_ok else '不通过'}；命中 {len(matched_records)} / {seen or len(records)} 条"
+            if not match_cfg.get("enabled"):
+                header += "；注意：未启用，正式执行会按通过处理"
+            ttk.Label(preview_body, text=header, foreground="gray").grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 6))
+            txt = tk.Text(preview_body, height=28, width=112, wrap=tk.WORD)
+            txt.grid(row=1, column=0, sticky="nsew")
+            scroll = ttk.Scrollbar(preview_body, orient=tk.VERTICAL, command=txt.yview)
+            scroll.grid(row=1, column=1, sticky="ns")
+            txt.configure(yscrollcommand=scroll.set)
+            txt.insert(tk.END, f"当前格 R{rec.get('row_index')}C{rec.get('col_index')}：{current_detail}\n")
+            txt.insert(tk.END, f"当前文本：{rec.get('text', '')}\n\n")
+            if matched_records:
+                txt.insert(tk.END, "命中记录：\n")
+                for item, detail in matched_records[:300]:
+                    txt.insert(tk.END, f"- {item.get('sheet_name','')} R{item.get('row_index')}C{item.get('col_index')}：{item.get('text','')}\n  明细：{detail}\n")
+                if len(matched_records) > 300:
+                    txt.insert(tk.END, f"... 还有 {len(matched_records) - 300} 条命中未显示。\n")
+            else:
+                txt.insert(tk.END, "没有任何命中记录。\n")
+                if failed_records:
+                    txt.insert(tk.END, "\n未命中示例：\n")
+                    for item, detail in failed_records[:20]:
+                        txt.insert(tk.END, f"- {item.get('sheet_name','')} R{item.get('row_index')}C{item.get('col_index')}：{item.get('text','')}\n  明细：{detail}\n")
+            txt.configure(state="disabled")
+            button_row = ttk.Frame(preview_body)
+            button_row.grid(row=2, column=0, columnspan=2, sticky=tk.E, pady=(8, 0))
+            ttk.Button(button_row, text="关闭", command=preview.destroy).pack(side=tk.RIGHT, padx=4)
+            preview.after_idle(lambda: _show_centered_window(preview, dlg, 1000, 640))
+
         def anchor_candidates_from_ui():
             axis = anchor_axis.get()
             index = _to_int(anchor_index.get(), 0)
             if index <= 0:
                 messagebox.showwarning("无法反推", "请先设置锚点行/列序号。", parent=dlg)
                 return []
-            match_cfg = {"enabled": True, "mode": anchor_match_mode.get(), "value": anchor_value.get()}
+            match_cfg = current_anchor_cfg()
             candidates = []
+            seen = 0
             for item in same_scope_records():
                 if axis in ("列", "column") and int(item.get("col_index") or 0) != index:
                     continue
                 if axis in ("行", "row") and int(item.get("row_index") or 0) != index:
                     continue
-                ok, _detail = _match_text(item.get("text", ""), match_cfg)
+                seen += 1
+                ok, _detail = evaluate_record(item, match_cfg, seen)
                 if ok:
                     candidates.append(item)
             return candidates
@@ -3332,8 +4626,7 @@ def open_config_window(parent, current_params, context):
             lb_frame, lb = _make_scrollable_listbox(body2, height=min(12, max(4, len(candidates))), width=72, exportselection=False)
             lb_frame.pack(fill=tk.BOTH, expand=True)
             for item in candidates:
-                label = f"R{item.get('row_index')}C{item.get('col_index')}  {item.get('text', '')}"
-                lb.insert(tk.END, label[:180])
+                lb.insert(tk.END, f"R{item.get('row_index')}C{item.get('col_index')}  {item.get('text', '')}"[:180])
             if candidates:
                 lb.selection_set(0)
 
@@ -3354,7 +4647,7 @@ def open_config_window(parent, current_params, context):
         def auto_infer_offset():
             candidates = anchor_candidates_from_ui()
             if not candidates:
-                messagebox.showwarning("无法反推", "未找到匹配的锚点单元格。请检查行/列序号、匹配方式和匹配内容。", parent=dlg)
+                messagebox.showwarning("无法反推", "未找到匹配的锚点单元格。请检查行/列序号和匹配条件。", parent=dlg)
                 return
             if len(candidates) == 1:
                 apply_anchor_candidate(candidates[0])
@@ -3362,96 +4655,24 @@ def open_config_window(parent, current_params, context):
                 return
             choose_anchor_candidate(candidates)
 
-        def preview_source_match():
-            match_cfg = {
-                "enabled": bool(sm_enabled.get()),
-                "mode": sm_mode.get(),
-                "value": sm_value.get(),
-            }
-            records = same_scope_records()
-            matched_records = []
-            failed_records = []
-            for item in records:
-                ok, detail = _match_text(item.get("text", ""), match_cfg)
-                row = (item, detail)
-                if ok:
-                    matched_records.append(row)
-                else:
-                    failed_records.append(row)
-            current_ok, current_detail = _match_text(rec.get("text", ""), match_cfg)
-
-            preview = _make_floating_child(dlg, "输入源匹配预览")
-            preview_body = ttk.Frame(preview, padding=10)
-            preview_body.pack(fill=tk.BOTH, expand=True)
-            preview_body.rowconfigure(1, weight=1)
-            preview_body.columnconfigure(0, weight=1)
-
-            header = (
-                f"当前格：{'通过' if current_ok else '不通过'}；"
-                f"同源同表命中 {len(matched_records)} / {len(records)} 条；"
-                f"匹配方式={match_cfg.get('mode')}；匹配值={match_cfg.get('value')}"
-            )
-            if not match_cfg.get("enabled"):
-                header += "；注意：未勾选启用，当前规则正式执行会按全部通过处理"
-            ttk.Label(preview_body, text=header, foreground="gray").grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 6))
-
-            txt = tk.Text(preview_body, height=28, width=110, wrap=tk.WORD)
-            txt.grid(row=1, column=0, sticky="nsew")
-            scroll = ttk.Scrollbar(preview_body, orient=tk.VERTICAL, command=txt.yview)
-            scroll.grid(row=1, column=1, sticky="ns")
-            txt.configure(yscrollcommand=scroll.set)
-
-            txt.insert(tk.END, f"当前格 R{rec.get('row_index')}C{rec.get('col_index')}：{current_detail}\n")
-            txt.insert(tk.END, f"当前文本：{rec.get('text', '')}\n\n")
-            if matched_records:
-                txt.insert(tk.END, "命中记录：\n")
-                for item, detail in matched_records[:300]:
-                    txt.insert(
-                        tk.END,
-                        f"- {item.get('sheet_name','')} R{item.get('row_index')}C{item.get('col_index')}：{item.get('text','')}\n  明细：{detail}\n"
-                    )
-                if len(matched_records) > 300:
-                    txt.insert(tk.END, f"... 还有 {len(matched_records) - 300} 条命中未显示。\n")
-            else:
-                txt.insert(tk.END, "没有任何命中记录。\n")
-                txt.insert(tk.END, "建议检查：是否勾选“启用”、匹配方式是否正确、正则是否可匹配当前格文本、是否存在大小写/空格差异。\n")
-                if failed_records:
-                    txt.insert(tk.END, "\n未命中示例：\n")
-                    for item, detail in failed_records[:20]:
-                        txt.insert(
-                            tk.END,
-                            f"- {item.get('sheet_name','')} R{item.get('row_index')}C{item.get('col_index')}：{item.get('text','')}\n  明细：{detail}\n"
-                        )
-            txt.configure(state="disabled")
-
-            button_row = ttk.Frame(preview_body)
-            button_row.grid(row=2, column=0, columnspan=2, sticky=tk.E, pady=(8, 0))
-            ttk.Button(button_row, text="关闭", command=preview.destroy).pack(side=tk.RIGHT, padx=4)
-            preview.after_idle(lambda: _show_centered_window(preview, dlg, 980, 620))
-
         def on_ok():
             rule["feature_name"] = _cfg_feature_name(feature_var.get())
-            source_match.update({"enabled": bool(sm_enabled.get()), "mode": sm_mode.get(), "value": sm_value.get()})
-            anchor.update({
-                "enabled": bool(anchor_enabled.get()),
-                "axis": anchor_axis.get(),
-                "index": anchor_index.get(),
-                "match_mode": anchor_match_mode.get(),
-                "value": anchor_value.get(),
-                "row_offset": row_offset.get(),
-                "col_offset": col_offset.get(),
-            })
+            source_match.clear()
+            source_match.update(current_source_match_cfg())
+            anchor.clear()
+            anchor.update(current_anchor_cfg())
             state["preview_changes"] = {}
             refresh_rules()
             dlg.destroy()
 
         btns = ttk.Frame(body)
-        btns.grid(row=7, column=0, columnspan=4, sticky=tk.E, pady=8)
+        btns.grid(row=3, column=0, sticky=tk.E, pady=(0, 2))
+        ttk.Button(btns, text="输入源匹配预览", command=lambda: preview_match("输入源匹配预览", current_source_match_cfg(), False)).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btns, text="锚点候选预览", command=lambda: preview_match("锚点候选预览", current_anchor_cfg(), True)).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="自动反推偏移", command=auto_infer_offset).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btns, text="匹配预览", command=preview_source_match).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="确定", command=on_ok).pack(side=tk.RIGHT, padx=4)
         ttk.Button(btns, text="取消", command=dlg.destroy).pack(side=tk.RIGHT, padx=4)
-        dlg.after_idle(lambda: _show_centered_window(dlg, win))
+        dlg.after_idle(lambda: _show_centered_window(dlg, win, 1120, 760))
 
     def edit_mapping(rec):
         rule = find_rule(rec)
@@ -3671,6 +4892,9 @@ def open_config_window(parent, current_params, context):
         if ref["kind"] == "global_rules":
             manage_global_rules(ref["index"])
             return
+        if ref["kind"] == "linked_rules":
+            manage_linked_rules(ref["index"])
+            return
         rule = ref["rule"]
         rec, detail = _locate_rule_record_for_edit(rule)
         if rec is None:
@@ -3763,7 +4987,7 @@ def open_config_window(parent, current_params, context):
             group_lb.selection_set(0)
             render_group(group_lb.get(0))
         refresh_rules()
-        status_var.set(f"读取 {len(state['records'])} 个单元格；规则 {len(cfg.get('rules', []))} 条")
+        status_var.set(f"读取 {len(state['records'])} 个单元格；规则 {len(cfg.get('rules', []))} 条；全局 {len(cfg.get('global_rules', []))} 条；联动 {len(cfg.get('linked_rules', []))} 条")
 
     def on_group_select(_event=None):
         sel = group_lb.curselection()
@@ -3860,11 +5084,18 @@ def open_config_window(parent, current_params, context):
                     if not feature_ok:
                         add_skip(rule, content, feature_detail, source_file)
                         continue
-                    rec, anchor_detail = _locate_target_record(rule, source_records, source_file)
+                    rec, anchor_detail = _locate_target_record(rule, source_records, source_file, content=content, table_context=current_table_context())
                     if rec is None:
                         add_skip(rule, content, anchor_detail, source_file)
                         continue
-                    ok, match_detail = _match_text(rec.get("text", ""), rule.get("source_match", {}))
+                    ok, match_detail = _match_text_with_sources(
+                        rec.get("text", ""),
+                        rule.get("source_match", {}),
+                        content=content,
+                        table_context=current_table_context(),
+                        doc_record=rec,
+                        source_records=source_records,
+                    )
                     if not ok:
                         add_skip(rule, content, f"输入源内容匹配未通过：{match_detail}", source_file, rec)
                         continue
