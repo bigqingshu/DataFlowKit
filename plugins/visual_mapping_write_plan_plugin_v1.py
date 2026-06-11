@@ -68,6 +68,7 @@ LINK_OVERFLOW_SKIP = "区域满时跳过"
 LINK_OVERFLOW_MIN_MARKER_ROW = "区域满时替换最小圈号行"
 LINK_OVERFLOW_POLICIES = [LINK_OVERFLOW_SKIP, LINK_OVERFLOW_MIN_MARKER_ROW]
 DIRECT_WRITE_STRATEGY = "直接定位写入"
+GLOBAL_SCOPE_SPECIAL_OBJECTS = "全文及特殊对象"
 CONFIG_WINDOW_WIDTH = 1360
 CONFIG_WINDOW_HEIGHT = 820
 CONFIG_WINDOW_MIN_WIDTH = 1120
@@ -2081,14 +2082,15 @@ def run(input_data, params, context):
                     raise ValueError(f"全局替换结果为空：{global_rule.get('name', '')}，新内容行 {content.get('__content_row__')}")
                 rule_hit += 1
                 matched += 1
+                special_scope = _as_text(global_rule.get("scope")) == GLOBAL_SCOPE_SPECIAL_OBJECTS
                 out_rows.append([
                     source_file,
                     target_file,
-                    rec.get("block_type", ""),
-                    rec.get("sheet_name", ""),
-                    rec.get("row_index", ""),
-                    rec.get("col_index", ""),
-                    rec.get("cell_address", ""),
+                    "word_global_replace" if special_scope else rec.get("block_type", ""),
+                    "" if special_scope else rec.get("sheet_name", ""),
+                    "" if special_scope else rec.get("row_index", ""),
+                    "" if special_scope else rec.get("col_index", ""),
+                    "" if special_scope else rec.get("cell_address", ""),
                     value,
                     rec.get("text", ""),
                     _global_rule_fields(global_rule),
@@ -2099,7 +2101,7 @@ def run(input_data, params, context):
                     f"{feature_detail}；{cond_detail}",
                     "",
                     f"全局搜索替换；{replace_detail}；源文件选择={source_note}",
-                    "",
+                    "按old_text查找替换" if special_scope else "",
                 ])
                 trigger_events.append({
                     "kind": "全局替换",
@@ -2774,7 +2776,13 @@ def open_config_window(parent, current_params, context):
         feature_combo = ttk.Combobox(right_panel, textvariable=feature_var, values=current_feature_names(True), width=24, state="normal")
         feature_combo.grid(row=1, column=1, sticky=tk.W, pady=3)
         ttk.Label(right_panel, text="范围：").grid(row=2, column=0, sticky=tk.W, pady=3)
-        ttk.Combobox(right_panel, textvariable=scope_var, values=["全部", "段落", "表格单元格"], width=14, state="readonly").grid(row=2, column=1, sticky=tk.W, pady=3)
+        ttk.Combobox(
+            right_panel,
+            textvariable=scope_var,
+            values=["全部", "段落", "表格单元格", GLOBAL_SCOPE_SPECIAL_OBJECTS],
+            width=16,
+            state="readonly",
+        ).grid(row=2, column=1, sticky=tk.W, pady=3)
         ttk.Label(right_panel, text="表格/Sheet：").grid(row=2, column=2, sticky=tk.E, pady=3)
         sheet_combo = ttk.Combobox(right_panel, textvariable=sheet_var, values=current_sheet_names(True), width=18, state="normal")
         sheet_combo.grid(row=2, column=3, sticky=tk.W, pady=3)

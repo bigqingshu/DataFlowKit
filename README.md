@@ -33,8 +33,8 @@ It is designed for Windows desktop workflows where clipboard tables, SQLite tabl
   - English: Reads Word/Excel files, outputs detail rows, and can write results to SQLite.
 
 - `plugins/word_excel_write_from_table_plugin_v2.py`
-  - 中文：按输入表数据写回 Word/Excel，支持预览保护、批量目标文件和 Win32 Office 进程复用。
-  - English: Writes table data back to Word/Excel with preview protection, batch target files, and Win32 Office process reuse.
+  - 中文：按输入表数据写回 Word/Excel，支持范围定位、原子文件替换、失败恢复、特殊 Word 对象替换和 Win32 Office 进程复用。
+  - English: Writes table data back to Word/Excel with range addressing, atomic file replacement, failure recovery, special Word object replacement, and Win32 Office process reuse.
 
 - `plugins/plugin_template_输出日志_后台进度_插件缓存版.py`
   - 中文：插件开发模板，演示日志、后台进度、取消、数据库 API 和缓存。

@@ -1,20 +1,25 @@
 # -*- coding: utf-8 -*-
+import argparse
 import json
+import os
 import re
 import shutil
+import sys
 import tempfile
 import time
+import traceback
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
 PLUGIN_INFO = {
     "id": "word_excel_write_from_table_v2",
     "name": "Word/Excel按数据写入V2",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "api_version": "1.0",
     "category": "文件处理",
-    "description": "按输入表数据直接写回 Word/Excel（无确认直写，默认预览保护）。",
+    "description": "按输入表数据安全写回 Word/Excel，支持范围定位、原子替换、重试及特殊对象全局替换。",
     "input_type": "table",
     "output_type": "table",
     "danger_level": "file_write",
@@ -25,6 +30,8 @@ WORD_MODE_OVERWRITE = "整段覆盖"
 WORD_MODE_FIND_REPLACE = "按old_text查找替换"
 WRITE_STRATEGY_FOLLOW_NODE = "跟随节点设置"
 WRITE_STRATEGY_DIRECT = "直接定位写入"
+BLOCK_WORD_TEXT_RANGE = "word_text_range"
+BLOCK_WORD_GLOBAL_REPLACE = "word_global_replace"
 
 OUTPUT_HEADERS = [
     "source_file",
@@ -84,6 +91,18 @@ def get_parameter_schema():
             "default": 200,
         },
         {
+            "name": "win32_cell_retries",
+            "label": "win32单项写入重试次数",
+            "type": "number",
+            "default": 3,
+        },
+        {
+            "name": "win32_save_retries",
+            "label": "win32保存重试次数",
+            "type": "number",
+            "default": 3,
+        },
+        {
             "name": "word_text_write_mode",
             "label": "Word文字写入方式",
             "type": "select",
@@ -134,6 +153,14 @@ def get_parameter_schema():
             "type": "bool",
             "default": True,
         },
+        {
+            "name": "backup_mode",
+            "label": "文件备份策略",
+            "type": "select",
+            "choices": ["失败时恢复原文件", "写入前保留备份", "不备份"],
+            "default": "失败时恢复原文件",
+            "help": "实际写入始终先在同目录临时副本完成；保留备份会额外保存原目标文件。",
+        },
         {"name": "block_type_field", "label": "类型字段", "type": "field_select", "default": "block_type"},
         {"name": "sheet_name_field", "label": "sheet/表名字段", "type": "field_select", "default": "sheet_name"},
         {"name": "row_index_field", "label": "行号字段", "type": "field_select", "default": "row_index"},
@@ -157,6 +184,21 @@ def get_output_schema(params=None, input_data=None, context=None):
 
 def _as_text(v):
     return "" if v is None else str(v).strip()
+
+
+def _value_text(v):
+    return "" if v is None else str(v)
+
+
+def _op_meta(op):
+    raw = (op or {}).get("meta_json", "")
+    if isinstance(raw, dict):
+        return dict(raw)
+    try:
+        value = json.loads(raw) if _as_text(raw) else {}
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
 
 
 def _default_word_text_write_mode(write_engine="win32"):
@@ -212,6 +254,35 @@ def _to_int_with_default(v, default, min_value=None):
     if min_value is not None and n < min_value:
         n = int(min_value)
     return n
+
+
+def _stop_on_error(context):
+    return _as_text(((context or {}).get("params") or {}).get("error_policy", "")) == "遇错停止"
+
+
+def _retry_count(context, key, default):
+    return _to_int_with_default(((context or {}).get("params") or {}).get(key, default), default, min_value=1)
+
+
+def _retry_interval(context):
+    milliseconds = _to_int_with_default(
+        ((context or {}).get("params") or {}).get("win32_retry_interval_ms", 300),
+        300,
+        min_value=0,
+    )
+    return milliseconds / 1000.0
+
+
+def _run_with_retry(action, attempts, interval, label):
+    last_exc = None
+    for attempt in range(1, max(1, int(attempts or 1)) + 1):
+        try:
+            return action()
+        except Exception as exc:
+            last_exc = exc
+            if attempt < attempts and interval > 0:
+                time.sleep(interval * attempt)
+    raise RuntimeError(f"{label}失败，已重试 {attempts} 次：{last_exc}") from last_exc
 
 
 def _parse_table_index(sheet_name, meta_json_text):
@@ -343,8 +414,14 @@ def validate_params(params, input_data, context):
     target_path_field = _as_text(p.get("target_path_field", "target_file")) or "target_file"
     value_field = _as_text(p.get("value_field", "text")) or "text"
     old_text_field = _as_text(p.get("old_text_field", "old_text")) or "old_text"
+    block_type_field = _as_text(p.get("block_type_field", "block_type")) or "block_type"
     write_engine = _as_text(p.get("write_engine", "win32")).lower() or "win32"
     word_text_write_mode = _word_text_mode_from_params(p)
+    block_types = set()
+    if block_type_field in headers:
+        block_index = headers.index(block_type_field)
+        for row in input_data.get("rows", []) or []:
+            block_types.add(_as_text(_safe_cell(row, block_index)).lower())
 
     if path_field not in headers:
         return False, f"文件路径字段不存在：{path_field}"
@@ -354,12 +431,19 @@ def validate_params(params, input_data, context):
             return False, f"新文件路径字段不存在：{target_path_field}"
     if value_field not in headers:
         return False, f"写入值字段不存在：{value_field}"
-    if word_text_write_mode == WORD_MODE_FIND_REPLACE and old_text_field not in headers:
+    needs_old_text = (
+        word_text_write_mode == WORD_MODE_FIND_REPLACE
+        or BLOCK_WORD_TEXT_RANGE in block_types
+        or BLOCK_WORD_GLOBAL_REPLACE in block_types
+    )
+    if needs_old_text and old_text_field not in headers:
         return False, f"原文匹配字段不存在：{old_text_field}"
     if word_text_write_mode == WORD_MODE_FIND_REPLACE and write_engine != "win32":
         return False, "按old_text查找替换仅支持 win32 写入引擎"
     if write_engine not in ("win32", "zip_xml"):
         return False, f"不支持的写入引擎：{write_engine}"
+    if write_engine == "zip_xml" and BLOCK_WORD_TEXT_RANGE in block_types:
+        return False, "word_text_range 依赖 Word COM 范围坐标，请使用 win32 写入引擎"
     return True, ""
 
 
@@ -389,6 +473,7 @@ def _collect_ops(input_data, params, context):
     grouped = {}
     skipped_no_path = 0
     skipped_empty_value = 0
+    skipped_duplicate_global = 0
 
     for row_no, row in enumerate(rows, start=1):
         raw_path = _as_text(cell_by_field(row, path_field))
@@ -398,7 +483,7 @@ def _collect_ops(input_data, params, context):
         raw_target = _as_text(cell_by_field(row, target_path_field))
         if raw_target == "":
             raw_target = raw_path
-        value_text = str(cell_by_field(row, value_field) or "")
+        value_text = _value_text(cell_by_field(row, value_field))
         if (not allow_empty) and (value_text == ""):
             skipped_empty_value += 1
             continue
@@ -415,7 +500,7 @@ def _collect_ops(input_data, params, context):
             "col_index": _as_text(cell_by_field(row, col_index_field)),
             "cell_address": _as_text(cell_by_field(row, cell_address_field)),
             "value": value_text,
-            "old_text": str(cell_by_field(row, old_text_field) or ""),
+            "old_text": _value_text(cell_by_field(row, old_text_field)),
             "write_strategy": _as_text(cell_by_field(row, write_strategy_field)),
             "meta_json": _as_text(cell_by_field(row, meta_json_field)),
         }
@@ -423,12 +508,20 @@ def _collect_ops(input_data, params, context):
         group = grouped.setdefault(key, {"source_path": source_path, "target_path": target_path, "ops": [], "source_conflict": False})
         if not _same_file_path(group["source_path"], source_path):
             group["source_conflict"] = True
+        if op["block_type"] == BLOCK_WORD_GLOBAL_REPLACE:
+            global_key = (op["old_text"], op["value"])
+            seen_global = group.setdefault("seen_global_ops", set())
+            if global_key in seen_global:
+                skipped_duplicate_global += 1
+                continue
+            seen_global.add(global_key)
         group["ops"].append(op)
 
     return grouped, {
         "input_rows": len(rows),
         "skipped_no_path": skipped_no_path,
         "skipped_empty_value": skipped_empty_value,
+        "skipped_duplicate_global": skipped_duplicate_global,
     }
 
 
@@ -573,6 +666,257 @@ def _word_write_range_by_mode(range_obj, op, context=None):
         _word_write_visible_text(range_obj, op.get("value", ""), _word_preserve_format_enabled(context))
 
 
+def _word_content_range(doc, op):
+    meta = _op_meta(op)
+    start = _to_int_or_none(meta.get("range_start"))
+    end = _to_int_or_none(meta.get("range_end"))
+    base = _to_int_or_none(meta.get("range_base")) or 0
+    address_match = re.fullmatch(r"WRANGE(\d+):(\d+)", _as_text(op.get("cell_address", "")), flags=re.I)
+    if (start is None or end is None) and address_match:
+        start = int(address_match.group(1))
+        end = int(address_match.group(2))
+        base = 0
+    if start is None or end is None or end <= start:
+        raise ValueError("缺少有效的 Word 文本范围(range_start/range_end)")
+    return doc.Range(int(base + start), int(base + end))
+
+
+def _word_replace_on_range(range_obj, old_text, new_text):
+    old_text = _value_text(old_text)
+    if old_text == "":
+        raise ValueError("缺少 old_text，无法执行 Word 全局替换")
+    finder = range_obj.Find
+    try:
+        finder.ClearFormatting()
+        finder.Replacement.ClearFormatting()
+    except Exception:
+        pass
+    return bool(finder.Execute(
+        FindText=old_text,
+        MatchCase=False,
+        MatchWholeWord=False,
+        MatchWildcards=False,
+        MatchSoundsLike=False,
+        MatchAllWordForms=False,
+        Forward=True,
+        Wrap=0,
+        Format=False,
+        ReplaceWith=_value_text(new_text),
+        Replace=2,
+    ))
+
+
+def _word_collection_items(collection):
+    try:
+        count = int(collection.Count)
+    except Exception:
+        return []
+    items = []
+    for index in range(1, count + 1):
+        try:
+            items.append(collection(index))
+        except Exception:
+            try:
+                items.append(collection.Item(index))
+            except Exception:
+                pass
+    return items
+
+
+def _word_replace_in_shape(shape, old_text, new_text):
+    replaced = 0
+    try:
+        text = _value_text(shape.TextEffect.Text)
+        if old_text in text:
+            shape.TextEffect.Text = text.replace(old_text, new_text)
+            replaced += 1
+    except Exception:
+        pass
+    try:
+        if shape.HasTextFrame and shape.TextFrame.HasText:
+            if _word_replace_on_range(shape.TextFrame.TextRange, old_text, new_text):
+                replaced += 1
+    except Exception:
+        pass
+    try:
+        text_range = shape.TextFrame2.TextRange
+        text = _value_text(text_range.Text)
+        if old_text in text:
+            text_range.Text = text.replace(old_text, new_text)
+            replaced += 1
+    except Exception:
+        pass
+    try:
+        if int(shape.Type) == 6:
+            for child in _word_collection_items(shape.GroupItems):
+                replaced += _word_replace_in_shape(child, old_text, new_text)
+    except Exception:
+        pass
+    return replaced
+
+
+def _word_global_replace(doc, op):
+    old_text = _value_text(op.get("old_text"))
+    new_text = _value_text(op.get("value"))
+    if old_text == "":
+        raise ValueError("word_global_replace 缺少 old_text")
+    replaced = 0
+    if _word_replace_on_range(doc.Content, old_text, new_text):
+        replaced += 1
+
+    try:
+        stories = list(doc.StoryRanges)
+    except Exception:
+        stories = []
+    for first_story in stories:
+        story = first_story
+        seen = set()
+        while story is not None:
+            try:
+                key = (int(story.StoryType), int(story.Start), int(story.End))
+            except Exception:
+                key = id(story)
+            if key in seen:
+                break
+            seen.add(key)
+            try:
+                if _word_replace_on_range(story, old_text, new_text):
+                    replaced += 1
+            except Exception:
+                pass
+            try:
+                story = story.NextStoryRange
+            except Exception:
+                break
+
+    for shape in _word_collection_items(doc.Shapes):
+        replaced += _word_replace_in_shape(shape, old_text, new_text)
+    for inline_shape in _word_collection_items(doc.InlineShapes):
+        replaced += _word_replace_in_shape(inline_shape, old_text, new_text)
+
+    try:
+        section_count = int(doc.Sections.Count)
+    except Exception:
+        section_count = 0
+    for section_index in range(1, section_count + 1):
+        section = doc.Sections(section_index)
+        for header_footer_type in (1, 2, 3):
+            for collection_name in ("Headers", "Footers"):
+                try:
+                    area = getattr(section, collection_name)(header_footer_type)
+                    if _word_replace_on_range(area.Range, old_text, new_text):
+                        replaced += 1
+                    for shape in _word_collection_items(area.Shapes):
+                        replaced += _word_replace_in_shape(shape, old_text, new_text)
+                except Exception:
+                    pass
+    if replaced <= 0:
+        raise ValueError(f"Word全文及特殊对象中未找到 old_text：{old_text}")
+    return replaced
+
+
+def _word_op_range_start(op):
+    if _as_text((op or {}).get("block_type")).lower() != BLOCK_WORD_TEXT_RANGE:
+        return None
+    meta = _op_meta(op)
+    start = _to_int_or_none(meta.get("range_start"))
+    base = _to_int_or_none(meta.get("range_base")) or 0
+    address_match = re.fullmatch(r"WRANGE(\d+):(\d+)", _as_text((op or {}).get("cell_address", "")), flags=re.I)
+    if start is None and address_match:
+        start = int(address_match.group(1))
+        base = 0
+    return None if start is None else base + start
+
+
+def _ordered_word_ops(ops):
+    indexed = list(enumerate(ops or []))
+    range_ops = [(index, op) for index, op in indexed if _word_op_range_start(op) is not None]
+    other_ops = [(index, op) for index, op in indexed if _word_op_range_start(op) is None]
+    range_ops.sort(key=lambda item: (_word_op_range_start(item[1]), item[0]), reverse=True)
+    return [op for _index, op in range_ops + other_ops]
+
+
+def _apply_word_com_op(doc, op, context=None):
+    bt = _as_text(op.get("block_type", "")).lower()
+    if bt == "word_paragraph":
+        paragraph_index = _to_int_or_none(op.get("row_index"))
+        if not paragraph_index or paragraph_index <= 0:
+            raise ValueError("缺少 paragraph 索引(row_index)")
+        _word_write_range_by_mode(doc.Paragraphs(int(paragraph_index)).Range, op, context)
+        return
+    if bt == BLOCK_WORD_TEXT_RANGE:
+        range_obj = _word_content_range(doc, op)
+        old_text = _value_text(op.get("old_text"))
+        if old_text == "":
+            raise ValueError("word_text_range 必须提供 old_text 以避免范围漂移误写")
+        _word_find_replace_visible_text(range_obj, old_text, op.get("value", ""))
+        return
+    if bt == "word_table_cell":
+        table_index = _parse_table_index(op.get("sheet_name", ""), op.get("meta_json", ""))
+        if not table_index:
+            raise ValueError("无法确定表索引（sheet_name 或 meta_json.table_index）")
+        row_index = _to_int_or_none(op.get("row_index"))
+        col_index = _to_int_or_none(op.get("col_index"))
+        if not row_index or not col_index:
+            parsed_row, parsed_col = _parse_rc_from_address(op.get("cell_address", ""))
+            row_index = row_index or parsed_row
+            col_index = col_index or parsed_col
+        meta = _op_meta(op)
+        row_index = _to_int_or_none(meta.get("merge_origin_row")) or row_index
+        col_index = _to_int_or_none(meta.get("merge_origin_col")) or col_index
+        if not row_index or not col_index:
+            raise ValueError("缺少单元格行列索引(row_index/col_index/cell_address)")
+        cell = doc.Tables(int(table_index)).Cell(int(row_index), int(col_index))
+        _word_write_range_by_mode(cell.Range, op, context)
+        return
+    if bt == BLOCK_WORD_GLOBAL_REPLACE:
+        _word_global_replace(doc, op)
+        return
+    raise ValueError(f"不支持的 Word block_type：{bt}")
+
+
+def _apply_excel_com_op(workbook, op):
+    sheet_name = _as_text(op.get("sheet_name", ""))
+    if sheet_name:
+        try:
+            worksheet = workbook.Worksheets(sheet_name)
+        except Exception as exc:
+            raise ValueError(f"Excel 工作表不存在：{sheet_name}") from exc
+    else:
+        worksheet = workbook.Worksheets(1)
+    row_index = _to_int_or_none(op.get("row_index"))
+    col_index = _to_int_or_none(op.get("col_index"))
+    address = _as_text(op.get("cell_address", "")).replace("$", "")
+    if row_index and col_index:
+        worksheet.Cells(int(row_index), int(col_index)).Value = op.get("value", "")
+        return
+    if address:
+        worksheet.Range(address).Value = op.get("value", "")
+        return
+    raise ValueError("缺少 Excel 定位(row/col/cell_address)")
+
+
+def _apply_operation_with_retry(action, op, context, label):
+    block_type = _as_text((op or {}).get("block_type", "")).lower()
+    attempts = 1 if block_type == BLOCK_WORD_GLOBAL_REPLACE else _retry_count(context, "win32_cell_retries", 3)
+    return _run_with_retry(action, attempts, _retry_interval(context), label)
+
+
+def _save_with_retry(action, context, label):
+    return _run_with_retry(
+        action,
+        _retry_count(context, "win32_save_retries", 3),
+        _retry_interval(context),
+        label,
+    )
+
+
+def _record_operation_failure(logs, message, file_path, context):
+    if _stop_on_error(context):
+        raise RuntimeError(message)
+    logs.append(_log("ERROR", message, str(file_path)))
+
+
 def _write_word_via_com(file_path, ops, context=None, progress_current=None, progress_total=None):
     try:
         import pythoncom
@@ -592,39 +936,26 @@ def _write_word_via_com(file_path, ops, context=None, progress_current=None, pro
         word.DisplayAlerts = 0
         doc = word.Documents.Open(str(file_path), ReadOnly=False, AddToRecentFiles=False, ConfirmConversions=False, Visible=False)
 
-        for op_no, op in enumerate(ops, start=1):
+        ordered_ops = _ordered_word_ops(ops)
+        for op_no, op in enumerate(ordered_ops, start=1):
             _op_progress(context, progress_current, progress_total, file_path, op, op_no)
-            bt = _as_text(op.get("block_type", "")).lower()
             try:
-                if bt == "word_paragraph":
-                    pi = _to_int_or_none(op.get("row_index"))
-                    if not pi or pi <= 0:
-                        raise ValueError("缺少 paragraph 索引(row_index)")
-                    para = doc.Paragraphs(int(pi))
-                    _word_write_range_by_mode(para.Range, op, context)
-                    applied += 1
-                elif bt == "word_table_cell":
-                    table_idx = _parse_table_index(op.get("sheet_name", ""), op.get("meta_json", ""))
-                    if not table_idx:
-                        raise ValueError("无法确定表索引（sheet_name 或 meta_json.table_index）")
-                    row_i = _to_int_or_none(op.get("row_index"))
-                    col_i = _to_int_or_none(op.get("col_index"))
-                    if not row_i or not col_i:
-                        rr, cc = _parse_rc_from_address(op.get("cell_address", ""))
-                        row_i = row_i or rr
-                        col_i = col_i or cc
-                    if not row_i or not col_i:
-                        raise ValueError("缺少单元格行列索引(row_index/col_index/cell_address)")
-                    cell = doc.Tables(int(table_idx)).Cell(int(row_i), int(col_i))
-                    _word_write_range_by_mode(cell.Range, op, context)
-                    applied += 1
-                else:
-                    skipped += 1
-                    logs.append(_log("WARNING", f"不支持的 Word block_type，已跳过：{bt}", str(file_path)))
+                _apply_operation_with_retry(
+                    lambda: _apply_word_com_op(doc, op, context),
+                    op,
+                    context,
+                    f"Word写入(源行{op.get('source_row')})",
+                )
+                applied += 1
             except Exception as exc:
                 skipped += 1
-                logs.append(_log("ERROR", f"写入失败(源行{op.get('source_row')})：{exc}", str(file_path)))
-        doc.Save()
+                _record_operation_failure(
+                    logs,
+                    f"写入失败(源行{op.get('source_row')})：{exc}",
+                    file_path,
+                    context,
+                )
+        _save_with_retry(doc.Save, context, "Word保存")
         return applied, skipped, logs
     finally:
         if doc is not None:
@@ -665,25 +996,23 @@ def _write_excel_via_com(file_path, ops, context=None, progress_current=None, pr
         for op_no, op in enumerate(ops, start=1):
             _op_progress(context, progress_current, progress_total, file_path, op, op_no)
             try:
-                sheet_name = _as_text(op.get("sheet_name", ""))
-                ws = wb.Worksheets(sheet_name) if sheet_name else wb.Worksheets(1)
-                row_i = _to_int_or_none(op.get("row_index"))
-                col_i = _to_int_or_none(op.get("col_index"))
-                addr = _as_text(op.get("cell_address", "")).replace("$", "")
-                if row_i and col_i:
-                    ws.Cells(int(row_i), int(col_i)).Value = op.get("value", "")
-                    applied += 1
-                elif addr:
-                    ws.Range(addr).Value = op.get("value", "")
-                    applied += 1
-                else:
-                    skipped += 1
-                    logs.append(_log("WARNING", f"缺少 Excel 定位(row/col/cell_address)，已跳过，源行{op.get('source_row')}", str(file_path)))
+                _apply_operation_with_retry(
+                    lambda: _apply_excel_com_op(wb, op),
+                    op,
+                    context,
+                    f"Excel写入(源行{op.get('source_row')})",
+                )
+                applied += 1
             except Exception as exc:
                 skipped += 1
-                logs.append(_log("ERROR", f"Excel写入失败(源行{op.get('source_row')})：{exc}", str(file_path)))
+                _record_operation_failure(
+                    logs,
+                    f"Excel写入失败(源行{op.get('source_row')})：{exc}",
+                    file_path,
+                    context,
+                )
 
-        wb.Save()
+        _save_with_retry(wb.Save, context, "Excel保存")
         return applied, skipped, logs
     finally:
         if wb is not None:
@@ -765,39 +1094,26 @@ class _Win32OfficeSession:
                 lambda: word.Documents.Open(str(file_path), ReadOnly=False, AddToRecentFiles=False, ConfirmConversions=False, Visible=False),
                 file_path,
             )
-            for op_no, op in enumerate(ops, start=1):
+            ordered_ops = _ordered_word_ops(ops)
+            for op_no, op in enumerate(ordered_ops, start=1):
                 _op_progress(context, progress_current, progress_total, file_path, op, op_no)
-                bt = _as_text(op.get("block_type", "")).lower()
                 try:
-                    if bt == "word_paragraph":
-                        pi = _to_int_or_none(op.get("row_index"))
-                        if not pi or pi <= 0:
-                            raise ValueError("缺少 paragraph 索引(row_index)")
-                        para = doc.Paragraphs(int(pi))
-                        _word_write_range_by_mode(para.Range, op, context)
-                        applied += 1
-                    elif bt == "word_table_cell":
-                        table_idx = _parse_table_index(op.get("sheet_name", ""), op.get("meta_json", ""))
-                        if not table_idx:
-                            raise ValueError("无法确定表索引（sheet_name 或 meta_json.table_index）")
-                        row_i = _to_int_or_none(op.get("row_index"))
-                        col_i = _to_int_or_none(op.get("col_index"))
-                        if not row_i or not col_i:
-                            rr, cc = _parse_rc_from_address(op.get("cell_address", ""))
-                            row_i = row_i or rr
-                            col_i = col_i or cc
-                        if not row_i or not col_i:
-                            raise ValueError("缺少单元格行列索引(row_index/col_index/cell_address)")
-                        cell = doc.Tables(int(table_idx)).Cell(int(row_i), int(col_i))
-                        _word_write_range_by_mode(cell.Range, op, context)
-                        applied += 1
-                    else:
-                        skipped += 1
-                        logs.append(_log("WARNING", f"不支持的 Word block_type，已跳过：{bt}", str(file_path)))
+                    _apply_operation_with_retry(
+                        lambda: _apply_word_com_op(doc, op, context),
+                        op,
+                        context,
+                        f"Word写入(源行{op.get('source_row')})",
+                    )
+                    applied += 1
                 except Exception as exc:
                     skipped += 1
-                    logs.append(_log("ERROR", f"写入失败(源行{op.get('source_row')})：{exc}", str(file_path)))
-            doc.Save()
+                    _record_operation_failure(
+                        logs,
+                        f"写入失败(源行{op.get('source_row')})：{exc}",
+                        file_path,
+                        context,
+                    )
+            _save_with_retry(doc.Save, context, "Word保存")
             saved = True
             return applied, skipped, logs
         finally:
@@ -827,24 +1143,22 @@ class _Win32OfficeSession:
             for op_no, op in enumerate(ops, start=1):
                 _op_progress(context, progress_current, progress_total, file_path, op, op_no)
                 try:
-                    sheet_name = _as_text(op.get("sheet_name", ""))
-                    ws = wb.Worksheets(sheet_name) if sheet_name else wb.Worksheets(1)
-                    row_i = _to_int_or_none(op.get("row_index"))
-                    col_i = _to_int_or_none(op.get("col_index"))
-                    addr = _as_text(op.get("cell_address", "")).replace("$", "")
-                    if row_i and col_i:
-                        ws.Cells(int(row_i), int(col_i)).Value = op.get("value", "")
-                        applied += 1
-                    elif addr:
-                        ws.Range(addr).Value = op.get("value", "")
-                        applied += 1
-                    else:
-                        skipped += 1
-                        logs.append(_log("WARNING", f"缺少 Excel 定位(row/col/cell_address)，已跳过，源行{op.get('source_row')}", str(file_path)))
+                    _apply_operation_with_retry(
+                        lambda: _apply_excel_com_op(wb, op),
+                        op,
+                        context,
+                        f"Excel写入(源行{op.get('source_row')})",
+                    )
+                    applied += 1
                 except Exception as exc:
                     skipped += 1
-                    logs.append(_log("ERROR", f"Excel写入失败(源行{op.get('source_row')})：{exc}", str(file_path)))
-            wb.Save()
+                    _record_operation_failure(
+                        logs,
+                        f"Excel写入失败(源行{op.get('source_row')})：{exc}",
+                        file_path,
+                        context,
+                    )
+            _save_with_retry(wb.Save, context, "Excel保存")
             saved = True
             return applied, skipped, logs
         finally:
@@ -885,15 +1199,105 @@ class _Win32OfficeSession:
         self.com_initialized = False
 
 
-def _set_word_paragraph_text(p_node, text, ns_w):
-    for ch in list(p_node):
-        p_node.remove(ch)
-    r = ET.SubElement(p_node, f"{{{ns_w}}}r")
-    t = ET.SubElement(r, f"{{{ns_w}}}t")
+def _set_xml_text_node(text_node, text):
     txt = str(text or "")
     if txt.startswith(" ") or txt.endswith(" "):
-        t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
-    t.text = txt
+        text_node.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+    else:
+        text_node.attrib.pop("{http://www.w3.org/XML/1998/namespace}space", None)
+    text_node.text = txt
+
+
+def _set_word_paragraph_text(p_node, text, ns_w, preserve_format=True):
+    text_nodes = list(p_node.iter(f"{{{ns_w}}}t"))
+    if preserve_format and text_nodes:
+        _set_xml_text_node(text_nodes[0], text)
+        for text_node in text_nodes[1:]:
+            _set_xml_text_node(text_node, "")
+        return
+
+    paragraph_properties = p_node.find(f"{{{ns_w}}}pPr")
+    for child in list(p_node):
+        if child is not paragraph_properties:
+            p_node.remove(child)
+    run = ET.SubElement(p_node, f"{{{ns_w}}}r")
+    text_node = ET.SubElement(run, f"{{{ns_w}}}t")
+    _set_xml_text_node(text_node, text)
+
+
+def _clear_word_paragraph_text(p_node, ns_w):
+    for text_node in p_node.iter(f"{{{ns_w}}}t"):
+        _set_xml_text_node(text_node, "")
+
+
+def _set_word_cell_text(cell_node, text, ns, preserve_format=True):
+    paragraphs = cell_node.findall("./w:p", ns)
+    if not paragraphs:
+        paragraphs = [ET.SubElement(cell_node, f"{{{ns['w']}}}p")]
+    _set_word_paragraph_text(paragraphs[0], text, ns["w"], preserve_format=preserve_format)
+    for paragraph in paragraphs[1:]:
+        _clear_word_paragraph_text(paragraph, ns["w"])
+
+
+def _xml_grid_span(cell_node, ns):
+    span_node = cell_node.find("./w:tcPr/w:gridSpan", ns)
+    if span_node is None:
+        return 1
+    raw = span_node.get(f"{{{ns['w']}}}val", span_node.get("val", "1"))
+    try:
+        return max(1, int(raw or 1))
+    except Exception:
+        return 1
+
+
+def _xml_cell_for_logical_column(row_node, logical_column, ns):
+    current_column = 1
+    for cell_node in row_node.findall("./w:tc", ns):
+        span = _xml_grid_span(cell_node, ns)
+        if current_column <= logical_column < current_column + span:
+            return cell_node, current_column
+        current_column += span
+    return None, current_column
+
+
+def _replace_xml_text(root, old_text, new_text):
+    replaced = 0
+    for node in root.iter():
+        local_name = node.tag.split("}")[-1]
+        if local_name in {"t", "instrText", "textpath"}:
+            current = node.text or ""
+            if old_text in current:
+                node.text = current.replace(old_text, new_text)
+                replaced += 1
+        for attribute_name, attribute_value in list(node.attrib.items()):
+            if attribute_name.split("}")[-1] not in {"string", "text"}:
+                continue
+            if old_text in attribute_value:
+                node.set(attribute_name, attribute_value.replace(old_text, new_text))
+                replaced += 1
+    return replaced
+
+
+def _apply_docx_global_replacements(payload, replacements):
+    if not replacements:
+        return payload, []
+    updated = dict(payload)
+    replacement_counts = [0 for _item in replacements]
+    for name, data in payload.items():
+        if not name.lower().endswith(".xml") or not name.lower().startswith("word/"):
+            continue
+        try:
+            root = ET.fromstring(data)
+        except Exception:
+            continue
+        file_replaced = 0
+        for replacement_index, (old_text, new_text) in enumerate(replacements):
+            count = _replace_xml_text(root, old_text, new_text)
+            replacement_counts[replacement_index] += count
+            file_replaced += count
+        if file_replaced:
+            updated[name] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    return updated, replacement_counts
 
 
 def _write_docx_zip_xml(file_path, ops, context=None, progress_current=None, progress_total=None):
@@ -917,6 +1321,8 @@ def _write_docx_zip_xml(file_path, ops, context=None, progress_current=None, pro
     body_children = list(body)
     paragraphs = [x for x in body_children if x.tag.split("}")[-1] == "p"]
     tables = [x for x in body_children if x.tag.split("}")[-1] == "tbl"]
+    global_replacements = []
+    preserve_format = _word_preserve_format_enabled(context)
 
     for op_no, op in enumerate(ops, start=1):
         _op_progress(context, progress_current, progress_total, file_path, op, op_no)
@@ -926,7 +1332,12 @@ def _write_docx_zip_xml(file_path, ops, context=None, progress_current=None, pro
                 pi = _to_int_or_none(op.get("row_index"))
                 if not pi or pi <= 0 or pi > len(paragraphs):
                     raise ValueError(f"paragraph 索引越界：{pi}")
-                _set_word_paragraph_text(paragraphs[pi - 1], op.get("value", ""), ns_w)
+                _set_word_paragraph_text(
+                    paragraphs[pi - 1],
+                    op.get("value", ""),
+                    ns_w,
+                    preserve_format=preserve_format,
+                )
                 applied += 1
             elif bt == "word_table_cell":
                 table_idx = _parse_table_index(op.get("sheet_name", ""), op.get("meta_json", ""))
@@ -940,39 +1351,62 @@ def _write_docx_zip_xml(file_path, ops, context=None, progress_current=None, pro
                     col_i = col_i or cc
                 if not row_i or not col_i:
                     raise ValueError("缺少单元格行列索引")
+                meta = _op_meta(op)
+                row_i = _to_int_or_none(meta.get("merge_origin_row")) or row_i
+                col_i = _to_int_or_none(meta.get("merge_origin_col")) or col_i
 
                 tbl = tables[table_idx - 1]
                 trs = tbl.findall("./w:tr", ns)
                 if row_i <= 0 or row_i > len(trs):
                     raise ValueError(f"行索引越界：{row_i}")
-                tcs = trs[row_i - 1].findall("./w:tc", ns)
-                if col_i <= 0 or col_i > len(tcs):
+                tc, cell_start_column = _xml_cell_for_logical_column(trs[row_i - 1], col_i, ns)
+                if tc is None:
                     raise ValueError(f"列索引越界：{col_i}")
-                tc = tcs[col_i - 1]
-                p = tc.find("./w:p", ns)
-                if p is None:
-                    p = ET.SubElement(tc, f"{{{ns_w}}}p")
-                _set_word_paragraph_text(p, op.get("value", ""), ns_w)
+                if cell_start_column != col_i:
+                    raise ValueError(f"列 {col_i} 位于合并单元格内部，合并起点为列 {cell_start_column}")
+                _set_word_cell_text(
+                    tc,
+                    op.get("value", ""),
+                    ns,
+                    preserve_format=preserve_format,
+                )
+                applied += 1
+            elif bt == BLOCK_WORD_GLOBAL_REPLACE:
+                old_text = _value_text(op.get("old_text"))
+                if old_text == "":
+                    raise ValueError("word_global_replace 缺少 old_text")
+                global_replacements.append((old_text, _value_text(op.get("value"))))
                 applied += 1
             else:
-                skipped += 1
-                logs.append(_log("WARNING", f"不支持的 Word block_type，已跳过：{bt}", str(file_path)))
+                raise ValueError(f"zip_xml 不支持的 Word block_type：{bt}")
         except Exception as exc:
             skipped += 1
-            logs.append(_log("ERROR", f"写入失败(源行{op.get('source_row')})：{exc}", str(file_path)))
+            _record_operation_failure(
+                logs,
+                f"写入失败(源行{op.get('source_row')})：{exc}",
+                file_path,
+                context,
+            )
 
     if applied > 0:
-        new_xml = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+        payload["word/document.xml"] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+        payload, replacement_counts = _apply_docx_global_replacements(payload, global_replacements)
+        for (old_text, _new_text), replace_count in zip(global_replacements, replacement_counts):
+            if replace_count > 0:
+                continue
+            message = f"Word全文及特殊对象中未找到 old_text：{old_text}"
+            if _stop_on_error(context):
+                raise RuntimeError(message)
+            logs.append(_log("ERROR", message, str(file_path)))
+            skipped += 1
+            applied -= 1
         tmp_fd = tempfile.NamedTemporaryFile(delete=False, suffix=".docx", dir=str(file_path.parent))
         tmp_path = Path(tmp_fd.name)
         tmp_fd.close()
         try:
             with zipfile.ZipFile(tmp_path, "w", compression=zipfile.ZIP_DEFLATED) as out_zf:
                 for name, data in payload.items():
-                    if name == "word/document.xml":
-                        out_zf.writestr(name, new_xml)
-                    else:
-                        out_zf.writestr(name, data)
+                    out_zf.writestr(name, data)
             tmp_path.replace(file_path)
         finally:
             if tmp_path.exists():
@@ -1001,7 +1435,9 @@ def _write_excel_openpyxl(file_path, ops, context=None, progress_current=None, p
             _op_progress(context, progress_current, progress_total, file_path, op, op_no)
             try:
                 sheet_name = _as_text(op.get("sheet_name", ""))
-                ws = wb[sheet_name] if sheet_name and sheet_name in wb.sheetnames else wb.worksheets[0]
+                if sheet_name and sheet_name not in wb.sheetnames:
+                    raise ValueError(f"Excel 工作表不存在：{sheet_name}")
+                ws = wb[sheet_name] if sheet_name else wb.worksheets[0]
                 row_i = _to_int_or_none(op.get("row_index"))
                 col_i = _to_int_or_none(op.get("col_index"))
                 addr = _as_text(op.get("cell_address", "")).replace("$", "")
@@ -1012,14 +1448,17 @@ def _write_excel_openpyxl(file_path, ops, context=None, progress_current=None, p
                     if rr and cc:
                         addr = _excel_addr_from_rc(rr, cc)
                 if not addr:
-                    skipped += 1
-                    logs.append(_log("WARNING", f"缺少 Excel 定位(row/col/cell_address)，已跳过，源行{op.get('source_row')}", str(file_path)))
-                    continue
+                    raise ValueError("缺少 Excel 定位(row/col/cell_address)")
                 ws[addr] = op.get("value", "")
                 applied += 1
             except Exception as exc:
                 skipped += 1
-                logs.append(_log("ERROR", f"Excel写入失败(源行{op.get('source_row')})：{exc}", str(file_path)))
+                _record_operation_failure(
+                    logs,
+                    f"Excel写入失败(源行{op.get('source_row')})：{exc}",
+                    file_path,
+                    context,
+                )
         wb.save(str(file_path))
         return applied, skipped, logs
     finally:
@@ -1093,6 +1532,78 @@ def _prepare_target_file(source_path, target_path, params, preview_protected):
     return "已复制", ""
 
 
+def _neighbor_temp_path(target_path, label):
+    file_descriptor, temp_name = tempfile.mkstemp(
+        prefix=f".{target_path.stem}.{label}.",
+        suffix=target_path.suffix,
+        dir=str(target_path.parent),
+    )
+    os.close(file_descriptor)
+    return Path(temp_name)
+
+
+def _snapshot_target(target_path, preview_protected):
+    state = {
+        "existed": bool(target_path.exists()),
+        "snapshot": None,
+    }
+    if preview_protected or not state["existed"]:
+        return state
+    snapshot = _neighbor_temp_path(target_path, "original")
+    shutil.copy2(str(target_path), str(snapshot))
+    state["snapshot"] = snapshot
+    return state
+
+
+def _cleanup_path(path):
+    if not path:
+        return
+    try:
+        Path(path).unlink()
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
+
+def _rollback_target(target_path, state):
+    snapshot = (state or {}).get("snapshot")
+    if (state or {}).get("existed"):
+        if snapshot and Path(snapshot).exists():
+            shutil.copy2(str(snapshot), str(target_path))
+    else:
+        _cleanup_path(target_path)
+
+
+def _permanent_backup_path(target_path):
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    return target_path.with_name(f"{target_path.stem}_backup_{stamp}{target_path.suffix}")
+
+
+def _prepare_working_copy(target_path):
+    working_path = _neighbor_temp_path(target_path, "working")
+    shutil.copy2(str(target_path), str(working_path))
+    return working_path
+
+
+def _commit_working_copy(working_path, target_path, state, backup_mode):
+    backup_path = None
+    snapshot = (state or {}).get("snapshot")
+    if backup_mode == "写入前保留备份" and (state or {}).get("existed") and snapshot and Path(snapshot).exists():
+        backup_path = _permanent_backup_path(target_path)
+        shutil.copy2(str(snapshot), str(backup_path))
+    os.replace(str(working_path), str(target_path))
+    return backup_path
+
+
+def _error_messages(logs):
+    return [
+        _as_text(item.get("message"))
+        for item in (logs or [])
+        if isinstance(item, dict) and _as_text(item.get("level")).upper() == "ERROR"
+    ]
+
+
 def run(input_data, params, context):
     p = dict(params or {})
     context = dict(context or {})
@@ -1105,6 +1616,7 @@ def run(input_data, params, context):
     win32_open_retries = _to_int_with_default(p.get("win32_open_retries", 5), 5, min_value=1)
     win32_retry_interval_ms = _to_int_with_default(p.get("win32_retry_interval_ms", 300), 300, min_value=0)
     win32_close_settle_ms = _to_int_with_default(p.get("win32_close_settle_ms", 200), 200, min_value=0)
+    backup_mode = _as_text(p.get("backup_mode", "失败时恢复原文件")) or "失败时恢复原文件"
 
     grouped, prep = _collect_ops(input_data, p, context)
     total_files = len(grouped)
@@ -1116,6 +1628,8 @@ def run(input_data, params, context):
         logs.append(_log("WARNING", f"有 {prep['skipped_no_path']} 行缺少路径，已跳过"))
     if prep["skipped_empty_value"] > 0:
         logs.append(_log("INFO", f"有 {prep['skipped_empty_value']} 行空文本，按配置已跳过"))
+    if prep["skipped_duplicate_global"] > 0:
+        logs.append(_log("INFO", f"有 {prep['skipped_duplicate_global']} 条重复全文替换操作，已合并"))
 
     if total_ops <= 0:
         return {
@@ -1133,7 +1647,11 @@ def run(input_data, params, context):
                 "total_files": 0,
                 "total_ops": 0,
                 "applied": 0,
-                "skipped": prep["skipped_no_path"] + prep["skipped_empty_value"],
+                "skipped": (
+                    prep["skipped_no_path"]
+                    + prep["skipped_empty_value"]
+                    + prep["skipped_duplicate_global"]
+                ),
                 "failed_files": 0,
                 "preview_protected": bool(is_preview and not preview_write),
             },
@@ -1142,8 +1660,15 @@ def run(input_data, params, context):
     out_headers = list(OUTPUT_HEADERS)
     out_rows = []
     total_applied = 0
-    total_skipped = prep["skipped_no_path"] + prep["skipped_empty_value"]
+    total_skipped = (
+        prep["skipped_no_path"]
+        + prep["skipped_empty_value"]
+        + prep["skipped_duplicate_global"]
+    )
     failed_files = 0
+    partial_files = 0
+    successful_files = 0
+    skipped_files = 0
     preview_protected = bool(is_preview and not preview_write)
     processed_files = 0
     cancelled = False
@@ -1182,16 +1707,21 @@ def run(input_data, params, context):
             continue
 
         copy_status = ""
+        transaction_state = _snapshot_target(target_path, preview_protected)
         try:
             copy_status, prepare_msg = _prepare_target_file(source_path, target_path, p, preview_protected)
             if copy_status == "skip":
                 out_rows.append([str(source_path), str(target_path), target_path.name, engine, len(ops), 0, len(ops), copy_status, "跳过", "跳过", prepare_msg])
                 logs.append(_log("INFO", f"{target_path.name} 已跳过：{prepare_msg}", str(target_path)))
                 total_skipped += len(ops)
+                skipped_files += 1
                 processed_files += 1
                 _progress(context, i, total_files, f"跳过：{target_path.name}", stage="file_skipped", object=str(target_path))
+                _cleanup_path(transaction_state.get("snapshot"))
                 continue
         except Exception as exc:
+            _rollback_target(target_path, transaction_state)
+            _cleanup_path(transaction_state.get("snapshot"))
             failed_files += 1
             err = str(exc)
             out_rows.append([str(source_path), str(target_path), target_path.name, engine, len(ops), 0, len(ops), copy_status, "失败", "失败", err])
@@ -1212,23 +1742,55 @@ def run(input_data, params, context):
             total_skipped += len(ops)
             processed_files += 1
             _progress(context, i, total_files, f"预览保护：{target_path.name}", stage="file_skipped", object=str(target_path))
+            _cleanup_path(transaction_state.get("snapshot"))
             continue
 
+        working_path = None
         try:
             if not target_path.exists():
                 raise FileNotFoundError(f"目标文件不存在：{target_path}")
+            working_path = _prepare_working_copy(target_path)
             if win32_session is not None:
-                applied, skipped, write_logs = win32_session.write_file(target_path, ops, context, i - 1, total_files)
+                applied, skipped, write_logs = win32_session.write_file(working_path, ops, context, i - 1, total_files)
             else:
-                applied, skipped, write_logs = _write_file(target_path, ops, engine, context, i - 1, total_files)
+                applied, skipped, write_logs = _write_file(working_path, ops, engine, context, i - 1, total_files)
+            error_messages = _error_messages(write_logs)
+            logs.extend(write_logs)
+            if applied <= 0:
+                raise RuntimeError(error_messages[0] if error_messages else "没有任何写入操作成功")
+            backup_path = _commit_working_copy(working_path, target_path, transaction_state, backup_mode)
+            working_path = None
             total_applied += applied
             total_skipped += skipped
-            out_rows.append([str(source_path), str(target_path), target_path.name, engine, len(ops), applied, skipped, copy_status, "成功", "成功", ""])
-            logs.extend(write_logs)
-            logs.append(_log("INFO", f"{target_path.name} 写入完成：应用 {applied}，跳过 {skipped}", str(target_path)))
+            if skipped > 0 or error_messages:
+                partial_files += 1
+                file_status = "部分成功"
+                file_error = "；".join(error_messages[:3])
+            else:
+                successful_files += 1
+                file_status = "成功"
+                file_error = ""
+            if backup_path is not None:
+                copy_status = f"{copy_status}；已备份:{backup_path.name}"
+            out_rows.append([
+                str(source_path),
+                str(target_path),
+                target_path.name,
+                engine,
+                len(ops),
+                applied,
+                skipped,
+                copy_status,
+                file_status,
+                file_status,
+                file_error,
+            ])
+            logs.append(_log("INFO", f"{target_path.name} 写入完成：状态 {file_status}，应用 {applied}，跳过 {skipped}", str(target_path)))
             processed_files += 1
             _progress(context, i, total_files, f"已完成：{target_path.name}", stage="file_done", object=str(target_path))
         except Exception as exc:
+            _cleanup_path(working_path)
+            _rollback_target(target_path, transaction_state)
             failed_files += 1
             err = str(exc)
             out_rows.append([str(source_path), str(target_path), target_path.name, engine, len(ops), 0, len(ops), copy_status, "失败", "失败", err])
@@ -1241,19 +1803,30 @@ def run(input_data, params, context):
                     win32_session.close()
                     win32_session = None
                 raise
+        finally:
+            _cleanup_path(working_path)
+            _cleanup_path(transaction_state.get("snapshot") if transaction_state else None)
 
     if win32_session is not None:
         win32_session.close()
         logs.append(_log("INFO", "WIN32_REUSE：Office 进程已统一退出"))
 
-    ok_files = max(0, processed_files - failed_files)
+    ok_files = successful_files + partial_files
     if cancelled:
-        msg = f"写入已取消：已处理文件 {processed_files}/{total_files}；成功 {ok_files}，失败 {failed_files}；应用 {total_applied}，跳过 {total_skipped}"
+        msg = (
+            f"写入已取消：已处理文件 {processed_files}/{total_files}；"
+            f"成功 {successful_files}，部分成功 {partial_files}，跳过 {skipped_files}，失败 {failed_files}；"
+            f"应用 {total_applied}，跳过操作 {total_skipped}"
+        )
     else:
-        msg = f"写入完成：文件成功 {ok_files}，失败 {failed_files}；操作应用 {total_applied}，跳过 {total_skipped}"
+        msg = (
+            f"写入完成：文件成功 {successful_files}，部分成功 {partial_files}，"
+            f"跳过 {skipped_files}，失败 {failed_files}；"
+            f"操作应用 {total_applied}，跳过 {total_skipped}"
+        )
     _progress(context, processed_files, total_files if total_files > 0 else 1, "写入阶段完成", stage="done", cancelled=cancelled)
     return {
-        "ok": True,
+        "ok": bool(total_files == 0 or ok_files > 0 or skipped_files > 0 or preview_protected),
         "message": msg,
         "output": {
             "type": "table",
@@ -1269,6 +1842,9 @@ def run(input_data, params, context):
             "applied": total_applied,
             "skipped": total_skipped,
             "failed_files": failed_files,
+            "successful_files": successful_files,
+            "partial_files": partial_files,
+            "skipped_files": skipped_files,
             "processed_files": processed_files,
             "preview_protected": preview_protected,
             "engine": engine,
@@ -1284,9 +1860,68 @@ def run(input_data, params, context):
             "target_missing_policy": _as_text(p.get("target_missing_policy", "从源文件复制")) or "从源文件复制",
             "target_existing_policy": _as_text(p.get("target_existing_policy", "直接写入")) or "直接写入",
             "same_path_policy": _as_text(p.get("same_path_policy", "修改源文件")) or "修改源文件",
+            "backup_mode": backup_mode,
         },
     }
 
 
+def _external_progress_callback(message):
+    try:
+        text = json.dumps(message, ensure_ascii=False) + "\n"
+        sys.stdout.buffer.write(text.encode("utf-8"))
+        sys.stdout.buffer.flush()
+    except Exception:
+        pass
+
+
+def _run_external_entry(input_path, output_path):
+    output_file = Path(output_path)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        payload = json.loads(Path(input_path).read_text(encoding="utf-8"))
+        input_data = payload.get("input_data") or {}
+        params = payload.get("params") or {}
+        context = payload.get("context") or {}
+        context.setdefault("plugin_id", PLUGIN_INFO["id"])
+        context["progress_callback"] = _external_progress_callback
+        context["report_progress"] = lambda current=0, total=0, message="", **extra: _external_progress_callback({
+            "type": "node_progress",
+            "current": current,
+            "total": total,
+            "message": message,
+            **extra,
+        })
+        result = run(input_data, params, context)
+    except Exception as exc:
+        result = {
+            "ok": False,
+            "message": str(exc),
+            "output": {
+                "type": "table",
+                "headers": ["错误"],
+                "rows": [[str(exc)]],
+                "meta": {"plugin": PLUGIN_INFO["id"]},
+            },
+            "logs": [
+                {"level": "ERROR", "message": str(exc)},
+                {"level": "ERROR", "message": traceback.format_exc()},
+            ],
+            "summary": {"success": 0, "failed": 1},
+        }
+    output_file.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return 0 if result.get("ok", False) else 1
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=PLUGIN_INFO["name"])
+    parser.add_argument("--input", dest="input_path")
+    parser.add_argument("--output", dest="output_path")
+    args = parser.parse_args(argv)
+    if args.input_path and args.output_path:
+        return _run_external_entry(args.input_path, args.output_path)
+    print("这是 DataFlowKit 插件，请在主程序插件节点中调用。")
+    return 0
+
+
 if __name__ == "__main__":
-    print("这是工作流插件文件，请放到 plugins 目录并在主程序里通过插件节点调用。")
+    raise SystemExit(main())

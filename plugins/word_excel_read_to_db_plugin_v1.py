@@ -526,18 +526,30 @@ def _split_word_cell_text(text):
 
 def _append_word_text_lines(rows, raw_text, file_path, context, progress_current, progress_total, meta_base=None):
     meta_base = dict(meta_base or {})
-    for line_index, part in enumerate(re.split(r"[\r\n]+", "" if raw_text is None else str(raw_text)), start=1):
+    source_text = "" if raw_text is None else str(raw_text)
+    line_index = 0
+    for match in re.finditer(r"[^\r\n]+", source_text):
+        part = match.group(0)
         txt = _clean_word_text(part)
         if txt == "" and "\x01" not in str(part):
             continue
-        meta = {"line_index": line_index}
+        line_index += 1
+        meta = {
+            "line_index": line_index,
+            "range_start": match.start(),
+            "range_end": match.end(),
+            "position_kind": "word_content_range",
+        }
         meta.update(meta_base)
+        range_base = int(meta.get("range_base") or 0)
+        absolute_start = range_base + match.start()
+        absolute_end = range_base + match.end()
         rec = {
-            "block_type": "word_paragraph",
+            "block_type": "word_text_range",
             "sheet_name": "",
             "row_index": line_index,
             "col_index": "",
-            "cell_address": "",
+            "cell_address": f"WRANGE{absolute_start}:{absolute_end}",
             "text": txt,
             "meta_json": _row_meta(meta),
         }
@@ -850,7 +862,7 @@ def _read_word_text_via_com(file_path, context=None, progress_current=None, prog
         _timing_add(timings, "打开文档", step_start)
 
         step_start = time.perf_counter()
-        raw_text = _as_text(doc.Content.Text)
+        raw_text = "" if doc.Content.Text is None else str(doc.Content.Text)
         _timing_add(timings, "读取全文", step_start, count=len(raw_text))
 
         step_start = time.perf_counter()
@@ -861,7 +873,7 @@ def _read_word_text_via_com(file_path, context=None, progress_current=None, prog
             context,
             progress_current,
             progress_total,
-            {"win32_text_fast": True},
+            {"win32_text_fast": True, "range_base": int(doc.Content.Start)},
         )
         _timing_add(timings, "拆分文本", step_start, rows=len(rows))
         return rows
@@ -907,7 +919,7 @@ def _read_word_text_table_map_via_com(file_path, context=None, progress_current=
         _timing_add(timings, "打开文档", step_start)
 
         step_start = time.perf_counter()
-        raw_text = _as_text(doc.Content.Text)
+        raw_text = "" if doc.Content.Text is None else str(doc.Content.Text)
         _timing_add(timings, "读取全文", step_start, count=len(raw_text))
 
         step_start = time.perf_counter()
@@ -918,7 +930,7 @@ def _read_word_text_table_map_via_com(file_path, context=None, progress_current=
             context,
             progress_current,
             progress_total,
-            {"win32_text_table_map": True},
+            {"win32_text_table_map": True, "range_base": int(doc.Content.Start)},
         )
         _timing_add(timings, "拆分文本", step_start, rows=len(rows))
 
@@ -1083,7 +1095,7 @@ def _read_word_text_exact_tables_via_com(file_path, word_merge_mode="关闭", co
         _timing_add(timings, "打开文档", step_start)
 
         step_start = time.perf_counter()
-        raw_text = _as_text(doc.Content.Text)
+        raw_text = "" if doc.Content.Text is None else str(doc.Content.Text)
         _timing_add(timings, "读取全文", step_start, count=len(raw_text))
 
         step_start = time.perf_counter()
@@ -1094,7 +1106,7 @@ def _read_word_text_exact_tables_via_com(file_path, word_merge_mode="关闭", co
             context,
             progress_current,
             progress_total,
-            {"win32_text_paragraph_exact_table": True},
+            {"win32_text_paragraph_exact_table": True, "range_base": int(doc.Content.Start)},
         )
         _timing_add(timings, "拆分文本", step_start, rows=len(rows))
 
