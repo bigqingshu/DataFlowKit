@@ -16,7 +16,7 @@ from xml.etree import ElementTree as ET
 PLUGIN_INFO = {
     "id": "word_excel_read_to_db_v1",
     "name": "Word/Excel读取入库V1",
-    "version": "1.2.0",
+    "version": "1.2.1",
     "api_version": "1.0",
     "category": "文件处理",
     "description": "按统一读取策略读取 Word/Excel，并按“每文件一表”写入数据库。",
@@ -24,6 +24,7 @@ PLUGIN_INFO = {
     "output_type": "table",
     "danger_level": "db_write",
 }
+PARSE_CACHE_VERSION = "word_table_cell_canonical_v2"
 
 DETAIL_HEADERS = [
     "source_file",
@@ -421,12 +422,14 @@ def _ensure_cache_table(conn):
 def _stable_params_hash(params):
     ignore = {"enable_cache", "force_refresh", "cache_key_mode"}
     data = {k: params[k] for k in sorted(params.keys()) if k not in ignore}
+    data["_parse_cache_version"] = PARSE_CACHE_VERSION
     txt = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(txt.encode("utf-8")).hexdigest()
 
 
 def _parse_params_hash(params):
     data = {
+        "parse_cache_version": PARSE_CACHE_VERSION,
         "read_engine": _as_text(params.get("read_engine", "win32")) or "win32",
         "word_merge_mode": _as_text(params.get("word_merge_mode", "关闭")) or "关闭",
         "doc_read_strategy": _as_text(params.get("doc_read_strategy", DEFAULT_READ_STRATEGY)) or DEFAULT_READ_STRATEGY,
@@ -539,14 +542,69 @@ def _split_word_cell_text(text):
     return [_clean_word_text(part) for part in parts]
 
 
-def _append_word_text_lines(rows, raw_text, file_path, context, progress_current, progress_total, meta_base=None):
+def _word_range_bounds(range_obj):
+    try:
+        return int(range_obj.Start), int(range_obj.End)
+    except Exception:
+        return None
+
+
+def _word_table_ranges(doc):
+    ranges = []
+    try:
+        count = int(doc.Tables.Count)
+    except Exception:
+        count = 0
+    for index in range(1, count + 1):
+        try:
+            bounds = _word_range_bounds(doc.Tables(index).Range)
+        except Exception:
+            bounds = None
+        if not bounds:
+            continue
+        start, end = bounds
+        if end > start:
+            ranges.append((start, end))
+    return ranges
+
+
+def _range_overlaps_any(start, end, ranges):
+    try:
+        start = int(start)
+        end = int(end)
+    except Exception:
+        return False
+    for left, right in ranges or []:
+        if start < right and end > left:
+            return True
+    return False
+
+
+def _word_range_in_table(range_obj):
+    try:
+        return int(range_obj.Tables.Count) > 0
+    except Exception:
+        pass
+    try:
+        return bool(range_obj.Information(12))
+    except Exception:
+        return False
+
+
+def _append_word_text_lines(rows, raw_text, file_path, context, progress_current, progress_total, meta_base=None, exclude_ranges=None):
     meta_base = dict(meta_base or {})
+    exclude_ranges = list(exclude_ranges or [])
     source_text = "" if raw_text is None else str(raw_text)
     line_index = 0
     for match in re.finditer(r"[^\r\n]+", source_text):
         part = match.group(0)
         txt = _clean_word_text(part)
         if txt == "" and "\x01" not in str(part):
+            continue
+        range_base = int(meta_base.get("range_base") or 0)
+        absolute_start = range_base + match.start()
+        absolute_end = range_base + match.end()
+        if exclude_ranges and _range_overlaps_any(absolute_start, absolute_end, exclude_ranges):
             continue
         line_index += 1
         meta = {
@@ -556,9 +614,6 @@ def _append_word_text_lines(rows, raw_text, file_path, context, progress_current
             "position_kind": "word_content_range",
         }
         meta.update(meta_base)
-        range_base = int(meta.get("range_base") or 0)
-        absolute_start = range_base + match.start()
-        absolute_end = range_base + match.end()
         rec = {
             "block_type": "word_text_range",
             "sheet_name": "",
@@ -1015,6 +1070,7 @@ def _read_word_text_table_map_via_com(file_path, context=None, progress_current=
         _timing_add(timings, "读取全文", step_start, count=len(raw_text))
 
         step_start = time.perf_counter()
+        table_ranges = _word_table_ranges(doc)
         _append_word_text_lines(
             rows,
             raw_text,
@@ -1023,8 +1079,9 @@ def _read_word_text_table_map_via_com(file_path, context=None, progress_current=
             progress_current,
             progress_total,
             {"win32_text_table_map": True, "range_base": int(doc.Content.Start)},
+            exclude_ranges=table_ranges,
         )
-        _timing_add(timings, "拆分文本", step_start, rows=len(rows))
+        _timing_add(timings, "拆分文本", step_start, rows=len(rows), excluded_table_ranges=len(table_ranges))
 
         step_start = time.perf_counter()
         try:
@@ -1191,6 +1248,7 @@ def _read_word_text_exact_tables_via_com(file_path, word_merge_mode="关闭", co
         _timing_add(timings, "读取全文", step_start, count=len(raw_text))
 
         step_start = time.perf_counter()
+        table_ranges = _word_table_ranges(doc)
         _append_word_text_lines(
             rows,
             raw_text,
@@ -1199,8 +1257,9 @@ def _read_word_text_exact_tables_via_com(file_path, word_merge_mode="关闭", co
             progress_current,
             progress_total,
             {"win32_text_paragraph_exact_table": True, "range_base": int(doc.Content.Start)},
+            exclude_ranges=table_ranges,
         )
-        _timing_add(timings, "拆分文本", step_start, rows=len(rows))
+        _timing_add(timings, "拆分文本", step_start, rows=len(rows), excluded_table_ranges=len(table_ranges))
 
         _append_word_table_cells_via_com(doc, file_path, word_merge_mode, rows, context, progress_current, progress_total, timings)
         return rows
@@ -1250,9 +1309,15 @@ def _read_word_via_com(file_path, word_merge_mode="关闭", context=None, progre
             p_count = int(doc.Paragraphs.Count)
         except Exception:
             p_count = 0
+        skipped_table_paragraphs = 0
         for i in range(1, p_count + 1):
             try:
-                txt = _clean_word_text(doc.Paragraphs(i).Range.Text)
+                para = doc.Paragraphs(i)
+                rng = para.Range
+                if _word_range_in_table(rng):
+                    skipped_table_paragraphs += 1
+                    continue
+                txt = _clean_word_text(rng.Text)
             except Exception:
                 txt = ""
             if txt == "":
@@ -1268,7 +1333,7 @@ def _read_word_via_com(file_path, word_merge_mode="关闭", context=None, progre
             }
             rows.append(rec)
             _record_progress(context, progress_current, progress_total, file_path, rec, len(rows))
-        _timing_add(timings, "读取段落", step_start, count=p_count, rows=len(rows))
+        _timing_add(timings, "读取段落", step_start, count=p_count, rows=len(rows), skipped_table_paragraphs=skipped_table_paragraphs)
 
         _append_word_table_cells_via_com(doc, file_path, word_merge_mode, rows, context, progress_current, progress_total, timings)
         return rows
