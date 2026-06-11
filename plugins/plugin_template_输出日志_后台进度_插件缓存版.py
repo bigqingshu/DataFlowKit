@@ -68,7 +68,7 @@ def get_parameter_schema():
             "label": "可选数据库表",
             "type": "table_select",
             "default": "",
-            "help": "示例：插件可通过 context['db'] 读取这个表。",
+            "help": "主程序内置模式可通过 context['db'] 读取；独立模式请配置为输入表。",
         },
         {
             "name": "enable_cache",

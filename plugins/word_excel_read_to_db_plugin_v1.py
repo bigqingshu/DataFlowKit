@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
+import argparse
 import hashlib
 import json
 import re
 import shutil
 import sqlite3
+import sys
 import tempfile
 import time
+import traceback
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -167,6 +170,32 @@ def get_parameter_schema():
             "default": "继续并记录失败",
         },
     ]
+
+
+def get_table_access_spec(params=None, context=None):
+    p = dict(params or {})
+    prefix = re.sub(r"[^0-9A-Za-z_\u4e00-\u9fff]+", "_", _as_text(p.get("table_prefix", "src_"))).strip()
+    mode = _as_text(p.get("write_mode", "replace")) or "replace"
+    permissions = {
+        "read_table": False,
+        "write_table": True,
+        "create_table": True,
+        "append_rows": mode == "append",
+        "update_rows": False,
+        "clear_table": False,
+        "replace_table": mode == "replace",
+        "alter_schema": mode == "append",
+        "delete_rows": False,
+        "drop_table": False,
+    }
+    return [{
+        "role": "document_output",
+        "source_type": "SQLite表",
+        "table_pattern": f"{prefix}*" if prefix else "*",
+        "pattern_type": "glob",
+        "permissions": permissions,
+        "write_mode": mode,
+    }]
 
 
 def get_output_schema(params=None, input_data=None, context=None):
@@ -1336,34 +1365,6 @@ def _write_table_with_db_api(db, table_name, headers, rows, mode):
     return db.write_table(table_name=table_name, headers=headers, rows=rows, mode=mode)
 
 
-def _write_table_sqlite_fallback(db_path, table_name, headers, rows, mode):
-    conn = sqlite3.connect(str(db_path))
-    try:
-        cur = conn.cursor()
-        qname = '"' + table_name.replace('"', '""') + '"'
-        if mode == "replace":
-            cur.execute(f"DROP TABLE IF EXISTS {qname}")
-        elif mode == "fail":
-            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
-            if cur.fetchone():
-                raise RuntimeError(f"表已存在：{table_name}")
-        elif mode == "timestamp":
-            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
-            if cur.fetchone():
-                table_name = f"{table_name}_{_short_hash(table_name)}"
-                qname = '"' + table_name.replace('"', '""') + '"'
-
-        col_defs = ", ".join(['"' + h.replace('"', '""') + '" TEXT' for h in headers])
-        cur.execute(f"CREATE TABLE IF NOT EXISTS {qname} ({col_defs})")
-        placeholders = ", ".join(["?"] * len(headers))
-        cols = ", ".join(['"' + h.replace('"', '""') + '"' for h in headers])
-        cur.executemany(f"INSERT INTO {qname} ({cols}) VALUES ({placeholders})", rows)
-        conn.commit()
-        return {"table_name": table_name, "row_count": len(rows)}
-    finally:
-        conn.close()
-
-
 def validate_params(params, input_data, context):
     p = dict(params or {})
     headers = list(input_data.get("headers", []))
@@ -1408,7 +1409,6 @@ def run(input_data, params, context):
     _progress(context, 0, len(files), f"准备读取 {len(files)} 个文件", stage="prepare")
 
     db = context.get("db")
-    db_path = context.get("db_path", "")
     is_preview = bool(context.get("is_preview", False))
     preview_write_db = bool(p.get("preview_write_db", False))
     write_mode = _as_text(p.get("write_mode", "replace")) or "replace"
@@ -1437,6 +1437,7 @@ def run(input_data, params, context):
     cache_hit_count = 0
     cache_miss_count = 0
     cache_write_count = 0
+    database_requests = []
 
     try:
         file_iter = enumerate(files, start=1)
@@ -1554,11 +1555,16 @@ def run(input_data, params, context):
                 if db is not None and hasattr(db, "write_table"):
                     result = _write_table_with_db_api(db, table_name, detail_headers, detail_rows, write_mode)
                     table_name = _as_text(result.get("table_name", table_name)) or table_name
+                elif context.get("database_access") == "managed_requests":
+                    database_requests.append({
+                        "operation": "write_table",
+                        "table_name": table_name,
+                        "headers": detail_headers,
+                        "rows": detail_rows,
+                        "mode": write_mode,
+                    })
                 else:
-                    if not db_path:
-                        raise RuntimeError("缺少数据库连接：context['db'] 和 context['db_path'] 都不可用")
-                    result = _write_table_sqlite_fallback(db_path, table_name, detail_headers, detail_rows, write_mode)
-                    table_name = _as_text(result.get("table_name", table_name)) or table_name
+                    raise RuntimeError("缺少受控数据库接口：请通过 context['db'] 或 managed_requests 执行写入")
                 written_count = len(detail_rows)
 
             summary_rows.append(
@@ -1634,7 +1640,7 @@ def run(input_data, params, context):
         except Exception:
             pass
     _progress(context, len(summary_rows), len(files), "读取阶段完成", stage="done", cancelled=cancelled)
-    return {
+    result_payload = {
         "ok": True,
         "message": f"读取完成：成功 {ok_count}，失败 {fail_count}",
         "output": {
@@ -1652,3 +1658,60 @@ def run(input_data, params, context):
         "logs": logs[-200:],
         "summary": summary,
     }
+    if database_requests:
+        result_payload["database_requests"] = database_requests
+    return result_payload
+
+
+def _external_progress_callback(msg):
+    try:
+        text = json.dumps(msg, ensure_ascii=False) + "\n"
+        sys.stdout.buffer.write(text.encode("utf-8"))
+        sys.stdout.buffer.flush()
+    except Exception:
+        pass
+
+
+def _run_external_entry(input_path, output_path):
+    output_file = Path(output_path)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        payload = json.loads(Path(input_path).read_text(encoding="utf-8"))
+        input_data = payload.get("input_data") or {}
+        params = payload.get("params") or {}
+        context = payload.get("context") or {}
+        context.setdefault("plugin_id", PLUGIN_INFO["id"])
+        context["progress_callback"] = _external_progress_callback
+        context["report_progress"] = lambda current=0, total=0, message="", **extra: _external_progress_callback({
+            "type": "node_progress",
+            "current": current,
+            "total": total,
+            "message": message,
+            **extra,
+        })
+        result = run(input_data, params, context)
+    except Exception as exc:
+        result = {
+            "ok": False,
+            "message": str(exc),
+            "output": {"type": "table", "headers": ["错误"], "rows": [[str(exc)]], "meta": {"plugin": PLUGIN_INFO["id"]}},
+            "logs": [{"level": "ERROR", "message": str(exc)}, {"level": "ERROR", "message": traceback.format_exc()}],
+            "summary": {"success": 0, "failed": 1},
+        }
+    output_file.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return 0 if result.get("ok", False) else 1
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=PLUGIN_INFO["name"])
+    parser.add_argument("--input", dest="input_path")
+    parser.add_argument("--output", dest="output_path")
+    args = parser.parse_args(argv)
+    if args.input_path and args.output_path:
+        return _run_external_entry(args.input_path, args.output_path)
+    print("这是 DataFlowKit 插件，请在主程序插件节点中调用。")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
