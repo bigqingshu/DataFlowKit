@@ -365,6 +365,25 @@ def _short_detail_text(text, limit=90):
     return text
 
 
+def _visible_log_text(text, limit=180):
+    raw = _value_text(text)
+    raw = (
+        raw.replace("\\", "\\\\")
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+        .replace("\t", "\\t")
+        .replace("\x07", "\\x07")
+    )
+    raw = re.sub(
+        r"[\x00-\x06\x08\x0b\x0c\x0e-\x1f]",
+        lambda match: f"\\x{ord(match.group(0)):02x}",
+        raw,
+    )
+    if len(raw) > limit:
+        return raw[:limit] + "..."
+    return raw
+
+
 def _op_location(op):
     sheet = _as_text(op.get("sheet_name"))
     row = _as_text(op.get("row_index"))
@@ -525,6 +544,42 @@ def _collect_ops(input_data, params, context):
     }
 
 
+def _old_text_length(value):
+    return len(_value_text(value))
+
+
+def _sort_global_replace_ops_by_old_text_length(ops):
+    indexed = list(enumerate(ops or []))
+    indexed.sort(key=lambda item: (-_old_text_length(item[1].get("old_text", "")), item[0]))
+    return [op for _index, op in indexed]
+
+
+def _sort_global_replace_runs_by_old_text_length(ops):
+    result = []
+    run = []
+
+    def flush_run():
+        if not run:
+            return
+        result.extend(_sort_global_replace_ops_by_old_text_length(run))
+        run.clear()
+
+    for op in ops or []:
+        if _as_text((op or {}).get("block_type", "")).lower() == BLOCK_WORD_GLOBAL_REPLACE:
+            run.append(op)
+            continue
+        flush_run()
+        result.append(op)
+    flush_run()
+    return result
+
+
+def _sort_global_replacements_by_old_text_length(replacements):
+    indexed = list(enumerate(replacements or []))
+    indexed.sort(key=lambda item: (-_old_text_length(item[1][0] if item[1] else ""), item[0]))
+    return [replacement for _index, replacement in indexed]
+
+
 def _word_text_write_mode(context):
     params = (context or {}).get("params") or {}
     return _word_text_mode_from_params(params)
@@ -547,6 +602,28 @@ def _op_write_strategy(op):
     if text in (WORD_MODE_FIND_REPLACE, "find_replace", "old_text", "按 old_text 查找替换"):
         return WORD_MODE_FIND_REPLACE
     return text
+
+
+def _op_failure_detail(op):
+    op = op or {}
+    old_text = _value_text(op.get("old_text"))
+    value = _value_text(op.get("value"))
+    return "；".join(
+        [
+            f"block_type={_as_text(op.get('block_type')) or '-'}",
+            f"位置={_op_location(op)}",
+            f"cell_address={_as_text(op.get('cell_address')) or '-'}",
+            f"write_strategy={_op_write_strategy(op)}",
+            f"old_text长度={len(old_text)}",
+            f"old_text={_visible_log_text(old_text)}",
+            f"写入值长度={len(value)}",
+            f"写入值={_visible_log_text(value)}",
+        ]
+    )
+
+
+def _operation_failure_message(prefix, op, exc):
+    return f"{prefix}(源行{(op or {}).get('source_row')})：{exc}；{_op_failure_detail(op)}"
 
 
 def _word_body_range(range_obj):
@@ -653,7 +730,17 @@ def _word_find_replace_visible_text(range_obj, old_text, value):
         Replace=2,
     )
     if not replaced:
-        raise ValueError("定位范围内未找到 old_text")
+        try:
+            range_text = str(body.Text)
+        except Exception:
+            range_text = ""
+        raise ValueError(
+            "定位范围内未找到 old_text"
+            f"；old_text长度={len(old_text)}"
+            f"；old_text={_visible_log_text(old_text)}"
+            f"；范围文本长度={len(range_text)}"
+            f"；范围文本={_visible_log_text(range_text)}"
+        )
 
 
 def _word_write_range_by_mode(range_obj, op, context=None):
@@ -811,7 +898,11 @@ def _word_global_replace(doc, op):
                 except Exception:
                     pass
     if replaced <= 0:
-        raise ValueError(f"Word全文及特殊对象中未找到 old_text：{old_text}")
+        raise ValueError(
+            "Word全文及特殊对象中未找到 old_text"
+            f"；old_text长度={len(old_text)}"
+            f"；old_text={_visible_log_text(old_text)}"
+        )
     return replaced
 
 
@@ -833,7 +924,9 @@ def _ordered_word_ops(ops):
     range_ops = [(index, op) for index, op in indexed if _word_op_range_start(op) is not None]
     other_ops = [(index, op) for index, op in indexed if _word_op_range_start(op) is None]
     range_ops.sort(key=lambda item: (_word_op_range_start(item[1]), item[0]), reverse=True)
-    return [op for _index, op in range_ops + other_ops]
+    ordered_range_ops = [op for _index, op in range_ops]
+    ordered_other_ops = _sort_global_replace_runs_by_old_text_length([op for _index, op in other_ops])
+    return ordered_range_ops + ordered_other_ops
 
 
 def _apply_word_com_op(doc, op, context=None):
@@ -951,7 +1044,7 @@ def _write_word_via_com(file_path, ops, context=None, progress_current=None, pro
                 skipped += 1
                 _record_operation_failure(
                     logs,
-                    f"写入失败(源行{op.get('source_row')})：{exc}",
+                    _operation_failure_message("写入失败", op, exc),
                     file_path,
                     context,
                 )
@@ -1007,7 +1100,7 @@ def _write_excel_via_com(file_path, ops, context=None, progress_current=None, pr
                 skipped += 1
                 _record_operation_failure(
                     logs,
-                    f"Excel写入失败(源行{op.get('source_row')})：{exc}",
+                    _operation_failure_message("Excel写入失败", op, exc),
                     file_path,
                     context,
                 )
@@ -1109,7 +1202,7 @@ class _Win32OfficeSession:
                     skipped += 1
                     _record_operation_failure(
                         logs,
-                        f"写入失败(源行{op.get('source_row')})：{exc}",
+                        _operation_failure_message("写入失败", op, exc),
                         file_path,
                         context,
                     )
@@ -1154,7 +1247,7 @@ class _Win32OfficeSession:
                     skipped += 1
                     _record_operation_failure(
                         logs,
-                        f"Excel写入失败(源行{op.get('source_row')})：{exc}",
+                        _operation_failure_message("Excel写入失败", op, exc),
                         file_path,
                         context,
                     )
@@ -1383,18 +1476,23 @@ def _write_docx_zip_xml(file_path, ops, context=None, progress_current=None, pro
             skipped += 1
             _record_operation_failure(
                 logs,
-                f"写入失败(源行{op.get('source_row')})：{exc}",
+                _operation_failure_message("写入失败", op, exc),
                 file_path,
                 context,
             )
 
     if applied > 0:
         payload["word/document.xml"] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+        global_replacements = _sort_global_replacements_by_old_text_length(global_replacements)
         payload, replacement_counts = _apply_docx_global_replacements(payload, global_replacements)
         for (old_text, _new_text), replace_count in zip(global_replacements, replacement_counts):
             if replace_count > 0:
                 continue
-            message = f"Word全文及特殊对象中未找到 old_text：{old_text}"
+            message = (
+                "Word全文及特殊对象中未找到 old_text"
+                f"；old_text长度={len(_value_text(old_text))}"
+                f"；old_text={_visible_log_text(old_text)}"
+            )
             if _stop_on_error(context):
                 raise RuntimeError(message)
             logs.append(_log("ERROR", message, str(file_path)))
@@ -1455,7 +1553,7 @@ def _write_excel_openpyxl(file_path, ops, context=None, progress_current=None, p
                 skipped += 1
                 _record_operation_failure(
                     logs,
-                    f"Excel写入失败(源行{op.get('source_row')})：{exc}",
+                    _operation_failure_message("Excel写入失败", op, exc),
                     file_path,
                     context,
                 )

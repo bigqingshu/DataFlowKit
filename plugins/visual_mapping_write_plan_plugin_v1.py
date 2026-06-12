@@ -1548,6 +1548,32 @@ def _plan_state_to_output_row(state):
     ]
 
 
+def _sort_global_replace_output_rows(rows):
+    rows = list(rows or [])
+    target_order = {}
+
+    def target_key(row):
+        try:
+            return _cell_text(row[1]) or _cell_text(row[0])
+        except Exception:
+            return ""
+
+    for row in rows:
+        key = target_key(row)
+        if key not in target_order:
+            target_order[key] = len(target_order)
+
+    def sort_key(item):
+        index, row = item
+        try:
+            old_text = _cell_text(row[8])
+        except Exception:
+            old_text = ""
+        return (target_order.get(target_key(row), 0), -len(old_text), index)
+
+    return [row for _index, row in sorted(enumerate(rows), key=sort_key)]
+
+
 def _circled_number(value):
     chars = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳㉑㉒㉓㉔㉕㉖㉗㉘㉙㉚㉛㉜㉝㉞㉟㊱㊲㊳㊴㊵㊶㊷㊸㊹㊺㊻㊼㊽㊾㊿"
     index = _to_int(value, 0)
@@ -2402,7 +2428,7 @@ def run(input_data, params, context):
         state = plan_states.get(key)
         if state and state.get("touched"):
             out_rows.append(_plan_state_to_output_row(state))
-    out_rows.extend(special_rows)
+    out_rows.extend(_sort_global_replace_output_rows(special_rows))
 
     logs.append({"level": "INFO", "message": f"配置={config_name}，单元格规则 {len(rules)} 条，全局规则 {len(global_rules)} 条，联动规则 {len(linked_rules)} 条，生成 {matched} 条，跳过 {skipped} 条"})
     if skipped and skip_reasons:
