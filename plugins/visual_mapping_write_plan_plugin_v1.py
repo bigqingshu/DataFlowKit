@@ -93,6 +93,10 @@ OUTPUT_HEADERS = [
     "anchor_match_detail",
     "write_note",
     "write_strategy",
+    "meta_json",
+    "replace_scope",
+    "rule_old_text",
+    "rule_new_text",
 ]
 
 
@@ -152,6 +156,38 @@ def _as_text(value):
 
 def _cell_text(value):
     return "" if value is None else str(value)
+
+
+def _minimal_text_change(old_text, new_text):
+    old_text = _cell_text(old_text)
+    new_text = _cell_text(new_text)
+    if old_text == new_text:
+        return "", ""
+    prefix = 0
+    max_prefix = min(len(old_text), len(new_text))
+    while prefix < max_prefix and old_text[prefix] == new_text[prefix]:
+        prefix += 1
+    suffix = 0
+    max_suffix = min(len(old_text) - prefix, len(new_text) - prefix)
+    while suffix < max_suffix and old_text[len(old_text) - 1 - suffix] == new_text[len(new_text) - 1 - suffix]:
+        suffix += 1
+    old_end = len(old_text) - suffix if suffix else len(old_text)
+    new_end = len(new_text) - suffix if suffix else len(new_text)
+    left = prefix
+    right_old = old_end
+    right_new = new_end
+    while True:
+        old_part = old_text[left:right_old]
+        new_part = new_text[left:right_new]
+        if old_part and old_text.count(old_part) == 1:
+            return old_part, new_part
+        if left <= 0 and right_old >= len(old_text):
+            return old_text, new_text
+        if left > 0:
+            left -= 1
+        if right_old < len(old_text):
+            right_old += 1
+            right_new += 1
 
 
 def _ui_feature_name(value):
@@ -399,11 +435,22 @@ def _normalize_doc_record(headers, row, row_no, params=None):
     merge_origin_row = _to_int(d.get("merge_origin_row", meta.get("merge_origin_row", row_index)), row_index)
     merge_origin_col = _to_int(d.get("merge_origin_col", meta.get("merge_origin_col", col_index)), col_index)
     merged_range = _as_text(d.get("merged_range") or meta.get("merged_range", ""))
+    normalized_meta = dict(meta)
+    normalized_meta.update({
+        "is_merged": is_merged,
+        "is_merge_origin": is_merge_origin,
+        "row_span": row_span,
+        "col_span": col_span,
+        "merge_origin_row": merge_origin_row,
+        "merge_origin_col": merge_origin_col,
+        "merged_range": merged_range,
+    })
     if not sheet_name:
         sheet_name = "table_1" if block_type.startswith("word_table") else "Sheet1"
     return {
         "raw": d,
-        "meta": meta,
+        "meta": normalized_meta,
+        "meta_json": json.dumps(normalized_meta, ensure_ascii=False),
         "source_row": row_no,
         "source_file": source_file,
         "block_type": block_type,
@@ -1526,6 +1573,10 @@ def _update_plan_state(
 
 def _plan_state_to_output_row(state):
     rec = (state or {}).get("record") or {}
+    rule_old_text, rule_new_text = _minimal_text_change(
+        state.get("original_text", ""),
+        state.get("current_text", ""),
+    )
     return [
         state.get("source_file", ""),
         state.get("target_file", ""),
@@ -1545,6 +1596,10 @@ def _plan_state_to_output_row(state):
         "；".join(state.get("anchor_details", []) or []),
         "；".join(state.get("write_notes", []) or []),
         state.get("write_strategy", ""),
+        rec.get("meta_json", json.dumps(rec.get("meta", {}), ensure_ascii=False)),
+        "替换第一次",
+        rule_old_text,
+        rule_new_text,
     ]
 
 
@@ -1659,6 +1714,16 @@ def _record_at_position(records, source_file, sheet_name, row_index, col_index):
 
 def _synthetic_target_record(event, sheet_name, row_index, col_index):
     base = event.get("rec") or {}
+    meta = dict(base.get("meta") or {})
+    meta.update({
+        "is_merged": False,
+        "is_merge_origin": True,
+        "row_span": 1,
+        "col_span": 1,
+        "merge_origin_row": _to_int(row_index, 0),
+        "merge_origin_col": _to_int(col_index, 0),
+        "merged_range": "",
+    })
     return {
         "source_file": event.get("source_file", ""),
         "block_type": base.get("block_type", "word_table_cell"),
@@ -1671,6 +1736,11 @@ def _synthetic_target_record(event, sheet_name, row_index, col_index):
         "is_merged": False,
         "row_span": 1,
         "col_span": 1,
+        "merge_origin_row": _to_int(row_index, 0),
+        "merge_origin_col": _to_int(col_index, 0),
+        "merged_range": "",
+        "meta": meta,
+        "meta_json": json.dumps(meta, ensure_ascii=False),
     }
 
 
@@ -1869,6 +1939,10 @@ def _build_linked_plan_rows(linked_rules, events, by_file, params, table_context
                 locate_detail,
                 f"联动写入；{area_detail}；触发格 {event.get('sheet_name', '')} R{event.get('row_index')}C{event.get('col_index')}；本页变化 {event.get('page_change_index')}/{event.get('page_change_total')}",
                 DIRECT_WRITE_STRATEGY,
+                target_rec.get("meta_json", json.dumps(target_rec.get("meta", {}), ensure_ascii=False)),
+                "",
+                "",
+                "",
             ])
     return rows, matched, skipped, skip_reasons
 
@@ -2220,6 +2294,10 @@ def run(input_data, params, context):
             "",
             note,
             "",
+            rec.get("meta_json", json.dumps(rec.get("meta", {}), ensure_ascii=False)) if rec else "",
+            "",
+            "",
+            "",
         ])
 
     plan_states = {}
@@ -2387,6 +2465,10 @@ def run(input_data, params, context):
                         "",
                         f"全局搜索替换；{replace_detail}；源文件选择={source_note}",
                         "按old_text查找替换",
+                        rec.get("meta_json", json.dumps(rec.get("meta", {}), ensure_ascii=False)),
+                        "替换全部",
+                        before_text,
+                        after_text,
                     ])
                 trigger_events.append({
                     "kind": "全局替换",

@@ -1205,15 +1205,19 @@ class ClipboardTableApp:
             width += 2 if ord(ch) > 127 else 1
         return width
 
-    def export_current_preview_to_xlsx(self):
-        if not self.headers:
+    def export_current_preview_to_xlsx(self, headers=None, rows=None, table_name=None, title="导出为 xlsx"):
+        headers = list(self.headers if headers is None else headers)
+        rows = [list(row) for row in (self.rows if rows is None else rows)]
+        table_name = self.table_name_var.get() if table_name is None else table_name
+
+        if not headers:
             messagebox.showwarning("提示", "当前没有可导出的表格字段。")
             return
 
-        default_base = self.sanitize_sql_name(self.table_name_var.get(), "导出数据")
+        default_base = self.sanitize_sql_name(table_name, "导出数据")
         default_name = f"{default_base}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         path = filedialog.asksaveasfilename(
-            title="导出为 xlsx",
+            title=title,
             defaultextension=".xlsx",
             initialfile=default_name,
             filetypes=[("Excel 工作簿", "*.xlsx"), ("所有文件", "*.*")]
@@ -1227,32 +1231,35 @@ class ClipboardTableApp:
 
         try:
             try:
-                self.export_xlsx_with_openpyxl(path)
+                self.export_xlsx_with_openpyxl(path, headers=headers, rows=rows, table_name=table_name)
                 engine = "openpyxl"
             except ModuleNotFoundError:
-                self.export_xlsx_minimal(path)
+                self.export_xlsx_minimal(path, headers=headers, rows=rows, table_name=table_name)
                 engine = "内置简易导出器"
 
             self.info_var.set(f"导出成功：{path}")
             messagebox.showinfo(
                 "导出成功",
-                f"已导出当前预览数据。\n\n文件：{path}\n行数：{len(self.rows)}\n列数：{len(self.headers)}\n导出方式：{engine}"
+                f"已导出当前预览数据。\n\n文件：{path}\n行数：{len(rows)}\n列数：{len(headers)}\n导出方式：{engine}"
             )
         except Exception as e:
             messagebox.showerror("导出失败", str(e))
 
-    def export_xlsx_with_openpyxl(self, path):
+    def export_xlsx_with_openpyxl(self, path, headers=None, rows=None, table_name=None):
         from openpyxl import Workbook
         from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
+        headers = [str(h) for h in (self.headers if headers is None else headers)]
+        rows = [list(row) for row in (self.rows if rows is None else rows)]
+        table_name = self.table_name_var.get() if table_name is None else table_name
+
         wb = Workbook()
         ws = wb.active
-        ws.title = self.normalize_sheet_title(self.table_name_var.get())
+        ws.title = self.normalize_sheet_title(table_name)
 
-        headers = [str(h) for h in self.headers]
         ws.append(headers)
 
-        for row in self.rows:
+        for row in rows:
             fixed = list(row)
             if len(fixed) < len(headers):
                 fixed += [""] * (len(headers) - len(fixed))
@@ -1278,30 +1285,31 @@ class ClipboardTableApp:
         ws.freeze_panes = "A2"
         if headers:
             last_col = self.column_letter(len(headers))
-            ws.auto_filter.ref = f"A1:{last_col}{max(len(self.rows) + 1, 1)}"
+            ws.auto_filter.ref = f"A1:{last_col}{max(len(rows) + 1, 1)}"
 
         for col_idx, header in enumerate(headers, start=1):
             max_width = self.calc_display_width(header)
-            for row in self.rows[:3000]:
+            for row in rows[:3000]:
                 if col_idx - 1 < len(row):
                     max_width = max(max_width, self.calc_display_width(row[col_idx - 1]))
             ws.column_dimensions[self.column_letter(col_idx)].width = min(max(max_width + 2, 10), 40)
 
         wb.save(path)
 
-    def export_xlsx_minimal(self, path):
+    def export_xlsx_minimal(self, path, headers=None, rows=None, table_name=None):
         import zipfile
         from xml.sax.saxutils import escape
 
-        headers = [str(h) for h in self.headers]
-        rows = [headers]
-        for row in self.rows:
+        headers = [str(h) for h in (self.headers if headers is None else headers)]
+        rows = [list(row) for row in (self.rows if rows is None else rows)]
+        sheet_rows = [headers]
+        for row in rows:
             fixed = list(row)
             if len(fixed) < len(headers):
                 fixed += [""] * (len(headers) - len(fixed))
             if len(fixed) > len(headers):
                 fixed = fixed[:len(headers)]
-            rows.append(["" if value is None else str(value) for value in fixed])
+            sheet_rows.append(["" if value is None else str(value) for value in fixed])
 
         def cell_xml(row_idx, col_idx, value, style_id="0"):
             ref = f"{self.column_letter(col_idx)}{row_idx}"
@@ -1311,20 +1319,20 @@ class ClipboardTableApp:
         col_xml = []
         for col_idx, header in enumerate(headers, start=1):
             max_width = self.calc_display_width(header)
-            for row in self.rows[:3000]:
+            for row in rows[:3000]:
                 if col_idx - 1 < len(row):
                     max_width = max(max_width, self.calc_display_width(row[col_idx - 1]))
             width = min(max(max_width + 2, 10), 40)
             col_xml.append(f'<col min="{col_idx}" max="{col_idx}" width="{width}" customWidth="1"/>')
 
         row_xml_list = []
-        for r_idx, row in enumerate(rows, start=1):
+        for r_idx, row in enumerate(sheet_rows, start=1):
             style_id = "1" if r_idx == 1 else "0"
             cells = "".join(cell_xml(r_idx, c_idx, value, style_id) for c_idx, value in enumerate(row, start=1))
             row_xml_list.append(f'<row r="{r_idx}">{cells}</row>')
 
         last_col = self.column_letter(len(headers) if headers else 1)
-        last_row = max(len(rows), 1)
+        last_row = max(len(sheet_rows), 1)
         auto_filter = f'<autoFilter ref="A1:{last_col}{last_row}"/>' if headers else ""
 
         sheet_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -5382,6 +5390,11 @@ class PlanWorkflowWindow:
             text="下一个",
             command=self.search_preview_next
         ).pack(side=tk.LEFT, padx=(12, 8))
+        ttk.Button(
+            preview_search_frame,
+            text="导出为 xlsx",
+            command=self.export_preview_to_xlsx
+        ).pack(side=tk.LEFT, padx=(4, 8))
 
         self.preview_tree = ttk.Treeview(preview_frame, show="headings")
         y_scroll = ttk.Scrollbar(preview_frame, orient=tk.VERTICAL, command=self.preview_tree.yview)
@@ -15801,6 +15814,21 @@ class PlanWorkflowWindow:
             self.status_var.set(f"已载入表到结果预览：{label}，{len(rows)} 行 × {len(headers)} 列。当前预览结果已独立缓存，不会被临时查看表覆盖。")
         except Exception as e:
             messagebox.showerror("载入表失败", str(e))
+
+    def export_preview_to_xlsx(self):
+        """导出结果预览区当前显示的数据，复用主界面的 xlsx 导出流程。"""
+        headers = list(self.preview_headers or [])
+        rows = [list(row) for row in (self.preview_rows or [])]
+        if not headers:
+            messagebox.showwarning("提示", "当前结果预览没有可导出的表格字段。")
+            return
+        table_name = self.preview_table_var.get().strip() or "计划预览结果"
+        self.app.export_current_preview_to_xlsx(
+            headers=headers,
+            rows=rows,
+            table_name=table_name,
+            title="导出为 xlsx",
+        )
 
     def preview_to_selected_node(self):
         idx = self.get_selected_node_index()

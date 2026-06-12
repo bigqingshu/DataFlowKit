@@ -24,7 +24,7 @@ PLUGIN_INFO = {
     "output_type": "table",
     "danger_level": "db_write",
 }
-PARSE_CACHE_VERSION = "word_table_cell_canonical_v2"
+PARSE_CACHE_VERSION = "word_table_cell_canonical_v3_raw_text"
 
 DETAIL_HEADERS = [
     "source_file",
@@ -529,6 +529,17 @@ def _clean_word_text(text):
     return s
 
 
+def _word_raw_visible_text(text):
+    raw = "" if text is None else str(text)
+    raw = raw.replace("\x00", "")
+    while raw.endswith(("\r\x07", "\x07", "\r")):
+        if raw.endswith("\r\x07"):
+            raw = raw[:-2]
+        else:
+            raw = raw[:-1]
+    return raw
+
+
 def _split_word_cell_text(text):
     raw = "" if text is None else str(text)
     if raw == "":
@@ -770,7 +781,10 @@ def _read_docx_like(file_path, word_merge_mode="关闭", context=None, progress_
                         "col_index": "",
                         "cell_address": "",
                         "text": txt,
-                        "meta_json": _row_meta({"paragraph_index": para_idx}),
+                        "meta_json": _row_meta({
+                            "paragraph_index": para_idx,
+                            "word_raw_text": txt,
+                        }),
                     }
                     rows.append(rec)
                     _record_progress(context, progress_current, progress_total, file_path, rec, len(rows))
@@ -844,7 +858,12 @@ def _read_docx_like(file_path, word_merge_mode="关闭", context=None, progress_
                         "col_index": col_start,
                         "cell_address": f"R{row_start}C{col_start}",
                         "text": txt,
-                        "meta_json": _row_meta({"table_index": table_idx, "row_index": row_start, "col_index": col_start}, merge),
+                        "meta_json": _row_meta({
+                            "table_index": table_idx,
+                            "row_index": row_start,
+                            "col_index": col_start,
+                            "word_raw_text": txt,
+                        }, merge),
                     }
                     rows.append(rec)
                     _record_progress(context, progress_current, progress_total, file_path, rec, len(rows))
@@ -1214,7 +1233,12 @@ def _append_word_table_cells_via_com(doc, file_path, word_merge_mode, rows, cont
                 "col_index": col_index,
                 "cell_address": f"R{row_index}C{col_index}",
                 "text": txt,
-                "meta_json": _row_meta({"table_index": t, "row_index": row_index, "col_index": col_index}, merge),
+                "meta_json": _row_meta({
+                    "table_index": t,
+                    "row_index": row_index,
+                    "col_index": col_index,
+                    "word_raw_text": _word_raw_visible_text(raw_cell_text),
+                }, merge),
             }
             rows.append(rec)
             _record_progress(context, progress_current, progress_total, file_path, rec, len(rows))
@@ -1317,7 +1341,8 @@ def _read_word_via_com(file_path, word_merge_mode="关闭", context=None, progre
                 if _word_range_in_table(rng):
                     skipped_table_paragraphs += 1
                     continue
-                txt = _clean_word_text(rng.Text)
+                raw_paragraph_text = rng.Text
+                txt = _clean_word_text(raw_paragraph_text)
             except Exception:
                 txt = ""
             if txt == "":
@@ -1329,7 +1354,10 @@ def _read_word_via_com(file_path, word_merge_mode="关闭", context=None, progre
                 "col_index": "",
                 "cell_address": "",
                 "text": txt,
-                "meta_json": _row_meta({"paragraph_index": i}),
+                "meta_json": _row_meta({
+                    "paragraph_index": i,
+                    "word_raw_text": _word_raw_visible_text(raw_paragraph_text),
+                }),
             }
             rows.append(rec)
             _record_progress(context, progress_current, progress_total, file_path, rec, len(rows))
