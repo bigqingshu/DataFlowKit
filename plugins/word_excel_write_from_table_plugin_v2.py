@@ -637,9 +637,24 @@ def _word_body_range(range_obj):
     return range_obj.Document.Range(start, max(start, end))
 
 
+def _word_visible_body_range(range_obj):
+    text = str(range_obj.Text)
+    if text.endswith("\r\x07"):
+        try:
+            body = range_obj.Duplicate
+            if int(body.End) > int(body.Start):
+                body.End = int(body.End) - 1
+            return body
+        except Exception:
+            start = int(range_obj.Start)
+            end = int(range_obj.End)
+            return range_obj.Document.Range(start, max(start, end - 1))
+    return _word_body_range(range_obj)
+
+
 def _word_capture_font(range_obj):
     try:
-        body = _word_body_range(range_obj)
+        body = _word_visible_body_range(range_obj)
         if int(body.End) > int(body.Start):
             sample = body.Document.Range(int(body.Start), int(body.Start) + 1)
         else:
@@ -676,15 +691,8 @@ def _word_apply_font(range_obj, font_info):
 
 def _word_write_text_preserve_format(range_obj, value):
     text = str(value if value is not None else "")
-    original_text = str(range_obj.Text)
     font_info = _word_capture_font(range_obj)
-    is_table_cell = original_text.endswith("\r\x07")
-    if is_table_cell:
-        range_obj.Text = text + "\r\x07"
-        new_body = _word_body_range(range_obj)
-        _word_apply_font(new_body, font_info)
-        return
-    body = _word_body_range(range_obj)
+    body = _word_visible_body_range(range_obj)
     start = int(body.Start)
     body.Text = text
     if text:
@@ -696,7 +704,7 @@ def _word_write_visible_text(range_obj, value, preserve_format=True):
     if preserve_format:
         _word_write_text_preserve_format(range_obj, value)
     else:
-        body = _word_body_range(range_obj)
+        body = _word_visible_body_range(range_obj)
         body.Text = str(value if value is not None else "")
 
 
@@ -704,7 +712,7 @@ def _word_find_replace_visible_text(range_obj, old_text, value):
     old_text = str(old_text if old_text is not None else "")
     if old_text == "":
         raise ValueError("缺少 old_text，无法执行查找替换")
-    body = _word_body_range(range_obj)
+    body = _word_visible_body_range(range_obj)
     if int(body.End) <= int(body.Start):
         raise ValueError("定位范围为空，无法执行查找替换")
     finder = body.Find
