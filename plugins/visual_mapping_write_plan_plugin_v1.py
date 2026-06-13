@@ -66,7 +66,8 @@ LINK_WRITE_REGEX = "正则替换"
 LINK_WRITE_MODES = [LINK_WRITE_REPLACE, LINK_WRITE_APPEND, LINK_WRITE_PREPEND, LINK_WRITE_REGEX]
 LINK_OVERFLOW_SKIP = "区域满时跳过"
 LINK_OVERFLOW_MIN_MARKER_ROW = "区域满时替换最小圈号行"
-LINK_OVERFLOW_POLICIES = [LINK_OVERFLOW_SKIP, LINK_OVERFLOW_MIN_MARKER_ROW]
+LINK_OVERFLOW_MIN_DATE_ROW = "区域满时替换最早日期行"
+LINK_OVERFLOW_POLICIES = [LINK_OVERFLOW_SKIP, LINK_OVERFLOW_MIN_MARKER_ROW, LINK_OVERFLOW_MIN_DATE_ROW]
 DIRECT_WRITE_STRATEGY = "直接定位写入"
 GLOBAL_SCOPE_SPECIAL_OBJECTS = "全文及特殊对象"
 CONFIG_WINDOW_WIDTH = 1360
@@ -1647,6 +1648,35 @@ def _circled_number_value(text):
     return best
 
 
+def _parse_date_value(text):
+    """从单元格文本中提取可比较的日期元组 (year, month, day)，解析失败返回 None。
+    正则与主程序 parse_date_auto_common 保持一致。"""
+    value = _cell_text(text).strip()
+    if not value:
+        return None
+    # 带分隔符 / 中文年月日（四位年 / 两位年）
+    for pat in (
+        r"(?<!\d)(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})(?:\s*日)?(?!\d)",
+        r"(?<!\d)(\d{2})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})(?:\s*日)?(?!\d)",
+    ):
+        m = re.search(pat, value)
+        if m:
+            y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if y < 100:
+                y += 2000
+            return (y, mo, d)
+    # 纯数字 YYYYMMDD / YYMMDD
+    m = re.search(r"(?<!\d)(\d{8})(?!\d)", value)
+    if m:
+        s = m.group(1)
+        return (int(s[:4]), int(s[4:6]), int(s[6:8]))
+    m = re.search(r"(?<!\d)(\d{6})(?!\d)", value)
+    if m:
+        s = m.group(1)
+        return (2000 + int(s[:2]), int(s[2:4]), int(s[4:6]))
+    return None
+
+
 def _linked_trigger_options(cfg):
     values = [LINKED_RULE_ANY]
     for rule in cfg.get("rules", []) or []:
@@ -1849,24 +1879,41 @@ def _linked_select_area_target(rule, base_rec, event, source_records):
             candidates.append(rec)
             if _cell_text(rec.get("text", "")) == "":
                 return rec, f"区域槽位：使用第一个空格子 R{row_index}C{col_index}"
-    if _as_text(rule.get("overflow_policy") or LINK_OVERFLOW_SKIP) != LINK_OVERFLOW_MIN_MARKER_ROW:
+    overflow_policy = _as_text(rule.get("overflow_policy") or LINK_OVERFLOW_SKIP)
+    if overflow_policy not in (LINK_OVERFLOW_MIN_MARKER_ROW, LINK_OVERFLOW_MIN_DATE_ROW):
         return None, f"区域 R{row_start}C{col_start}:R{row_end}C{col_end} 已满"
-    marker_col = base_col + _to_int(rule.get("marker_col_offset"), 0)
     write_col = base_col + _to_int(rule.get("area_write_col_offset"), _to_int(rule.get("area_col_start_offset"), 0))
+    # 固定行号模式：跳过自动扫描，直接用指定行
+    if _as_text(rule.get("overflow_target_mode") or "自动") == "固定行号":
+        fixed_row = _to_int(rule.get("overflow_fixed_row"), 0)
+        if fixed_row <= 0:
+            return None, "满区固定行号未设置或无效"
+        rec = _record_at_position(source_records, source_file, sheet_name, fixed_row, write_col)
+        if rec is None:
+            rec = _synthetic_target_record(event, sheet_name, fixed_row, write_col)
+        return rec, f"区域已满：使用固定目标行 R{fixed_row}C{write_col}"
+    marker_col = base_col + _to_int(rule.get("marker_col_offset"), 0)
     best = None
     for row_index in range(row_start, row_end + 1):
         marker_rec = _record_at_position(source_records, source_file, sheet_name, row_index, marker_col)
-        marker_value = _circled_number_value(marker_rec.get("text", "") if marker_rec else "")
-        if marker_value is None:
+        marker_text = marker_rec.get("text", "") if marker_rec else ""
+        if overflow_policy == LINK_OVERFLOW_MIN_DATE_ROW:
+            sort_key = _parse_date_value(marker_text)
+            label = f"最早日期 {sort_key}"
+        else:
+            sort_key = _circled_number_value(marker_text)
+            label = f"最小圈号 {_circled_number(sort_key) if sort_key else ''}"
+        if sort_key is None:
             continue
-        if best is None or marker_value < best[0]:
-            best = (marker_value, row_index)
+        if best is None or sort_key < best[0]:
+            best = (sort_key, row_index, label)
     if best is None:
-        return None, "区域已满，且未找到可替换的圈号行"
+        kind = "日期" if overflow_policy == LINK_OVERFLOW_MIN_DATE_ROW else "圈号"
+        return None, f"区域已满，且未找到可替换的{kind}行"
     rec = _record_at_position(source_records, source_file, sheet_name, best[1], write_col)
     if rec is None:
         rec = _synthetic_target_record(event, sheet_name, best[1], write_col)
-    return rec, f"区域已满：替换最小圈号 {_circled_number(best[0])} 所在行 R{best[1]}C{write_col}"
+    return rec, f"区域已满：替换{best[2]}所在行 R{best[1]}C{write_col}"
 
 
 def _build_linked_plan_rows(linked_rules, events, by_file, params, table_context=None):
@@ -2601,6 +2648,8 @@ def _default_linked_rule(index=1):
         "area_write_col_offset": 0,
         "marker_col_offset": 0,
         "overflow_policy": LINK_OVERFLOW_SKIP,
+        "overflow_target_mode": "自动",
+        "overflow_fixed_row": "",
     }
 
 
@@ -3783,8 +3832,8 @@ def open_config_window(parent, current_params, context):
         dlg = _make_floating_child(win, "联动写入规则窗口")
         body = ttk.Frame(dlg, padding=10)
         body.pack(fill=tk.BOTH, expand=True)
-        body.columnconfigure(1, weight=1)
-        body.columnconfigure(2, weight=1)
+        body.columnconfigure(1, weight=3)
+        body.columnconfigure(2, weight=2)
         body.rowconfigure(0, weight=1)
 
         left_panel = ttk.Frame(body)
@@ -3800,8 +3849,10 @@ def open_config_window(parent, current_params, context):
         editor_canvas.configure(yscrollcommand=editor_scroll.set)
         editor = ttk.Frame(editor_canvas)
         editor_window = editor_canvas.create_window((0, 0), window=editor, anchor="nw")
-        editor.columnconfigure(1, weight=1)
-        editor.columnconfigure(3, weight=1)
+        editor.columnconfigure(0, minsize=120)
+        editor.columnconfigure(1, weight=1, minsize=170)
+        editor.columnconfigure(2, minsize=120)
+        editor.columnconfigure(3, weight=1, minsize=170)
 
         def refresh_editor_scroll(_event=None):
             editor_canvas.configure(scrollregion=editor_canvas.bbox("all"))
@@ -3820,7 +3871,7 @@ def open_config_window(parent, current_params, context):
         preview_panel.rowconfigure(1, weight=1)
         preview_panel.columnconfigure(0, weight=1)
 
-        rule_list_frame, rule_list = _make_scrollable_listbox(left_panel, height=22, width=32, exportselection=False)
+        rule_list_frame, rule_list = _make_scrollable_listbox(left_panel, height=22, width=28, exportselection=False)
         rule_list_frame.pack(fill=tk.BOTH, expand=True)
         selected_idx = {"value": None}
 
@@ -3859,8 +3910,14 @@ def open_config_window(parent, current_params, context):
         area_write_col_var = tk.StringVar(value="0")
         marker_col_var = tk.StringVar(value="0")
         overflow_var = tk.StringVar(value=LINK_OVERFLOW_SKIP)
+        overflow_target_mode_var = tk.StringVar(value="自动")
+        overflow_fixed_row_var = tk.StringVar(value="")
+        value_hint_var = tk.StringVar(value="")
+        area_hint_var = tk.StringVar(value="")
 
         row = 0
+        ttk.Label(editor, text="1. 基础与触发", foreground="#0f172a").grid(row=row, column=0, columnspan=4, sticky=tk.W, pady=(0, 3))
+        row += 1
         ttk.Label(editor, text="规则名称：").grid(row=row, column=0, sticky=tk.W, pady=3)
         ttk.Entry(editor, textvariable=name_var, width=24).grid(row=row, column=1, sticky="ew", pady=3)
         ttk.Checkbutton(editor, text="启用", variable=enabled_var).grid(row=row, column=2, sticky=tk.W, padx=6)
@@ -3871,85 +3928,252 @@ def open_config_window(parent, current_params, context):
         row += 1
         ttk.Separator(editor).grid(row=row, column=0, columnspan=4, sticky="ew", pady=8)
         row += 1
+        ttk.Label(editor, text="2. 写到哪里", foreground="#0f172a").grid(row=row, column=0, columnspan=4, sticky=tk.W, pady=(0, 3))
+        row += 1
         ttk.Label(editor, text="目标定位：").grid(row=row, column=0, sticky=tk.W, pady=3)
-        ttk.Combobox(editor, textvariable=target_mode_var, values=LINK_TARGET_MODES, width=16, state="readonly").grid(row=row, column=1, sticky=tk.W, pady=3)
+        target_mode_combo = ttk.Combobox(editor, textvariable=target_mode_var, values=LINK_TARGET_MODES, width=18, state="readonly")
+        target_mode_combo.grid(row=row, column=1, sticky=tk.W, pady=3)
         ttk.Label(editor, text="表格/Sheet：").grid(row=row, column=2, sticky=tk.E, pady=3)
-        sheet_combo = ttk.Combobox(editor, textvariable=sheet_var, values=[], width=18, state="normal")
+        sheet_combo = ttk.Combobox(editor, textvariable=sheet_var, values=[], width=22, state="normal")
         sheet_combo.grid(row=row, column=3, sticky="ew", pady=3)
         row += 1
         ttk.Label(editor, text="行偏移：").grid(row=row, column=0, sticky=tk.W, pady=3)
-        ttk.Entry(editor, textvariable=row_offset_var, width=10).grid(row=row, column=1, sticky=tk.W, pady=3)
+        row_offset_entry = ttk.Entry(editor, textvariable=row_offset_var, width=10)
+        row_offset_entry.grid(row=row, column=1, sticky=tk.W, pady=3)
         ttk.Label(editor, text="列偏移：").grid(row=row, column=2, sticky=tk.E, pady=3)
-        ttk.Entry(editor, textvariable=col_offset_var, width=10).grid(row=row, column=3, sticky=tk.W, pady=3)
+        col_offset_entry = ttk.Entry(editor, textvariable=col_offset_var, width=10)
+        col_offset_entry.grid(row=row, column=3, sticky=tk.W, pady=3)
         row += 1
         ttk.Label(editor, text="指定行：").grid(row=row, column=0, sticky=tk.W, pady=3)
-        ttk.Entry(editor, textvariable=row_index_var, width=10).grid(row=row, column=1, sticky=tk.W, pady=3)
+        row_index_entry = ttk.Entry(editor, textvariable=row_index_var, width=10)
+        row_index_entry.grid(row=row, column=1, sticky=tk.W, pady=3)
         ttk.Label(editor, text="指定列：").grid(row=row, column=2, sticky=tk.E, pady=3)
-        ttk.Entry(editor, textvariable=col_index_var, width=10).grid(row=row, column=3, sticky=tk.W, pady=3)
+        col_index_entry = ttk.Entry(editor, textvariable=col_index_var, width=10)
+        col_index_entry.grid(row=row, column=3, sticky=tk.W, pady=3)
         row += 1
-        ttk.Checkbutton(editor, text="启用目标格匹配", variable=target_match_enabled_var).grid(row=row, column=0, sticky=tk.W, pady=3)
-        ttk.Combobox(editor, textvariable=target_match_mode_var, values=["包含", "等于", "不等于", "正则匹配", "正则不匹配", "为空", "非空"], width=14, state="readonly").grid(row=row, column=1, sticky=tk.W, pady=3)
-        ttk.Entry(editor, textvariable=target_match_value_var, width=24).grid(row=row, column=2, columnspan=2, sticky="ew", pady=3)
+        target_match_check = ttk.Checkbutton(editor, text="启用目标格匹配", variable=target_match_enabled_var)
+        target_match_check.grid(row=row, column=0, sticky=tk.W, pady=3)
+        target_match_combo = ttk.Combobox(editor, textvariable=target_match_mode_var, values=["包含", "等于", "不等于", "正则匹配", "正则不匹配", "为空", "非空"], width=16, state="readonly")
+        target_match_combo.grid(row=row, column=1, sticky=tk.W, pady=3)
+        target_match_entry = ttk.Entry(editor, textvariable=target_match_value_var, width=24)
+        target_match_entry.grid(row=row, column=2, columnspan=2, sticky="ew", pady=3)
         row += 1
         ttk.Label(editor, text="锚点：").grid(row=row, column=0, sticky=tk.W, pady=3)
-        ttk.Checkbutton(editor, text="启用", variable=anchor_enabled_var).grid(row=row, column=1, sticky=tk.W, pady=3)
-        ttk.Combobox(editor, textvariable=anchor_axis_var, values=["列", "行"], width=8, state="readonly").grid(row=row, column=2, sticky=tk.E, pady=3)
-        ttk.Entry(editor, textvariable=anchor_index_var, width=10).grid(row=row, column=3, sticky=tk.W, pady=3)
+        anchor_enabled_check = ttk.Checkbutton(editor, text="启用", variable=anchor_enabled_var)
+        anchor_enabled_check.grid(row=row, column=1, sticky=tk.W, pady=3)
+        anchor_axis_combo = ttk.Combobox(editor, textvariable=anchor_axis_var, values=["列", "行"], width=8, state="readonly")
+        anchor_axis_combo.grid(row=row, column=2, sticky=tk.E, pady=3)
+        anchor_index_entry = ttk.Entry(editor, textvariable=anchor_index_var, width=10)
+        anchor_index_entry.grid(row=row, column=3, sticky=tk.W, pady=3)
         row += 1
         ttk.Label(editor, text="锚点匹配：").grid(row=row, column=0, sticky=tk.W, pady=3)
-        ttk.Combobox(editor, textvariable=anchor_match_mode_var, values=["包含", "等于", "不等于", "正则匹配", "正则不匹配", "为空", "非空"], width=14, state="readonly").grid(row=row, column=1, sticky=tk.W, pady=3)
-        ttk.Entry(editor, textvariable=anchor_value_var, width=24).grid(row=row, column=2, columnspan=2, sticky="ew", pady=3)
+        anchor_match_combo = ttk.Combobox(editor, textvariable=anchor_match_mode_var, values=["包含", "等于", "不等于", "正则匹配", "正则不匹配", "为空", "非空"], width=16, state="readonly")
+        anchor_match_combo.grid(row=row, column=1, sticky=tk.W, pady=3)
+        anchor_value_entry = ttk.Entry(editor, textvariable=anchor_value_var, width=24)
+        anchor_value_entry.grid(row=row, column=2, columnspan=2, sticky="ew", pady=3)
         row += 1
         ttk.Separator(editor).grid(row=row, column=0, columnspan=4, sticky="ew", pady=8)
         row += 1
+        ttk.Label(editor, text="3. 写入什么", foreground="#0f172a").grid(row=row, column=0, columnspan=4, sticky=tk.W, pady=(0, 3))
+        row += 1
         ttk.Label(editor, text="写入来源：").grid(row=row, column=0, sticky=tk.W, pady=3)
-        ttk.Combobox(editor, textvariable=value_source_var, values=LINK_VALUE_SOURCES, width=16, state="readonly").grid(row=row, column=1, sticky=tk.W, pady=3)
+        value_source_combo = ttk.Combobox(editor, textvariable=value_source_var, values=LINK_VALUE_SOURCES, width=18, state="readonly")
+        value_source_combo.grid(row=row, column=1, sticky=tk.W, pady=3)
         ttk.Label(editor, text="新内容字段：").grid(row=row, column=2, sticky=tk.E, pady=3)
-        value_field_combo = ttk.Combobox(editor, textvariable=value_field_var, values=[], width=18, state="normal")
+        value_field_combo = ttk.Combobox(editor, textvariable=value_field_var, values=[], width=22, state="normal")
         value_field_combo.grid(row=row, column=3, sticky="ew", pady=3)
         row += 1
         ttk.Label(editor, text="固定值：").grid(row=row, column=0, sticky=tk.W, pady=3)
-        ttk.Entry(editor, textvariable=fixed_value_var, width=24).grid(row=row, column=1, sticky="ew", pady=3)
-        ttk.Label(editor, text="写入方式：").grid(row=row, column=2, sticky=tk.E, pady=3)
-        ttk.Combobox(editor, textvariable=write_mode_var, values=LINK_WRITE_MODES, width=16, state="readonly").grid(row=row, column=3, sticky=tk.W, pady=3)
+        fixed_value_entry = ttk.Entry(editor, textvariable=fixed_value_var, width=24)
+        fixed_value_entry.grid(row=row, column=1, sticky="ew", pady=3)
+        ttk.Label(editor, text="空值策略：").grid(row=row, column=2, sticky=tk.E, pady=3)
+        empty_policy_combo = ttk.Combobox(editor, textvariable=empty_policy_var, values=["允许", "跳过"], width=12, state="readonly")
+        empty_policy_combo.grid(row=row, column=3, sticky=tk.W, pady=3)
         row += 1
         ttk.Label(editor, text="模板：").grid(row=row, column=0, sticky=tk.W, pady=3)
-        ttk.Entry(editor, textvariable=value_template_var, width=42).grid(row=row, column=1, columnspan=3, sticky="ew", pady=3)
+        value_template_entry = ttk.Entry(editor, textvariable=value_template_var, width=42)
+        value_template_entry.grid(row=row, column=1, columnspan=3, sticky="ew", pady=3)
         row += 1
-        ttk.Label(editor, text="追加分隔：").grid(row=row, column=0, sticky=tk.W, pady=3)
-        ttk.Entry(editor, textvariable=append_separator_var, width=10).grid(row=row, column=1, sticky=tk.W, pady=3)
-        ttk.Label(editor, text="空值策略：").grid(row=row, column=2, sticky=tk.E, pady=3)
-        ttk.Combobox(editor, textvariable=empty_policy_var, values=["允许", "跳过"], width=10, state="readonly").grid(row=row, column=3, sticky=tk.W, pady=3)
-        row += 1
-        ttk.Label(editor, text="正则模式：").grid(row=row, column=0, sticky=tk.W, pady=3)
-        ttk.Entry(editor, textvariable=regex_pattern_var, width=24).grid(row=row, column=1, sticky="ew", pady=3)
-        ttk.Label(editor, text="次数：").grid(row=row, column=2, sticky=tk.E, pady=3)
-        ttk.Entry(editor, textvariable=replace_count_var, width=10).grid(row=row, column=3, sticky=tk.W, pady=3)
-        row += 1
-        ttk.Checkbutton(editor, text="正则区分大小写", variable=case_sensitive_var).grid(row=row, column=1, columnspan=3, sticky=tk.W, pady=3)
-        row += 1
-        ttk.Label(editor, text="模板可用：{触发新值} {原文} {本页变化序号} {本页变化总数} {圈号}").grid(row=row, column=0, columnspan=4, sticky=tk.W, pady=(0, 6))
+        template_button_frame = ttk.Frame(editor)
+        template_button_frame.grid(row=row, column=1, columnspan=3, sticky=tk.W, pady=(0, 4))
         row += 1
         ttk.Separator(editor).grid(row=row, column=0, columnspan=4, sticky="ew", pady=8)
         row += 1
-        ttk.Checkbutton(editor, text="启用区域槽位", variable=area_enabled_var).grid(row=row, column=0, sticky=tk.W, pady=3)
-        ttk.Label(editor, text="满区策略：").grid(row=row, column=2, sticky=tk.E, pady=3)
-        ttk.Combobox(editor, textvariable=overflow_var, values=LINK_OVERFLOW_POLICIES, width=18, state="readonly").grid(row=row, column=3, sticky=tk.W, pady=3)
+        ttk.Label(editor, text="4. 怎么写入", foreground="#0f172a").grid(row=row, column=0, columnspan=4, sticky=tk.W, pady=(0, 3))
         row += 1
-        ttk.Label(editor, text="区域行偏移：").grid(row=row, column=0, sticky=tk.W, pady=3)
-        ttk.Entry(editor, textvariable=area_row_start_var, width=6).grid(row=row, column=1, sticky=tk.W, pady=3)
-        ttk.Entry(editor, textvariable=area_row_end_var, width=6).grid(row=row, column=1, sticky=tk.E, pady=3)
-        ttk.Label(editor, text="区域列偏移：").grid(row=row, column=2, sticky=tk.E, pady=3)
-        ttk.Entry(editor, textvariable=area_col_start_var, width=6).grid(row=row, column=3, sticky=tk.W, pady=3)
-        ttk.Entry(editor, textvariable=area_col_end_var, width=6).grid(row=row, column=3, sticky=tk.E, pady=3)
+        ttk.Label(editor, text="写入方式：").grid(row=row, column=0, sticky=tk.W, pady=3)
+        write_mode_combo = ttk.Combobox(editor, textvariable=write_mode_var, values=LINK_WRITE_MODES, width=18, state="readonly")
+        write_mode_combo.grid(row=row, column=1, sticky=tk.W, pady=3)
+        row += 1
+        ttk.Label(editor, textvariable=value_hint_var, foreground="gray").grid(row=row, column=0, columnspan=4, sticky=tk.W, pady=(0, 3))
+        row += 1
+        ttk.Label(editor, text="追加分隔：").grid(row=row, column=0, sticky=tk.W, pady=3)
+        append_separator_entry = ttk.Entry(editor, textvariable=append_separator_var, width=10)
+        append_separator_entry.grid(row=row, column=1, sticky=tk.W, pady=3)
+        ttk.Label(editor, text="仅值追加/值前置时生效", foreground="gray").grid(row=row, column=2, columnspan=2, sticky=tk.W, pady=3)
+        row += 1
+        ttk.Label(editor, text="正则模式：").grid(row=row, column=0, sticky=tk.W, pady=3)
+        regex_pattern_entry = ttk.Entry(editor, textvariable=regex_pattern_var, width=24)
+        regex_pattern_entry.grid(row=row, column=1, sticky="ew", pady=3)
+        ttk.Label(editor, text="替换次数(0=全部)：").grid(row=row, column=2, sticky=tk.E, pady=3)
+        replace_count_entry = ttk.Entry(editor, textvariable=replace_count_var, width=10)
+        replace_count_entry.grid(row=row, column=3, sticky=tk.W, pady=3)
+        row += 1
+        case_sensitive_check = ttk.Checkbutton(editor, text="正则区分大小写", variable=case_sensitive_var)
+        case_sensitive_check.grid(row=row, column=1, columnspan=3, sticky=tk.W, pady=3)
+        row += 1
+        ttk.Label(editor, text="模板可用：{触发新值} {原文} {本页变化序号} {本页变化总数} {圈号}", foreground="gray").grid(row=row, column=0, columnspan=4, sticky=tk.W, pady=(0, 6))
+        row += 1
+        ttk.Separator(editor).grid(row=row, column=0, columnspan=4, sticky="ew", pady=8)
+        row += 1
+        ttk.Label(editor, text="5. 高级：区域槽位", foreground="#0f172a").grid(row=row, column=0, columnspan=4, sticky=tk.W, pady=(0, 3))
+        row += 1
+        area_enabled_check = ttk.Checkbutton(editor, text="启用区域槽位", variable=area_enabled_var)
+        area_enabled_check.grid(row=row, column=0, sticky=tk.W, pady=3)
+        ttk.Label(editor, text="满区策略：").grid(row=row, column=2, sticky=tk.E, pady=3)
+        overflow_frame = ttk.Frame(editor)
+        overflow_frame.grid(row=row, column=3, sticky="ew", pady=3)
+        overflow_combo = ttk.Combobox(overflow_frame, textvariable=overflow_var, values=LINK_OVERFLOW_POLICIES, width=18, state="readonly")
+        overflow_combo.pack(side=tk.LEFT)
+
+        def open_overflow_target_dlg():
+            dlg2 = _make_floating_child(dlg, "满区目标行设置")
+            body = ttk.Frame(dlg2, padding=12)
+            body.pack(fill=tk.BOTH, expand=True)
+            mode_var = tk.StringVar(value=overflow_target_mode_var.get())
+            row_var = tk.StringVar(value=overflow_fixed_row_var.get())
+            ttk.Label(body, text="目标行模式：").grid(row=0, column=0, sticky=tk.W, pady=4)
+            mode_combo = ttk.Combobox(body, textvariable=mode_var, values=["自动", "固定行号"], width=14, state="readonly")
+            mode_combo.grid(row=0, column=1, sticky=tk.W, pady=4)
+            ttk.Label(body, text="固定行号：").grid(row=1, column=0, sticky=tk.W, pady=4)
+            row_entry = ttk.Entry(body, textvariable=row_var, width=10)
+            row_entry.grid(row=1, column=1, sticky=tk.W, pady=4)
+
+            def _sync_row_entry(*_):
+                row_entry.configure(state="normal" if mode_var.get() == "固定行号" else "disabled")
+            mode_var.trace_add("write", _sync_row_entry)
+            _sync_row_entry()
+
+            def on_ok():
+                overflow_target_mode_var.set(mode_var.get())
+                overflow_fixed_row_var.set(row_var.get())
+                dlg2.destroy()
+
+            btn_row = ttk.Frame(body)
+            btn_row.grid(row=2, column=0, columnspan=2, pady=(10, 0))
+            ttk.Button(btn_row, text="确定", command=on_ok).pack(side=tk.LEFT, padx=4)
+            ttk.Button(btn_row, text="取消", command=dlg2.destroy).pack(side=tk.LEFT, padx=4)
+            _show_centered_window(dlg2, dlg, 300, 160)
+
+        ttk.Button(overflow_frame, text="目标行...", command=open_overflow_target_dlg).pack(side=tk.LEFT, padx=(4, 0))
+        row += 1
+        ttk.Label(editor, textvariable=area_hint_var, foreground="gray").grid(row=row, column=0, columnspan=4, sticky=tk.W, pady=(0, 3))
+        row += 1
+        ttk.Label(editor, text="区域起始/结束行偏移：").grid(row=row, column=0, sticky=tk.W, pady=3)
+        area_row_start_entry = ttk.Entry(editor, textvariable=area_row_start_var, width=6)
+        area_row_start_entry.grid(row=row, column=1, sticky=tk.W, pady=3)
+        area_row_end_entry = ttk.Entry(editor, textvariable=area_row_end_var, width=6)
+        area_row_end_entry.grid(row=row, column=1, sticky=tk.E, pady=3)
+        ttk.Label(editor, text="区域起始/结束列偏移：").grid(row=row, column=2, sticky=tk.E, pady=3)
+        area_col_start_entry = ttk.Entry(editor, textvariable=area_col_start_var, width=6)
+        area_col_start_entry.grid(row=row, column=3, sticky=tk.W, pady=3)
+        area_col_end_entry = ttk.Entry(editor, textvariable=area_col_end_var, width=6)
+        area_col_end_entry.grid(row=row, column=3, sticky=tk.E, pady=3)
         row += 1
         ttk.Label(editor, text="写入列偏移：").grid(row=row, column=0, sticky=tk.W, pady=3)
-        ttk.Entry(editor, textvariable=area_write_col_var, width=10).grid(row=row, column=1, sticky=tk.W, pady=3)
+        area_write_col_entry = ttk.Entry(editor, textvariable=area_write_col_var, width=10)
+        area_write_col_entry.grid(row=row, column=1, sticky=tk.W, pady=3)
         ttk.Label(editor, text="圈号列偏移：").grid(row=row, column=2, sticky=tk.E, pady=3)
-        ttk.Entry(editor, textvariable=marker_col_var, width=10).grid(row=row, column=3, sticky=tk.W, pady=3)
+        marker_col_entry = ttk.Entry(editor, textvariable=marker_col_var, width=10)
+        marker_col_entry.grid(row=row, column=3, sticky=tk.W, pady=3)
+
+        def set_control_enabled(widget, enabled=True, readonly=False):
+            try:
+                if isinstance(widget, ttk.Combobox):
+                    widget.configure(state="readonly" if enabled and readonly else ("normal" if enabled else "disabled"))
+                else:
+                    widget.configure(state="normal" if enabled else "disabled")
+            except Exception:
+                pass
+
+        def set_controls_enabled(widgets, enabled=True, readonly=False):
+            for widget in widgets:
+                set_control_enabled(widget, enabled, readonly=readonly)
+
+        def insert_template_token(token):
+            try:
+                value_template_entry.insert(value_template_entry.index(tk.INSERT), token)
+                value_template_var.set(value_template_entry.get())
+                value_template_entry.focus_set()
+            except Exception:
+                value_template_var.set(_cell_text(value_template_var.get()) + token)
+
+        template_buttons = []
+        for token in ["{触发新值}", "{原文}", "{本页变化序号}", "{本页变化总数}", "{圈号}"]:
+            btn = ttk.Button(template_button_frame, text=token, width=max(8, len(token) + 2), command=lambda t=token: insert_template_token(t))
+            btn.pack(side=tk.LEFT, padx=(0, 4), pady=1)
+            template_buttons.append(btn)
+
+        def update_linked_field_states(*_args):
+            target_mode = _as_text(target_mode_var.get()) or LINK_TARGET_TRIGGER_OFFSET
+            value_source = _as_text(value_source_var.get()) or LINK_VALUE_FIXED
+            write_mode = _as_text(write_mode_var.get()) or LINK_WRITE_REPLACE
+            area_enabled = bool(area_enabled_var.get())
+            use_target_match = bool(target_match_enabled_var.get())
+            use_area_marker = area_enabled and _as_text(overflow_var.get()) in (LINK_OVERFLOW_MIN_MARKER_ROW, LINK_OVERFLOW_MIN_DATE_ROW)
+
+            is_fixed_target = target_mode == LINK_TARGET_FIXED_CELL
+            is_anchor_target = target_mode == LINK_TARGET_ANCHOR_OFFSET
+            set_controls_enabled([row_offset_entry, col_offset_entry], not is_fixed_target)
+            set_controls_enabled([row_index_entry, col_index_entry], is_fixed_target)
+            set_controls_enabled([anchor_enabled_check, anchor_axis_combo, anchor_index_entry, anchor_match_combo, anchor_value_entry], is_anchor_target, readonly=True)
+
+            set_controls_enabled([target_match_combo, target_match_entry], use_target_match, readonly=True)
+
+            set_control_enabled(fixed_value_entry, value_source == LINK_VALUE_FIXED)
+            set_control_enabled(value_field_combo, value_source == LINK_VALUE_CONTENT_FIELD)
+            set_control_enabled(value_template_entry, value_source == LINK_VALUE_TEMPLATE)
+            set_controls_enabled(template_buttons, value_source == LINK_VALUE_TEMPLATE)
+
+            set_control_enabled(append_separator_entry, write_mode in (LINK_WRITE_APPEND, LINK_WRITE_PREPEND))
+            set_controls_enabled([regex_pattern_entry, replace_count_entry, case_sensitive_check], write_mode == LINK_WRITE_REGEX)
+
+            set_control_enabled(overflow_combo, area_enabled, readonly=True)
+            set_controls_enabled(
+                [area_row_start_entry, area_row_end_entry, area_col_start_entry, area_col_end_entry],
+                area_enabled,
+            )
+            set_controls_enabled([area_write_col_entry, marker_col_entry], use_area_marker)
+
+            inactive = []
+            if write_mode not in (LINK_WRITE_APPEND, LINK_WRITE_PREPEND):
+                inactive.append("追加分隔不生效")
+            if write_mode != LINK_WRITE_REGEX:
+                inactive.append("正则参数不生效")
+            value_hint_var.set(f"当前生效：{value_source} + {write_mode}" + (f"；{'; '.join(inactive)}" if inactive else ""))
+            if area_enabled:
+                if use_area_marker:
+                    area_hint_var.set("区域启用：先找区域内第一个空格；满区时按圈号列找最小圈号行，再写到写入列。")
+                else:
+                    area_hint_var.set("区域启用：先找区域内第一个空格；区域满时按满区策略处理。")
+            else:
+                area_hint_var.set("区域槽位未启用：下方区域参数不会参与计算。")
+
+        for watched_var in (
+            target_mode_var,
+            target_match_enabled_var,
+            value_source_var,
+            write_mode_var,
+            area_enabled_var,
+            overflow_var,
+        ):
+            try:
+                watched_var.trace_add("write", update_linked_field_states)
+            except Exception:
+                pass
 
         ttk.Label(preview_panel, text="联动预览").grid(row=0, column=0, sticky=tk.W, pady=(0, 4))
-        preview_text = tk.Text(preview_panel, height=30, width=48, wrap=tk.WORD)
+        preview_text = tk.Text(preview_panel, height=30, width=42, wrap=tk.WORD)
         preview_text.grid(row=1, column=0, sticky="nsew")
         preview_scroll = ttk.Scrollbar(preview_panel, orient=tk.VERTICAL, command=preview_text.yview)
         preview_scroll.grid(row=1, column=1, sticky="ns")
@@ -4002,6 +4226,8 @@ def open_config_window(parent, current_params, context):
                 "area_write_col_offset": _as_text(area_write_col_var.get()) or "0",
                 "marker_col_offset": _as_text(marker_col_var.get()) or "0",
                 "overflow_policy": _as_text(overflow_var.get()) or LINK_OVERFLOW_SKIP,
+                "overflow_target_mode": _as_text(overflow_target_mode_var.get()) or "自动",
+                "overflow_fixed_row": _as_text(overflow_fixed_row_var.get()) or "",
             }
 
         def load_rule(index):
@@ -4047,6 +4273,9 @@ def open_config_window(parent, current_params, context):
             area_write_col_var.set(_as_text(rule.get("area_write_col_offset") or "0"))
             marker_col_var.set(_as_text(rule.get("marker_col_offset") or "0"))
             overflow_var.set(_as_text(rule.get("overflow_policy") or LINK_OVERFLOW_SKIP))
+            overflow_target_mode_var.set(_as_text(rule.get("overflow_target_mode") or "自动"))
+            overflow_fixed_row_var.set(_as_text(rule.get("overflow_fixed_row") or ""))
+            update_linked_field_states()
 
         def refresh_linked_list(select_index=None):
             rule_list.delete(0, tk.END)
@@ -4061,6 +4290,8 @@ def open_config_window(parent, current_params, context):
                 rule_list.selection_set(idx)
                 rule_list.see(idx)
                 load_rule(idx)
+            else:
+                update_linked_field_states()
 
         def collect_preview_events():
             if not state.get("records"):
@@ -4257,8 +4488,9 @@ def open_config_window(parent, current_params, context):
         ttk.Button(preview_buttons, text="刷新预览", command=preview_current_rule).pack(side=tk.LEFT, padx=4)
         ttk.Button(preview_buttons, text="关闭", command=dlg.destroy).pack(side=tk.LEFT, padx=4)
 
+        update_linked_field_states()
         refresh_linked_list(initial_index)
-        dlg.after_idle(lambda: _show_centered_window(dlg, win, 1120, 720))
+        dlg.after_idle(lambda: _show_centered_window(dlg, win, 1480, 760))
 
     def current_content_fields():
         table = tables.get(content_alias_var.get(), {})
