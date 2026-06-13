@@ -2,6 +2,7 @@
 import os
 import sqlite3
 import tempfile
+import threading
 import types
 import unittest
 
@@ -128,6 +129,87 @@ class TableAccessPermissionTests(unittest.TestCase):
         manager = self.manager([allowed_entry])
         manager.write_table("allowed", ["a", "b"], [["x", "y"]], mode="append")
         self.assertEqual(manager.get_columns("allowed"), ["a", "b"])
+
+    def test_replace_write_failure_rolls_back_original_table(self):
+        manager = TableAccessManager(self.db_path)
+
+        def fail_insert(_cur, _sql, _rows):
+            raise RuntimeError("forced insert failure")
+
+        manager._executemany = fail_insert
+        with self.assertRaisesRegex(RuntimeError, "forced insert failure"):
+            manager.write_table("allowed", ["a"], [["new"]], mode="replace")
+        with sqlite3.connect(self.db_path) as conn:
+            self.assertEqual(conn.execute("SELECT a FROM allowed").fetchall(), [("ok",)])
+
+    def test_timestamp_write_failure_does_not_leave_empty_table(self):
+        manager = TableAccessManager(self.db_path)
+        before = set(manager.list_tables())
+
+        def fail_insert(_cur, _sql, _rows):
+            raise RuntimeError("forced insert failure")
+
+        manager._executemany = fail_insert
+        with self.assertRaisesRegex(RuntimeError, "forced insert failure"):
+            manager.write_table("allowed", ["a"], [["new"]], mode="timestamp")
+        self.assertEqual(set(manager.list_tables()), before)
+
+    def test_append_write_failure_rolls_back_added_column(self):
+        manager = TableAccessManager(self.db_path)
+
+        def fail_insert(_cur, _sql, _rows):
+            raise RuntimeError("forced insert failure")
+
+        manager._executemany = fail_insert
+        with self.assertRaisesRegex(RuntimeError, "forced insert failure"):
+            manager.write_table("allowed", ["a", "b"], [["new", "value"]], mode="append")
+        self.assertEqual(manager.get_columns("allowed"), ["a"])
+        with sqlite3.connect(self.db_path) as conn:
+            self.assertEqual(conn.execute("SELECT a FROM allowed").fetchall(), [("ok",)])
+
+    def test_clear_and_writeback_failure_rolls_back_all_changes(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("INSERT INTO allowed VALUES ('old-2')")
+            conn.commit()
+        manager = TableAccessManager(self.db_path)
+        original_execute = manager._execute_writeback_update
+        update_count = {"value": 0}
+
+        def fail_second_update(cur, sql, params):
+            update_count["value"] += 1
+            if update_count["value"] == 2:
+                raise RuntimeError("forced second update failure")
+            return original_execute(cur, sql, params)
+
+        manager._execute_writeback_update = fail_second_update
+        actions = [
+            {"write": True, "target_field": "a", "target_rowid": 1, "new_value": "new-1"},
+            {"write": True, "target_field": "a", "target_rowid": 2, "new_value": "new-2"},
+        ]
+        with self.assertRaisesRegex(RuntimeError, "forced second update failure"):
+            manager.apply_writeback_transaction("allowed", actions, clear_fields=["a"])
+        with sqlite3.connect(self.db_path) as conn:
+            self.assertEqual(
+                conn.execute("SELECT a FROM allowed ORDER BY rowid").fetchall(),
+                [("ok",), ("old-2",)],
+            )
+
+    def test_clear_and_writeback_cancel_rolls_back_all_changes(self):
+        manager = TableAccessManager(self.db_path)
+        cancel_event = threading.Event()
+        cancel_event.set()
+        actions = [
+            {"write": True, "target_field": "a", "target_rowid": 1, "new_value": "new"},
+        ]
+        with self.assertRaisesRegex(RuntimeError, "用户取消"):
+            manager.apply_writeback_transaction(
+                "allowed",
+                actions,
+                clear_fields=["a"],
+                cancel_event=cancel_event,
+            )
+        with sqlite3.connect(self.db_path) as conn:
+            self.assertEqual(conn.execute("SELECT a FROM allowed").fetchall(), [("ok",)])
 
     def test_dynamic_table_pattern_limits_plugin_output_scope(self):
         entry = access_entry(
@@ -297,6 +379,543 @@ class TableAccessPermissionTests(unittest.TestCase):
         operations = [event.get("operation") for event in context.get("table_access_logs", [])]
         self.assertIn("permission_check", operations)
         self.assertIn("transform_current_table", operations)
+
+    def test_replace_node_reports_invalid_fixed_regex(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+        with self.assertRaisesRegex(ValueError, "批量替换正则错误"):
+            window.apply_replace_node(
+                ["text"],
+                [["abc"]],
+                {
+                    "target_field": "text",
+                    "match_mode": "正则匹配",
+                    "replace_mode": "局部替换匹配字符串",
+                    "match_value": "(",
+                    "replace_value": "x",
+                },
+            )
+
+    def test_replace_node_honors_cancel_signal(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+        cancel_event = threading.Event()
+        cancel_event.set()
+        with self.assertRaisesRegex(RuntimeError, "用户取消"):
+            window.apply_replace_node(
+                ["text"],
+                [["abc"]],
+                {
+                    "target_field": "text",
+                    "match_mode": "包含",
+                    "replace_mode": "局部替换匹配字符串",
+                    "match_value": "a",
+                    "replace_value": "x",
+                },
+                context={"cancel_event": cancel_event},
+            )
+
+    def test_row_expansion_rejects_excessive_target(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+        with self.assertRaisesRegex(ValueError, "超过安全上限"):
+            window.ensure_row_count(
+                [],
+                window.MAX_EXPANDED_ROWS + 1,
+                1,
+            )
+
+    def test_numeric_column_uses_decimal_for_long_integer(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+        headers, rows, _stat = window.apply_numeric_column_node(
+            ["n"],
+            [["123456789012345678"]],
+            {
+                "target_field": "n",
+                "output_mode": "生成新字段",
+                "output_field": "result",
+                "operation": "加",
+                "operand_source": "固定值",
+                "operand_value": "1",
+                "decimal_places": "自动",
+                "range_mode": "全部行",
+            },
+        )
+        self.assertEqual(headers, ["n", "result"])
+        self.assertEqual(rows, [["123456789012345678", "123456789012345679"]])
+
+    def test_datetime_warning_marks_ambiguous_month_and_day(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+        warning = window.get_datetime_parse_warning(
+            "03/06/26",
+            {
+                "input_structure": "分隔符",
+                "date_delimiter": "自动识别",
+                "date_order": "月-日-年",
+                "year_rule": "20xx",
+            },
+            {"year": 2026, "month": 3, "day": 6},
+        )
+        self.assertIn("确认月日顺序", warning)
+
+    def filter_window(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+        window.get_workflow_db_path = lambda context=None: self.db_path
+        window.get_workflow_sqlite_columns = (
+            lambda table_name, context=None: TableAccessManager(self.db_path).get_columns(table_name)
+        )
+        window.get_table_manager = (
+            lambda *args, **kwargs: TableAccessManager(self.db_path)
+        )
+        return window
+
+    def test_filter_current_field_prefix_does_not_leak_to_output_header(self):
+        window = self.filter_window()
+        headers, rows, _stat = window.apply_filter_node(
+            ["编码"],
+            [["A001"]],
+            {"conditions": [], "join_rules": [], "extra_tables": [], "output_fields": ["当前表.编码"]},
+        )
+        self.assertEqual(headers, ["编码"])
+        self.assertEqual(rows, [["A001"]])
+
+    def test_two_consecutive_filters_do_not_accumulate_current_table_prefix(self):
+        window = self.filter_window()
+        headers, rows, _stat = window.apply_filter_node(
+            ["编码"],
+            [["A001"]],
+            {"conditions": [], "join_rules": [], "extra_tables": [], "output_fields": ["当前表.编码"]},
+        )
+        second_lookup_fields = window.get_plan_filter_available_fields(headers, [], {})
+        headers, rows, _stat = window.apply_filter_node(
+            headers,
+            rows,
+            {
+                "conditions": [],
+                "join_rules": [],
+                "extra_tables": [],
+                "output_fields": second_lookup_fields,
+            },
+        )
+        self.assertEqual(headers, ["编码"])
+        self.assertEqual(rows, [["A001"]])
+
+    def test_three_consecutive_filters_keep_same_header(self):
+        window = self.filter_window()
+        headers = ["编码"]
+        rows = [["A001"]]
+        for _index in range(3):
+            lookup_fields = window.get_plan_filter_available_fields(headers, [], {})
+            headers, rows, _stat = window.apply_filter_node(
+                headers,
+                rows,
+                {
+                    "conditions": [],
+                    "join_rules": [],
+                    "extra_tables": [],
+                    "output_fields": lookup_fields,
+                },
+            )
+        self.assertEqual(headers, ["编码"])
+        self.assertEqual(rows, [["A001"]])
+
+    def test_run_plan_three_filters_keep_same_header(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+        window.nodes = []
+        window.plugin_registry = {}
+        filter_config = {
+            "conditions": [],
+            "join_rules": [],
+            "extra_tables": [],
+            "output_fields": ["当前表.编码"],
+        }
+        snapshot = {
+            "nodes": [
+                {
+                    "type": "高级筛选",
+                    "name": f"筛选{index}",
+                    "enabled": True,
+                    "config": dict(filter_config),
+                }
+                for index in range(1, 4)
+            ],
+            "headers": ["编码"],
+            "rows": [["A001"]],
+            "db_path": "",
+            "table_access_policy": "audit",
+        }
+        headers, rows, _logs = window.run_plan(
+            raise_error=True,
+            workflow_snapshot=snapshot,
+        )
+        self.assertEqual(headers, ["编码"])
+        self.assertEqual(rows, [["A001"]])
+
+    def test_filter_runtime_migrates_old_nested_current_field_references(self):
+        window = self.filter_window()
+        config = {
+            "conditions": [{
+                "field": "当前表.当前表.编码",
+                "op": "等于",
+                "value_source": "固定值",
+                "value": "A001",
+            }],
+            "join_rules": [],
+            "extra_tables": [],
+            "output_fields": ["当前表.当前表.编码"],
+        }
+        headers, rows, _stat = window.apply_filter_node(
+            ["编码"],
+            [["A001"], ["B002"]],
+            config,
+        )
+        self.assertEqual(headers, ["编码"])
+        self.assertEqual(rows, [["A001"]])
+        self.assertEqual(config["conditions"][0]["field"], "当前表.当前表.编码")
+        self.assertEqual(config["conditions"][0]["value"], "A001")
+
+    def test_filter_config_migration_updates_field_value_and_join_refs_only(self):
+        window = self.filter_window()
+        config = {
+            "conditions": [
+                {
+                    "field": "当前表.当前表.编码",
+                    "op": "等于",
+                    "value_source": "字段值",
+                    "value": "当前表.当前表.对照编码",
+                },
+                {
+                    "field": "当前表.当前表.编码",
+                    "op": "等于",
+                    "value_source": "固定值",
+                    "value": "当前表.当前表.这是普通文本",
+                },
+            ],
+            "join_rules": [{
+                "left": "当前表.当前表.编码",
+                "op": "等于",
+                "right": "allowed.a",
+            }],
+            "extra_tables": ["allowed"],
+            "output_fields": ["当前表.当前表.编码", "allowed.a"],
+        }
+        window.normalize_plan_filter_config_field_references(
+            config,
+            ["编码", "对照编码"],
+            ["allowed"],
+        )
+        self.assertEqual(config["conditions"][0]["field"], "当前表.编码")
+        self.assertEqual(config["conditions"][0]["value"], "当前表.对照编码")
+        self.assertEqual(config["conditions"][1]["value"], "当前表.当前表.这是普通文本")
+        self.assertEqual(config["join_rules"][0]["left"], "当前表.编码")
+        self.assertEqual(config["join_rules"][0]["right"], "allowed.a")
+        self.assertEqual(config["output_fields"], ["当前表.编码", "allowed.a"])
+
+    def test_filter_preserves_real_header_that_starts_with_current_table_prefix(self):
+        window = self.filter_window()
+        headers, rows, _stat = window.apply_filter_node(
+            ["当前表.编码"],
+            [["A001"]],
+            {
+                "conditions": [],
+                "join_rules": [],
+                "extra_tables": [],
+                "output_fields": ["当前表.当前表.编码"],
+            },
+        )
+        self.assertEqual(headers, ["当前表.编码"])
+        self.assertEqual(rows, [["A001"]])
+
+    def test_filter_output_headers_use_stable_suffix_for_name_collision(self):
+        window = self.filter_window()
+        lookup_fields = ["当前表.物料表.名称", "物料表.名称", "物料表.名称"]
+        output_headers = window.get_plan_filter_output_headers(
+            lookup_fields,
+            ["物料表.名称"],
+        )
+        self.assertEqual(output_headers, ["物料表.名称", "物料表.名称_2", "物料表.名称_3"])
+        self.assertEqual(
+            window.get_plan_filter_output_header_conflicts(
+                lookup_fields,
+                ["物料表.名称"],
+            ),
+            ["物料表.名称"],
+        )
+
+    def test_filter_multi_table_keeps_external_qualified_name_only(self):
+        window = self.filter_window()
+        headers, rows, _stat = window.apply_filter_node(
+            ["编码"],
+            [["ok"]],
+            {
+                "conditions": [],
+                "join_rules": [{
+                    "left": "当前表.编码",
+                    "op": "等于",
+                    "right": "allowed.a",
+                }],
+                "extra_tables": ["allowed"],
+                "output_fields": ["当前表.编码", "allowed.a"],
+            },
+        )
+        self.assertEqual(headers, ["编码", "allowed.a"])
+        self.assertEqual(rows, [["ok", "ok"]])
+
+    def test_filter_config_probe_returns_downstream_headers_without_current_prefix(self):
+        window = self.filter_window()
+        headers, rows, stat = window.apply_filter_node(
+            ["编码"],
+            [["ok"]],
+            {
+                "conditions": [],
+                "join_rules": [],
+                "extra_tables": ["allowed"],
+                "output_fields": [],
+            },
+            context={"is_config_probe": True},
+        )
+        self.assertEqual(headers, ["编码", "allowed.a"])
+        self.assertEqual(rows, [])
+        self.assertIn("配置探测", stat)
+
+    def test_group_filter_analysis_covers_conditions_joins_and_outputs(self):
+        window = self.filter_window()
+        info = window.analyze_group_inner_node_field_io({
+            "type": "高级筛选",
+            "config": {
+                "conditions": [
+                    {
+                        "field": "当前表.编码",
+                        "value_source": "字段值",
+                        "value": "当前表.对照编码",
+                    },
+                    {
+                        "field": "allowed.a",
+                        "value_source": "固定值",
+                        "value": "ok",
+                    },
+                ],
+                "join_rules": [{
+                    "left": "当前表.编码",
+                    "right": "allowed.a",
+                }],
+                "extra_tables": ["allowed"],
+                "output_fields": ["当前表.编码", "allowed.a"],
+            },
+        })
+        self.assertEqual(info["read_fields"], ["编码", "对照编码"])
+        self.assertEqual(info["write_fields"], ["编码", "allowed.a"])
+
+    def test_group_filter_does_not_require_field_created_by_previous_node(self):
+        window = self.filter_window()
+        inferred, details = window.infer_group_input_fields_from_nodes([
+            {
+                "type": "新建列",
+                "enabled": True,
+                "config": {"columns_text": "编码"},
+            },
+            {
+                "type": "高级筛选",
+                "enabled": True,
+                "config": {
+                    "conditions": [{"field": "当前表.编码", "value": "A001"}],
+                    "join_rules": [],
+                    "extra_tables": [],
+                    "output_fields": ["当前表.编码"],
+                },
+            },
+        ])
+        self.assertEqual(inferred, [])
+        self.assertEqual(details[1]["reads"], ["编码"])
+        self.assertEqual(details[1]["writes"], ["编码"])
+
+    def test_group_filter_external_output_is_available_to_later_node(self):
+        window = self.filter_window()
+        inferred, details = window.infer_group_input_fields_from_nodes([
+            {
+                "type": "高级筛选",
+                "enabled": True,
+                "config": {
+                    "conditions": [],
+                    "join_rules": [{
+                        "left": "当前表.编码",
+                        "right": "allowed.a",
+                    }],
+                    "extra_tables": ["allowed"],
+                    "output_fields": ["当前表.编码", "allowed.a"],
+                },
+            },
+            {
+                "type": "合并列",
+                "enabled": True,
+                "config": {
+                    "fields": ["allowed.a"],
+                    "output_field": "组合结果",
+                },
+            },
+        ])
+        self.assertEqual(inferred, ["编码"])
+        self.assertEqual(details[0]["writes"], ["编码", "allowed.a"])
+        self.assertEqual(details[1]["required"], [])
+
+    def test_group_filter_reports_only_missing_current_fields(self):
+        window = self.filter_window()
+        inferred, _details = window.infer_group_input_fields_from_nodes([{
+            "type": "高级筛选",
+            "enabled": True,
+            "config": {
+                "conditions": [{
+                    "field": "当前表.编码",
+                    "value_source": "字段值",
+                    "value": "当前表.对照编码",
+                }],
+                "join_rules": [{
+                    "left": "当前表.编码",
+                    "right": "allowed.a",
+                }],
+                "extra_tables": ["allowed"],
+                "output_fields": ["allowed.a"],
+            },
+        }])
+        self.assertEqual(inferred, ["编码", "对照编码"])
+
+    def test_group_filter_without_explicit_output_resolves_sqlite_side_fields(self):
+        window = self.filter_window()
+        inferred, details = window.infer_group_input_fields_from_nodes([
+            {
+                "type": "高级筛选",
+                "enabled": True,
+                "config": {
+                    "conditions": [],
+                    "join_rules": [{
+                        "left": "当前表.编码",
+                        "right": "allowed.a",
+                    }],
+                    "extra_tables": ["allowed"],
+                    "output_fields": [],
+                },
+            },
+            {
+                "type": "合并列",
+                "enabled": True,
+                "config": {
+                    "fields": ["allowed.a"],
+                    "output_field": "组合结果",
+                },
+            },
+        ], context={})
+        self.assertEqual(inferred, ["编码"])
+        self.assertEqual(details[0]["writes"], ["allowed.a"])
+        self.assertEqual(details[0]["write_prefixes"], ["allowed."])
+        self.assertEqual(details[1]["required"], [])
+
+    def test_group_filter_without_explicit_output_resolves_transit_side_fields(self):
+        window = self.filter_window()
+        context = {
+            "transit_tables": {
+                "副表": {
+                    "headers": ["名称", "规格"],
+                    "rows": [],
+                },
+            },
+        }
+        inferred, details = window.infer_group_input_fields_from_nodes([
+            {
+                "type": "高级筛选",
+                "enabled": True,
+                "config": {
+                    "conditions": [],
+                    "join_rules": [],
+                    "extra_tables": ["中转:副表"],
+                    "output_fields": [],
+                },
+            },
+            {
+                "type": "合并列",
+                "enabled": True,
+                "config": {
+                    "fields": ["中转:副表.规格"],
+                    "output_field": "组合结果",
+                },
+            },
+        ], context=context)
+        self.assertEqual(inferred, [])
+        self.assertEqual(
+            details[0]["writes"],
+            ["中转:副表.名称", "中转:副表.规格"],
+        )
+        self.assertEqual(details[1]["required"], [])
+
+    def test_group_filter_without_explicit_output_uses_prefix_when_schema_unavailable(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+
+        def unavailable_schema(*_args, **_kwargs):
+            raise ValueError("数据库不可用")
+
+        window.get_workflow_sqlite_columns = unavailable_schema
+        inferred, details = window.infer_group_input_fields_from_nodes([
+            {
+                "type": "高级筛选",
+                "enabled": True,
+                "config": {
+                    "conditions": [],
+                    "join_rules": [],
+                    "extra_tables": ["missing"],
+                    "output_fields": [],
+                },
+            },
+            {
+                "type": "合并列",
+                "enabled": True,
+                "config": {
+                    "fields": ["missing.any"],
+                    "output_field": "组合结果",
+                },
+            },
+        ], context={})
+        self.assertEqual(inferred, [])
+        self.assertEqual(details[0]["writes"], [])
+        self.assertEqual(details[0]["write_prefixes"], ["missing."])
+        self.assertIn("结构未解析", details[0]["note"])
+        self.assertEqual(details[1]["required"], [])
+
+    def test_group_filter_explicit_output_does_not_enable_side_table_prefix(self):
+        window = self.filter_window()
+        inferred, details = window.infer_group_input_fields_from_nodes([
+            {
+                "type": "高级筛选",
+                "enabled": True,
+                "config": {
+                    "conditions": [],
+                    "join_rules": [],
+                    "extra_tables": ["allowed"],
+                    "output_fields": ["allowed.a"],
+                },
+            },
+            {
+                "type": "合并列",
+                "enabled": True,
+                "config": {
+                    "fields": ["allowed.other"],
+                    "output_field": "组合结果",
+                },
+            },
+        ], context={})
+        self.assertEqual(inferred, ["allowed.other"])
+        self.assertEqual(details[0]["writes"], ["allowed.a"])
+        self.assertEqual(details[0]["write_prefixes"], [])
+        self.assertEqual(details[1]["required"], ["allowed.other"])
+
+    def test_group_filter_old_nested_reference_removes_one_context_prefix(self):
+        window = self.filter_window()
+        info = window.analyze_group_inner_node_field_io({
+            "type": "高级筛选",
+            "config": {
+                "conditions": [{"field": "当前表.当前表.编码"}],
+                "join_rules": [],
+                "extra_tables": [],
+                "output_fields": ["当前表.当前表.编码"],
+            },
+        })
+        self.assertEqual(info["read_fields"], ["当前表.编码"])
+        self.assertEqual(info["write_fields"], ["当前表.编码"])
 
 
 if __name__ == "__main__":

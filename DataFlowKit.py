@@ -55,7 +55,9 @@ import time
 import subprocess
 import uuid
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 
+from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
 from shared.table_access_policy import extract_read_tables, table_pattern_matches
 
 
@@ -72,6 +74,15 @@ def get_app_dir():
     if getattr(sys, "frozen", False):
         return os.path.dirname(os.path.abspath(sys.executable))
     return os.path.dirname(os.path.abspath(__file__))
+
+
+def load_json_file_with_recovery(path, parent=None):
+    data, info = load_json_with_backup(path)
+    warning = info.get("warning", "")
+    if warning:
+        messagebox.showwarning("配置已从备份恢复", warning, parent=parent)
+    return data
+
 
 class TableAccessManager:
     """
@@ -650,6 +661,16 @@ class TableAccessManager:
         cur.execute(f"CREATE TABLE {self.quote_ident(table_name)} ({col_defs})")
         return headers
 
+    def _executemany(self, cur, sql, rows):
+        """统一批量写入入口，便于事务失败测试和后续分批优化。"""
+        return cur.executemany(sql, rows)
+
+    def _execute_writeback_update(self, cur, sql, params):
+        return cur.execute(sql, params)
+
+    def _execute_writeback_insert(self, cur, sql, params):
+        return cur.execute(sql, params)
+
     def _timestamp_table_name(self, base_name):
         suffix = datetime.now().strftime("%Y%m%d_%H%M%S")
         actual = f"{base_name}_{suffix}"
@@ -693,7 +714,18 @@ class TableAccessManager:
             actual_name = self._timestamp_table_name(table_name)
             exists = False
 
-        with self._connect() as conn:
+        fixed_rows = []
+        for row in rows:
+            r = list(row)
+            if len(r) < len(headers):
+                r += [""] * (len(headers) - len(r))
+            elif len(r) > len(headers):
+                r = r[:len(headers)]
+            fixed_rows.append(["" if v is None else str(v) for v in r])
+
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
             cur = conn.cursor()
             if mode == "replace":
                 cur.execute(f"DROP TABLE IF EXISTS {self.quote_ident(actual_name)}")
@@ -717,102 +749,154 @@ class TableAccessManager:
             col_names = ", ".join(self.quote_ident(h) for h in headers)
             placeholders = ", ".join(["?"] * len(headers))
             insert_sql = f"INSERT INTO {self.quote_ident(actual_name)} ({col_names}) VALUES ({placeholders})"
-            fixed_rows = []
-            for row in rows:
-                r = list(row)
-                if len(r) < len(headers):
-                    r += [""] * (len(headers) - len(r))
-                elif len(r) > len(headers):
-                    r = r[:len(headers)]
-                fixed_rows.append(["" if v is None else str(v) for v in r])
             if fixed_rows:
-                cur.executemany(insert_sql, fixed_rows)
+                self._executemany(cur, insert_sql, fixed_rows)
             conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
         self._log_event("write_table", actual_name, mode=mode, write_mode=standard_mode, rows=len(rows), columns=len(headers), message=f"写入表 {actual_name}：{len(rows)} 行 × {len(headers)} 列，模式 {standard_mode}")
         return {"table_name": actual_name, "rows": len(rows), "columns": len(headers), "mode": mode, "write_mode": standard_mode}
 
     def clear_fields(self, table_name, fields):
-        self.check_table_permission(
+        result = self.apply_writeback_transaction(
             table_name,
-            ["write_table", "clear_table"],
-            operation="clear_fields",
-            fields=fields,
-            field_action="write",
-            source_type="SQLite表",
+            actions=[],
+            clear_fields=fields,
         )
-        existing = set(self.get_columns(table_name))
+        return result["cleared_fields"]
+
+    def apply_cell_actions(self, table_name, actions, cancel_event=None):
+        result = self.apply_writeback_transaction(
+            table_name,
+            actions=actions,
+            clear_fields=[],
+            cancel_event=cancel_event,
+        )
+        return result["cells"]
+
+    def apply_writeback_transaction(self, table_name, actions, clear_fields=None, cancel_event=None):
+        """在同一事务中完成字段清空、已有行更新和新行追加。"""
+        table_name = str(table_name or "").strip()
+        if not table_name:
+            raise ValueError("table_name 不能为空")
+        target_columns = self.get_columns(table_name)
+        if not target_columns and not self.table_exists(table_name):
+            raise ValueError(f"表不存在：{table_name}")
+
         clean_fields = []
-        for field in fields or []:
+        existing = set(target_columns)
+        for field in clear_fields or []:
             field = str(field or "").strip()
             if field and field in existing and field not in clean_fields:
                 clean_fields.append(field)
-        if not clean_fields:
-            return 0
-        with self._connect() as conn:
-            cur = conn.cursor()
-            set_sql = ", ".join(f"{self.quote_ident(field)}=''" for field in clean_fields)
-            cur.execute(f"UPDATE {self.quote_ident(table_name)} SET {set_sql}")
-            conn.commit()
-        self._log_event("clear_fields", table_name, fields=clean_fields, message=f"清空表 {table_name} 字段：{len(clean_fields)} 个")
-        return len(clean_fields)
+        if clean_fields:
+            self.check_table_permission(
+                table_name,
+                ["write_table", "clear_table"],
+                operation="clear_fields",
+                fields=clean_fields,
+                field_action="write",
+                source_type="SQLite表",
+            )
 
-    def apply_cell_actions(self, table_name, actions):
         write_actions = [a for a in (actions or []) if a.get("write")]
-        if not write_actions:
-            return 0
         target_fields = []
         has_new_rows = False
         for action in write_actions:
-            field = action.get("target_field")
+            field = str(action.get("target_field", "") or "").strip()
             if field and field not in target_fields:
                 target_fields.append(field)
             if action.get("is_new_row"):
                 has_new_rows = True
-        required = ["write_table", "update_rows"]
-        if has_new_rows:
-            required.append("append_rows")
-        self.check_table_permission(
-            table_name,
-            required,
-            operation="update_cells",
-            fields=target_fields,
-            field_action="write",
-            source_type="SQLite表",
-        )
-        target_columns = self.get_columns(table_name)
-        with self._connect() as conn:
+        if write_actions:
+            required = ["write_table", "update_rows"]
+            if has_new_rows:
+                required.append("append_rows")
+            self.check_table_permission(
+                table_name,
+                required,
+                operation="update_cells",
+                fields=target_fields,
+                field_action="write",
+                source_type="SQLite表",
+            )
+
+        def check_cancel():
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("用户取消后台执行")
+
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
             cur = conn.cursor()
+            check_cancel()
+            if clean_fields:
+                set_sql = ", ".join(f"{self.quote_ident(field)}=''" for field in clean_fields)
+                cur.execute(f"UPDATE {self.quote_ident(table_name)} SET {set_sql}")
+
             actual = 0
-            for action in write_actions:
+            for index, action in enumerate(write_actions, start=1):
+                if index == 1 or index % 100 == 0:
+                    check_cancel()
                 if action.get("is_new_row"):
                     continue
                 target_field = action.get("target_field")
                 if target_field not in target_columns:
                     continue
                 sql = f"UPDATE {self.quote_ident(table_name)} SET {self.quote_ident(target_field)}=? WHERE rowid=?"
-                cur.execute(sql, (action.get("new_value", ""), action.get("target_rowid")))
+                self._execute_writeback_update(
+                    cur,
+                    sql,
+                    (action.get("new_value", ""), action.get("target_rowid")),
+                )
                 actual += 1
 
             insert_groups = {}
-            for action in write_actions:
+            for index, action in enumerate(write_actions, start=1):
+                if index == 1 or index % 100 == 0:
+                    check_cancel()
                 if not action.get("is_new_row"):
                     continue
                 key = action.get("new_row_key") or f"source_{action.get('source_row', '')}"
                 insert_groups.setdefault(key, {})[action.get("target_field", "")] = action.get("new_value", "")
 
-            for _, values_by_field in insert_groups.items():
+            for index, values_by_field in enumerate(insert_groups.values(), start=1):
+                if index == 1 or index % 100 == 0:
+                    check_cancel()
                 insert_cols = [col for col in target_columns if col in values_by_field]
                 if not insert_cols:
                     continue
                 placeholders = ", ".join(["?"] * len(insert_cols))
                 col_sql = ", ".join(self.quote_ident(col) for col in insert_cols)
                 sql = f"INSERT INTO {self.quote_ident(table_name)} ({col_sql}) VALUES ({placeholders})"
-                cur.execute(sql, [values_by_field.get(col, "") for col in insert_cols])
+                self._execute_writeback_insert(
+                    cur,
+                    sql,
+                    [values_by_field.get(col, "") for col in insert_cols],
+                )
                 actual += len(insert_cols)
 
+            check_cancel()
             conn.commit()
-        self._log_event("update_cells", table_name, cells=actual, message=f"更新表 {table_name}：{actual} 处")
-        return actual
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        if clean_fields:
+            self._log_event(
+                "clear_fields",
+                table_name,
+                fields=clean_fields,
+                message=f"清空表 {table_name} 字段：{len(clean_fields)} 个",
+            )
+        if write_actions:
+            self._log_event("update_cells", table_name, cells=actual, message=f"更新表 {table_name}：{actual} 处")
+        return {"cells": actual, "cleared_fields": len(clean_fields)}
 
     def execute_select(self, sql, params=None, tables=None):
         """执行只读 SELECT 查询，返回 table 格式。"""
@@ -2667,8 +2751,7 @@ class DataExtractWindow:
         if not path:
             return
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(self.collect_template(), f, ensure_ascii=False, indent=2)
+            atomic_write_json(path, self.collect_template())
             self.status_var.set(f"已保存模板：{path}")
         except Exception as e:
             messagebox.showerror("保存模板失败", str(e))
@@ -2681,8 +2764,7 @@ class DataExtractWindow:
         if not path:
             return
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = load_json_file_with_recovery(path, parent=self.window)
             self.apply_template(data)
             self.status_var.set(f"已载入模板：{path}")
         except Exception as e:
@@ -3452,8 +3534,7 @@ class MergeColumnsWindow:
         if not path:
             return
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(self.collect_template(), f, ensure_ascii=False, indent=2)
+            atomic_write_json(path, self.collect_template())
             self.status_var.set(f"已保存合并模板：{path}")
         except Exception as e:
             messagebox.showerror("保存模板失败", str(e))
@@ -3466,8 +3547,7 @@ class MergeColumnsWindow:
         if not path:
             return
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = load_json_file_with_recovery(path, parent=self.window)
             self.apply_template(data)
             self.status_var.set(f"已载入合并模板：{path}")
         except Exception as e:
@@ -3904,8 +3984,7 @@ class BatchReplaceWindow:
             "rules": rules
         }
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            atomic_write_json(path, data)
             self.status_var.set(f"已保存替换规则模板：{path}")
         except Exception as e:
             messagebox.showerror("保存失败", str(e))
@@ -3919,8 +3998,7 @@ class BatchReplaceWindow:
             return
 
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = load_json_file_with_recovery(path, parent=self.window)
 
             rules = data.get("rules", data if isinstance(data, list) else [])
             valid_rules = []
@@ -4948,8 +5026,7 @@ class AdvancedFilterWindow:
 
         try:
             data = self.export_template_data()
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            atomic_write_json(path, data)
 
             self.status_var.set(f"筛选模板已保存：{path}")
 
@@ -4968,8 +5045,7 @@ class AdvancedFilterWindow:
             return
 
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = load_json_file_with_recovery(path, parent=self.window)
 
             self.apply_template_data(data)
             self.status_var.set(f"筛选模板已载入：{path}")
@@ -4993,6 +5069,8 @@ class PlanWorkflowWindow:
 
     NODE_TYPES = ["获取文件列表", "节点组 / 子工作流", "循环执行起点", "跳转锚点节点", "无条件跳转节点", "条件判断节点", "条件跳转节点", "批量替换", "数据提取", "格式规范化 / 日期时间解析", "新建日期时间列", "新建列", "合并列", "批量更改列名", "去重 / 重复数据处理", "列数字运算", "匹配值输出列名", "复制列", "复制行", "删除行", "填充值", "序列填充", "区域填充", "行数据映射填充", "保存中转数据", "选定列写入指定表", "字段映射写入表", "高级筛选", "删除列", "移动列", "批量重命名", "循环判断回跳"]
     TABLE_ACCESS_POLICY_CHOICES = ["只审计", "预检确认", "强制拦截"]
+    MAX_EXPANDED_ROWS = 200000
+    MAX_TARGET_CELLS = 1000000
     TABLE_ACCESS_POLICY_DISPLAY = {
         "audit": "只审计",
         "prompt": "预检确认",
@@ -11402,7 +11480,10 @@ class PlanWorkflowWindow:
             refresh_mapping_tree()
 
         def infer_inputs_from_inner_nodes():
-            inferred, details = self.infer_group_input_fields_from_nodes(config.get("nodes", []))
+            inferred, details = self.infer_group_input_fields_from_nodes(
+                config.get("nodes", []),
+                context=transit_context,
+            )
             detail_text = self.format_group_input_infer_details(inferred, details)
             if not inferred:
                 messagebox.showinfo("入口字段推导", "没有从组内节点推导到需要外部传入的入口字段。\n\n" + detail_text)
@@ -11805,8 +11886,7 @@ class PlanWorkflowWindow:
         group_name = os.path.splitext(os.path.basename(path))[0].replace(".group", "").strip() or config.get("group_name") or "节点组"
         data = self.build_group_template_data(config, group_name=group_name)
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            atomic_write_json(path, data)
             config["group_name"] = data.get("group_name", group_name)
             self.status_var.set(f"节点组模板已保存：{path}")
         except Exception as e:
@@ -11822,8 +11902,7 @@ class PlanWorkflowWindow:
         if not path:
             return None
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = load_json_file_with_recovery(path, parent=self.window)
             ok, reason = self.validate_group_template_data(data)
             if not ok:
                 raise ValueError(reason)
@@ -14709,6 +14788,11 @@ class PlanWorkflowWindow:
         config.setdefault("result_limit", "5000")
         config.setdefault("max_intermediate", "200000")
         config.setdefault("remove_duplicates", False)
+        self.normalize_plan_filter_config_field_references(
+            config,
+            headers,
+            config.get("extra_tables", []),
+        )
 
         frame = ttk.LabelFrame(self.config_frame, text="高级筛选节点（支持：上一步结果 + 多表匹配）", padding=8)
         frame.pack(fill=tk.BOTH, expand=True, pady=8)
@@ -15020,9 +15104,34 @@ class PlanWorkflowWindow:
             out_list.insert(tk.END, h)
             if h in selected:
                 out_list.selection_set(i)
+        actual_output_var = tk.StringVar(value="")
+        ttk.Label(
+            output_frame,
+            textvariable=actual_output_var,
+            foreground="gray",
+            wraplength=1000,
+        ).pack(fill=tk.X, pady=(4, 0))
+
+        def refresh_actual_output_text():
+            selected_fields = [out_list.get(i) for i in out_list.curselection()]
+            if selected_fields:
+                lookup_fields = selected_fields
+            elif config.get("extra_tables"):
+                lookup_fields = list(field_state["all"])
+            else:
+                lookup_fields = list(headers)
+            actual_headers = self.get_plan_filter_output_headers(lookup_fields, headers)
+            conflicts = self.get_plan_filter_output_header_conflicts(lookup_fields, headers)
+            display = actual_headers[:12]
+            suffix = f" 等 {len(actual_headers)} 个字段" if len(actual_headers) > len(display) else ""
+            text = "实际输出字段：" + ("、".join(display) + suffix if display else "无")
+            if conflicts:
+                text += "；重名自动编号：" + "、".join(conflicts[:6])
+            actual_output_var.set(text)
 
         def sync_output_fields():
             config["output_fields"] = [out_list.get(i) for i in out_list.curselection()]
+            refresh_actual_output_text()
 
         def refresh_filter_field_sources():
             config["extra_tables"] = [table_list.get(i) for i in table_list.curselection()]
@@ -15033,16 +15142,16 @@ class PlanWorkflowWindow:
             first_any = all_values[0] if all_values else ""
             first_current = current_values[0] if current_values else first_any
             first_external = next((f for f in all_values if not str(f).startswith("当前表.")), first_any)
-            self.refresh_combo_values(field_combo, field_var, all_values, keep_custom=True, fallback=first_any)
+            self.refresh_combo_values(field_combo, field_var, all_values, keep_custom=False, fallback=first_any)
             self.refresh_combo_values(
                 value_combo,
                 value_var,
                 all_values if value_source_var.get() == "字段值" else [],
-                keep_custom=True,
+                keep_custom=value_source_var.get() != "字段值",
                 fallback=first_any if value_source_var.get() == "字段值" else "",
             )
-            self.refresh_combo_values(left_combo, left_var, all_values, keep_custom=True, fallback=first_current)
-            self.refresh_combo_values(right_combo, right_var, all_values, keep_custom=True, fallback=first_external)
+            self.refresh_combo_values(left_combo, left_var, all_values, keep_custom=False, fallback=first_current)
+            self.refresh_combo_values(right_combo, right_var, all_values, keep_custom=False, fallback=first_external)
             selected_output = set(config.get("output_fields", []))
             self.refresh_listbox_values(out_list, all_values, selected_output)
             sync_output_fields()
@@ -15053,9 +15162,21 @@ class PlanWorkflowWindow:
         out_list.bind("<<ListboxSelect>>", lambda e: sync_output_fields())
         btns = ttk.Frame(output_frame)
         btns.pack(fill=tk.X, pady=4)
-        ttk.Button(btns, text="选择全部输出字段", command=lambda: self.select_all_output_fields(out_list, config)).pack(side=tk.LEFT, padx=2)
-        ttk.Button(btns, text="反选", command=lambda: self.invert_output_fields(out_list, config)).pack(side=tk.LEFT, padx=2)
-        ttk.Button(btns, text="只选当前表字段", command=lambda: self.select_current_table_output_fields(out_list, config)).pack(side=tk.LEFT, padx=2)
+        ttk.Button(
+            btns,
+            text="选择全部输出字段",
+            command=lambda: (self.select_all_output_fields(out_list, config), refresh_actual_output_text()),
+        ).pack(side=tk.LEFT, padx=2)
+        ttk.Button(
+            btns,
+            text="反选",
+            command=lambda: (self.invert_output_fields(out_list, config), refresh_actual_output_text()),
+        ).pack(side=tk.LEFT, padx=2)
+        ttk.Button(
+            btns,
+            text="只选当前表字段",
+            command=lambda: (self.select_current_table_output_fields(out_list, config), refresh_actual_output_text()),
+        ).pack(side=tk.LEFT, padx=2)
         ttk.Button(btns, text="清空输出选择", command=lambda: (out_list.selection_clear(0, tk.END), sync_output_fields())).pack(side=tk.LEFT, padx=2)
 
         dedupe_text = tk.StringVar(value="去除重复内容:开" if bool(config.get("remove_duplicates", False)) else "去除重复内容:关")
@@ -15066,6 +15187,7 @@ class PlanWorkflowWindow:
 
         ttk.Button(btns, textvariable=dedupe_text, command=toggle_filter_dedupe).pack(side=tk.LEFT, padx=(12, 2))
         ttk.Label(btns, text="按最终输出整行去重，保留第一条。", foreground="gray").pack(side=tk.LEFT, padx=4)
+        refresh_actual_output_text()
         refresh_filter_risk_text()
 
     def select_all_output_fields(self, listbox, config):
@@ -16244,7 +16366,109 @@ class PlanWorkflowWindow:
             for key in keys:
                 self.add_group_field_ref(target, item.get(key))
 
-    def analyze_group_inner_node_field_io(self, node):
+    def classify_group_filter_field_reference(self, field, extra_tables=None):
+        """
+        将高级筛选字段引用转换为节点组静态分析使用的字段名。
+
+        当前表限定名去掉本轮“当前表.”前缀；副表字段保留限定名，但标记为
+        external，表示它由高级筛选节点自行读取，不属于节点组入口。
+        """
+        text = str(field or "").strip()
+        if not text:
+            return "", ""
+        for table in extra_tables or []:
+            table_name = str(table or "").strip()
+            if table_name and text.startswith(f"{table_name}."):
+                return "external", text
+        if text.startswith("当前表."):
+            return "current", text[len("当前表."):]
+        return "current", text
+
+    def get_group_filter_external_output_fields(self, config, context=None):
+        """读取无显式投影时高级筛选会输出的副表字段。"""
+        fields = []
+        unresolved = []
+        transit_tables = (context or {}).get("transit_tables", {})
+        for table in list((config or {}).get("extra_tables", []) or []):
+            table_name = str(table or "").strip()
+            if not table_name:
+                continue
+            try:
+                if table_name.startswith("中转:"):
+                    transit_name = table_name.split(":", 1)[1]
+                    item = transit_tables.get(transit_name)
+                    if not isinstance(item, dict):
+                        raise ValueError("中转副表尚未生成")
+                    columns = list(item.get("headers", []) or [])
+                else:
+                    columns = list(self.get_workflow_sqlite_columns(table_name, context))
+                fields.extend(f"{table_name}.{column}" for column in columns)
+            except Exception as exc:
+                unresolved.append(f"{table_name}（{exc}）")
+        return self.unique_keep_order(fields), unresolved
+
+    def analyze_group_filter_field_io(self, config, context=None):
+        """专门分析节点组内高级筛选的条件、匹配规则和投影字段。"""
+        cfg = config or {}
+        extra_tables = list(cfg.get("extra_tables", []) or [])
+        reads = []
+        writes = []
+        write_prefixes = []
+
+        def add_current_read(field):
+            owner, name = self.classify_group_filter_field_reference(field, extra_tables)
+            if owner == "current":
+                self.add_group_field_ref(reads, name)
+
+        def add_output(field):
+            owner, name = self.classify_group_filter_field_reference(field, extra_tables)
+            if not name:
+                return
+            if owner == "current":
+                self.add_group_field_ref(reads, name)
+            self.add_group_field_ref(writes, name)
+
+        for cond in cfg.get("conditions", []) or []:
+            if not isinstance(cond, dict):
+                continue
+            add_current_read(cond.get("field"))
+            if self.normalize_filter_condition_value_source(cond) == "字段值":
+                add_current_read(cond.get("value"))
+
+        for rule in cfg.get("join_rules", []) or []:
+            if not isinstance(rule, dict):
+                continue
+            add_current_read(rule.get("left"))
+            add_current_read(rule.get("right"))
+
+        for field in cfg.get("output_fields", []) or []:
+            add_output(field)
+
+        note = "当前表字段作为组内输入；副表字段由高级筛选自行读取"
+        if cfg.get("output_fields"):
+            note += "；显式输出字段参与后续节点推导"
+        else:
+            external_fields, unresolved = self.get_group_filter_external_output_fields(
+                cfg,
+                context=context,
+            )
+            writes.extend(external_fields)
+            write_prefixes.extend(
+                f"{str(table).strip()}."
+                for table in extra_tables
+                if str(table).strip()
+            )
+            note += f"；未指定输出字段，已推导副表输出 {len(external_fields)} 个字段"
+            if unresolved:
+                note += "；结构未解析：" + "、".join(unresolved)
+        return {
+            "read_fields": self.unique_keep_order(reads),
+            "write_fields": self.unique_keep_order(writes),
+            "write_field_prefixes": self.unique_keep_order(write_prefixes),
+            "note": note,
+        }
+
+    def analyze_group_inner_node_field_io(self, node, context=None):
         """
         分析组内单个节点的字段输入/输出。
 
@@ -16421,14 +16645,7 @@ class PlanWorkflowWindow:
             note = "匹配规则/字段映射中的当前表字段为输入"
 
         elif node_type == "高级筛选":
-            # 高级筛选规则结构较灵活，递归扫描常见字段键。
-            for key in ["conditions", "join_rules", "output_fields"]:
-                self.collect_group_fields_from_nested_config(
-                    reads,
-                    cfg.get(key),
-                    field_keys={"field", "left_field", "right_field", "source_field", "output_field", "字段", "字段名"},
-                )
-            note = "筛选条件/输出字段为输入"
+            return self.analyze_group_filter_field_io(cfg, context=context)
 
         elif node_type == "删除列":
             self.add_group_field_ref(reads, cfg.get("fields"))
@@ -16493,7 +16710,7 @@ class PlanWorkflowWindow:
             for item in value:
                 self.collect_group_fields_from_nested_config(target, item, field_keys=field_keys)
 
-    def infer_group_input_fields_from_nodes(self, nodes):
+    def infer_group_input_fields_from_nodes(self, nodes, context=None):
         """
         从组内节点顺序自动推导“真正需要从组外传入”的入口字段。
 
@@ -16504,6 +16721,7 @@ class PlanWorkflowWindow:
         """
         required = []
         produced = set()
+        produced_prefixes = []
         details = []
         for idx, node in enumerate(nodes or [], start=1):
             if not node.get("enabled", True):
@@ -16512,25 +16730,33 @@ class PlanWorkflowWindow:
                     "type": node.get("type", ""),
                     "reads": [],
                     "writes": [],
+                    "write_prefixes": [],
                     "required": [],
                     "note": "节点已禁用，跳过推导",
                 })
                 continue
-            info = self.analyze_group_inner_node_field_io(node)
+            info = self.analyze_group_inner_node_field_io(node, context=context)
             reads = info.get("read_fields", [])
             writes = info.get("write_fields", [])
+            write_prefixes = info.get("write_field_prefixes", [])
             req_this = []
             for f in reads:
-                if f not in produced:
+                if f not in produced and not any(str(f).startswith(prefix) for prefix in produced_prefixes):
                     req_this.append(f)
                     required.append(f)
             for f in writes:
                 produced.add(f)
+            produced_prefixes.extend(
+                prefix
+                for prefix in write_prefixes
+                if prefix and prefix not in produced_prefixes
+            )
             details.append({
                 "index": idx,
                 "type": node.get("type", ""),
                 "reads": reads,
                 "writes": writes,
+                "write_prefixes": write_prefixes,
                 "required": self.unique_keep_order(req_this),
                 "note": info.get("note", ""),
             })
@@ -16543,6 +16769,8 @@ class PlanWorkflowWindow:
             lines.append(f"{item.get('index')}. {item.get('type')}")
             lines.append(f"  读取：{', '.join(item.get('reads') or []) or '-'}")
             lines.append(f"  输出：{', '.join(item.get('writes') or []) or '-'}")
+            if item.get("write_prefixes"):
+                lines.append(f"  动态输出前缀：{', '.join(item.get('write_prefixes') or [])}")
             lines.append(f"  需要入口：{', '.join(item.get('required') or []) or '-'}")
             if item.get("note"):
                 lines.append(f"  说明：{item.get('note')}")
@@ -17017,7 +17245,7 @@ class PlanWorkflowWindow:
         if node_type == "获取文件列表":
             return self.apply_file_list_node(headers, rows, config, context=context)
         if node_type == "批量替换":
-            return self.apply_replace_node(headers, rows, config)
+            return self.apply_replace_node(headers, rows, config, context=context)
         if node_type == "数据提取":
             return self.apply_extract_node(headers, rows, config)
         if node_type == "格式规范化 / 日期时间解析":
@@ -17027,13 +17255,13 @@ class PlanWorkflowWindow:
         if node_type == "新建列":
             return self.apply_new_columns_node(headers, rows, config)
         if node_type == "合并列":
-            return self.apply_merge_node(headers, rows, config)
+            return self.apply_merge_node(headers, rows, config, context=context)
         if node_type == "批量更改列名":
             return self.apply_rename_columns_node(headers, rows, config)
         if node_type == "去重 / 重复数据处理":
-            return self.apply_dedupe_node(headers, rows, config)
+            return self.apply_dedupe_node(headers, rows, config, context=context)
         if node_type == "列数字运算":
-            return self.apply_numeric_column_node(headers, rows, config)
+            return self.apply_numeric_column_node(headers, rows, config, context=context)
         if node_type == "匹配值输出列名":
             return self.apply_match_value_output_field_name_node(headers, rows, config, context=context)
         if node_type == "插件节点":
@@ -17045,11 +17273,11 @@ class PlanWorkflowWindow:
         if node_type == "删除行":
             return self.apply_delete_rows_node(headers, rows, config)
         if node_type == "填充值":
-            return self.apply_fill_value_node(headers, rows, config)
+            return self.apply_fill_value_node(headers, rows, config, context=context)
         if node_type == "序列填充":
-            return self.apply_sequence_fill_node(headers, rows, config)
+            return self.apply_sequence_fill_node(headers, rows, config, context=context)
         if node_type == "区域填充":
-            return self.apply_area_fill_node(headers, rows, config)
+            return self.apply_area_fill_node(headers, rows, config, context=context)
         if node_type == "行数据映射填充":
             return self.apply_row_data_mapping_node(headers, rows, config)
         if node_type == "保存中转数据":
@@ -17162,6 +17390,10 @@ class PlanWorkflowWindow:
         cancel_event = (context or {}).get("cancel_event")
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("用户取消后台执行")
+
+    def check_workflow_cancelled_periodically(self, context, index, interval=500):
+        if index == 0 or index % max(1, int(interval)) == 0:
+            self.check_workflow_cancelled(context)
 
     def report_workflow_node_progress(self, context=None, current=None, total=None, message="", node_name=""):
         """长循环节点内部调用：通过后台 Queue 回传节点内行级/项目级进度。"""
@@ -17448,7 +17680,7 @@ class PlanWorkflowWindow:
             return headers, rows, f"实际重命名 {changed} 项，跳过/失败 {skipped} 项"
         return headers, rows, f"重命名预览：可处理 {preview_ok} 项，跳过/失败 {skipped} 项"
 
-    def apply_replace_node(self, headers, rows, config):
+    def apply_replace_node(self, headers, rows, config, context=None):
         idx = self.field_index(headers, config.get("target_field", ""))
         match_mode = config.get("match_mode", "包含")
         replace_mode = config.get("replace_mode", "局部替换匹配字符串")
@@ -17469,6 +17701,12 @@ class PlanWorkflowWindow:
         replace_field_idx = self.field_index(headers, config.get("replace_value_field", "")) if replace_source == "列字段" else None
         static_match_value = str(config.get("match_value", ""))
         static_replace_value = str(config.get("replace_value", ""))
+        if match_mode == "正则匹配" and match_source != "列字段":
+            flags = 0 if case_sensitive else re.IGNORECASE
+            try:
+                re.compile(static_match_value, flags=flags)
+            except re.error as exc:
+                raise ValueError(f"批量替换正则错误：{exc}") from exc
 
         new_rows = self.normalize_rows(rows, len(headers))
         changed = 0
@@ -17514,6 +17752,7 @@ class PlanWorkflowWindow:
             return re.sub(re.escape(match_value), replace_value, old, count=replace_count, flags=re.IGNORECASE)
 
         for row_index, row in enumerate(new_rows):
+            self.check_workflow_cancelled_periodically(context, row_index)
             old = self.safe_cell(row, idx)
             new_value = old
             row_changed = False
@@ -17530,9 +17769,20 @@ class PlanWorkflowWindow:
                 if skip_empty_match_value and match_value == "" and match_mode not in ("为空", "不为空"):
                     skipped_empty += 1
                     continue
-                if not self.compare_values(new_value, match_mode, match_value, case_sensitive):
+                try:
+                    matched = self.compare_values(new_value, match_mode, match_value, case_sensitive)
+                except re.error as exc:
+                    raise ValueError(
+                        f"批量替换正则错误（第 {row_index + 1} 行，匹配值 {match_value!r}）：{exc}"
+                    ) from exc
+                if not matched:
                     continue
-                updated = replace_text(new_value, match_value, replace_value)
+                try:
+                    updated = replace_text(new_value, match_value, replace_value)
+                except re.error as exc:
+                    raise ValueError(
+                        f"批量替换正则错误（第 {row_index + 1} 行，匹配值 {match_value!r}）：{exc}"
+                    ) from exc
                 if updated != new_value:
                     new_value = updated
                     row_changed = True
@@ -17983,7 +18233,8 @@ class PlanWorkflowWindow:
             try:
                 parts = self.parse_format_datetime_value(original, time_text, config)
                 out_value = self.format_output_value(parts, config)
-                status = "成功"
+                warning = self.get_datetime_parse_warning(original, config, parts)
+                status = "成功但存在歧义：" + warning if warning else "成功"
             except Exception as e:
                 failed += 1
                 out_value, status = self.apply_unmatched_format_value(original, str(e), config)
@@ -18006,6 +18257,33 @@ class PlanWorkflowWindow:
             changed += 1
 
         return headers, new_rows, f"格式规范化完成：写入 {changed} 行，失败 {failed} 行，跳过 {skipped} 行"
+
+    def get_datetime_parse_warning(self, original, config, parts):
+        warnings = []
+        if config.get("input_structure") == "分隔符":
+            values = [
+                item.strip()
+                for item in self.split_by_config_delimiter(
+                    self.normalize_datetime_source_text(original),
+                    "date",
+                    config,
+                )
+                if str(item).strip()
+            ]
+            order = config.get("date_order", "年-月-日")
+            if order in ("月-日-年", "日-月-年") and len(values) >= 2:
+                try:
+                    first = int(values[0])
+                    second = int(values[1])
+                    if 1 <= first <= 12 and 1 <= second <= 12:
+                        warnings.append("月和日均不超过12，请确认月日顺序")
+                except Exception:
+                    pass
+        if config.get("year_rule") == "不补全":
+            year = parts.get("year")
+            if year is not None and int(year) < 1000:
+                warnings.append("年份未补全且不足四位")
+        return "；".join(warnings)
 
     def render_current_datetime_template(self, dt, config):
         mode = config.get("format_mode", "占位符模板")
@@ -18181,7 +18459,7 @@ class PlanWorkflowWindow:
                 changed += 1
         return headers, new_rows, f"写入 {changed} 行，跳过 {skipped} 行"
 
-    def apply_merge_node(self, headers, rows, config):
+    def apply_merge_node(self, headers, rows, config, context=None):
         fields = list(config.get("fields", []))
         if not fields:
             raise ValueError("合并字段不能为空。")
@@ -18195,7 +18473,8 @@ class PlanWorkflowWindow:
         skip_empty = bool(config.get("skip_empty", True))
         trim_value = bool(config.get("trim_value", True))
         placeholder = str(config.get("empty_placeholder", ""))
-        for row in new_rows:
+        for row_index, row in enumerate(new_rows):
+            self.check_workflow_cancelled_periodically(context, row_index)
             pieces = []
             active_indexes = []
             for i, idx in enumerate(indexes):
@@ -18238,10 +18517,24 @@ class PlanWorkflowWindow:
         return headers, rows, len(headers) - 1
 
     def ensure_row_count(self, rows, row_count, col_count):
+        if row_count > self.MAX_EXPANDED_ROWS:
+            raise ValueError(
+                f"目标行数 {row_count} 超过安全上限 {self.MAX_EXPANDED_ROWS}，"
+                "请缩小填充范围或分批处理。"
+            )
         rows = self.normalize_rows(rows, col_count)
         while len(rows) < row_count:
             rows.append([""] * col_count)
         return rows
+
+    def ensure_target_cell_limit(self, row_count, col_count):
+        total = max(0, int(row_count)) * max(0, int(col_count))
+        if total > self.MAX_TARGET_CELLS:
+            raise ValueError(
+                f"目标单元格数量 {total} 超过安全上限 {self.MAX_TARGET_CELLS}，"
+                "请缩小处理区域或分批执行。"
+            )
+        return total
 
     def ensure_column_count(self, headers, rows, col_count, base_name="区域复制列"):
         """确保表格至少有 col_count 列；不足时在末尾追加新字段。"""
@@ -18447,6 +18740,12 @@ class PlanWorkflowWindow:
                 end_row = len(rows) - 1 if direction == "向下" else 0
             else:
                 end_row = len(rows) - 1 if direction == "向下" else 0
+            target_count = abs(end_row - start_row) + 1
+            if target_count > self.MAX_TARGET_CELLS:
+                raise ValueError(
+                    f"目标单元格数量 {target_count} 超过安全上限 {self.MAX_TARGET_CELLS}，"
+                    "请缩小填充范围或分批处理。"
+                )
             if allow_expand_rows and direction == "向下" and end_row >= len(rows):
                 rows = self.ensure_row_count(rows, end_row + 1, len(headers))
             step = 1 if direction == "向下" else -1
@@ -18469,6 +18768,12 @@ class PlanWorkflowWindow:
                     end_col = headers.index(end_field_value)
             else:
                 end_col = len(headers) - 1 if direction == "向右" else 0
+            target_count = abs(end_col - target_col) + 1
+            if target_count > self.MAX_TARGET_CELLS:
+                raise ValueError(
+                    f"目标单元格数量 {target_count} 超过安全上限 {self.MAX_TARGET_CELLS}，"
+                    "请缩小填充范围或分批处理。"
+                )
             if allow_expand_cols and direction == "向右" and end_col >= len(headers):
                 ensure_cols(end_col)
             step = 1 if direction == "向右" else -1
@@ -18623,7 +18928,7 @@ class PlanWorkflowWindow:
         new_rows = [row for i, row in enumerate(normalized) if i not in delete_indexes]
         return headers, new_rows, f"删除 {len(delete_indexes)} 行"
 
-    def apply_fill_value_node(self, headers, rows, config):
+    def apply_fill_value_node(self, headers, rows, config, context=None):
         headers = list(headers)
         rows = self.normalize_rows(rows, len(headers))
         value_source = config.get("value_source", "手动输入值")
@@ -18650,7 +18955,8 @@ class PlanWorkflowWindow:
                 return headers, rows, "循环源列无可用数据，未执行填充"
             overwrite_rule = config.get("overwrite_rule", "只填充空单元格")
             changed = skipped = write_index = 0
-            for r, c in targets:
+            for target_index, (r, c) in enumerate(targets):
+                self.check_workflow_cancelled_periodically(context, target_index)
                 rows = self.ensure_row_count(rows, r + 1, len(headers))
                 can_write, stop = self.should_write_cell(self.safe_cell(rows[r], c), overwrite_rule)
                 if stop:
@@ -18674,6 +18980,7 @@ class PlanWorkflowWindow:
             overwrite_rule = config.get("overwrite_rule", "只填充空单元格")
             changed = skipped = 0
             for offset, value in enumerate(values):
+                self.check_workflow_cancelled_periodically(context, offset)
                 r = start_row + offset
                 can_write, stop = self.should_write_cell(self.safe_cell(rows[r], target_col), overwrite_rule)
                 if stop:
@@ -18701,7 +19008,8 @@ class PlanWorkflowWindow:
         )
         changed = skipped = 0
         overwrite_rule = config.get("overwrite_rule", "只填充空单元格")
-        for r, c in targets:
+        for target_index, (r, c) in enumerate(targets):
+            self.check_workflow_cancelled_periodically(context, target_index)
             rows = self.ensure_row_count(rows, r + 1, len(headers))
             can_write, stop = self.should_write_cell(self.safe_cell(rows[r], c), overwrite_rule)
             if stop:
@@ -18723,7 +19031,7 @@ class PlanWorkflowWindow:
             text = str(value).rstrip("0").rstrip(".") if "." in str(value) else str(value)
         return f"{config.get('prefix', '')}{text}{config.get('suffix', '')}"
 
-    def apply_sequence_fill_node(self, headers, rows, config):
+    def apply_sequence_fill_node(self, headers, rows, config, context=None):
         headers = list(headers)
         rows = self.normalize_rows(rows, len(headers))
         try:
@@ -18756,7 +19064,8 @@ class PlanWorkflowWindow:
         )
         changed = skipped = seq_index = 0
         overwrite_rule = config.get("overwrite_rule", "覆盖所有目标单元格")
-        for r, c in targets:
+        for target_index, (r, c) in enumerate(targets):
+            self.check_workflow_cancelled_periodically(context, target_index)
             rows = self.ensure_row_count(rows, r + 1, len(headers))
             can_write, stop = self.should_write_cell(self.safe_cell(rows[r], c), overwrite_rule)
             if stop:
@@ -18769,7 +19078,7 @@ class PlanWorkflowWindow:
                 skipped += 1
         return headers, rows, f"序列填充 {changed} 个单元格，跳过 {skipped} 个"
 
-    def apply_area_fill_node(self, headers, rows, config):
+    def apply_area_fill_node(self, headers, rows, config, context=None):
         headers = list(headers)
         rows = self.normalize_rows(rows, len(headers))
         if config.get("start_field", "") not in headers:
@@ -18796,10 +19105,12 @@ class PlanWorkflowWindow:
             if end_row < 0:
                 return headers, rows, "参考列无数据，未执行区域填充"
             r1, r2 = sorted([start_row, end_row])
+            self.ensure_target_cell_limit(r2 - r1 + 1, c2 - c1 + 1)
             rows = self.ensure_row_count(rows, r2 + 1, len(headers))
             stop_all = False
             write_index = 0
             for r in range(r1, r2 + 1):
+                self.check_workflow_cancelled_periodically(context, r - r1)
                 if stop_all:
                     break
                 for c in range(c1, c2 + 1):
@@ -18824,12 +19135,14 @@ class PlanWorkflowWindow:
             source_width = max((len(row) for row in source_area), default=0)
             if source_height <= 0 or source_width <= 0:
                 return headers, rows, "来源区域为空，未执行区域完整复制"
+            self.ensure_target_cell_limit(source_height, source_width)
 
             # 目标区域以“起始字段 + 起始位置”作为统一左上角锚点，按源区域行列偏移完整复制。
             headers, rows = self.ensure_column_count(headers, rows, start_col + source_width, "区域复制列")
             rows = self.ensure_row_count(rows, start_row + source_height, len(headers))
             stop_all = False
             for r_offset, source_row in enumerate(source_area):
+                self.check_workflow_cancelled_periodically(context, r_offset)
                 if stop_all:
                     break
                 target_r = start_row + r_offset
@@ -18851,9 +19164,11 @@ class PlanWorkflowWindow:
             values = self.get_source_column_values_by_config(headers, rows, config)
             if not values:
                 return headers, rows, "来源列无可填充数据，未执行区域填充"
+            self.ensure_target_cell_limit(len(values), c2 - c1 + 1)
             rows = self.ensure_row_count(rows, start_row + len(values), len(headers))
             stop_all = False
             for offset, value in enumerate(values):
+                self.check_workflow_cancelled_periodically(context, offset)
                 if stop_all:
                     break
                 r = start_row + offset
@@ -18876,9 +19191,11 @@ class PlanWorkflowWindow:
                 return headers, rows, "指定行多字段取值为空或越界，未执行区域填充"
             direction = config.get("multi_field_fill_direction", "横向填充")
             if direction == "纵向填充":
+                self.ensure_target_cell_limit(len(values), c2 - c1 + 1)
                 rows = self.ensure_row_count(rows, start_row + len(values), len(headers))
                 stop_all = False
                 for offset, value in enumerate(values):
+                    self.check_workflow_cancelled_periodically(context, offset)
                     if stop_all:
                         break
                     r = start_row + offset
@@ -18897,10 +19214,12 @@ class PlanWorkflowWindow:
                 if end_row < 0:
                     return headers, rows, "参考列无数据，未执行区域填充"
                 r1, r2 = sorted([start_row, end_row])
+                self.ensure_target_cell_limit(r2 - r1 + 1, min(c2 - c1 + 1, len(values)))
                 rows = self.ensure_row_count(rows, r2 + 1, len(headers))
                 target_cols = list(range(c1, c2 + 1))
                 stop_all = False
                 for r in range(r1, r2 + 1):
+                    self.check_workflow_cancelled_periodically(context, r - r1)
                     if stop_all:
                         break
                     for offset, c in enumerate(target_cols):
@@ -18922,9 +19241,11 @@ class PlanWorkflowWindow:
         if end_row < 0:
             return headers, rows, "参考列无数据，未执行区域填充"
         r1, r2 = sorted([start_row, end_row])
+        self.ensure_target_cell_limit(r2 - r1 + 1, c2 - c1 + 1)
         rows = self.ensure_row_count(rows, r2 + 1, len(headers))
         stop_all = False
         for r in range(r1, r2 + 1):
+            self.check_workflow_cancelled_periodically(context, r - r1)
             if stop_all:
                 break
             for c in range(c1, c2 + 1):
@@ -18962,6 +19283,89 @@ class PlanWorkflowWindow:
             except Exception:
                 continue
         return fields
+
+    def normalize_plan_filter_field_reference(self, field, headers, extra_tables=None):
+        """
+        将旧版高级筛选累积出的“当前表.当前表.字段”折叠为当前可用查值键。
+
+        只有折叠结果能精确对应当前 headers 时才转换，避免误伤真实字段名
+        本身包含“当前表.”前缀的情况。
+        """
+        text = str(field or "").strip()
+        if not text:
+            return ""
+        header_names = [str(header) for header in (headers or [])]
+        current_lookup_fields = {f"当前表.{header}" for header in header_names}
+        if text in current_lookup_fields or text in header_names:
+            return text
+        for table in extra_tables or []:
+            if self.plan_filter_field_belongs_to_table(text, table):
+                return text
+        candidate = text
+        while candidate.startswith("当前表.当前表."):
+            candidate = candidate[len("当前表."):]
+            if candidate in current_lookup_fields or candidate in header_names:
+                return candidate
+        return text
+
+    def normalize_plan_filter_config_field_references(self, config, headers, extra_tables=None):
+        """就地升级旧版高级筛选配置中的字段引用。"""
+        extra_tables = list(extra_tables or [])
+        for cond in config.get("conditions", []) or []:
+            if not isinstance(cond, dict):
+                continue
+            cond["field"] = self.normalize_plan_filter_field_reference(
+                cond.get("field", ""), headers, extra_tables
+            )
+            if self.normalize_filter_condition_value_source(cond) == "字段值":
+                cond["value"] = self.normalize_plan_filter_field_reference(
+                    cond.get("value", ""), headers, extra_tables
+                )
+        for rule in config.get("join_rules", []) or []:
+            if not isinstance(rule, dict):
+                continue
+            rule["left"] = self.normalize_plan_filter_field_reference(
+                rule.get("left", ""), headers, extra_tables
+            )
+            rule["right"] = self.normalize_plan_filter_field_reference(
+                rule.get("right", ""), headers, extra_tables
+            )
+        config["output_fields"] = [
+            self.normalize_plan_filter_field_reference(field, headers, extra_tables)
+            for field in (config.get("output_fields", []) or [])
+        ]
+        return config
+
+    def get_plan_filter_output_base_headers(self, lookup_fields, headers):
+        """把内部查值键转换为尚未去重的实际输出字段名。"""
+        current_field_names = {
+            f"当前表.{header}": str(header)
+            for header in (headers or [])
+        }
+        return [
+            current_field_names.get(str(field), str(field))
+            for field in (lookup_fields or [])
+        ]
+
+    def get_plan_filter_output_headers(self, lookup_fields, headers):
+        """
+        把高级筛选内部查值键转换为后续节点使用的真实表头。
+
+        当前表字段去掉本轮限定前缀，副表字段保留表名前缀；最终使用稳定编号
+        处理重名，保证查值键与输出字段名不再混为一体。
+        """
+        return self.make_unique_plan_headers(
+            self.get_plan_filter_output_base_headers(lookup_fields, headers)
+        )
+
+    def get_plan_filter_output_header_conflicts(self, lookup_fields, headers):
+        """返回会触发自动编号的实际输出字段名。"""
+        counts = {}
+        for field in self.get_plan_filter_output_base_headers(lookup_fields, headers):
+            name = str(field).strip()
+            if name:
+                counts[name] = counts.get(name, 0) + 1
+        return [name for name, count in counts.items() if count > 1]
 
     def plan_filter_field_belongs_to_table(self, field, table_name):
         return str(field or "").startswith(f"{table_name}.")
@@ -19565,7 +19969,25 @@ class PlanWorkflowWindow:
         db_path = self.get_workflow_db_path(context)
         if not db_path or not os.path.exists(db_path):
             raise ValueError("SQLite 数据库路径不存在，请先选择数据库。")
-        return self.get_table_manager(context, node_type="字段映射写入表").apply_cell_actions(table_name, actions)
+        return self.get_table_manager(context, node_type="字段映射写入表").apply_cell_actions(
+            table_name,
+            actions,
+            cancel_event=(context or {}).get("cancel_event"),
+        )
+
+    def apply_writeback_transaction_to_sqlite(self, table_name, actions, target_fields, context=None):
+        db_path = self.get_workflow_db_path(context)
+        if not db_path or not os.path.exists(db_path):
+            raise ValueError("SQLite 数据库路径不存在，请先选择数据库。")
+        return self.get_table_manager(
+            context,
+            node_type="字段映射写入表",
+        ).apply_writeback_transaction(
+            table_name,
+            actions,
+            clear_fields=target_fields,
+            cancel_event=(context or {}).get("cancel_event"),
+        )
 
     def clear_writeback_target_fields_in_sqlite(self, table_name, target_fields, context=None):
         """清空 SQLite 目标表中指定字段的全部旧值，返回清空字段数量。"""
@@ -20055,8 +20477,20 @@ class PlanWorkflowWindow:
                 cleared = 0
                 if write_range_mode == "清空目标字段后覆盖，保留目标原行数":
                     target_fields = [str(m.get("target_field", "")).strip() for m in config.get("field_mappings", []) if str(m.get("target_field", "")).strip()]
-                    cleared = self.clear_writeback_target_fields_in_sqlite(table_name, target_fields, context=context)
-                actual = self.apply_writeback_updates_to_sqlite(table_name, actions, context=context) if write_count > 0 else 0
+                    result = self.apply_writeback_transaction_to_sqlite(
+                        table_name,
+                        actions,
+                        target_fields,
+                        context=context,
+                    )
+                    cleared = result.get("cleared_fields", 0)
+                    actual = result.get("cells", 0)
+                else:
+                    actual = self.apply_writeback_updates_to_sqlite(
+                        table_name,
+                        actions,
+                        context=context,
+                    ) if write_count > 0 else 0
                 stat = f"已写入目标表 {table_name}：{actual} 处"
                 if cleared:
                     stat += f"，已先清空目标字段 {cleared} 列"
@@ -20085,32 +20519,39 @@ class PlanWorkflowWindow:
         return headers, rows, stat
 
     def apply_filter_node(self, headers, rows, config, context=None):
-        conditions = list(config.get("conditions", []))
-        join_rules = list(config.get("join_rules", []))
+        runtime_config = copy.deepcopy(config)
+        self.normalize_plan_filter_config_field_references(
+            runtime_config,
+            headers,
+            runtime_config.get("extra_tables", []),
+        )
+        conditions = list(runtime_config.get("conditions", []))
+        join_rules = list(runtime_config.get("join_rules", []))
         extra_tables = list(config.get("extra_tables", []))
         logic = config.get("logic", "AND")
         join_logic = config.get("join_logic", "AND")
-        output_fields = list(config.get("output_fields", []))
+        output_fields = list(runtime_config.get("output_fields", []))
         result_limit = self.get_positive_int(config.get("result_limit", "5000"), 5000)
         max_intermediate = self.get_positive_int(config.get("max_intermediate", "200000"), 200000)
         remove_duplicates = bool(config.get("remove_duplicates", False))
 
         # 字段输出规则：不选择输出字段时，单表保持旧逻辑输出当前表字段；多表则输出所有可用字段。
         if output_fields:
-            fields = output_fields
+            lookup_fields = output_fields
         elif extra_tables:
-            fields = self.get_plan_filter_available_fields(headers, extra_tables, context)
+            lookup_fields = self.get_plan_filter_available_fields(headers, extra_tables, context)
         else:
-            fields = list(headers)
+            lookup_fields = list(headers)
+        output_headers = self.get_plan_filter_output_headers(lookup_fields, headers)
 
         if (context or {}).get("is_config_probe") and extra_tables:
-            return fields, [], (
+            return output_headers, [], (
                 f"配置探测：跳过高级筛选多表匹配，仅返回字段结构 "
-                f"{len(fields)} 列；正式预览/执行时会按规则计算。"
+                f"{len(output_headers)} 列；正式预览/执行时会按规则计算。"
             )
 
         current_required, table_required = self.collect_plan_filter_required_fields(
-            headers, extra_tables, conditions, join_rules, output_fields, fields
+            headers, extra_tables, conditions, join_rules, output_fields, lookup_fields
         )
         records = self.make_current_table_records(headers, rows, current_required)
         early_filtered = 0
@@ -20177,7 +20618,7 @@ class PlanWorkflowWindow:
         for record in records:
             if not self.record_passes_plan_conditions(record, conditions, logic):
                 continue
-            out_row = [record.get(field, "") for field in fields]
+            out_row = [record.get(field, "") for field in lookup_fields]
             if remove_duplicates:
                 row_key = tuple("" if value is None else str(value) for value in out_row)
                 if row_key in seen_rows:
@@ -20200,7 +20641,7 @@ class PlanWorkflowWindow:
             optimizations.append(f"等值索引匹配 {hash_join_tables} 表")
         if optimizations:
             stat += "；优化：" + "，".join(optimizations)
-        return fields, result_rows, stat
+        return output_headers, result_rows, stat
 
     def match_value_output_column_match(self, source_value, lookup_value, mode):
         """匹配值输出列名节点的匹配规则。"""
@@ -20511,18 +20952,22 @@ class PlanWorkflowWindow:
 
 
     def parse_numeric_value_for_column_op(self, value):
-        """列数字运算专用数字解析：去除首尾空格后解析为 float。"""
+        """列数字运算专用数字解析：使用 Decimal 保留长整数和十进制精度。"""
         text = "" if value is None else str(value).strip()
         if text == "":
             raise ValueError("空值")
-        return float(text)
+        try:
+            return Decimal(text)
+        except InvalidOperation as exc:
+            raise ValueError(f"不是有效数字：{text}") from exc
 
     def format_numeric_column_result(self, value, config):
+        value = value if isinstance(value, Decimal) else Decimal(str(value))
         decimal_places = str(config.get("decimal_places", "自动"))
         if decimal_places == "自动":
-            if abs(value - int(value)) < 1e-12:
-                return str(int(value))
-            return (f"{value:.12f}").rstrip("0").rstrip(".")
+            if value == value.to_integral_value():
+                return format(value.quantize(Decimal("1")), "f")
+            return format(value.normalize(), "f")
         try:
             places = int(decimal_places)
         except Exception:
@@ -20557,7 +21002,7 @@ class PlanWorkflowWindow:
             return fail_text
         return ""
 
-    def apply_numeric_column_node(self, headers, rows, config):
+    def apply_numeric_column_node(self, headers, rows, config, context=None):
         """列数字运算：对指定列进行加、减、乘、除。"""
         headers = list(headers)
         rows = self.normalize_rows(rows, len(headers))
@@ -20593,24 +21038,25 @@ class PlanWorkflowWindow:
             operand_field_idx = self.field_index(headers, config.get("operand_field", ""))
 
         try:
-            fixed_operand = float(str(config.get("operand_value", "1")).strip())
+            fixed_operand = Decimal(str(config.get("operand_value", "1")).strip())
         except Exception:
-            fixed_operand = 0.0
+            fixed_operand = Decimal("0")
         try:
-            row_offset = float(str(config.get("row_offset", "0")).strip())
+            row_offset = Decimal(str(config.get("row_offset", "0")).strip())
         except Exception:
-            row_offset = 0.0
+            row_offset = Decimal("0")
         try:
-            sequence_start = float(str(config.get("sequence_start", "1")).strip())
-            sequence_step = float(str(config.get("sequence_step", "1")).strip())
+            sequence_start = Decimal(str(config.get("sequence_start", "1")).strip())
+            sequence_step = Decimal(str(config.get("sequence_step", "1")).strip())
         except Exception:
-            sequence_start = 1.0
-            sequence_step = 1.0
+            sequence_start = Decimal("1")
+            sequence_step = Decimal("1")
 
         changed = skipped = fail_count = zero_count = 0
         seq_counter = 0
 
-        for row_idx in row_indexes:
+        for item_index, row_idx in enumerate(row_indexes):
+            self.check_workflow_cancelled_periodically(context, item_index)
             rows = self.ensure_row_count(rows, row_idx + 1, len(headers))
             original_text = self.safe_cell(rows[row_idx], target_idx)
             try:
@@ -20626,9 +21072,9 @@ class PlanWorkflowWindow:
                 if operand_source == "固定值":
                     operand = fixed_operand
                 elif operand_source == "行号":
-                    operand = float(row_idx + 1)
+                    operand = Decimal(row_idx + 1)
                 elif operand_source == "行号+N":
-                    operand = float(row_idx + 1) + row_offset
+                    operand = Decimal(row_idx + 1) + row_offset
                 elif operand_source == "序号":
                     operand = sequence_start + sequence_step * seq_counter
                 elif operand_source == "另一列同行数值":
@@ -20650,7 +21096,7 @@ class PlanWorkflowWindow:
             elif operation == "乘":
                 result = base_value * operand
             elif operation == "除":
-                if abs(operand) < 1e-12:
+                if operand == 0:
                     rows[row_idx][out_idx] = self.numeric_node_fallback_value(
                         original_text, divide_zero_policy, divide_zero_fixed, "除零错误"
                     )
@@ -20674,7 +21120,7 @@ class PlanWorkflowWindow:
             msg += "，处理范围为空"
         return headers, rows, msg
 
-    def apply_dedupe_node(self, headers, rows, config):
+    def apply_dedupe_node(self, headers, rows, config, context=None):
         """去重 / 重复数据处理节点。"""
         headers = list(headers)
         normalized = self.normalize_rows(rows, len(headers))
@@ -20714,6 +21160,7 @@ class PlanWorkflowWindow:
         order = []
         skipped_empty = []
         for row_idx, row in enumerate(normalized):
+            self.check_workflow_cancelled_periodically(context, row_idx)
             key = tuple(normalize_key_value(self.safe_cell(row, i)) for i in key_indices)
             if empty_key_policy == "空键跳过去重" and all(v == "" for v in key):
                 skipped_empty.append(row_idx)
@@ -20731,7 +21178,8 @@ class PlanWorkflowWindow:
         def non_empty_count(row):
             return sum(1 for cell in row if str(cell).strip() != "")
 
-        for key in order:
+        for group_index, key in enumerate(order):
+            self.check_workflow_cancelled_periodically(context, group_index)
             idxs = groups[key]
             is_duplicate = len(idxs) > 1
             if is_duplicate:
@@ -20782,7 +21230,8 @@ class PlanWorkflowWindow:
             stat_headers = list(key_names) + ["重复次数", "重复组编号", "是否重复"]
             stat_rows = []
             duplicate_group_no = 0
-            for key in order:
+            for group_index, key in enumerate(order):
+                self.check_workflow_cancelled_periodically(context, group_index)
                 idxs = groups[key]
                 is_duplicate = len(idxs) > 1
                 if is_duplicate:
@@ -20812,7 +21261,8 @@ class PlanWorkflowWindow:
             out_headers += marker_fields
 
         out_rows = []
-        for i in selected_indices:
+        for output_index, i in enumerate(selected_indices):
+            self.check_workflow_cancelled_periodically(context, output_index)
             row = list(normalized[i])
             info = group_info.get(i, {})
             if add_marker:
@@ -21086,8 +21536,7 @@ class PlanWorkflowWindow:
         for file_name in files:
             path = os.path.join(self.plan_dir, file_name)
             try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+                data, _load_info = load_json_with_backup(path)
                 ok, _ = self.validate_plan_template_data(data)
                 if not ok:
                     skipped_count += 1
@@ -21158,8 +21607,7 @@ class PlanWorkflowWindow:
 
         data = self.build_plan_template_data(plan_name=saved_plan_name)
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            atomic_write_json(path, data)
             self.status_var.set(f"计划模板已保存：{path}；plan_name 已同步为：{saved_plan_name}")
             self.refresh_plan_template_list(show_status=False)
 
@@ -21184,8 +21632,7 @@ class PlanWorkflowWindow:
             if not ok:
                 return
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = load_json_file_with_recovery(path, parent=self.window)
             self.apply_plan_template_data(data, source_path=path)
         except Exception as e:
             messagebox.showerror("载入失败", str(e))

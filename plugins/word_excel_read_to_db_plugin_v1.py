@@ -1650,7 +1650,8 @@ def run(input_data, params, context):
     cache_conn = None
     if enable_cache:
         try:
-            cache_conn = sqlite3.connect(str(_cache_db_path(context)))
+            cache_conn = sqlite3.connect(str(_cache_db_path(context)), timeout=10)
+            cache_conn.execute("PRAGMA busy_timeout=10000")
             _ensure_cache_table(cache_conn)
         except Exception as exc:
             cache_conn = None

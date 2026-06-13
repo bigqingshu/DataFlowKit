@@ -2286,7 +2286,7 @@ def _error_messages(logs):
     ]
 
 
-def run(input_data, params, context):
+def _run_impl(input_data, params, context, _session_holder=None):
     p = dict(params or {})
     context = dict(context or {})
     context["params"] = p
@@ -2371,6 +2371,8 @@ def run(input_data, params, context):
             retry_interval_ms=win32_retry_interval_ms,
             close_settle_ms=win32_close_settle_ms,
         )
+        if isinstance(_session_holder, dict):
+            _session_holder["session"] = win32_session
         logs.append(_log("INFO", "WIN32_REUSE：本节点将复用同一个 Word/Excel 进程处理多个文件"))
 
     for i, item in enumerate(grouped.values(), start=1):
@@ -2409,6 +2411,8 @@ def run(input_data, params, context):
                 if win32_session is not None:
                     win32_session.close()
                     win32_session = None
+                    if isinstance(_session_holder, dict):
+                        _session_holder["session"] = None
                 raise RuntimeError(err)
             continue
         for conflict_message in (item.get("target_conflicts") or []):
@@ -2441,6 +2445,8 @@ def run(input_data, params, context):
                 if win32_session is not None:
                     win32_session.close()
                     win32_session = None
+                    if isinstance(_session_holder, dict):
+                        _session_holder["session"] = None
                 raise
             continue
 
@@ -2510,6 +2516,8 @@ def run(input_data, params, context):
                 if win32_session is not None:
                     win32_session.close()
                     win32_session = None
+                    if isinstance(_session_holder, dict):
+                        _session_holder["session"] = None
                 raise
         finally:
             _cleanup_path(working_path)
@@ -2517,6 +2525,8 @@ def run(input_data, params, context):
 
     if win32_session is not None:
         win32_session.close()
+        if isinstance(_session_holder, dict):
+            _session_holder["session"] = None
         logs.append(_log("INFO", "WIN32_REUSE：Office 进程已统一退出"))
 
     ok_files = successful_files + partial_files
@@ -2578,6 +2588,22 @@ def run(input_data, params, context):
             "backup_mode": backup_mode,
         },
     }
+
+
+def run(input_data, params, context):
+    session_holder = {}
+    try:
+        return _run_impl(
+            input_data,
+            params,
+            context,
+            _session_holder=session_holder,
+        )
+    finally:
+        win32_session = session_holder.get("session")
+        if win32_session is not None:
+            win32_session.close()
+            session_holder["session"] = None
 
 
 def _external_progress_callback(message):

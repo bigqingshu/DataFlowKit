@@ -19,6 +19,7 @@ from shared.datetime_parse_utils import (
     default_date_parser_config,
     parse_date_value,
 )
+from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
 
 try:
     import tkinter as tk
@@ -44,6 +45,7 @@ PLUGIN_INFO = {
 }
 
 SETTINGS_FILE = "visual_mapping_write_plan_settings.json"
+MAX_AREA_SCAN_ROWS = 100000
 FEATURE_ANY_LABEL = "不限制"
 SHEET_ALL_LABEL = "所有表"
 BATCH_TARGET_CONDITION_VALUE = "条件命中值"
@@ -437,25 +439,26 @@ def _ensure_config(cfg):
 
 def _load_settings(context):
     path = _settings_path(context)
-    if not path.exists():
-        return {"version": 1, "configs": {"default": _empty_config()}}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            raise ValueError("settings root must be object")
-        data.setdefault("version", 1)
-        data.setdefault("configs", {})
-        data["configs"].setdefault("default", _empty_config())
-        for name, cfg in list(data["configs"].items()):
-            data["configs"][name] = _ensure_config(cfg)
-        return data
-    except Exception:
-        return {"version": 1, "configs": {"default": _empty_config()}}
+    default = {"version": 1, "configs": {"default": _empty_config()}}
+    data, info = load_json_with_backup(path, default=default)
+    if not isinstance(data, dict):
+        raise ValueError("settings root must be object")
+    warning = info.get("warning", "")
+    if warning and isinstance(context, dict):
+        warnings = context.setdefault("settings_warnings", [])
+        if warning not in warnings:
+            warnings.append(warning)
+    data.setdefault("version", 1)
+    data.setdefault("configs", {})
+    data["configs"].setdefault("default", _empty_config())
+    for name, cfg in list(data["configs"].items()):
+        data["configs"][name] = _ensure_config(cfg)
+    return data
 
 
 def _save_settings(context, data):
     path = _settings_path(context)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(path, data)
     return str(path)
 
 
@@ -1082,12 +1085,19 @@ def _global_rule_records(rule, source_records):
 
 def _expand_template(text, content):
     template = _cell_text(text)
+    missing = []
 
     def replace_match(match):
         key = _as_text(match.group(1))
-        return _cell_text(content.get(key, match.group(0)))
+        if key not in content:
+            missing.append(key)
+            return match.group(0)
+        return _cell_text(content.get(key))
 
-    return re.sub(r"\{([^{}]+)\}", replace_match, template)
+    result = re.sub(r"\{([^{}]+)\}", replace_match, template)
+    if missing:
+        raise ValueError("模板缺少字段：" + "、".join(dict.fromkeys(missing)))
+    return result
 
 
 def _normalize_batch_value_source(value):
@@ -2196,6 +2206,12 @@ def _linked_select_area_target(rule, base_rec, event, source_records, slot_conte
         col_start, col_end = col_end, col_start
     row_start = max(1, row_start)
     col_start = max(1, col_start)
+    scan_rows = row_end - row_start + 1
+    if scan_rows > MAX_AREA_SCAN_ROWS:
+        return None, (
+            f"区域槽位扫描行数 {scan_rows} 超过安全上限 {MAX_AREA_SCAN_ROWS}，"
+            "请缩小区域范围"
+        ), {}
     write_col = base_col + _to_int(
         rule.get("area_write_col_offset"),
         _to_int(rule.get("area_col_start_offset"), 0),

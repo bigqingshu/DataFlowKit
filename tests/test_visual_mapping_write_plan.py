@@ -707,6 +707,37 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertIn("联动:联动追加", by_cell[(2, 1)][12])
         self.assertEqual(by_cell[(2, 1)][17], visual.DIRECT_WRITE_STRATEGY)
 
+    def test_expand_template_rejects_missing_field(self):
+        with self.assertRaisesRegex(ValueError, "模板缺少字段：不存在"):
+            visual._expand_template("{签名}-{不存在}", {"签名": "张三"})
+
+    def test_settings_recovers_from_backup_instead_of_returning_empty_config(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = {"plugin_data_dir": temp_dir}
+            visual._save_settings(context, {"version": 1, "configs": {"first": {"rules": []}}})
+            visual._save_settings(context, {"version": 1, "configs": {"second": {"rules": []}}})
+            path = visual._settings_path(context)
+            path.write_text("{broken", encoding="utf-8")
+            loaded = visual._load_settings(context)
+        self.assertIn("first", loaded["configs"])
+        self.assertTrue(context.get("settings_warnings"))
+
+    def test_area_slot_scan_rejects_excessive_row_range(self):
+        base = make_record(1, 1, "base")
+        event = self.linked_event(base)
+        rule = self.area_rule()
+        rule["area_row_start_offset"] = 0
+        rule["area_row_end_offset"] = visual.MAX_AREA_SCAN_ROWS
+        target, detail, allocation = visual._linked_select_area_target(
+            rule,
+            base,
+            event,
+            [base],
+        )
+        self.assertIsNone(target)
+        self.assertIn("超过安全上限", detail)
+        self.assertEqual(allocation, {})
+
 
 if __name__ == "__main__":
     unittest.main()
