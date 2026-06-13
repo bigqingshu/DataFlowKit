@@ -56,7 +56,7 @@ import subprocess
 import uuid
 from datetime import datetime
 
-from table_access_policy import extract_read_tables, table_pattern_matches
+from shared.table_access_policy import extract_read_tables, table_pattern_matches
 
 
 def get_app_dir():
@@ -17697,15 +17697,8 @@ class PlanWorkflowWindow:
         return f"{name}_{counter}"
 
     def normalize_datetime_source_text(self, value):
-        text = "" if value is None else str(value)
-        text = text.strip() if True else text
-        trans = str.maketrans({
-            "０": "0", "１": "1", "２": "2", "３": "3", "４": "4",
-            "５": "5", "６": "6", "７": "7", "８": "8", "９": "9",
-            "：": ":", "／": "/", "－": "-", "—": "-", "–": "-",
-            "．": ".", "。": ".", "　": " ",
-        })
-        return text.translate(trans)
+        from shared.datetime_parse_utils import normalize_datetime_text
+        return normalize_datetime_text(value)
 
     def parse_format_int(self, value, name, allow_zero=False):
         try:
@@ -17731,26 +17724,8 @@ class PlanWorkflowWindow:
         return text[idx:idx + length]
 
     def complete_format_year(self, value, config):
-        s = str(value or "").strip()
-        if not s:
-            raise ValueError("年份为空")
-        if not re.fullmatch(r"\d{1,4}", s):
-            raise ValueError(f"年份不是数字：{s}")
-        n = int(s)
-        if len(s) >= 3:
-            return n
-        rule = config.get("year_rule", "20xx")
-        if rule == "20xx":
-            return 2000 + n
-        if rule == "19xx":
-            return 1900 + n
-        if rule == "不补全":
-            return n
-        try:
-            pivot = int(str(config.get("auto_window_pivot", "80")).strip())
-        except Exception:
-            pivot = 80
-        return 1900 + n if n >= pivot else 2000 + n
+        from shared.datetime_parse_utils import complete_year
+        return complete_year(value, config)
 
     def build_date_parts(self, year, month, day, config):
         y = self.complete_format_year(year, config)
@@ -17844,26 +17819,8 @@ class PlanWorkflowWindow:
         return self.build_time_parts(h, mi, sec)
 
     def parse_date_auto_common(self, text, config):
-        t = self.normalize_datetime_source_text(text)
-        # 优先匹配带分隔符 / 中文年月日 / 混合文本中的日期
-        patterns = [
-            r"(?<!\d)(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})(?:\s*日)?(?!\d)",
-            r"(?<!\d)(\d{2})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})(?:\s*日)?(?!\d)",
-        ]
-        for pat in patterns:
-            m = re.search(pat, t)
-            if m:
-                return self.build_date_parts(m.group(1), m.group(2), m.group(3), config)
-        # 再匹配纯数字日期：YYYYMMDD / YYMMDD
-        m = re.search(r"(?<!\d)(\d{8})(?!\d)", t)
-        if m:
-            s = m.group(1)
-            return self.build_date_parts(s[:4], s[4:6], s[6:8], config)
-        m = re.search(r"(?<!\d)(\d{6})(?!\d)", t)
-        if m:
-            s = m.group(1)
-            return self.build_date_parts(s[:2], s[2:4], s[4:6], config)
-        raise ValueError("未识别到常见日期格式")
+        from shared.datetime_parse_utils import parse_date_auto_common
+        return parse_date_auto_common(text, config)
 
     def parse_time_auto_common(self, text, config):
         t = self.normalize_datetime_source_text(text)

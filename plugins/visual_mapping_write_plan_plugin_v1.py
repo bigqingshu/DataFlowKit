@@ -5,16 +5,30 @@ import json
 import re
 import sys
 import traceback
+from datetime import datetime
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from shared.datetime_parse_utils import (
+    DATE_INPUT_STRUCTURES,
+    DATE_ORDERS,
+    DATE_YEAR_RULES,
+    default_date_parser_config,
+    parse_date_value,
+)
 
 try:
     import tkinter as tk
-    from tkinter import messagebox, simpledialog, ttk
+    from tkinter import filedialog, messagebox, simpledialog, ttk
 except Exception:  # pragma: no cover
     tk = None
     ttk = None
     messagebox = None
     simpledialog = None
+    filedialog = None
 
 
 PLUGIN_INFO = {
@@ -67,7 +81,28 @@ LINK_WRITE_MODES = [LINK_WRITE_REPLACE, LINK_WRITE_APPEND, LINK_WRITE_PREPEND, L
 LINK_OVERFLOW_SKIP = "区域满时跳过"
 LINK_OVERFLOW_MIN_MARKER_ROW = "区域满时替换最小圈号行"
 LINK_OVERFLOW_MIN_DATE_ROW = "区域满时替换最早日期行"
-LINK_OVERFLOW_POLICIES = [LINK_OVERFLOW_SKIP, LINK_OVERFLOW_MIN_MARKER_ROW, LINK_OVERFLOW_MIN_DATE_ROW]
+LINK_OVERFLOW_SLOT_RULE = "按槽位判定替换"
+LINK_OVERFLOW_POLICIES = [
+    LINK_OVERFLOW_SKIP,
+    LINK_OVERFLOW_SLOT_RULE,
+    LINK_OVERFLOW_MIN_MARKER_ROW,
+    LINK_OVERFLOW_MIN_DATE_ROW,
+]
+SLOT_MODE_SEQUENCE_DATE = "文档统一序号优先（日期兜底）"
+SLOT_MODE_SEQUENCE_ONLY = "仅文档统一序号"
+SLOT_MODE_DATE_ONLY = "仅日期"
+SLOT_JUDGEMENT_MODES = [
+    SLOT_MODE_SEQUENCE_DATE,
+    SLOT_MODE_SEQUENCE_ONLY,
+    SLOT_MODE_DATE_ONLY,
+]
+SLOT_INVALID_SKIP = "跳过"
+SLOT_INVALID_FIRST_ROW = "使用最上方行"
+SLOT_INVALID_ERROR = "报错"
+SLOT_INVALID_POLICIES = [SLOT_INVALID_SKIP, SLOT_INVALID_FIRST_ROW, SLOT_INVALID_ERROR]
+LINK_ACTION_SHARED_SLOT = "共享槽位偏移"
+LINK_ACTION_TRIGGER_OFFSET = "触发格偏移"
+LINK_ACTION_TARGET_MODES = [LINK_ACTION_SHARED_SLOT, LINK_ACTION_TRIGGER_OFFSET]
 DIRECT_WRITE_STRATEGY = "直接定位写入"
 GLOBAL_SCOPE_SPECIAL_OBJECTS = "全文及特殊对象"
 CONFIG_WINDOW_WIDTH = 1360
@@ -312,6 +347,83 @@ def _empty_config():
     return {"rules": [], "features": [], "global_rules": [], "linked_rules": []}
 
 
+def _default_sequence_symbols():
+    chars = "⓪①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳㉑㉒㉓㉔㉕㉖㉗㉘㉙㉚㉛㉜㉝㉞㉟㊱㊲㊳㊴㊵㊶㊷㊸㊹㊺㊻㊼㊽㊾㊿"
+    return [{"index": index, "symbol": char} for index, char in enumerate(chars)]
+
+
+def _default_date_presets():
+    presets = []
+    common = default_date_parser_config()
+    presets.append({"name": "自动识别常见格式", "config": common})
+    for name, delimiter in (
+        ("YYYY-MM-DD", "-"),
+        ("YYYY/MM/DD", "/"),
+        ("YYYY.MM.DD", "."),
+        ("YYYY年MM月DD日", "年/月/日"),
+    ):
+        config = default_date_parser_config()
+        config.update({
+            "input_structure": "分隔符",
+            "date_delimiter": delimiter,
+            "date_order": "年-月-日",
+            "year_rule": "20xx",
+        })
+        presets.append({"name": name, "config": config})
+    for name, year_len in (("YYYYMMDD", "4"), ("YYMMDD", "2")):
+        config = default_date_parser_config()
+        config.update({
+            "input_structure": "固定位置",
+            "year_len": year_len,
+            "month_start": "5" if year_len == "4" else "3",
+            "day_start": "7" if year_len == "4" else "5",
+        })
+        presets.append({"name": name, "config": config})
+    return presets
+
+
+def _default_slot_judgement():
+    return {
+        "mode": SLOT_MODE_SEQUENCE_DATE,
+        "sequence_start": 1,
+        "sequence_col_offset": 0,
+        "date_col_offset": 0,
+        "sequence_group": "文档统一序号",
+        "sequence_overflow": "括号数字",
+        "sequence_symbols": _default_sequence_symbols(),
+        "date_presets": _default_date_presets(),
+        "active_date_preset": "自动识别常见格式",
+        "date_parser": default_date_parser_config(),
+        "invalid_policy": SLOT_INVALID_SKIP,
+    }
+
+
+def _ensure_slot_judgement(value):
+    result = copy.deepcopy(value) if isinstance(value, dict) else {}
+    defaults = _default_slot_judgement()
+    for key, default in defaults.items():
+        if key not in result:
+            result[key] = copy.deepcopy(default)
+    if not isinstance(result.get("sequence_symbols"), list):
+        result["sequence_symbols"] = _default_sequence_symbols()
+    if not isinstance(result.get("date_presets"), list):
+        result["date_presets"] = _default_date_presets()
+    if not isinstance(result.get("date_parser"), dict):
+        result["date_parser"] = default_date_parser_config()
+    return result
+
+
+def _ensure_linked_rule(rule):
+    if not isinstance(rule, dict):
+        rule = {}
+    rule.setdefault("event_tags", [])
+    rule.setdefault("trigger_tags", [])
+    rule["slot_judgement"] = _ensure_slot_judgement(rule.get("slot_judgement"))
+    if "actions" in rule and not isinstance(rule.get("actions"), list):
+        rule["actions"] = []
+    return rule
+
+
 def _ensure_config(cfg):
     if not isinstance(cfg, dict):
         cfg = {}
@@ -319,6 +431,7 @@ def _ensure_config(cfg):
     cfg.setdefault("features", [])
     cfg.setdefault("global_rules", [])
     cfg.setdefault("linked_rules", [])
+    cfg["linked_rules"] = [_ensure_linked_rule(rule) for rule in cfg["linked_rules"] if isinstance(rule, dict)]
     return cfg
 
 
@@ -1631,50 +1744,118 @@ def _sort_global_replace_output_rows(rows):
 
 
 def _circled_number(value):
-    chars = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳㉑㉒㉓㉔㉕㉖㉗㉘㉙㉚㉛㉜㉝㉞㉟㊱㊲㊳㊴㊵㊶㊷㊸㊹㊺㊻㊼㊽㊾㊿"
+    return _sequence_symbol(value, _default_slot_judgement())
+
+
+def _sequence_map(slot_rule):
+    result = {}
+    for item in (_ensure_slot_judgement(slot_rule).get("sequence_symbols") or []):
+        if not isinstance(item, dict):
+            continue
+        index = _to_int(item.get("index"), -1)
+        symbol = _cell_text(item.get("symbol", ""))
+        if index >= 0 and symbol:
+            result[index] = symbol
+    return result
+
+
+def _sequence_symbol(value, slot_rule):
     index = _to_int(value, 0)
-    if 1 <= index <= len(chars):
-        return chars[index - 1]
-    return f"({index})" if index > 0 else ""
+    symbol = _sequence_map(slot_rule).get(index)
+    if symbol:
+        return symbol
+    overflow = _as_text((_ensure_slot_judgement(slot_rule)).get("sequence_overflow") or "括号数字")
+    if overflow == "报错":
+        raise ValueError(f"统一序号 {index} 超出特殊字符映射范围")
+    return f"({index})" if index >= 0 else ""
+
+
+def _sequence_value(text, slot_rule):
+    value = _cell_text(text)
+    matches = []
+    for index, symbol in _sequence_map(slot_rule).items():
+        if symbol and symbol in value:
+            matches.append((index, -len(symbol)))
+    if matches:
+        matches.sort()
+        return matches[0][0]
+    for match in re.finditer(r"\((\d+)\)", value):
+        return _to_int(match.group(1), -1)
+    return None
 
 
 def _circled_number_value(text):
-    chars = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳㉑㉒㉓㉔㉕㉖㉗㉘㉙㉚㉛㉜㉝㉞㉟㊱㊲㊳㊴㊵㊶㊷㊸㊹㊺㊻㊼㊽㊾㊿"
-    value = _cell_text(text)
-    best = None
-    for index, char in enumerate(chars, start=1):
-        if char in value and (best is None or index < best):
-            best = index
-    return best
+    return _sequence_value(text, _default_slot_judgement())
 
 
-def _parse_date_value(text):
-    """从单元格文本中提取可比较的日期元组 (year, month, day)，解析失败返回 None。
-    正则与主程序 parse_date_auto_common 保持一致。"""
-    value = _cell_text(text).strip()
-    if not value:
+def _parse_date_value(text, config=None):
+    try:
+        return parse_date_value(text, config or default_date_parser_config())
+    except Exception:
         return None
-    # 带分隔符 / 中文年月日（四位年 / 两位年）
-    for pat in (
-        r"(?<!\d)(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})(?:\s*日)?(?!\d)",
-        r"(?<!\d)(\d{2})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})(?:\s*日)?(?!\d)",
-    ):
-        m = re.search(pat, value)
-        if m:
-            y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-            if y < 100:
-                y += 2000
-            return (y, mo, d)
-    # 纯数字 YYYYMMDD / YYMMDD
-    m = re.search(r"(?<!\d)(\d{8})(?!\d)", value)
-    if m:
-        s = m.group(1)
-        return (int(s[:4]), int(s[4:6]), int(s[6:8]))
-    m = re.search(r"(?<!\d)(\d{6})(?!\d)", value)
-    if m:
-        s = m.group(1)
-        return (2000 + int(s[:2]), int(s[2:4]), int(s[4:6]))
-    return None
+
+
+def _record_position_key(source_file, sheet_name, row_index, col_index):
+    return (
+        _as_text(source_file),
+        _as_text(sheet_name),
+        _to_int(row_index, 0),
+        _to_int(col_index, 0),
+    )
+
+
+def _new_slot_context():
+    return {
+        "reserved": set(),
+        "planned_values": {},
+        "allocations": {},
+        "sequence_max": {},
+    }
+
+
+def _slot_current_text(slot_context, rec):
+    key = _record_position_key(
+        rec.get("source_file", ""),
+        rec.get("sheet_name", ""),
+        rec.get("row_index"),
+        rec.get("col_index"),
+    )
+    return _cell_text((slot_context or {}).get("planned_values", {}).get(key, rec.get("text", "")))
+
+
+def _slot_set_planned_value(slot_context, rec, value):
+    if slot_context is None:
+        return
+    key = _record_position_key(
+        rec.get("source_file", ""),
+        rec.get("sheet_name", ""),
+        rec.get("row_index"),
+        rec.get("col_index"),
+    )
+    slot_context.setdefault("planned_values", {})[key] = _cell_text(value)
+
+
+def _slot_scope_key(rule, event, sheet_name, row_start, row_end):
+    slot_rule = _ensure_slot_judgement(rule.get("slot_judgement"))
+    return (
+        _as_text(event.get("source_file", "")),
+        _as_text(event.get("target_file", "")),
+        _as_text(sheet_name),
+        _as_text(slot_rule.get("sequence_group") or rule.get("name") or "文档统一序号"),
+        _to_int(row_start, 0),
+        _to_int(row_end, 0),
+    )
+
+
+def _slot_candidate_record(source_records, event, sheet_name, row_index, col_index):
+    rec = _record_at_position(
+        source_records,
+        event.get("source_file", ""),
+        sheet_name,
+        row_index,
+        col_index,
+    )
+    return rec or _synthetic_target_record(event, sheet_name, row_index, col_index)
 
 
 def _linked_trigger_options(cfg):
@@ -1695,6 +1876,7 @@ def _linked_trigger_options(cfg):
 
 def _event_template_context(event, content=None):
     data = dict(content or event.get("content") or {})
+    now = datetime.now()
     data.update({
         "触发规则": event.get("match_rule", ""),
         "规则类型": event.get("kind", ""),
@@ -1712,6 +1894,13 @@ def _event_template_context(event, content=None):
         "本页变化序号": event.get("page_change_index", ""),
         "本页变化总数": event.get("page_change_total", ""),
         "圈号": _circled_number(event.get("page_change_index", 0)),
+        "统一序号": event.get("slot_sequence_symbol", _circled_number(event.get("page_change_index", 0))),
+        "统一序号值": event.get("slot_sequence", event.get("page_change_index", "")),
+        "变更字段": event.get("mapping_field", ""),
+        "变更摘要": event.get("change_summary", f"{event.get('old_text', '')} -> {event.get('new_text', '')}"),
+        "执行日期": now.strftime("%Y-%m-%d"),
+        "执行时间": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "操作者": data.get("操作者") or data.get("签名") or data.get("姓名") or "",
     })
     return data
 
@@ -1775,10 +1964,146 @@ def _synthetic_target_record(event, sheet_name, row_index, col_index):
 
 
 def _linked_rule_matches_event(rule, event):
+    trigger_tags = _normalize_event_tags(rule.get("trigger_tags"))
+    if trigger_tags:
+        event_tags = set(_normalize_event_tags(event.get("event_tags")))
+        return bool(event_tags.intersection(trigger_tags))
     trigger = _as_text(rule.get("trigger_rule") or LINKED_RULE_ANY)
     if not trigger or trigger == LINKED_RULE_ANY:
         return True
     return trigger == _as_text(event.get("match_rule")) or trigger == _as_text(event.get("rule_name"))
+
+
+def _normalize_event_tags(value):
+    if isinstance(value, (list, tuple, set)):
+        values = value
+    else:
+        values = re.split(r"[,，;；\n]+", _cell_text(value))
+    result = []
+    for item in values:
+        tag = _as_text(item)
+        if tag and tag not in result:
+            result.append(tag)
+    return result
+
+
+def _rule_event_tags(rule, default_tag=""):
+    tags = _normalize_event_tags((rule or {}).get("event_tags"))
+    stable_values = [
+        (rule or {}).get("id"),
+        ((rule or {}).get("mapping") or {}).get("content_field"),
+        default_tag,
+    ]
+    for value in stable_values:
+        tag = _as_text(value)
+        if tag and tag not in tags:
+            tags.append(tag)
+    return tags
+
+
+def _linked_actions(rule):
+    actions = [item for item in (rule.get("actions") or []) if isinstance(item, dict) and item.get("enabled", True)]
+    if actions:
+        return actions
+    return [{
+        "name": _as_text(rule.get("name")) or "联动写入",
+        "enabled": True,
+        "target_mode": LINK_ACTION_SHARED_SLOT,
+        "row_offset": 0,
+        "col_offset": 0,
+        "target_match": copy.deepcopy(rule.get("target_match") or {}),
+        "value_source": rule.get("value_source", LINK_VALUE_TEMPLATE),
+        "fixed_value": rule.get("fixed_value", ""),
+        "value_field": rule.get("value_field", ""),
+        "value_template": rule.get("value_template", "{触发新值}"),
+        "write_mode": rule.get("write_mode", LINK_WRITE_REPLACE),
+        "append_separator": rule.get("append_separator", ""),
+        "regex_pattern": rule.get("regex_pattern", ""),
+        "replace_count": rule.get("replace_count", "0"),
+        "case_sensitive": rule.get("case_sensitive", True),
+        "empty_policy": rule.get("empty_policy", "允许"),
+    }]
+
+
+def _linked_action_target(action, shared_target, event, source_records):
+    mode = _as_text(action.get("target_mode") or LINK_ACTION_SHARED_SLOT)
+    base = event.get("rec") if mode == LINK_ACTION_TRIGGER_OFFSET else shared_target
+    base = base or shared_target or event.get("rec") or {}
+    row_index = _to_int(base.get("row_index"), 0) + _to_int(action.get("row_offset"), 0)
+    col_index = _to_int(base.get("col_index"), 0) + _to_int(action.get("col_offset"), 0)
+    sheet_name = _cfg_sheet_name(action.get("sheet_name")) or base.get("sheet_name", event.get("sheet_name", ""))
+    if row_index <= 0 or col_index <= 0:
+        return None, f"动作目标坐标无效：R{row_index}C{col_index}"
+    rec = _record_at_position(
+        source_records,
+        event.get("source_file", ""),
+        sheet_name,
+        row_index,
+        col_index,
+    )
+    if rec is None:
+        rec = _synthetic_target_record(event, sheet_name, row_index, col_index)
+    return rec, f"{mode}：{sheet_name} R{row_index}C{col_index}"
+
+
+def _release_slot_allocation(slot_context, target_rec):
+    if slot_context is None or target_rec is None:
+        return
+    key = _record_position_key(
+        target_rec.get("source_file", ""),
+        target_rec.get("sheet_name", ""),
+        target_rec.get("row_index"),
+        target_rec.get("col_index"),
+    )
+    slot_context.setdefault("reserved", set()).discard(key)
+    slot_context.setdefault("allocations", {}).pop(key, None)
+
+
+def _prepare_linked_action_writes(
+    rule,
+    event,
+    shared_target,
+    source_records,
+    table_context,
+    slot_context,
+):
+    staged = []
+    event_content = event.get("content") or {}
+    for action_index, action in enumerate(_linked_actions(rule), start=1):
+        target_rec, target_detail = _linked_action_target(action, shared_target, event, source_records)
+        if target_rec is None:
+            return [], target_detail
+        target_text = _slot_current_text(slot_context, target_rec)
+        target_match = action.get("target_match")
+        if not isinstance(target_match, dict):
+            target_match = rule.get("target_match") or {}
+        ok, match_detail = _match_text_with_sources(
+            target_text,
+            target_match,
+            content=event_content,
+            table_context=table_context,
+            doc_record=target_rec,
+            source_records=source_records,
+            match_index=event.get("page_change_index") or event.get("content_row") or 1,
+        )
+        if not ok:
+            return [], f"动作{action_index}目标格匹配未通过：{match_detail}"
+        effective = dict(rule)
+        effective.update(action)
+        raw_value = _linked_rule_value(effective, event)
+        value = _linked_apply_write_mode(effective, target_text, raw_value)
+        if value == "" and _as_text(effective.get("empty_policy") or "允许") == "跳过":
+            return [], f"动作{action_index}写入结果为空，按策略跳过"
+        staged.append({
+            "action": action,
+            "action_index": action_index,
+            "target_rec": target_rec,
+            "target_text": target_text,
+            "value": value,
+            "target_detail": target_detail,
+            "match_detail": match_detail,
+        })
+    return staged, ""
 
 
 def _linked_rule_value(rule, event):
@@ -1853,9 +2178,10 @@ def _linked_locate_base_target(rule, event, source_records, table_context=None):
     return rec, f"{mode}：定位到 {sheet_name} R{row_index}C{col_index}"
 
 
-def _linked_select_area_target(rule, base_rec, event, source_records):
+def _linked_select_area_target(rule, base_rec, event, source_records, slot_context=None):
     if not bool(rule.get("area_enabled", False)):
-        return base_rec, "未启用区域槽位"
+        return base_rec, "未启用区域槽位", {}
+    slot_context = slot_context if slot_context is not None else _new_slot_context()
     source_file = event.get("source_file", "")
     sheet_name = base_rec.get("sheet_name", event.get("sheet_name", ""))
     base_row = int(base_rec.get("row_index") or 0)
@@ -1870,57 +2196,155 @@ def _linked_select_area_target(rule, base_rec, event, source_records):
         col_start, col_end = col_end, col_start
     row_start = max(1, row_start)
     col_start = max(1, col_start)
+    write_col = base_col + _to_int(
+        rule.get("area_write_col_offset"),
+        _to_int(rule.get("area_col_start_offset"), 0),
+    )
+    if write_col <= 0:
+        write_col = col_start
+    slot_rule = _ensure_slot_judgement(rule.get("slot_judgement"))
+    sequence_col = base_col + _to_int(
+        slot_rule.get("sequence_col_offset"),
+        _to_int(rule.get("marker_col_offset"), 0),
+    )
+    date_col = base_col + _to_int(
+        slot_rule.get("date_col_offset"),
+        _to_int(rule.get("marker_col_offset"), 0),
+    )
+    sequence_col = max(1, sequence_col)
+    date_col = max(1, date_col)
+    scope_key = _slot_scope_key(rule, event, sheet_name, row_start, row_end)
     candidates = []
+    max_sequence = _to_int(slot_rule.get("sequence_start"), 1) - 1
     for row_index in range(row_start, row_end + 1):
-        for col_index in range(col_start, col_end + 1):
-            rec = _record_at_position(source_records, source_file, sheet_name, row_index, col_index)
-            if rec is None:
-                rec = _synthetic_target_record(event, sheet_name, row_index, col_index)
-            candidates.append(rec)
-            if _cell_text(rec.get("text", "")) == "":
-                return rec, f"区域槽位：使用第一个空格子 R{row_index}C{col_index}"
+        write_rec = _slot_candidate_record(source_records, event, sheet_name, row_index, write_col)
+        sequence_rec = _slot_candidate_record(source_records, event, sheet_name, row_index, sequence_col)
+        date_rec = _slot_candidate_record(source_records, event, sheet_name, row_index, date_col)
+        slot_key = _record_position_key(source_file, sheet_name, row_index, write_col)
+        sequence_value = _sequence_value(_slot_current_text(slot_context, sequence_rec), slot_rule)
+        if sequence_value is not None:
+            max_sequence = max(max_sequence, sequence_value)
+        candidates.append({
+            "row": row_index,
+            "write_rec": write_rec,
+            "sequence_rec": sequence_rec,
+            "date_rec": date_rec,
+            "sequence": sequence_value,
+            "date": _parse_date_value(
+                _slot_current_text(slot_context, date_rec),
+                slot_rule.get("date_parser"),
+            ),
+            "reserved": slot_key in slot_context.setdefault("reserved", set()),
+            "empty": _slot_current_text(slot_context, write_rec) == "",
+            "slot_key": slot_key,
+        })
+    known_max = slot_context.setdefault("sequence_max", {}).get(scope_key)
+    if known_max is not None:
+        max_sequence = max(max_sequence, known_max)
+    for candidate in candidates:
+        if candidate["empty"] and not candidate["reserved"]:
+            next_sequence = max_sequence + 1
+            slot_context["sequence_max"][scope_key] = next_sequence
+            slot_context["reserved"].add(candidate["slot_key"])
+            allocation = {
+                "row_index": candidate["row"],
+                "sequence": next_sequence,
+                "sequence_symbol": _sequence_symbol(next_sequence, slot_rule),
+                "sequence_rec": candidate["sequence_rec"],
+                "date_rec": candidate["date_rec"],
+                "scope_key": scope_key,
+                "reused": False,
+            }
+            slot_context.setdefault("allocations", {})[candidate["slot_key"]] = allocation
+            return (
+                candidate["write_rec"],
+                f"区域槽位：预留第一个空行 R{candidate['row']}C{write_col}；"
+                f"统一序号={allocation['sequence_symbol']}",
+                allocation,
+            )
     overflow_policy = _as_text(rule.get("overflow_policy") or LINK_OVERFLOW_SKIP)
-    if overflow_policy not in (LINK_OVERFLOW_MIN_MARKER_ROW, LINK_OVERFLOW_MIN_DATE_ROW):
-        return None, f"区域 R{row_start}C{col_start}:R{row_end}C{col_end} 已满"
-    write_col = base_col + _to_int(rule.get("area_write_col_offset"), _to_int(rule.get("area_col_start_offset"), 0))
+    if overflow_policy not in (
+        LINK_OVERFLOW_SLOT_RULE,
+        LINK_OVERFLOW_MIN_MARKER_ROW,
+        LINK_OVERFLOW_MIN_DATE_ROW,
+    ):
+        return None, f"区域 R{row_start}C{col_start}:R{row_end}C{col_end} 已满", {}
     # 固定行号模式：跳过自动扫描，直接用指定行
     if _as_text(rule.get("overflow_target_mode") or "自动") == "固定行号":
         fixed_row = _to_int(rule.get("overflow_fixed_row"), 0)
         if fixed_row <= 0:
-            return None, "满区固定行号未设置或无效"
-        rec = _record_at_position(source_records, source_file, sheet_name, fixed_row, write_col)
-        if rec is None:
-            rec = _synthetic_target_record(event, sheet_name, fixed_row, write_col)
-        return rec, f"区域已满：使用固定目标行 R{fixed_row}C{write_col}"
-    marker_col = base_col + _to_int(rule.get("marker_col_offset"), 0)
-    best = None
-    for row_index in range(row_start, row_end + 1):
-        marker_rec = _record_at_position(source_records, source_file, sheet_name, row_index, marker_col)
-        marker_text = marker_rec.get("text", "") if marker_rec else ""
-        if overflow_policy == LINK_OVERFLOW_MIN_DATE_ROW:
-            sort_key = _parse_date_value(marker_text)
-            label = f"最早日期 {sort_key}"
+            return None, "满区固定行号未设置或无效", {}
+        rec = _slot_candidate_record(source_records, event, sheet_name, fixed_row, write_col)
+        slot_key = _record_position_key(source_file, sheet_name, fixed_row, write_col)
+        slot_context["reserved"].add(slot_key)
+        return rec, f"区域已满：使用固定目标行 R{fixed_row}C{write_col}", {
+            "row_index": fixed_row,
+            "scope_key": scope_key,
+            "reused": True,
+        }
+
+    if overflow_policy == LINK_OVERFLOW_MIN_MARKER_ROW:
+        judgement_mode = SLOT_MODE_SEQUENCE_ONLY
+    elif overflow_policy == LINK_OVERFLOW_MIN_DATE_ROW:
+        judgement_mode = SLOT_MODE_DATE_ONLY
+    else:
+        judgement_mode = _as_text(slot_rule.get("mode") or SLOT_MODE_SEQUENCE_DATE)
+
+    available = [item for item in candidates if not item["reserved"]]
+    sequence_candidates = [item for item in available if item["sequence"] is not None]
+    date_candidates = [item for item in available if item["date"] is not None]
+    selected = None
+    detail = ""
+    if judgement_mode in (SLOT_MODE_SEQUENCE_DATE, SLOT_MODE_SEQUENCE_ONLY) and sequence_candidates:
+        min_sequence = min(item["sequence"] for item in sequence_candidates)
+        tied = [item for item in sequence_candidates if item["sequence"] == min_sequence]
+        dated_tied = [item for item in tied if item["date"] is not None]
+        selected = min(dated_tied, key=lambda item: (item["date"], item["row"])) if dated_tied else min(tied, key=lambda item: item["row"])
+        detail = f"最小统一序号 {_sequence_symbol(min_sequence, slot_rule)}"
+        if len(tied) > 1 and selected.get("date") is not None:
+            detail += f"；同序号按最早日期 {selected['date']}"
+    elif judgement_mode in (SLOT_MODE_SEQUENCE_DATE, SLOT_MODE_DATE_ONLY) and date_candidates:
+        selected = min(date_candidates, key=lambda item: (item["date"], item["row"]))
+        detail = f"无有效统一序号，按最早日期 {selected['date']}" if judgement_mode == SLOT_MODE_SEQUENCE_DATE else f"最早日期 {selected['date']}"
+
+    if selected is None:
+        invalid_policy = _as_text(slot_rule.get("invalid_policy") or SLOT_INVALID_SKIP)
+        if invalid_policy == SLOT_INVALID_FIRST_ROW and available:
+            selected = min(available, key=lambda item: item["row"])
+            detail = "序号和日期均无法判定，按配置使用最上方行"
+        elif invalid_policy == SLOT_INVALID_ERROR:
+            return None, "区域已满，统一序号和日期均无法判定", {}
         else:
-            sort_key = _circled_number_value(marker_text)
-            label = f"最小圈号 {_circled_number(sort_key) if sort_key else ''}"
-        if sort_key is None:
-            continue
-        if best is None or sort_key < best[0]:
-            best = (sort_key, row_index, label)
-    if best is None:
-        kind = "日期" if overflow_policy == LINK_OVERFLOW_MIN_DATE_ROW else "圈号"
-        return None, f"区域已满，且未找到可替换的{kind}行"
-    rec = _record_at_position(source_records, source_file, sheet_name, best[1], write_col)
-    if rec is None:
-        rec = _synthetic_target_record(event, sheet_name, best[1], write_col)
-    return rec, f"区域已满：替换{best[2]}所在行 R{best[1]}C{write_col}"
+            return None, "区域已满，且未找到可用的统一序号或日期", {}
+
+    slot_context["reserved"].add(selected["slot_key"])
+    allocation = {
+        "row_index": selected["row"],
+        "sequence": selected.get("sequence"),
+        "sequence_symbol": (
+            _sequence_symbol(selected["sequence"], slot_rule)
+            if selected.get("sequence") is not None
+            else ""
+        ),
+        "sequence_rec": selected["sequence_rec"],
+        "date_rec": selected["date_rec"],
+        "scope_key": scope_key,
+        "reused": True,
+    }
+    slot_context.setdefault("allocations", {})[selected["slot_key"]] = allocation
+    return (
+        selected["write_rec"],
+        f"区域已满：替换{detail}所在行 R{selected['row']}C{write_col}",
+        allocation,
+    )
 
 
-def _build_linked_plan_rows(linked_rules, events, by_file, params, table_context=None):
+def _build_linked_plan_rows(linked_rules, events, by_file, params, table_context=None, slot_context=None):
     rows = []
     matched = 0
     skipped = 0
     skip_reasons = {}
+    slot_context = slot_context if slot_context is not None else _new_slot_context()
     enabled_rules = [r for r in (linked_rules or []) if isinstance(r, dict) and r.get("enabled", True)]
     if not enabled_rules or not events:
         return rows, matched, skipped, skip_reasons
@@ -1940,64 +2364,81 @@ def _build_linked_plan_rows(linked_rules, events, by_file, params, table_context
                 skipped += 1
                 skip_reasons[locate_detail] = skip_reasons.get(locate_detail, 0) + 1
                 continue
-            target_rec, area_detail = _linked_select_area_target(rule, base_rec, event, source_records)
+            target_rec, area_detail, allocation = _linked_select_area_target(
+                rule,
+                base_rec,
+                event,
+                source_records,
+                slot_context=slot_context,
+            )
             if target_rec is None:
                 skipped += 1
                 skip_reasons[area_detail] = skip_reasons.get(area_detail, 0) + 1
                 continue
-            target_match = rule.get("target_match") or {}
-            ok, match_detail = _match_text_with_sources(
-                target_rec.get("text", ""),
-                target_match,
-                content=event_content,
+            if allocation:
+                event["slot_sequence"] = allocation.get("sequence", "")
+                event["slot_sequence_symbol"] = allocation.get("sequence_symbol", "")
+            staged, action_error = _prepare_linked_action_writes(
+                rule,
+                event,
+                target_rec,
+                source_records,
                 table_context=table_context,
-                doc_record=target_rec,
-                source_records=source_records,
-                match_index=event.get("page_change_index") or event.get("content_row") or 1,
+                slot_context=slot_context,
             )
-            if not ok:
+            if action_error:
+                _release_slot_allocation(slot_context, target_rec)
                 skipped += 1
-                note = f"目标格匹配未通过：{match_detail}"
-                skip_reasons[note] = skip_reasons.get(note, 0) + 1
+                skip_reasons[action_error] = skip_reasons.get(action_error, 0) + 1
                 continue
-            raw_value = _linked_rule_value(rule, event)
-            value = _linked_apply_write_mode(rule, target_rec.get("text", ""), raw_value)
-            if value == "" and _as_text(rule.get("empty_policy") or "允许") == "跳过":
-                skipped += 1
-                skip_reasons["联动写入结果为空，按策略跳过"] = skip_reasons.get("联动写入结果为空，按策略跳过", 0) + 1
-                continue
-            matched += 1
-            rows.append([
-                event.get("source_file", ""),
-                event.get("target_file", ""),
-                target_rec.get("block_type", ""),
-                target_rec.get("sheet_name", ""),
-                target_rec.get("row_index", ""),
-                target_rec.get("col_index", ""),
-                target_rec.get("cell_address", ""),
-                value,
-                target_rec.get("text", ""),
-                _as_text(rule.get("name")) or "联动写入规则",
-                event.get("content_row", ""),
-                "通过",
-                f"联动:{_as_text(rule.get('name')) or '未命名'}",
-                json.dumps(rule.get("anchor", {}), ensure_ascii=False),
-                f"触发={event.get('match_rule', '')}；{match_detail}",
-                locate_detail,
-                f"联动写入；{area_detail}；触发格 {event.get('sheet_name', '')} R{event.get('row_index')}C{event.get('col_index')}；本页变化 {event.get('page_change_index')}/{event.get('page_change_total')}",
-                DIRECT_WRITE_STRATEGY,
-                target_rec.get("meta_json", json.dumps(target_rec.get("meta", {}), ensure_ascii=False)),
-                "",
-                "",
-                "",
-            ])
+            for item in staged:
+                action = item["action"]
+                action_rec = item["target_rec"]
+                _slot_set_planned_value(slot_context, action_rec, item["value"])
+                matched += 1
+                rows.append([
+                    event.get("source_file", ""),
+                    event.get("target_file", ""),
+                    action_rec.get("block_type", ""),
+                    action_rec.get("sheet_name", ""),
+                    action_rec.get("row_index", ""),
+                    action_rec.get("col_index", ""),
+                    action_rec.get("cell_address", ""),
+                    item["value"],
+                    item["target_text"],
+                    _as_text(action.get("name")) or _as_text(rule.get("name")) or "联动写入动作",
+                    event.get("content_row", ""),
+                    "通过",
+                    f"联动:{_as_text(rule.get('name')) or '未命名'}",
+                    json.dumps(rule.get("anchor", {}), ensure_ascii=False),
+                    f"触发={event.get('match_rule', '')}；{item['match_detail']}",
+                    f"{locate_detail}；{item['target_detail']}",
+                    f"联动方案；{area_detail}；动作 {item['action_index']}/{len(staged)}；"
+                    f"触发格 {event.get('sheet_name', '')} R{event.get('row_index')}C{event.get('col_index')}；"
+                    f"本页变化 {event.get('page_change_index')}/{event.get('page_change_total')}",
+                    DIRECT_WRITE_STRATEGY,
+                    action_rec.get("meta_json", json.dumps(action_rec.get("meta", {}), ensure_ascii=False)),
+                    "",
+                    "",
+                    "",
+                ])
     return rows, matched, skipped, skip_reasons
 
 
-def _apply_linked_rules_to_plan_states(linked_rules, events, by_file, params, states, order, table_context=None):
+def _apply_linked_rules_to_plan_states(
+    linked_rules,
+    events,
+    by_file,
+    params,
+    states,
+    order,
+    table_context=None,
+    slot_context=None,
+):
     matched = 0
     skipped = 0
     skip_reasons = {}
+    slot_context = slot_context if slot_context is not None else _new_slot_context()
     enabled_rules = [r for r in (linked_rules or []) if isinstance(r, dict) and r.get("enabled", True)]
     if not enabled_rules or not events:
         return matched, skipped, skip_reasons
@@ -2017,61 +2458,79 @@ def _apply_linked_rules_to_plan_states(linked_rules, events, by_file, params, st
                 skipped += 1
                 skip_reasons[locate_detail] = skip_reasons.get(locate_detail, 0) + 1
                 continue
-            target_rec, area_detail = _linked_select_area_target(rule, base_rec, event, source_records)
+            target_rec, area_detail, allocation = _linked_select_area_target(
+                rule,
+                base_rec,
+                event,
+                source_records,
+                slot_context=slot_context,
+            )
             if target_rec is None:
                 skipped += 1
                 skip_reasons[area_detail] = skip_reasons.get(area_detail, 0) + 1
                 continue
-            target_state = _plan_state_for(
-                states,
-                order,
-                event.get("source_file", ""),
-                event.get("target_file", ""),
+            if allocation:
+                event["slot_sequence"] = allocation.get("sequence", "")
+                event["slot_sequence_symbol"] = allocation.get("sequence_symbol", "")
+            for rec in source_records:
+                key = _record_position_key(
+                    rec.get("source_file", ""),
+                    rec.get("sheet_name", ""),
+                    rec.get("row_index"),
+                    rec.get("col_index"),
+                )
+                state_key = _plan_object_key(event.get("target_file", ""), rec)
+                existing_state = states.get(state_key)
+                if existing_state is not None:
+                    slot_context.setdefault("planned_values", {})[key] = existing_state.get("current_text", rec.get("text", ""))
+            staged, action_error = _prepare_linked_action_writes(
+                rule,
+                event,
                 target_rec,
-                event_content,
-            )
-            current_rec = _plan_state_record(target_state)
-            target_match = rule.get("target_match") or {}
-            ok, match_detail = _match_text_with_sources(
-                current_rec.get("text", ""),
-                target_match,
-                content=event_content,
+                source_records,
                 table_context=table_context,
-                doc_record=current_rec,
-                source_records=source_records,
-                match_index=event.get("page_change_index") or event.get("content_row") or 1,
+                slot_context=slot_context,
             )
-            if not ok:
+            if action_error:
+                _release_slot_allocation(slot_context, target_rec)
                 skipped += 1
-                note = f"目标格匹配未通过：{match_detail}"
-                skip_reasons[note] = skip_reasons.get(note, 0) + 1
+                skip_reasons[action_error] = skip_reasons.get(action_error, 0) + 1
                 continue
-            raw_value = _linked_rule_value(rule, event)
-            value = _linked_apply_write_mode(rule, current_rec.get("text", ""), raw_value)
-            if value == "" and _as_text(rule.get("empty_policy") or "允许") == "跳过":
-                skipped += 1
-                skip_reasons["联动写入结果为空，按策略跳过"] = skip_reasons.get("联动写入结果为空，按策略跳过", 0) + 1
-                continue
-            before, after = _update_plan_state(
-                target_state,
-                value,
-                rule_name=f"联动:{_as_text(rule.get('name')) or '未命名'}",
-                mapping_field=_as_text(rule.get("name")) or "联动写入规则",
-                content_row=event.get("content_row", ""),
-                source_detail=f"触发={event.get('match_rule', '')}；{match_detail}",
-                anchor_detail=locate_detail,
-                write_note=f"联动写入；{area_detail}；触发格 {event.get('sheet_name', '')} R{event.get('row_index')}C{event.get('col_index')}；本页变化 {event.get('page_change_index')}/{event.get('page_change_total')}",
-                anchor_rule=json.dumps(rule.get("anchor", {}), ensure_ascii=False),
-                write_strategy=DIRECT_WRITE_STRATEGY,
-            )
-            matched += 1
-            if after != before:
-                event.setdefault("linked_results", []).append({
-                    "rule_name": rule.get("name", ""),
-                    "old_text": before,
-                    "new_text": after,
-                    "target_key": target_state.get("key", ""),
-                })
+            for item in staged:
+                action = item["action"]
+                action_rec = item["target_rec"]
+                target_state = _plan_state_for(
+                    states,
+                    order,
+                    event.get("source_file", ""),
+                    event.get("target_file", ""),
+                    action_rec,
+                    event_content,
+                )
+                before, after = _update_plan_state(
+                    target_state,
+                    item["value"],
+                    rule_name=f"联动:{_as_text(rule.get('name')) or '未命名'}",
+                    mapping_field=_as_text(action.get("name")) or _as_text(rule.get("name")) or "联动写入动作",
+                    content_row=event.get("content_row", ""),
+                    source_detail=f"触发={event.get('match_rule', '')}；{item['match_detail']}",
+                    anchor_detail=f"{locate_detail}；{item['target_detail']}",
+                    write_note=f"联动方案；{area_detail}；动作 {item['action_index']}/{len(staged)}；"
+                    f"触发格 {event.get('sheet_name', '')} R{event.get('row_index')}C{event.get('col_index')}；"
+                    f"本页变化 {event.get('page_change_index')}/{event.get('page_change_total')}",
+                    anchor_rule=json.dumps(rule.get("anchor", {}), ensure_ascii=False),
+                    write_strategy=DIRECT_WRITE_STRATEGY,
+                )
+                _slot_set_planned_value(slot_context, action_rec, after)
+                matched += 1
+                if after != before:
+                    event.setdefault("linked_results", []).append({
+                        "rule_name": rule.get("name", ""),
+                        "action_name": action.get("name", ""),
+                        "old_text": before,
+                        "new_text": after,
+                        "target_key": target_state.get("key", ""),
+                    })
     return matched, skipped, skip_reasons
 
 
@@ -2424,6 +2883,7 @@ def run(input_data, params, context):
                     "kind": "普通映射",
                     "rule_name": rule.get("name", ""),
                     "match_rule": rule.get("name", ""),
+                    "event_tags": _rule_event_tags(rule, rule.get("name", "")),
                     "source_file": source_file,
                     "target_file": target_file,
                     "rec": rec,
@@ -2521,6 +2981,7 @@ def run(input_data, params, context):
                     "kind": "全局替换",
                     "rule_name": global_rule.get("name", ""),
                     "match_rule": f"全局:{global_rule.get('name', '')}",
+                    "event_tags": _rule_event_tags(global_rule, global_rule.get("name", "")),
                     "source_file": source_file,
                     "target_file": target_file,
                     "rec": rec,
@@ -2622,6 +3083,7 @@ def _default_linked_rule(index=1):
         "name": f"linked_{index}",
         "enabled": True,
         "trigger_rule": LINKED_RULE_ANY,
+        "trigger_tags": [],
         "target_mode": LINK_TARGET_TRIGGER_OFFSET,
         "sheet_name": "",
         "row_offset": 0,
@@ -2650,6 +3112,94 @@ def _default_linked_rule(index=1):
         "overflow_policy": LINK_OVERFLOW_SKIP,
         "overflow_target_mode": "自动",
         "overflow_fixed_row": "",
+        "slot_judgement": _default_slot_judgement(),
+        "actions": [],
+    }
+
+
+def _linked_scheme_presets():
+    change_log = _default_linked_rule()
+    change_log_slot_judgement = _default_slot_judgement()
+    change_log_slot_judgement.update({
+        "sequence_col_offset": 0,
+        "date_col_offset": 4,
+    })
+    change_log.update({
+        "name": "设计文件变更记录",
+        "trigger_tags": ["需要生成变更记录"],
+        "target_mode": LINK_TARGET_ANCHOR_OFFSET,
+        "anchor": {
+            "enabled": True,
+            "axis": "列",
+            "index": 1,
+            "match_mode": "等于",
+            "value": "更改标记",
+        },
+        "area_enabled": True,
+        "area_row_start_offset": 1,
+        "area_row_end_offset": 10,
+        "area_col_start_offset": 1,
+        "area_col_end_offset": 4,
+        "area_write_col_offset": 2,
+        "overflow_policy": LINK_OVERFLOW_SLOT_RULE,
+        "slot_judgement": change_log_slot_judgement,
+        "actions": [
+            {
+                "name": "统一序号",
+                "enabled": True,
+                "target_mode": LINK_ACTION_SHARED_SLOT,
+                "row_offset": 0,
+                "col_offset": -2,
+                "value_source": LINK_VALUE_TEMPLATE,
+                "value_template": "{统一序号}",
+                "write_mode": LINK_WRITE_REPLACE,
+                "empty_policy": "允许",
+            },
+            {
+                "name": "变更信息",
+                "enabled": True,
+                "target_mode": LINK_ACTION_SHARED_SLOT,
+                "row_offset": 0,
+                "col_offset": 0,
+                "value_source": LINK_VALUE_TEMPLATE,
+                "value_template": "{变更字段}：{旧值} → {新值}",
+                "write_mode": LINK_WRITE_REPLACE,
+                "empty_policy": "允许",
+            },
+            {
+                "name": "署名",
+                "enabled": True,
+                "target_mode": LINK_ACTION_SHARED_SLOT,
+                "row_offset": 0,
+                "col_offset": 1,
+                "value_source": LINK_VALUE_TEMPLATE,
+                "value_template": "{操作者}",
+                "write_mode": LINK_WRITE_REPLACE,
+                "empty_policy": "跳过",
+            },
+            {
+                "name": "日期",
+                "enabled": True,
+                "target_mode": LINK_ACTION_SHARED_SLOT,
+                "row_offset": 0,
+                "col_offset": 2,
+                "value_source": LINK_VALUE_TEMPLATE,
+                "value_template": "{执行日期}",
+                "write_mode": LINK_WRITE_REPLACE,
+                "empty_policy": "允许",
+            },
+        ],
+    })
+    signature = _default_linked_rule()
+    signature.update({
+        "name": "指定区域署名日期",
+        "trigger_tags": ["需要署名"],
+        "value_source": LINK_VALUE_TEMPLATE,
+        "value_template": "{操作者} {执行日期}",
+    })
+    return {
+        "设计文件变更记录（序号优先）": change_log,
+        "指定区域署名日期": signature,
     }
 
 
@@ -3201,6 +3751,7 @@ def open_config_window(parent, current_params, context):
         scope_var = tk.StringVar(value="全部")
         sheet_var = tk.StringVar(value=SHEET_ALL_LABEL)
         logic_var = tk.StringVar(value="AND")
+        event_tags_var = tk.StringVar(value="")
 
         ttk.Label(right_panel, text="规则名称：").grid(row=0, column=0, sticky=tk.W, pady=3)
         ttk.Entry(right_panel, textvariable=name_var, width=30).grid(row=0, column=1, sticky="ew", pady=3)
@@ -3208,6 +3759,8 @@ def open_config_window(parent, current_params, context):
         ttk.Label(right_panel, text="表特征：").grid(row=1, column=0, sticky=tk.W, pady=3)
         feature_combo = ttk.Combobox(right_panel, textvariable=feature_var, values=current_feature_names(True), width=24, state="normal")
         feature_combo.grid(row=1, column=1, sticky=tk.W, pady=3)
+        ttk.Label(right_panel, text="事件标签：").grid(row=1, column=2, sticky=tk.E, pady=3)
+        ttk.Entry(right_panel, textvariable=event_tags_var, width=24).grid(row=1, column=3, sticky="ew", pady=3)
         ttk.Label(right_panel, text="范围：").grid(row=2, column=0, sticky=tk.W, pady=3)
         ttk.Combobox(
             right_panel,
@@ -3538,6 +4091,7 @@ def open_config_window(parent, current_params, context):
                 "feature_name": _cfg_feature_name(feature_var.get()),
                 "scope": scope_var.get() or "全部",
                 "sheet_name": _cfg_sheet_name(sheet_var.get()),
+                "event_tags": _normalize_event_tags(event_tags_var.get()),
                 "condition_logic": logic_var.get() or "AND",
                 "conditions": serialize_conditions(),
                 "batch_target_scope": _normalize_batch_target_scope(batch_target_scope_var.get()),
@@ -3619,6 +4173,7 @@ def open_config_window(parent, current_params, context):
             feature_var.set(_ui_feature_name(rule.get("feature_name")))
             scope_var.set(_as_text(rule.get("scope", "全部")) or "全部")
             sheet_var.set(_ui_sheet_name(rule.get("sheet_name")))
+            event_tags_var.set("，".join(_normalize_event_tags(rule.get("event_tags"))))
             logic_var.set(_as_text(rule.get("condition_logic", "AND")) or "AND")
             batch_target_scope_var.set(_batch_target_scope(rule))
             cond_tree.delete(*cond_tree.get_children())
@@ -3878,6 +4433,7 @@ def open_config_window(parent, current_params, context):
         name_var = tk.StringVar(value="")
         enabled_var = tk.BooleanVar(value=True)
         trigger_var = tk.StringVar(value=LINKED_RULE_ANY)
+        trigger_tags_var = tk.StringVar(value="")
         target_mode_var = tk.StringVar(value=LINK_TARGET_TRIGGER_OFFSET)
         sheet_var = tk.StringVar(value=SHEET_ALL_LABEL)
         row_offset_var = tk.StringVar(value="0")
@@ -3912,6 +4468,9 @@ def open_config_window(parent, current_params, context):
         overflow_var = tk.StringVar(value=LINK_OVERFLOW_SKIP)
         overflow_target_mode_var = tk.StringVar(value="自动")
         overflow_fixed_row_var = tk.StringVar(value="")
+        slot_mode_var = tk.StringVar(value=SLOT_MODE_SEQUENCE_DATE)
+        slot_judgement_state = {"value": _default_slot_judgement()}
+        actions_state = {"items": []}
         value_hint_var = tk.StringVar(value="")
         area_hint_var = tk.StringVar(value="")
 
@@ -3925,6 +4484,15 @@ def open_config_window(parent, current_params, context):
         ttk.Label(editor, text="触发规则：").grid(row=row, column=0, sticky=tk.W, pady=3)
         trigger_combo = ttk.Combobox(editor, textvariable=trigger_var, values=[], width=28, state="readonly")
         trigger_combo.grid(row=row, column=1, columnspan=3, sticky="ew", pady=3)
+        row += 1
+        ttk.Label(editor, text="触发标签：").grid(row=row, column=0, sticky=tk.W, pady=3)
+        ttk.Entry(editor, textvariable=trigger_tags_var, width=42).grid(row=row, column=1, columnspan=3, sticky="ew", pady=3)
+        row += 1
+        ttk.Label(
+            editor,
+            text="多个标签用逗号分隔；填写后优先按稳定标签触发，规则改名不影响。",
+            foreground="gray",
+        ).grid(row=row, column=1, columnspan=3, sticky=tk.W, pady=(0, 3))
         row += 1
         ttk.Separator(editor).grid(row=row, column=0, columnspan=4, sticky="ew", pady=8)
         row += 1
@@ -4022,7 +4590,11 @@ def open_config_window(parent, current_params, context):
         case_sensitive_check = ttk.Checkbutton(editor, text="正则区分大小写", variable=case_sensitive_var)
         case_sensitive_check.grid(row=row, column=1, columnspan=3, sticky=tk.W, pady=3)
         row += 1
-        ttk.Label(editor, text="模板可用：{触发新值} {原文} {本页变化序号} {本页变化总数} {圈号}", foreground="gray").grid(row=row, column=0, columnspan=4, sticky=tk.W, pady=(0, 6))
+        ttk.Label(
+            editor,
+            text="模板可用：触发值、统一序号、变更摘要、操作者和执行日期等；可用下方按钮插入。",
+            foreground="gray",
+        ).grid(row=row, column=0, columnspan=4, sticky=tk.W, pady=(0, 6))
         row += 1
         ttk.Separator(editor).grid(row=row, column=0, columnspan=4, sticky="ew", pady=8)
         row += 1
@@ -4067,6 +4639,22 @@ def open_config_window(parent, current_params, context):
 
         ttk.Button(overflow_frame, text="目标行...", command=open_overflow_target_dlg).pack(side=tk.LEFT, padx=(4, 0))
         row += 1
+        ttk.Label(editor, text="槽位判定：").grid(row=row, column=0, sticky=tk.W, pady=3)
+        slot_mode_combo = ttk.Combobox(
+            editor,
+            textvariable=slot_mode_var,
+            values=SLOT_JUDGEMENT_MODES,
+            width=28,
+            state="readonly",
+        )
+        slot_mode_combo.grid(row=row, column=1, columnspan=2, sticky="ew", pady=3)
+        slot_rule_button = ttk.Button(
+            editor,
+            text="槽位判定规则...",
+            command=lambda: open_slot_judgement_editor(),
+        )
+        slot_rule_button.grid(row=row, column=3, sticky=tk.W, pady=3)
+        row += 1
         ttk.Label(editor, textvariable=area_hint_var, foreground="gray").grid(row=row, column=0, columnspan=4, sticky=tk.W, pady=(0, 3))
         row += 1
         ttk.Label(editor, text="区域起始/结束行偏移：").grid(row=row, column=0, sticky=tk.W, pady=3)
@@ -4086,6 +4674,423 @@ def open_config_window(parent, current_params, context):
         ttk.Label(editor, text="圈号列偏移：").grid(row=row, column=2, sticky=tk.E, pady=3)
         marker_col_entry = ttk.Entry(editor, textvariable=marker_col_var, width=10)
         marker_col_entry.grid(row=row, column=3, sticky=tk.W, pady=3)
+        row += 1
+        ttk.Separator(editor).grid(row=row, column=0, columnspan=4, sticky="ew", pady=8)
+        row += 1
+        ttk.Label(editor, text="6. 方案动作", foreground="#0f172a").grid(row=row, column=0, columnspan=4, sticky=tk.W, pady=(0, 3))
+        row += 1
+        action_tree = ttk.Treeview(
+            editor,
+            columns=("name", "target", "offset", "value"),
+            show="headings",
+            height=6,
+        )
+        for col, label, width in (
+            ("name", "动作", 120),
+            ("target", "目标", 110),
+            ("offset", "偏移", 80),
+            ("value", "写入内容", 260),
+        ):
+            action_tree.heading(col, text=label)
+            action_tree.column(col, width=width, anchor=tk.W)
+        action_tree.grid(row=row, column=0, columnspan=4, sticky="nsew", pady=3)
+        row += 1
+        action_buttons = ttk.Frame(editor)
+        action_buttons.grid(row=row, column=0, columnspan=4, sticky=tk.E, pady=(0, 4))
+        ttk.Button(action_buttons, text="增加动作", command=lambda: open_action_editor()).pack(side=tk.LEFT, padx=2)
+        ttk.Button(action_buttons, text="编辑动作", command=lambda: edit_selected_action()).pack(side=tk.LEFT, padx=2)
+        ttk.Button(action_buttons, text="删除动作", command=lambda: delete_selected_action()).pack(side=tk.LEFT, padx=2)
+        ttk.Button(action_buttons, text="上移", command=lambda: move_selected_action(-1)).pack(side=tk.LEFT, padx=2)
+        ttk.Button(action_buttons, text="下移", command=lambda: move_selected_action(1)).pack(side=tk.LEFT, padx=2)
+
+        def open_slot_judgement_editor():
+            slot_cfg = _ensure_slot_judgement(slot_judgement_state.get("value"))
+            dlg2 = _make_floating_child(dlg, "槽位判定规则")
+            body2 = ttk.Frame(dlg2, padding=10)
+            body2.pack(fill=tk.BOTH, expand=True)
+            body2.columnconfigure(0, weight=1)
+            body2.rowconfigure(1, weight=1)
+
+            general = ttk.Frame(body2)
+            general.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+            mode_var = tk.StringVar(value=slot_mode_var.get() or slot_cfg.get("mode", SLOT_MODE_SEQUENCE_DATE))
+            sequence_start_var = tk.StringVar(value=_as_text(slot_cfg.get("sequence_start", 1)))
+            sequence_col_var = tk.StringVar(value=_as_text(slot_cfg.get("sequence_col_offset", 0)))
+            date_col_var = tk.StringVar(value=_as_text(slot_cfg.get("date_col_offset", 0)))
+            group_var = tk.StringVar(value=_as_text(slot_cfg.get("sequence_group") or "文档统一序号"))
+            invalid_var = tk.StringVar(value=_as_text(slot_cfg.get("invalid_policy") or SLOT_INVALID_SKIP))
+            ttk.Label(general, text="判定方式：").grid(row=0, column=0, sticky=tk.W, padx=3, pady=3)
+            ttk.Combobox(general, textvariable=mode_var, values=SLOT_JUDGEMENT_MODES, width=30, state="readonly").grid(row=0, column=1, sticky=tk.W, padx=3)
+            ttk.Label(general, text="无有效值：").grid(row=0, column=2, sticky=tk.E, padx=3)
+            ttk.Combobox(general, textvariable=invalid_var, values=SLOT_INVALID_POLICIES, width=14, state="readonly").grid(row=0, column=3, sticky=tk.W, padx=3)
+            ttk.Label(general, text="首个分配序号：").grid(row=1, column=0, sticky=tk.W, padx=3, pady=3)
+            ttk.Entry(general, textvariable=sequence_start_var, width=8).grid(row=1, column=1, sticky=tk.W, padx=3)
+            ttk.Label(general, text="序号列偏移：").grid(row=1, column=2, sticky=tk.E, padx=3)
+            ttk.Entry(general, textvariable=sequence_col_var, width=8).grid(row=1, column=3, sticky=tk.W, padx=3)
+            ttk.Label(general, text="序号分组：").grid(row=2, column=0, sticky=tk.W, padx=3, pady=3)
+            ttk.Entry(general, textvariable=group_var, width=24).grid(row=2, column=1, sticky="ew", padx=3)
+            ttk.Label(general, text="日期列偏移：").grid(row=2, column=2, sticky=tk.E, padx=3)
+            ttk.Entry(general, textvariable=date_col_var, width=8).grid(row=2, column=3, sticky=tk.W, padx=3)
+            general.columnconfigure(1, weight=1)
+
+            notebook = ttk.Notebook(body2)
+            notebook.grid(row=1, column=0, sticky="nsew")
+            sequence_page = ttk.Frame(notebook, padding=8)
+            date_page = ttk.Frame(notebook, padding=8)
+            notebook.add(sequence_page, text="序号规则")
+            notebook.add(date_page, text="日期规则")
+
+            sequence_page.rowconfigure(0, weight=1)
+            sequence_page.columnconfigure(0, weight=1)
+            sequence_tree = ttk.Treeview(
+                sequence_page,
+                columns=("index", "symbol"),
+                show="headings",
+                height=18,
+            )
+            sequence_tree.heading("index", text="自然序号")
+            sequence_tree.heading("symbol", text="特殊字符")
+            sequence_tree.column("index", width=100, anchor=tk.CENTER, stretch=False)
+            sequence_tree.column("symbol", width=180, anchor=tk.CENTER)
+            sequence_tree.grid(row=0, column=0, sticky="nsew")
+            seq_scroll = ttk.Scrollbar(sequence_page, orient=tk.VERTICAL, command=sequence_tree.yview)
+            seq_scroll.grid(row=0, column=1, sticky="ns")
+            sequence_tree.configure(yscrollcommand=seq_scroll.set)
+            symbol_var = tk.StringVar(value="")
+            seq_buttons = ttk.Frame(sequence_page)
+            seq_buttons.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+            ttk.Label(seq_buttons, text="特殊字符：").pack(side=tk.LEFT)
+            ttk.Entry(seq_buttons, textvariable=symbol_var, width=12).pack(side=tk.LEFT, padx=4)
+
+            def reload_sequence_tree():
+                sequence_tree.delete(*sequence_tree.get_children())
+                for item in sorted(slot_cfg.get("sequence_symbols") or [], key=lambda value: _to_int(value.get("index"), 0)):
+                    sequence_tree.insert("", tk.END, values=(_to_int(item.get("index"), 0), _cell_text(item.get("symbol", ""))))
+
+            def select_sequence(_event=None):
+                selected = sequence_tree.selection()
+                if selected:
+                    symbol_var.set(_cell_text(sequence_tree.item(selected[0], "values")[1]))
+
+            def update_sequence():
+                selected = sequence_tree.selection()
+                if not selected:
+                    return
+                index = _to_int(sequence_tree.item(selected[0], "values")[0], 0)
+                symbol = symbol_var.get()
+                for item in slot_cfg.get("sequence_symbols") or []:
+                    if _to_int(item.get("index"), -1) == index:
+                        item["symbol"] = symbol
+                        break
+                reload_sequence_tree()
+
+            def restore_sequence():
+                slot_cfg["sequence_symbols"] = _default_sequence_symbols()
+                reload_sequence_tree()
+
+            ttk.Button(seq_buttons, text="更新字符", command=update_sequence).pack(side=tk.LEFT, padx=3)
+            ttk.Button(seq_buttons, text="恢复默认圈号", command=restore_sequence).pack(side=tk.LEFT, padx=3)
+            sequence_tree.bind("<<TreeviewSelect>>", select_sequence)
+            reload_sequence_tree()
+
+            date_page.columnconfigure(1, weight=1)
+            date_page.rowconfigure(0, weight=1)
+            preset_frame, preset_list = _make_scrollable_listbox(date_page, height=16, width=22, exportselection=False)
+            preset_frame.grid(row=0, column=0, rowspan=12, sticky="nsew", padx=(0, 8))
+            date_editor = ttk.Frame(date_page)
+            date_editor.grid(row=0, column=1, sticky="nsew")
+            date_editor.columnconfigure(1, weight=1)
+            preset_name_var = tk.StringVar(value="")
+            structure_var = tk.StringVar(value="自动识别常见格式")
+            delimiter_var = tk.StringVar(value="自动识别")
+            custom_delimiter_var = tk.StringVar(value="-")
+            order_var = tk.StringVar(value="年-月-日")
+            year_rule_var = tk.StringVar(value="20xx")
+            pivot_var = tk.StringVar(value="80")
+            position_base_var = tk.StringVar(value="从1开始")
+            year_start_var = tk.StringVar(value="1")
+            year_len_var = tk.StringVar(value="2")
+            month_start_var = tk.StringVar(value="3")
+            month_len_var = tk.StringVar(value="2")
+            day_start_var = tk.StringVar(value="5")
+            day_len_var = tk.StringVar(value="2")
+            test_text_var = tk.StringVar(value="2026-06-13")
+            test_result_var = tk.StringVar(value="")
+
+            date_fields = [
+                ("预设名称：", preset_name_var, None),
+                ("输入结构：", structure_var, DATE_INPUT_STRUCTURES),
+                ("日期分隔符：", delimiter_var, ["自动识别", "-", "/", ".", "年/月/日", "自定义"]),
+                ("自定义分隔符：", custom_delimiter_var, None),
+                ("日期顺序：", order_var, DATE_ORDERS),
+                ("两位年份：", year_rule_var, DATE_YEAR_RULES),
+                ("自动窗口分界：", pivot_var, None),
+                ("位置规则：", position_base_var, ["从1开始", "从0开始"]),
+            ]
+            for field_row, (label, variable, choices) in enumerate(date_fields):
+                ttk.Label(date_editor, text=label).grid(row=field_row, column=0, sticky=tk.W, pady=3)
+                if choices:
+                    ttk.Combobox(date_editor, textvariable=variable, values=choices, state="readonly", width=22).grid(row=field_row, column=1, sticky="ew", pady=3)
+                else:
+                    ttk.Entry(date_editor, textvariable=variable, width=24).grid(row=field_row, column=1, sticky="ew", pady=3)
+            position_frame = ttk.Frame(date_editor)
+            position_frame.grid(row=8, column=0, columnspan=2, sticky="ew", pady=4)
+            for index, (label, variable) in enumerate((
+                ("年起始", year_start_var), ("年长度", year_len_var),
+                ("月起始", month_start_var), ("月长度", month_len_var),
+                ("日起始", day_start_var), ("日长度", day_len_var),
+            )):
+                ttk.Label(position_frame, text=label).grid(row=index // 3 * 2, column=index % 3, sticky=tk.W, padx=3)
+                ttk.Entry(position_frame, textvariable=variable, width=7).grid(row=index // 3 * 2 + 1, column=index % 3, sticky=tk.W, padx=3)
+            ttk.Label(date_editor, text="测试文本：").grid(row=9, column=0, sticky=tk.W, pady=3)
+            ttk.Entry(date_editor, textvariable=test_text_var).grid(row=9, column=1, sticky="ew", pady=3)
+            ttk.Label(date_editor, textvariable=test_result_var, foreground="gray").grid(row=10, column=0, columnspan=2, sticky=tk.W, pady=3)
+            selected_preset = {"index": None}
+
+            def date_config_from_editor():
+                config = default_date_parser_config()
+                config.update({
+                    "input_structure": structure_var.get(),
+                    "date_delimiter": delimiter_var.get(),
+                    "custom_date_delimiter": custom_delimiter_var.get(),
+                    "date_order": order_var.get(),
+                    "year_rule": year_rule_var.get(),
+                    "auto_window_pivot": pivot_var.get(),
+                    "position_base": position_base_var.get(),
+                    "year_start": year_start_var.get(),
+                    "year_len": year_len_var.get(),
+                    "month_start": month_start_var.get(),
+                    "month_len": month_len_var.get(),
+                    "day_start": day_start_var.get(),
+                    "day_len": day_len_var.get(),
+                })
+                return config
+
+            def load_date_config(config):
+                config = dict(default_date_parser_config(), **(config or {}))
+                structure_var.set(config["input_structure"])
+                delimiter_var.set(config["date_delimiter"])
+                custom_delimiter_var.set(config["custom_date_delimiter"])
+                order_var.set(config["date_order"])
+                year_rule_var.set(config["year_rule"])
+                pivot_var.set(_as_text(config["auto_window_pivot"]))
+                position_base_var.set(config["position_base"])
+                year_start_var.set(_as_text(config["year_start"]))
+                year_len_var.set(_as_text(config["year_len"]))
+                month_start_var.set(_as_text(config["month_start"]))
+                month_len_var.set(_as_text(config["month_len"]))
+                day_start_var.set(_as_text(config["day_start"]))
+                day_len_var.set(_as_text(config["day_len"]))
+
+            def reload_presets(select_index=None):
+                preset_list.delete(0, tk.END)
+                presets = slot_cfg.get("date_presets") or []
+                for preset in presets:
+                    preset_list.insert(tk.END, _as_text(preset.get("name")) or "未命名")
+                if presets:
+                    index = 0 if select_index is None else max(0, min(select_index, len(presets) - 1))
+                    preset_list.selection_set(index)
+                    selected_preset["index"] = index
+                    preset_name_var.set(_as_text(presets[index].get("name")))
+                    load_date_config(presets[index].get("config"))
+
+            def on_preset_select(_event=None):
+                selected = preset_list.curselection()
+                if not selected:
+                    return
+                index = int(selected[0])
+                selected_preset["index"] = index
+                preset = slot_cfg["date_presets"][index]
+                preset_name_var.set(_as_text(preset.get("name")))
+                load_date_config(preset.get("config"))
+
+            def save_preset():
+                index = selected_preset.get("index")
+                if index is None:
+                    return
+                slot_cfg["date_presets"][index] = {
+                    "name": _as_text(preset_name_var.get()) or "未命名",
+                    "config": date_config_from_editor(),
+                }
+                slot_cfg["active_date_preset"] = slot_cfg["date_presets"][index]["name"]
+                slot_cfg["date_parser"] = copy.deepcopy(slot_cfg["date_presets"][index]["config"])
+                reload_presets(index)
+
+            def add_preset():
+                slot_cfg.setdefault("date_presets", []).append({
+                    "name": "新日期预设",
+                    "config": default_date_parser_config(),
+                })
+                reload_presets(len(slot_cfg["date_presets"]) - 1)
+
+            def delete_preset():
+                index = selected_preset.get("index")
+                if index is None or len(slot_cfg.get("date_presets") or []) <= 1:
+                    return
+                slot_cfg["date_presets"].pop(index)
+                reload_presets(max(0, index - 1))
+
+            def test_date_parser():
+                try:
+                    result = parse_date_value(test_text_var.get(), date_config_from_editor())
+                    test_result_var.set(f"解析结果：{result[0]:04d}-{result[1]:02d}-{result[2]:02d}")
+                except Exception as exc:
+                    test_result_var.set(f"解析失败：{exc}")
+
+            preset_list.bind("<<ListboxSelect>>", on_preset_select)
+            preset_buttons = ttk.Frame(date_page)
+            preset_buttons.grid(row=12, column=0, sticky="ew", pady=(6, 0))
+            ttk.Button(preset_buttons, text="增加", command=add_preset).pack(side=tk.LEFT, padx=2)
+            ttk.Button(preset_buttons, text="删除", command=delete_preset).pack(side=tk.LEFT, padx=2)
+            editor_buttons = ttk.Frame(date_editor)
+            editor_buttons.grid(row=11, column=0, columnspan=2, sticky=tk.E, pady=(6, 0))
+            ttk.Button(editor_buttons, text="测试解析", command=test_date_parser).pack(side=tk.LEFT, padx=2)
+            ttk.Button(editor_buttons, text="保存预设", command=save_preset).pack(side=tk.LEFT, padx=2)
+            reload_presets()
+
+            def save_slot_rules():
+                preset_index = selected_preset.get("index")
+                presets = slot_cfg.get("date_presets") or []
+                if preset_index is not None and 0 <= preset_index < len(presets):
+                    presets[preset_index] = {
+                        "name": _as_text(preset_name_var.get()) or "未命名",
+                        "config": date_config_from_editor(),
+                    }
+                    slot_cfg["active_date_preset"] = presets[preset_index]["name"]
+                    slot_cfg["date_parser"] = copy.deepcopy(presets[preset_index]["config"])
+                slot_cfg["mode"] = mode_var.get() or SLOT_MODE_SEQUENCE_DATE
+                slot_cfg["sequence_start"] = max(0, _to_int(sequence_start_var.get(), 1))
+                slot_cfg["sequence_col_offset"] = _to_int(sequence_col_var.get(), 0)
+                slot_cfg["date_col_offset"] = _to_int(date_col_var.get(), 0)
+                slot_cfg["sequence_group"] = _as_text(group_var.get()) or "文档统一序号"
+                slot_cfg["invalid_policy"] = invalid_var.get() or SLOT_INVALID_SKIP
+                slot_mode_var.set(slot_cfg["mode"])
+                slot_judgement_state["value"] = _ensure_slot_judgement(slot_cfg)
+                dlg2.destroy()
+
+            bottom2 = ttk.Frame(body2)
+            bottom2.grid(row=2, column=0, sticky=tk.E, pady=(8, 0))
+            ttk.Button(bottom2, text="确定", command=save_slot_rules).pack(side=tk.LEFT, padx=3)
+            ttk.Button(bottom2, text="取消", command=dlg2.destroy).pack(side=tk.LEFT, padx=3)
+            dlg2.after_idle(lambda: _show_centered_window(dlg2, dlg, 900, 680))
+
+        def action_value_label(action):
+            source = _as_text(action.get("value_source") or LINK_VALUE_TEMPLATE)
+            if source == LINK_VALUE_TEMPLATE:
+                return _cell_text(action.get("value_template", ""))
+            if source == LINK_VALUE_CONTENT_FIELD:
+                return f"字段:{_as_text(action.get('value_field'))}"
+            if source == LINK_VALUE_FIXED:
+                return _cell_text(action.get("fixed_value", ""))
+            return source
+
+        def refresh_action_tree(select_index=None):
+            action_tree.delete(*action_tree.get_children())
+            for index, action in enumerate(actions_state.get("items") or []):
+                action_tree.insert("", tk.END, iid=str(index), values=(
+                    _as_text(action.get("name")) or f"动作{index + 1}",
+                    _as_text(action.get("target_mode") or LINK_ACTION_SHARED_SLOT),
+                    f"R{_to_int(action.get('row_offset'), 0):+d} C{_to_int(action.get('col_offset'), 0):+d}",
+                    action_value_label(action),
+                ))
+            if select_index is not None and str(select_index) in action_tree.get_children():
+                action_tree.selection_set(str(select_index))
+                action_tree.see(str(select_index))
+
+        def selected_action_index():
+            selected = action_tree.selection()
+            return _to_int(selected[0], -1) if selected else -1
+
+        def open_action_editor(index=None):
+            current = {}
+            if index is not None and 0 <= index < len(actions_state.get("items") or []):
+                current = copy.deepcopy(actions_state["items"][index])
+            dlg2 = _make_floating_child(dlg, "编辑联动动作")
+            form = ttk.Frame(dlg2, padding=12)
+            form.pack(fill=tk.BOTH, expand=True)
+            form.columnconfigure(1, weight=1)
+            name = tk.StringVar(value=_as_text(current.get("name")) or "新动作")
+            enabled = tk.BooleanVar(value=bool(current.get("enabled", True)))
+            target_mode = tk.StringVar(value=_as_text(current.get("target_mode") or LINK_ACTION_SHARED_SLOT))
+            row_offset = tk.StringVar(value=_as_text(current.get("row_offset") or "0"))
+            col_offset = tk.StringVar(value=_as_text(current.get("col_offset") or "0"))
+            value_source = tk.StringVar(value=_as_text(current.get("value_source") or LINK_VALUE_TEMPLATE))
+            fixed_value = tk.StringVar(value=_cell_text(current.get("fixed_value", "")))
+            value_field = tk.StringVar(value=_as_text(current.get("value_field")))
+            value_template = tk.StringVar(value=_cell_text(current.get("value_template", "{触发新值}")))
+            write_mode = tk.StringVar(value=_as_text(current.get("write_mode") or LINK_WRITE_REPLACE))
+            empty_policy = tk.StringVar(value=_as_text(current.get("empty_policy") or "允许"))
+            fields = [
+                ("动作名称：", ttk.Entry(form, textvariable=name)),
+                ("目标方式：", ttk.Combobox(form, textvariable=target_mode, values=LINK_ACTION_TARGET_MODES, state="readonly")),
+                ("行偏移：", ttk.Entry(form, textvariable=row_offset)),
+                ("列偏移：", ttk.Entry(form, textvariable=col_offset)),
+                ("写入来源：", ttk.Combobox(form, textvariable=value_source, values=LINK_VALUE_SOURCES, state="readonly")),
+                ("固定值：", ttk.Entry(form, textvariable=fixed_value)),
+                ("新内容字段：", ttk.Combobox(form, textvariable=value_field, values=current_content_fields(), state="normal")),
+                ("模板：", ttk.Entry(form, textvariable=value_template)),
+                ("写入方式：", ttk.Combobox(form, textvariable=write_mode, values=LINK_WRITE_MODES, state="readonly")),
+                ("空值策略：", ttk.Combobox(form, textvariable=empty_policy, values=["允许", "跳过"], state="readonly")),
+            ]
+            for field_row, (label, widget) in enumerate(fields):
+                ttk.Label(form, text=label).grid(row=field_row, column=0, sticky=tk.W, pady=3)
+                widget.grid(row=field_row, column=1, sticky="ew", pady=3)
+            ttk.Checkbutton(form, text="启用动作", variable=enabled).grid(row=len(fields), column=1, sticky=tk.W, pady=3)
+            ttk.Label(
+                form,
+                text="模板可用：{统一序号} {旧值} {新值} {变更字段} {变更摘要} {操作者} {执行日期}",
+                foreground="gray",
+            ).grid(row=len(fields) + 1, column=0, columnspan=2, sticky=tk.W, pady=3)
+
+            def save_action():
+                payload = {
+                    "name": _as_text(name.get()) or "未命名动作",
+                    "enabled": bool(enabled.get()),
+                    "target_mode": target_mode.get() or LINK_ACTION_SHARED_SLOT,
+                    "row_offset": _as_text(row_offset.get()) or "0",
+                    "col_offset": _as_text(col_offset.get()) or "0",
+                    "value_source": value_source.get() or LINK_VALUE_TEMPLATE,
+                    "fixed_value": fixed_value.get(),
+                    "value_field": _as_text(value_field.get()),
+                    "value_template": value_template.get(),
+                    "write_mode": write_mode.get() or LINK_WRITE_REPLACE,
+                    "empty_policy": empty_policy.get() or "允许",
+                }
+                if index is None:
+                    actions_state.setdefault("items", []).append(payload)
+                    selected = len(actions_state["items"]) - 1
+                else:
+                    actions_state["items"][index] = payload
+                    selected = index
+                refresh_action_tree(selected)
+                dlg2.destroy()
+
+            buttons = ttk.Frame(form)
+            buttons.grid(row=len(fields) + 2, column=0, columnspan=2, sticky=tk.E, pady=(8, 0))
+            ttk.Button(buttons, text="确定", command=save_action).pack(side=tk.LEFT, padx=3)
+            ttk.Button(buttons, text="取消", command=dlg2.destroy).pack(side=tk.LEFT, padx=3)
+            dlg2.after_idle(lambda: _show_centered_window(dlg2, dlg, 620, 520))
+
+        def edit_selected_action():
+            index = selected_action_index()
+            if index >= 0:
+                open_action_editor(index)
+
+        def delete_selected_action():
+            index = selected_action_index()
+            if index < 0:
+                return
+            actions_state["items"].pop(index)
+            refresh_action_tree(max(0, index - 1) if actions_state["items"] else None)
+
+        def move_selected_action(delta):
+            index = selected_action_index()
+            target = index + delta
+            if index < 0 or target < 0 or target >= len(actions_state.get("items") or []):
+                return
+            items = actions_state["items"]
+            items[index], items[target] = items[target], items[index]
+            refresh_action_tree(target)
 
         def set_control_enabled(widget, enabled=True, readonly=False):
             try:
@@ -4109,9 +5114,17 @@ def open_config_window(parent, current_params, context):
                 value_template_var.set(_cell_text(value_template_var.get()) + token)
 
         template_buttons = []
-        for token in ["{触发新值}", "{原文}", "{本页变化序号}", "{本页变化总数}", "{圈号}"]:
+        for token_index, token in enumerate([
+            "{触发新值}",
+            "{原文}",
+            "{统一序号}",
+            "{变更摘要}",
+            "{操作者}",
+            "{执行日期}",
+            "{圈号}",
+        ]):
             btn = ttk.Button(template_button_frame, text=token, width=max(8, len(token) + 2), command=lambda t=token: insert_template_token(t))
-            btn.pack(side=tk.LEFT, padx=(0, 4), pady=1)
+            btn.grid(row=token_index // 4, column=token_index % 4, sticky=tk.W, padx=(0, 4), pady=1)
             template_buttons.append(btn)
 
         def update_linked_field_states(*_args):
@@ -4120,7 +5133,12 @@ def open_config_window(parent, current_params, context):
             write_mode = _as_text(write_mode_var.get()) or LINK_WRITE_REPLACE
             area_enabled = bool(area_enabled_var.get())
             use_target_match = bool(target_match_enabled_var.get())
-            use_area_marker = area_enabled and _as_text(overflow_var.get()) in (LINK_OVERFLOW_MIN_MARKER_ROW, LINK_OVERFLOW_MIN_DATE_ROW)
+            overflow_policy = _as_text(overflow_var.get())
+            use_legacy_marker = area_enabled and overflow_policy in (
+                LINK_OVERFLOW_MIN_MARKER_ROW,
+                LINK_OVERFLOW_MIN_DATE_ROW,
+            )
+            use_slot_rule = area_enabled and overflow_policy == LINK_OVERFLOW_SLOT_RULE
 
             is_fixed_target = target_mode == LINK_TARGET_FIXED_CELL
             is_anchor_target = target_mode == LINK_TARGET_ANCHOR_OFFSET
@@ -4139,11 +5157,14 @@ def open_config_window(parent, current_params, context):
             set_controls_enabled([regex_pattern_entry, replace_count_entry, case_sensitive_check], write_mode == LINK_WRITE_REGEX)
 
             set_control_enabled(overflow_combo, area_enabled, readonly=True)
+            set_control_enabled(slot_mode_combo, use_slot_rule, readonly=True)
+            set_control_enabled(slot_rule_button, use_slot_rule)
             set_controls_enabled(
                 [area_row_start_entry, area_row_end_entry, area_col_start_entry, area_col_end_entry],
                 area_enabled,
             )
-            set_controls_enabled([area_write_col_entry, marker_col_entry], use_area_marker)
+            set_control_enabled(area_write_col_entry, area_enabled)
+            set_control_enabled(marker_col_entry, use_legacy_marker)
 
             inactive = []
             if write_mode not in (LINK_WRITE_APPEND, LINK_WRITE_PREPEND):
@@ -4152,10 +5173,12 @@ def open_config_window(parent, current_params, context):
                 inactive.append("正则参数不生效")
             value_hint_var.set(f"当前生效：{value_source} + {write_mode}" + (f"；{'; '.join(inactive)}" if inactive else ""))
             if area_enabled:
-                if use_area_marker:
-                    area_hint_var.set("区域启用：先找区域内第一个空格；满区时按圈号列找最小圈号行，再写到写入列。")
+                if use_slot_rule:
+                    area_hint_var.set("区域启用：先预留第一个空行；满区时按槽位判定规则选择替换行。")
+                elif use_legacy_marker:
+                    area_hint_var.set("区域启用：使用兼容满区策略；圈号/日期读取列由“圈号列偏移”指定。")
                 else:
-                    area_hint_var.set("区域启用：先找区域内第一个空格；区域满时按满区策略处理。")
+                    area_hint_var.set("区域启用：本次计划共享槽位状态，已分配行不会被后续事件重复占用。")
             else:
                 area_hint_var.set("区域槽位未启用：下方区域参数不会参与计算。")
 
@@ -4166,6 +5189,7 @@ def open_config_window(parent, current_params, context):
             write_mode_var,
             area_enabled_var,
             overflow_var,
+            slot_mode_var,
         ):
             try:
                 watched_var.trace_add("write", update_linked_field_states)
@@ -4190,6 +5214,7 @@ def open_config_window(parent, current_params, context):
                 "name": _as_text(name_var.get()) or "未命名联动规则",
                 "enabled": bool(enabled_var.get()),
                 "trigger_rule": _as_text(trigger_var.get()) or LINKED_RULE_ANY,
+                "trigger_tags": _normalize_event_tags(trigger_tags_var.get()),
                 "target_mode": _as_text(target_mode_var.get()) or LINK_TARGET_TRIGGER_OFFSET,
                 "sheet_name": _cfg_sheet_name(sheet_var.get()),
                 "row_offset": _as_text(row_offset_var.get()) or "0",
@@ -4228,6 +5253,11 @@ def open_config_window(parent, current_params, context):
                 "overflow_policy": _as_text(overflow_var.get()) or LINK_OVERFLOW_SKIP,
                 "overflow_target_mode": _as_text(overflow_target_mode_var.get()) or "自动",
                 "overflow_fixed_row": _as_text(overflow_fixed_row_var.get()) or "",
+                "slot_judgement": dict(
+                    _ensure_slot_judgement(slot_judgement_state.get("value")),
+                    mode=_as_text(slot_mode_var.get()) or SLOT_MODE_SEQUENCE_DATE,
+                ),
+                "actions": copy.deepcopy(actions_state.get("items") or []),
             }
 
         def load_rule(index):
@@ -4239,6 +5269,7 @@ def open_config_window(parent, current_params, context):
             name_var.set(_as_text(rule.get("name")))
             enabled_var.set(bool(rule.get("enabled", True)))
             trigger_var.set(_as_text(rule.get("trigger_rule") or LINKED_RULE_ANY))
+            trigger_tags_var.set("，".join(_normalize_event_tags(rule.get("trigger_tags"))))
             target_mode_var.set(_as_text(rule.get("target_mode") or LINK_TARGET_TRIGGER_OFFSET))
             sheet_var.set(_ui_sheet_name(rule.get("sheet_name", "")))
             row_offset_var.set(_as_text(rule.get("row_offset") or "0"))
@@ -4275,6 +5306,11 @@ def open_config_window(parent, current_params, context):
             overflow_var.set(_as_text(rule.get("overflow_policy") or LINK_OVERFLOW_SKIP))
             overflow_target_mode_var.set(_as_text(rule.get("overflow_target_mode") or "自动"))
             overflow_fixed_row_var.set(_as_text(rule.get("overflow_fixed_row") or ""))
+            slot_config = _ensure_slot_judgement(rule.get("slot_judgement"))
+            slot_judgement_state["value"] = copy.deepcopy(slot_config)
+            slot_mode_var.set(_as_text(slot_config.get("mode") or SLOT_MODE_SEQUENCE_DATE))
+            actions_state["items"] = copy.deepcopy(rule.get("actions") or [])
+            refresh_action_tree()
             update_linked_field_states()
 
         def refresh_linked_list(select_index=None):
@@ -4354,6 +5390,7 @@ def open_config_window(parent, current_params, context):
                             "kind": "普通映射",
                             "rule_name": rule.get("name", ""),
                             "match_rule": rule.get("name", ""),
+                            "event_tags": _rule_event_tags(rule, rule.get("name", "")),
                             "source_file": source_file,
                             "target_file": target_file,
                             "rec": rec,
@@ -4393,6 +5430,7 @@ def open_config_window(parent, current_params, context):
                             "kind": "全局替换",
                             "rule_name": global_rule.get("name", ""),
                             "match_rule": f"全局:{global_rule.get('name', '')}",
+                            "event_tags": _rule_event_tags(global_rule, global_rule.get("name", "")),
                             "source_file": source_file,
                             "target_file": target_file,
                             "rec": rec,
@@ -4470,6 +5508,77 @@ def open_config_window(parent, current_params, context):
             refresh_linked_list(0)
             refresh_rules()
 
+        def add_scheme_preset(preset_name):
+            preset = _linked_scheme_presets().get(preset_name)
+            if not isinstance(preset, dict):
+                return
+            rule = _ensure_linked_rule(copy.deepcopy(preset))
+            cfg.setdefault("linked_rules", []).append(rule)
+            _save_config(params, context, cfg)
+            refresh_linked_list(len(cfg["linked_rules"]) - 1)
+            refresh_rules()
+            status_var.set(f"已增加联动方案预设：{preset_name}")
+
+        def export_current_scheme():
+            if filedialog is None:
+                return
+            rule = build_rule_from_editor()
+            safe_name = re.sub(r'[\\/:*?"<>|]+', "_", _as_text(rule.get("name")) or "联动写入方案")
+            path = filedialog.asksaveasfilename(
+                parent=dlg,
+                title="导出联动写入方案",
+                initialdir=str(_plugin_data_dir(context)),
+                initialfile=f"{safe_name}.json",
+                defaultextension=".json",
+                filetypes=[("JSON 文件", "*.json"), ("所有文件", "*.*")],
+            )
+            if not path:
+                return
+            payload = {
+                "schema": "DataFlowKit.visual_mapping.linked_rules",
+                "version": 1,
+                "linked_rules": [rule],
+            }
+            Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            status_var.set(f"已导出联动方案：{path}")
+
+        def import_linked_schemes():
+            if filedialog is None:
+                return
+            path = filedialog.askopenfilename(
+                parent=dlg,
+                title="导入联动写入方案",
+                initialdir=str(_plugin_data_dir(context)),
+                filetypes=[("JSON 文件", "*.json"), ("所有文件", "*.*")],
+            )
+            if not path:
+                return
+            try:
+                payload = json.loads(Path(path).read_text(encoding="utf-8"))
+                if isinstance(payload, list):
+                    imported = payload
+                elif isinstance(payload, dict) and isinstance(payload.get("linked_rules"), list):
+                    imported = payload["linked_rules"]
+                elif isinstance(payload, dict):
+                    imported = [payload]
+                else:
+                    imported = []
+                rules = [
+                    _ensure_linked_rule(copy.deepcopy(item))
+                    for item in imported
+                    if isinstance(item, dict)
+                ]
+                if not rules:
+                    raise ValueError("文件中没有有效的联动写入规则")
+                start_index = len(cfg.setdefault("linked_rules", []))
+                cfg["linked_rules"].extend(rules)
+                _save_config(params, context, cfg)
+                refresh_linked_list(start_index)
+                refresh_rules()
+                status_var.set(f"已导入 {len(rules)} 条联动写入规则")
+            except Exception as exc:
+                messagebox.showerror("导入失败", str(exc), parent=dlg)
+
         def on_rule_select(_event=None):
             sel = rule_list.curselection()
             if sel:
@@ -4482,6 +5591,19 @@ def open_config_window(parent, current_params, context):
         ttk.Button(left_buttons, text="增加", command=add_rule).pack(side=tk.LEFT, padx=2)
         ttk.Button(left_buttons, text="删除", command=delete_rule).pack(side=tk.LEFT, padx=2)
         ttk.Button(left_buttons, text="保存修改", command=lambda: save_rule(True)).pack(side=tk.LEFT, padx=2)
+        scheme_buttons = ttk.Frame(left_panel)
+        scheme_buttons.pack(fill=tk.X, pady=(4, 0))
+        preset_button = ttk.Menubutton(scheme_buttons, text="方案预设")
+        preset_menu = tk.Menu(preset_button, tearoff=False)
+        for preset_name in _linked_scheme_presets():
+            preset_menu.add_command(
+                label=preset_name,
+                command=lambda name=preset_name: add_scheme_preset(name),
+            )
+        preset_button.configure(menu=preset_menu)
+        preset_button.pack(side=tk.LEFT, padx=2)
+        ttk.Button(scheme_buttons, text="导入", command=import_linked_schemes).pack(side=tk.LEFT, padx=2)
+        ttk.Button(scheme_buttons, text="导出当前", command=export_current_scheme).pack(side=tk.LEFT, padx=2)
 
         preview_buttons = ttk.Frame(preview_panel)
         preview_buttons.grid(row=3, column=0, columnspan=2, sticky=tk.E, pady=(8, 0))
@@ -4622,6 +5744,7 @@ def open_config_window(parent, current_params, context):
                             "kind": "普通映射",
                             "rule_name": rule.get("name", ""),
                             "match_rule": rule.get("name", ""),
+                            "event_tags": _rule_event_tags(rule, rule.get("name", "")),
                             "source_file": source_file,
                             "target_file": target_file,
                             "rec": rec,
@@ -4690,6 +5813,7 @@ def open_config_window(parent, current_params, context):
                                 "kind": "全局替换",
                                 "rule_name": global_rule.get("name", ""),
                                 "match_rule": f"全局:{global_rule.get('name', '')}",
+                                "event_tags": _rule_event_tags(global_rule, global_rule.get("name", "")),
                                 "source_file": source_file,
                                 "target_file": target_file,
                                 "rec": rec,
