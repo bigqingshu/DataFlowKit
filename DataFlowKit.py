@@ -172,6 +172,15 @@ from workflow.nodes.file_nodes import (
     make_numbered_path as workflow_make_numbered_path,
     parse_extensions_filter as workflow_parse_extensions_filter,
 )
+from workflow.nodes.selected_columns_nodes import (
+    apply_selected_columns_to_memory_table as workflow_apply_selected_columns_to_memory_table,
+    build_selected_columns_write_payload as workflow_build_selected_columns_write_payload,
+    build_selected_columns_write_preview_rows as workflow_build_selected_columns_write_preview_rows,
+    get_selected_columns_write_selected_fields as workflow_get_selected_columns_write_selected_fields,
+    make_selected_columns_target_fields as workflow_make_selected_columns_target_fields,
+    normalize_selected_columns_write_mode as workflow_normalize_selected_columns_write_mode,
+    selected_columns_should_write as workflow_selected_columns_should_write,
+)
 from workflow.nodes.transit_nodes import (
     append_headers_rows as workflow_append_headers_rows,
     apply_save_transit_node as workflow_apply_save_transit_node,
@@ -12990,40 +12999,10 @@ class PlanWorkflowWindow:
         ).pack(side=tk.LEFT, padx=12)
 
     def get_selected_columns_write_selected_fields(self, config, source_headers):
-        fields = [f for f in (config.get("selected_fields", []) or []) if f in source_headers]
-        if not fields:
-            fields = list(source_headers)
-        return fields
+        return workflow_get_selected_columns_write_selected_fields(config, source_headers)
 
     def make_selected_columns_target_fields(self, config, selected_fields):
-        mode = config.get("field_name_mode", "使用原字段名")
-        mapping = {
-            item.get("source_field", ""): (item.get("target_field", "") or item.get("source_field", ""))
-            for item in (config.get("field_mappings", []) or [])
-        }
-        result = []
-        used = {}
-        for field in selected_fields:
-            if mode == "添加前缀":
-                name = f"{config.get('target_prefix', '')}{field}"
-            elif mode == "添加后缀":
-                name = f"{field}{config.get('target_suffix', '')}"
-            elif mode == "手动字段映射":
-                name = mapping.get(field, field)
-            else:
-                name = field
-            name = str(name or field).strip() or field
-            base = name
-            if base in used:
-                used[base] += 1
-                name = f"{base}_{used[base]}"
-            else:
-                used[base] = 1
-            while name in result:
-                used[base] = used.get(base, 1) + 1
-                name = f"{base}_{used[base]}"
-            result.append(name)
-        return result
+        return workflow_make_selected_columns_target_fields(config, selected_fields)
 
     def read_selected_columns_source_table(self, config, current_headers, current_rows, context=None):
         """读取选定列写入节点的来源表。"""
@@ -13103,158 +13082,105 @@ class PlanWorkflowWindow:
         raise ValueError(f"未知目标类型：{target_type}")
 
     def selected_columns_should_write(self, old_value, new_value, overwrite_rule):
-        old = "" if old_value is None else str(old_value)
-        new = "" if new_value is None else str(new_value)
-        if overwrite_rule == "覆盖全部":
-            return True
-        if overwrite_rule == "只写入空单元格":
-            return old == ""
-        if overwrite_rule == "目标已有值则跳过":
-            return old == ""
-        if overwrite_rule == "目标已有值且不同才覆盖":
-            return old != new
-        return old == ""
+        return workflow_selected_columns_should_write(old_value, new_value, overwrite_rule)
 
     def normalize_selected_columns_write_mode(self, write_mode):
-        """统一“选定列写入指定表”的写入范围。
-
-        兼容旧模板：
-        - “复制列到目标表新建字段” -> “局部覆盖，保留目标原行数”
-        - “按来源完整结构写入” -> “按来源完整结构覆盖”
-        - “追加到目标表末尾” -> “局部覆盖，保留目标原行数”
-        """
-        mode = str(write_mode or "局部覆盖，保留目标原行数").strip()
-        legacy_map = {
-            "复制列到目标表新建字段": "局部覆盖，保留目标原行数",
-            "追加到目标表末尾": "局部覆盖，保留目标原行数",
-            "按来源完整结构写入": "按来源完整结构覆盖",
-        }
-        mode = legacy_map.get(mode, mode)
-        valid = [
-            "局部覆盖，保留目标原行数",
-            "清空目标字段后覆盖，保留目标原行数",
-            "按来源完整结构覆盖",
-            "覆盖重建目标表",
-        ]
-        if mode not in valid:
-            return "局部覆盖，保留目标原行数"
-        return mode
+        return workflow_normalize_selected_columns_write_mode(write_mode)
 
     def build_selected_columns_write_preview(self, config, current_headers, current_rows, context=None):
         source_headers, source_rows, source_name = self.read_selected_columns_source_table(config, current_headers, current_rows, context)
         target_headers, target_rows, target_name = self.read_selected_columns_target_table(config, context, current_headers, current_rows)
-        selected_fields = self.get_selected_columns_write_selected_fields(config, source_headers)
-        target_fields = self.make_selected_columns_target_fields(config, selected_fields)
-        src_indexes = [source_headers.index(f) for f in selected_fields]
-        target_index = {h: i for i, h in enumerate(target_headers)}
-        write_mode = self.normalize_selected_columns_write_mode(config.get("write_mode", "复制列到目标表新建字段"))
-        overwrite_rule = config.get("overwrite_rule", "只写入空单元格")
-
-        preview_headers = ["来源表", "来源行", "来源字段", "来源值", "目标表", "目标行", "目标字段", "原值", "动作"]
-        preview_rows = []
-
-        for r_idx, src_row in enumerate(self.normalize_rows(source_rows, len(source_headers)), start=1):
-            # 复制列到目标表新建字段：按来源行号对应目标行号，不再把来源列追加成新行。
-            target_row_no = r_idx
-            for source_field, target_field, src_col in zip(selected_fields, target_fields, src_indexes):
-                new_value = src_row[src_col] if src_col < len(src_row) else ""
-                old_value = ""
-                field_exists = target_field in target_index
-                row_exists = target_row_no <= len(target_rows)
-                if field_exists and row_exists:
-                    t_col = target_index[target_field]
-                    old_row = target_rows[target_row_no - 1]
-                    if t_col < len(old_row):
-                        old_value = old_row[t_col]
-                if write_mode == "覆盖重建目标表":
-                    action = "重建目标表后写入"
-                elif write_mode == "按来源完整结构覆盖":
-                    action = "按来源完整结构覆盖：目标多余旧行将被丢弃"
-                elif write_mode == "清空目标字段后覆盖，保留目标原行数":
-                    action = "先清空目标字段整列，再按来源行写入"
-                else:
-                    parts = []
-                    if not field_exists:
-                        parts.append("新建字段")
-                    if not row_exists:
-                        parts.append("新增目标行")
-                    if self.selected_columns_should_write(old_value, new_value, overwrite_rule):
-                        parts.append("写入/覆盖")
-                    else:
-                        parts.append("按覆盖策略跳过")
-                    action = "；".join(parts)
-                preview_rows.append([
-                    source_name,
-                    str(r_idx),
-                    source_field,
-                    new_value,
-                    target_name,
-                    str(target_row_no),
-                    target_field,
-                    old_value,
-                    action
-                ])
-        return preview_headers, preview_rows
+        return workflow_build_selected_columns_write_preview_rows(
+            config,
+            source_headers,
+            source_rows,
+            source_name,
+            target_headers,
+            target_rows,
+            target_name,
+        )
 
     def apply_selected_columns_to_memory_table(self, target_headers, target_rows, selected_target_headers, selected_rows, config):
-        """把选定列数据写入内存表，返回新的 headers/rows。
-
-        写入范围：
-        - 局部覆盖，保留目标原行数：旧行为，目标多余行保留。
-        - 清空目标字段后覆盖，保留目标原行数：先清空映射字段整列，再写入来源行。
-        - 按来源完整结构覆盖：输出行数等于来源行数，目标旧的多余行被丢弃；未写入字段为空。
-        - 覆盖重建目标表：只保留本次选定字段。
-        """
-        target_headers = list(target_headers or [])
-        target_rows = [list(r) for r in (target_rows or [])]
-        write_mode = self.normalize_selected_columns_write_mode(config.get("write_mode", "局部覆盖，保留目标原行数"))
-        overwrite_rule = config.get("overwrite_rule", "只写入空单元格")
-
-        if write_mode == "覆盖重建目标表":
-            return list(selected_target_headers), [list(r) for r in selected_rows]
-
-        headers_out = list(target_headers)
-        for h in selected_target_headers:
-            if h not in headers_out:
-                headers_out.append(h)
-
-        if write_mode == "按来源完整结构覆盖":
-            # 以来源完整数据结构为边界：行数跟来源走，未映射字段不带入旧值，避免旧行/旧值污染后续生成。
-            rows_out = [[""] * len(headers_out) for _ in selected_rows]
-        else:
-            rows_out = self.normalize_rows(target_rows, len(headers_out))
-            while len(rows_out) < len(selected_rows):
-                rows_out.append([""] * len(headers_out))
-            if write_mode == "清空目标字段后覆盖，保留目标原行数":
-                for row in rows_out:
-                    while len(row) < len(headers_out):
-                        row.append("")
-                    for h in selected_target_headers:
-                        row[headers_out.index(h)] = ""
-
-        selected_idx = {h: i for i, h in enumerate(selected_target_headers)}
-        for r_idx, selected_row in enumerate(selected_rows):
-            if r_idx >= len(rows_out):
-                break
-            while len(rows_out[r_idx]) < len(headers_out):
-                rows_out[r_idx].append("")
-            for h in selected_target_headers:
-                t_col = headers_out.index(h)
-                new_value = selected_row[selected_idx[h]] if selected_idx[h] < len(selected_row) else ""
-                old_value = rows_out[r_idx][t_col] if t_col < len(rows_out[r_idx]) else ""
-                if self.selected_columns_should_write(old_value, new_value, overwrite_rule):
-                    rows_out[r_idx][t_col] = new_value
-        return headers_out, rows_out
+        return workflow_apply_selected_columns_to_memory_table(
+            target_headers,
+            target_rows,
+            selected_target_headers,
+            selected_rows,
+            config,
+        )
 
     def get_selected_columns_write_payload(self, config, current_headers, current_rows, context=None):
         source_headers, source_rows, source_name = self.read_selected_columns_source_table(config, current_headers, current_rows, context)
-        selected_fields = self.get_selected_columns_write_selected_fields(config, source_headers)
-        target_fields = self.make_selected_columns_target_fields(config, selected_fields)
-        src_indexes = [source_headers.index(f) for f in selected_fields]
-        selected_rows = []
-        for row in self.normalize_rows(source_rows, len(source_headers)):
-            selected_rows.append([row[i] if i < len(row) else "" for i in src_indexes])
+        selected_fields, target_fields, selected_rows = workflow_build_selected_columns_write_payload(
+            config,
+            source_headers,
+            source_rows,
+        )
         return selected_fields, target_fields, selected_rows, source_name
+
+    def apply_selected_columns_write_current_table(self, headers, rows, config, target_fields, selected_rows):
+        new_headers, new_rows = self.apply_selected_columns_to_memory_table(headers, rows, target_fields, selected_rows, config)
+        return new_headers, new_rows, f"已写入当前工作表：{len(new_rows)} 行 × {len(new_headers)} 列，结果继续传给后续节点"
+
+    def apply_selected_columns_write_transit_table(self, headers, rows, config, context, target_name, target_fields, selected_rows):
+        mode = self.normalize_selected_columns_write_mode(config.get("write_mode", "局部覆盖，保留目标原行数"))
+        exists_before = target_name in context["transit_tables"]
+        manager = self.check_transit_table_write_permission(
+            context,
+            target_name,
+            exists=exists_before,
+            write_mode=mode,
+            fields=target_fields,
+            partial=mode in ("局部覆盖，保留目标原行数", "清空目标字段后覆盖，保留目标原行数"),
+            node_type="选定列写入指定表",
+        )
+        old = context["transit_tables"].get(target_name, {}) or {}
+        old_headers = list(old.get("headers", []) or [])
+        old_rows = [list(r) for r in (old.get("rows", []) or [])]
+        new_headers, new_rows = self.apply_selected_columns_to_memory_table(old_headers, old_rows, target_fields, selected_rows, config)
+        context["transit_tables"][target_name] = {
+            "headers": new_headers,
+            "rows": [list(r) for r in new_rows],
+            "source": "选定列写入指定表"
+        }
+        self.log_transit_table_event(
+            manager,
+            "write_transit_table",
+            target_name,
+            new_headers,
+            new_rows,
+            write_mode=mode,
+            message=f"写入中转副表 {target_name}：{len(new_rows)} 行 × {len(new_headers)} 列，模式 {mode}",
+        )
+        return headers, rows, f"已写入中转副表：{target_name}（{len(new_rows)} 行 × {len(new_headers)} 列），主流程数据透传"
+
+    def apply_selected_columns_write_sqlite_table(self, headers, rows, config, context, target_name, target_fields, selected_rows):
+        sqlite_name = self.app.sanitize_sql_name(target_name, "选定列结果")
+        mode = self.normalize_selected_columns_write_mode(config.get("write_mode", "复制列到目标表新建字段"))
+        if mode == "覆盖重建目标表":
+            saved = self.save_result_to_sqlite(
+                target_fields,
+                selected_rows,
+                sqlite_name,
+                overwrite=True,
+                backup=bool(config.get("backup_before_write", True)),
+                context=context,
+            )
+            return headers, rows, f"已覆盖重建 SQLite 表：{saved}（{len(selected_rows)} 行 × {len(target_fields)} 列），主流程数据透传"
+        target_headers, target_rows, _target_label = self.read_selected_columns_target_table(
+            {**config, "target_type": "SQLite表", "target_table": sqlite_name},
+            context,
+        )
+        new_headers, new_rows = self.apply_selected_columns_to_memory_table(target_headers, target_rows, target_fields, selected_rows, config)
+        saved = self.save_result_to_sqlite(
+            new_headers,
+            new_rows,
+            sqlite_name,
+            overwrite=True,
+            backup=bool(config.get("backup_before_write", True)),
+            context=context,
+        )
+        return headers, rows, f"已复制选定列到 SQLite 表字段：{saved}（{len(new_rows)} 行 × {len(new_headers)} 列），主流程数据透传"
 
     def apply_selected_columns_write_node(self, headers, rows, config, context=None, execute_actions=False):
         """执行“选定列写入指定表”。
@@ -13295,46 +13221,29 @@ class PlanWorkflowWindow:
             )
 
         if target_type == "当前工作表":
-            new_headers, new_rows = self.apply_selected_columns_to_memory_table(headers, rows, target_fields, selected_rows, config)
-            return new_headers, new_rows, f"已写入当前工作表：{len(new_rows)} 行 × {len(new_headers)} 列，结果继续传给后续节点"
+            return self.apply_selected_columns_write_current_table(headers, rows, config, target_fields, selected_rows)
 
         if target_type == "中转副表":
-            mode = self.normalize_selected_columns_write_mode(config.get("write_mode", "局部覆盖，保留目标原行数"))
-            exists_before = target_name in context["transit_tables"]
-            manager = self.check_transit_table_write_permission(
+            return self.apply_selected_columns_write_transit_table(
+                headers,
+                rows,
+                config,
                 context,
                 target_name,
-                exists=exists_before,
-                write_mode=mode,
-                fields=target_fields,
-                partial=mode in ("局部覆盖，保留目标原行数", "清空目标字段后覆盖，保留目标原行数"),
-                node_type="选定列写入指定表",
+                target_fields,
+                selected_rows,
             )
-            old = context["transit_tables"].get(target_name, {}) or {}
-            old_headers = list(old.get("headers", []) or [])
-            old_rows = [list(r) for r in (old.get("rows", []) or [])]
-            new_headers, new_rows = self.apply_selected_columns_to_memory_table(old_headers, old_rows, target_fields, selected_rows, config)
-            context["transit_tables"][target_name] = {
-                "headers": new_headers,
-                "rows": [list(r) for r in new_rows],
-                "source": "选定列写入指定表"
-            }
-            self.log_transit_table_event(manager, "write_transit_table", target_name, new_headers, new_rows, write_mode=mode, message=f"写入中转副表 {target_name}：{len(new_rows)} 行 × {len(new_headers)} 列，模式 {mode}")
-            return headers, rows, f"已写入中转副表：{target_name}（{len(new_rows)} 行 × {len(new_headers)} 列），主流程数据透传"
 
         if target_type == "SQLite表":
-            sqlite_name = self.app.sanitize_sql_name(target_name, "选定列结果")
-            mode = self.normalize_selected_columns_write_mode(config.get("write_mode", "复制列到目标表新建字段"))
-            if mode == "覆盖重建目标表":
-                saved = self.save_result_to_sqlite(target_fields, selected_rows, sqlite_name, overwrite=True, backup=bool(config.get("backup_before_write", True)), context=context)
-                return headers, rows, f"已覆盖重建 SQLite 表：{saved}（{len(selected_rows)} 行 × {len(target_fields)} 列），主流程数据透传"
-            # 复制列到目标表新建字段 / 按来源完整结构写入：读取目标表，内存更新后覆盖回写。目标表不存在则等价新建。
-            target_headers, target_rows, _target_label = self.read_selected_columns_target_table(
-                {**config, "target_type": "SQLite表", "target_table": sqlite_name}, context
+            return self.apply_selected_columns_write_sqlite_table(
+                headers,
+                rows,
+                config,
+                context,
+                target_name,
+                target_fields,
+                selected_rows,
             )
-            new_headers, new_rows = self.apply_selected_columns_to_memory_table(target_headers, target_rows, target_fields, selected_rows, config)
-            saved = self.save_result_to_sqlite(new_headers, new_rows, sqlite_name, overwrite=True, backup=bool(config.get("backup_before_write", True)), context=context)
-            return headers, rows, f"已复制选定列到 SQLite 表字段：{saved}（{len(new_rows)} 行 × {len(new_headers)} 列），主流程数据透传"
 
         raise ValueError(f"未知目标类型：{target_type}")
 

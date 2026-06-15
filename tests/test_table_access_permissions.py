@@ -973,6 +973,72 @@ class TableAccessPermissionTests(unittest.TestCase):
         self.assertEqual(events[0][0][1], "append_transit_table")
         self.assertEqual(events[0][1]["appended_rows"], 1)
 
+    def test_selected_columns_write_transit_helper_checks_permission_before_write(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+        window.apply_selected_columns_to_memory_table = lambda *args, **kwargs: (["B"], [["new"]])
+
+        def deny_write(*_args, **_kwargs):
+            raise PermissionError("blocked selected columns transit write")
+
+        window.check_transit_table_write_permission = deny_write
+        window.log_transit_table_event = lambda *args, **kwargs: None
+        context = {"transit_tables": {}}
+
+        with self.assertRaisesRegex(PermissionError, "blocked selected columns transit write"):
+            window.apply_selected_columns_write_transit_table(
+                ["A"],
+                [["old"]],
+                {"write_mode": "局部覆盖，保留目标原行数"},
+                context,
+                "目标副表",
+                ["B"],
+                [["new"]],
+            )
+
+        self.assertEqual(context["transit_tables"], {})
+
+    def test_selected_columns_write_sqlite_helper_uses_rebuild_and_merge_modes(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+        window.app = types.SimpleNamespace(sanitize_sql_name=lambda name, default: name or default)
+        calls = []
+        window.save_result_to_sqlite = lambda headers, rows, table, **kwargs: calls.append((headers, rows, table, kwargs)) or table
+
+        headers, rows, message = window.apply_selected_columns_write_sqlite_table(
+            ["A"],
+            [["old"]],
+            {"write_mode": "覆盖重建目标表", "backup_before_write": False},
+            {"transit_tables": {}},
+            "目标表",
+            ["B"],
+            [["new"]],
+        )
+
+        self.assertEqual((headers, rows), (["A"], [["old"]]))
+        self.assertIn("已覆盖重建 SQLite 表：目标表", message)
+        self.assertEqual(calls[0][0], ["B"])
+        self.assertEqual(calls[0][1], [["new"]])
+        self.assertFalse(calls[0][3]["backup"])
+
+        window.read_selected_columns_target_table = lambda config, context: (["ID"], [["1"]], "SQLite:目标表")
+        window.apply_selected_columns_to_memory_table = lambda target_headers, target_rows, target_fields, selected_rows, config: (
+            target_headers + target_fields,
+            [["1", "new"]],
+        )
+        calls.clear()
+        _headers, _rows, message = window.apply_selected_columns_write_sqlite_table(
+            ["A"],
+            [["old"]],
+            {"write_mode": "局部覆盖，保留目标原行数"},
+            {"transit_tables": {}},
+            "目标表",
+            ["B"],
+            [["new"]],
+        )
+
+        self.assertIn("已复制选定列到 SQLite 表字段：目标表", message)
+        self.assertEqual(calls[0][0], ["ID", "B"])
+        self.assertEqual(calls[0][1], [["1", "new"]])
+
 
 if __name__ == "__main__":
     unittest.main()
