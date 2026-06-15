@@ -13,6 +13,7 @@ from workflow.nodes.data_nodes import (
     apply_delete_rows_node,
     apply_dedupe_node,
     apply_extract_node,
+    apply_filter_node,
     apply_format_datetime_node,
     apply_fill_value_node,
     apply_match_value_output_field_name_node,
@@ -24,12 +25,25 @@ from workflow.nodes.data_nodes import (
     apply_rename_columns_node,
     apply_row_data_mapping_node,
     apply_sequence_fill_node,
+    build_plan_filter_right_index,
+    collect_plan_filter_required_fields,
     extract_one_value,
     format_numeric_column_result,
     get_datetime_parse_warning,
     get_numeric_node_row_indexes,
+    get_plan_filter_config_warnings,
+    get_plan_filter_hash_join_rules,
+    get_plan_filter_output_header_conflicts,
+    get_plan_filter_output_headers,
+    get_required_columns_for_plan_table,
     get_row_mapping_end_index,
+    iter_plan_filter_join_candidates,
+    make_current_table_records,
     match_value_output_column_match,
+    normalize_plan_filter_config_field_references,
+    record_passes_plan_conditions,
+    record_passes_plan_join_rules,
+    record_survives_available_plan_conditions,
     numeric_node_fallback_value,
     parse_format_datetime_value,
     parse_new_columns_specs,
@@ -1045,6 +1059,180 @@ class WorkflowDataNodesTests(unittest.TestCase):
             apply_row_data_mapping_node(["A"], [["x"]], {"value_fields": ["Missing"]})
         with self.assertRaisesRegex(ValueError, "起始行号超出当前数据范围"):
             apply_row_data_mapping_node(["A"], [["x"]], {"value_fields": ["A"], "start_row": "2"})
+
+    def test_plan_filter_helpers_normalize_refs_and_output_headers(self):
+        config = {
+            "conditions": [
+                {
+                    "field": "当前表.当前表.编码",
+                    "op": "等于",
+                    "value_source": "字段值",
+                    "value": "当前表.当前表.对照编码",
+                },
+                {
+                    "field": "当前表.当前表.编码",
+                    "op": "等于",
+                    "value_source": "固定值",
+                    "value": "当前表.当前表.普通文本",
+                },
+            ],
+            "join_rules": [{"left": "当前表.当前表.编码", "op": "等于", "right": "allowed.a"}],
+            "output_fields": ["当前表.当前表.编码", "allowed.a"],
+        }
+
+        normalize_plan_filter_config_field_references(config, ["编码", "对照编码"], ["allowed"])
+
+        self.assertEqual(config["conditions"][0]["field"], "当前表.编码")
+        self.assertEqual(config["conditions"][0]["value"], "当前表.对照编码")
+        self.assertEqual(config["conditions"][1]["value"], "当前表.当前表.普通文本")
+        self.assertEqual(config["join_rules"][0]["left"], "当前表.编码")
+        self.assertEqual(config["output_fields"], ["当前表.编码", "allowed.a"])
+        self.assertEqual(
+            get_plan_filter_output_headers(["当前表.物料表.名称", "物料表.名称", "物料表.名称"], ["物料表.名称"]),
+            ["物料表.名称", "物料表.名称_2", "物料表.名称_3"],
+        )
+        self.assertEqual(
+            get_plan_filter_output_header_conflicts(
+                ["当前表.物料表.名称", "物料表.名称", "物料表.名称"],
+                ["物料表.名称"],
+            ),
+            ["物料表.名称"],
+        )
+
+    def test_plan_filter_helpers_conditions_and_join_rules(self):
+        record = {"当前表.A": "x", "当前表.B": "x", "t.C": "xyz"}
+
+        self.assertTrue(record_passes_plan_conditions(
+            record,
+            [{"field": "当前表.A", "op": "等于", "value_source": "字段值", "value": "当前表.B"}],
+            "AND",
+        ))
+        self.assertFalse(record_passes_plan_conditions(
+            record,
+            [{"field": "当前表.A", "op": "等于", "value_source": "字段值", "value": "当前表.Missing"}],
+            "AND",
+        ))
+        self.assertTrue(record_survives_available_plan_conditions(
+            {"当前表.A": "x"},
+            [
+                {"field": "当前表.A", "op": "等于", "value": "x"},
+                {"field": "t.C", "op": "等于", "value": "z"},
+            ],
+            "OR",
+        ))
+        self.assertTrue(record_passes_plan_join_rules(
+            record,
+            [{"left": "当前表.A", "op": "等于", "right": "当前表.B"}],
+        ))
+        self.assertTrue(record_passes_plan_join_rules(
+            {"当前表.A": "x"},
+            [{"left": "当前表.A", "op": "等于", "right": "t.C"}],
+        ))
+        self.assertFalse(record_passes_plan_join_rules(
+            {"当前表.A": "x", "t.C": "y"},
+            [{"left": "当前表.A", "op": "等于", "right": "t.C"}],
+        ))
+
+    def test_plan_filter_helpers_hash_join_and_required_fields(self):
+        right_records = [{"t.C": "x", "t.Name": "n1"}, {"t.C": "y", "t.Name": "n2"}]
+        join_rules = [{"left": "当前表.A", "op": "等于", "right": "t.C"}]
+        hash_rules = get_plan_filter_hash_join_rules("t", join_rules, "AND", right_records)
+        right_index, missing = build_plan_filter_right_index(right_records, hash_rules)
+
+        self.assertEqual(hash_rules, [("当前表.A", "t.C")])
+        self.assertEqual(missing, [])
+        self.assertEqual(
+            iter_plan_filter_join_candidates({"当前表.A": "x"}, right_records, hash_rules, right_index, missing),
+            [right_records[0]],
+        )
+        self.assertEqual(get_required_columns_for_plan_table("t", ["C", "Name", "Other"], {"t.C", "t.Name"}), ["C", "Name"])
+
+        current_required, table_required = collect_plan_filter_required_fields(
+            ["A", "B"],
+            ["t"],
+            [{"field": "当前表.B", "op": "等于", "value_source": "字段值", "value": "t.Name"}],
+            join_rules,
+            ["当前表.A"],
+            ["当前表.A", "t.Name"],
+        )
+        self.assertEqual(current_required, {"A", "B"})
+        self.assertEqual(table_required, {"t": {"t.C", "t.Name"}})
+        self.assertEqual(make_current_table_records(["A", "B"], [["x", "b"]], {"A"}), [{"A": "x", "当前表.A": "x"}])
+        self.assertEqual(
+            get_plan_filter_config_warnings(["A"], ["t"], [], [], "AND"),
+            ["未设置筛选条件，副表会先按匹配规则读取全部可用行", "已选择副表但没有多表匹配规则，正式运行可能形成全组合"],
+        )
+
+    def test_filter_node_filters_current_table_and_dedupes(self):
+        headers, rows, message = apply_filter_node(
+            ["A", "B"],
+            [["x", "1"], ["x", "1"], ["y", "2"]],
+            {
+                "conditions": [{"field": "当前表.A", "op": "等于", "value": "x"}],
+                "output_fields": ["当前表.A", "当前表.B"],
+                "remove_duplicates": True,
+            },
+            context={
+                "lookup_fields": ["当前表.A", "当前表.B"],
+                "output_headers": ["A", "B"],
+                "current_required": {"A", "B"},
+                "table_required": {},
+                "table_records": {},
+            },
+        )
+
+        self.assertEqual(headers, ["A", "B"])
+        self.assertEqual(rows, [["x", "1"]])
+        self.assertEqual(message, "筛选/匹配后 1 行，已去除重复内容 1 行；优化：提前过滤 1 行")
+
+    def test_filter_node_joins_loaded_table_records_with_hash_index(self):
+        headers, rows, message = apply_filter_node(
+            ["Code"],
+            [["A"], ["B"]],
+            {
+                "conditions": [],
+                "join_rules": [{"left": "当前表.Code", "op": "等于", "right": "t.Code"}],
+                "extra_tables": ["t"],
+                "output_fields": ["当前表.Code", "t.Name"],
+            },
+            context={
+                "lookup_fields": ["当前表.Code", "t.Name"],
+                "output_headers": ["Code", "t.Name"],
+                "current_required": {"Code"},
+                "table_required": {"t": {"t.Code", "t.Name"}},
+                "table_records": {
+                    "t": [
+                        {"t.Code": "A", "t.Name": "Alpha"},
+                        {"t.Code": "C", "t.Name": "Gamma"},
+                    ]
+                },
+            },
+        )
+
+        self.assertEqual(headers, ["Code", "t.Name"])
+        self.assertEqual(rows, [["A", "Alpha"]])
+        self.assertEqual(message, "筛选/匹配后 1 行；优化：字段裁剪 1 表，等值索引匹配 1 表")
+
+    def test_filter_node_rejects_large_cross_join_without_rules(self):
+        with self.assertRaisesRegex(RuntimeError, "可能形成全组合"):
+            apply_filter_node(
+                ["A"],
+                [["1"], ["2"]],
+                {
+                    "conditions": [],
+                    "join_rules": [],
+                    "extra_tables": ["t"],
+                    "output_fields": ["当前表.A", "t.B"],
+                    "max_intermediate": "3",
+                },
+                context={
+                    "lookup_fields": ["当前表.A", "t.B"],
+                    "output_headers": ["A", "t.B"],
+                    "current_required": {"A"},
+                    "table_required": {"t": {"t.B"}},
+                    "table_records": {"t": [{"t.B": "x"}, {"t.B": "y"}]},
+                },
+            )
 
     def test_fill_value_manual_expands_rows_and_skips_existing_cells(self):
         headers, rows, message = apply_fill_value_node(
