@@ -10,6 +10,16 @@ from core.text_utils import quote_ident as core_quote_ident
 from shared.table_access_policy import extract_read_tables, table_pattern_matches
 
 
+class _ClosingConnection(sqlite3.Connection):
+    """sqlite3 context managers commit/rollback but do not close the file handle."""
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 class TableAccessManager:
     """
     表访问统一管理入口。
@@ -229,7 +239,7 @@ class TableAccessManager:
 
     def _connect(self):
         self._ensure_db_path()
-        return sqlite3.connect(self.db_path)
+        return sqlite3.connect(self.db_path, factory=_ClosingConnection)
 
     @staticmethod
     def quote_ident(name):

@@ -5,10 +5,21 @@ import tempfile
 import threading
 import types
 import unittest
+from contextlib import contextmanager
 
 from DataFlowKit import PlanWorkflowWindow, TableAccessManager
 from plugins import word_excel_read_to_db_plugin_v1 as read_plugin
 from shared.table_access_policy import extract_read_tables
+
+
+@contextmanager
+def closing_sqlite_connection(path):
+    conn = sqlite3.connect(path)
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def permission_set(**enabled):
@@ -45,7 +56,7 @@ class TableAccessPermissionTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory(dir=os.getcwd())
         self.db_path = os.path.join(self.temp_dir.name, "permissions.db")
-        with sqlite3.connect(self.db_path) as conn:
+        with closing_sqlite_connection(self.db_path) as conn:
             conn.execute("CREATE TABLE allowed (a TEXT)")
             conn.execute("INSERT INTO allowed VALUES ('ok')")
             conn.execute("CREATE TABLE secret (a TEXT)")
@@ -139,7 +150,7 @@ class TableAccessPermissionTests(unittest.TestCase):
         manager._executemany = fail_insert
         with self.assertRaisesRegex(RuntimeError, "forced insert failure"):
             manager.write_table("allowed", ["a"], [["new"]], mode="replace")
-        with sqlite3.connect(self.db_path) as conn:
+        with closing_sqlite_connection(self.db_path) as conn:
             self.assertEqual(conn.execute("SELECT a FROM allowed").fetchall(), [("ok",)])
 
     def test_timestamp_write_failure_does_not_leave_empty_table(self):
@@ -164,11 +175,11 @@ class TableAccessPermissionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "forced insert failure"):
             manager.write_table("allowed", ["a", "b"], [["new", "value"]], mode="append")
         self.assertEqual(manager.get_columns("allowed"), ["a"])
-        with sqlite3.connect(self.db_path) as conn:
+        with closing_sqlite_connection(self.db_path) as conn:
             self.assertEqual(conn.execute("SELECT a FROM allowed").fetchall(), [("ok",)])
 
     def test_clear_and_writeback_failure_rolls_back_all_changes(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with closing_sqlite_connection(self.db_path) as conn:
             conn.execute("INSERT INTO allowed VALUES ('old-2')")
             conn.commit()
         manager = TableAccessManager(self.db_path)
@@ -188,7 +199,7 @@ class TableAccessPermissionTests(unittest.TestCase):
         ]
         with self.assertRaisesRegex(RuntimeError, "forced second update failure"):
             manager.apply_writeback_transaction("allowed", actions, clear_fields=["a"])
-        with sqlite3.connect(self.db_path) as conn:
+        with closing_sqlite_connection(self.db_path) as conn:
             self.assertEqual(
                 conn.execute("SELECT a FROM allowed ORDER BY rowid").fetchall(),
                 [("ok",), ("old-2",)],
@@ -208,7 +219,7 @@ class TableAccessPermissionTests(unittest.TestCase):
                 clear_fields=["a"],
                 cancel_event=cancel_event,
             )
-        with sqlite3.connect(self.db_path) as conn:
+        with closing_sqlite_connection(self.db_path) as conn:
             self.assertEqual(conn.execute("SELECT a FROM allowed").fetchall(), [("ok",)])
 
     def test_dynamic_table_pattern_limits_plugin_output_scope(self):
@@ -332,7 +343,7 @@ class TableAccessPermissionTests(unittest.TestCase):
             execute_actions=True,
         )
         self.assertEqual(rows[0]["status"], "ok")
-        with sqlite3.connect(self.db_path) as conn:
+        with closing_sqlite_connection(self.db_path) as conn:
             self.assertEqual(conn.execute("SELECT a FROM src_external").fetchall(), [("managed",)])
         self.assertTrue(context["needs_refresh_table_list"])
 
