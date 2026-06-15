@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import unittest
 
+from DataFlowKit import PlanWorkflowWindow
 from workflow.nodes.group_nodes import (
     build_empty_group_stat,
     build_group_final_output,
@@ -115,6 +116,49 @@ class WorkflowGroupNodesTests(unittest.TestCase):
         self.assertIn("节点组【G】完成：来源=当前工作表", stat)
         self.assertIn("SQLite表：T", stat)
         self.assertIn("1.A；2.B", stat)
+
+    def test_dataflowkit_run_group_inner_nodes_prepares_permissions_and_logs_shape(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+        calls = []
+        window.ensure_node_identity = lambda node: node.setdefault("node_id", "generated")
+        window.refresh_node_table_access = lambda node: node.setdefault("table_access", {"current_table": {}})
+
+        def fake_check(context, headers, write=False, operation=""):
+            calls.append(("check", operation, write, list(headers), context.get("current_node_info", {}).get("node_type")))
+            return {"operation": operation, "write": write}
+
+        def fake_apply(headers, rows, node, execute_actions=False, context=None):
+            calls.append(("apply", node.get("type"), context.get("current_node_info", {}).get("node_index")))
+            return list(headers) + ["B"], [list(row) + ["b"] for row in rows], "done"
+
+        def fake_log(manager, before_shape, headers, rows, node_type=None):
+            calls.append(("log", node_type, before_shape, (len(rows), len(headers)), manager.get("operation")))
+
+        window.check_current_table_permission = fake_check
+        window.get_table_manager = lambda context, node_type="": {"operation": "jump", "write": False}
+        window.apply_node = fake_apply
+        window.log_current_table_transform = fake_log
+
+        child_context = {}
+        headers, rows, logs = window.run_group_inner_nodes(
+            ["A"],
+            [["a"]],
+            [
+                {"type": "新建列", "name": "n1", "config": {}},
+                {"type": "删除行", "enabled": False, "config": {}},
+            ],
+            child_context,
+            execute_actions=True,
+        )
+
+        self.assertEqual(headers, ["A", "B"])
+        self.assertEqual(rows, [["a", "b"]])
+        self.assertEqual(logs, ["1.新建列 1×1→1×2 done", "2.删除行 已禁用"])
+        self.assertEqual(child_context["current_node_info"]["node_index"], 0)
+        self.assertIn(("check", "read_current_table", False, ["A"], "新建列"), calls)
+        self.assertIn(("check", "write_current_table", True, ["A"], "新建列"), calls)
+        self.assertIn(("apply", "新建列", 0), calls)
+        self.assertIn(("log", "新建列", (1, 1), (1, 2), "write_current_table"), calls)
 
 
 if __name__ == "__main__":

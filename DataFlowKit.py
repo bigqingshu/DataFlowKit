@@ -15421,6 +15421,68 @@ class PlanWorkflowWindow:
                 requests.append("table_list")
         return parts
 
+    def prepare_group_inner_node_execution(self, child_context, node, node_type, node_index, cur_headers):
+        self.ensure_node_identity(node)
+        self.refresh_node_table_access(node)
+        child_context["current_node_info"] = {
+            "node_id": node.get("node_id", ""),
+            "node_name": node.get("name", ""),
+            "node_type": node_type,
+            "node_index": node_index,
+            "table_access": copy.deepcopy(node.get("table_access", {})),
+        }
+        if node_type in ("循环执行起点", "循环判断回跳"):
+            raise ValueError("第一版节点组暂不支持组内循环执行起点 / 循环判断回跳。")
+        if node_type in ("跳转锚点节点", "无条件跳转节点", "条件跳转节点"):
+            return self.get_table_manager(child_context, node_type=node_type)
+        manager = self.check_current_table_permission(
+            child_context,
+            cur_headers,
+            write=False,
+            operation="read_current_table",
+        )
+        if node_type != "条件判断节点":
+            manager = self.check_current_table_permission(
+                child_context,
+                cur_headers,
+                write=True,
+                operation="write_current_table",
+            )
+        return manager
+
+    def run_group_inner_nodes(self, cur_headers, cur_rows, nodes, child_context, execute_actions=False):
+        logs = []
+        for i, node in enumerate(nodes):
+            if not node.get("enabled", True):
+                logs.append(f"{i+1}.{node.get('type')} 已禁用")
+                continue
+            node_type = node.get("type")
+            before_shape = (len(cur_rows), len(cur_headers))
+            current_table_manager = self.prepare_group_inner_node_execution(
+                child_context,
+                node,
+                node_type,
+                i,
+                cur_headers,
+            )
+            cur_headers, cur_rows, stat = self.apply_node(
+                cur_headers,
+                cur_rows,
+                node,
+                execute_actions=execute_actions,
+                context=child_context,
+            )
+            self.log_current_table_transform(
+                current_table_manager,
+                before_shape,
+                cur_headers,
+                cur_rows,
+                node_type=node_type,
+            )
+            after_shape = (len(cur_rows), len(cur_headers))
+            logs.append(workflow_build_group_node_log(i + 1, node_type, before_shape, after_shape, stat))
+        return cur_headers, cur_rows, logs
+
     def apply_group_node(self, headers, rows, config, execute_actions=False, context=None):
         nodes = config.get("nodes", [])
         group_name = config.get("group_name") or "节点组"
@@ -15440,54 +15502,17 @@ class PlanWorkflowWindow:
             return cur_headers, cur_rows, stat
 
         child_context = self.make_group_child_context(context, config)
-        logs = []
         def merge_child_audit_logs():
             workflow_merge_group_child_audit_logs(context, child_context)
 
         try:
-            for i, node in enumerate(nodes):
-                if not node.get("enabled", True):
-                    logs.append(f"{i+1}.{node.get('type')} 已禁用")
-                    continue
-                node_type = node.get("type")
-                self.ensure_node_identity(node)
-                self.refresh_node_table_access(node)
-                child_context["current_node_info"] = {
-                    "node_id": node.get("node_id", ""),
-                    "node_name": node.get("name", ""),
-                    "node_type": node_type,
-                    "node_index": i,
-                    "table_access": copy.deepcopy(node.get("table_access", {})),
-                }
-                if node_type in ("循环执行起点", "循环判断回跳"):
-                    raise ValueError("第一版节点组暂不支持组内循环执行起点 / 循环判断回跳。")
-                before_shape = (len(cur_rows), len(cur_headers))
-                if node_type in ("跳转锚点节点", "无条件跳转节点", "条件跳转节点"):
-                    current_table_manager = self.get_table_manager(child_context, node_type=node_type)
-                else:
-                    current_table_manager = self.check_current_table_permission(
-                        child_context,
-                        cur_headers,
-                        write=False,
-                        operation="read_current_table",
-                    )
-                    if node_type != "条件判断节点":
-                        current_table_manager = self.check_current_table_permission(
-                            child_context,
-                            cur_headers,
-                            write=True,
-                            operation="write_current_table",
-                        )
-                cur_headers, cur_rows, stat = self.apply_node(cur_headers, cur_rows, node, execute_actions=execute_actions, context=child_context)
-                self.log_current_table_transform(
-                    current_table_manager,
-                    before_shape,
-                    cur_headers,
-                    cur_rows,
-                    node_type=node_type,
-                )
-                after_shape = (len(cur_rows), len(cur_headers))
-                logs.append(workflow_build_group_node_log(i + 1, node_type, before_shape, after_shape, stat))
+            cur_headers, cur_rows, logs = self.run_group_inner_nodes(
+                cur_headers,
+                cur_rows,
+                nodes,
+                child_context,
+                execute_actions=execute_actions,
+            )
         except Exception:
             merge_child_audit_logs()
             raise
