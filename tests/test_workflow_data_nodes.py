@@ -2,6 +2,7 @@
 import unittest
 import threading
 from datetime import datetime
+from decimal import Decimal
 
 from workflow.nodes.data_nodes import (
     apply_area_fill_node,
@@ -16,13 +17,18 @@ from workflow.nodes.data_nodes import (
     apply_merge_node,
     apply_move_columns_node,
     apply_new_columns_node,
+    apply_numeric_column_node,
     apply_replace_node,
     apply_rename_columns_node,
     apply_sequence_fill_node,
     extract_one_value,
+    format_numeric_column_result,
     get_datetime_parse_warning,
+    get_numeric_node_row_indexes,
+    numeric_node_fallback_value,
     parse_format_datetime_value,
     parse_new_columns_specs,
+    parse_numeric_value_for_column_op,
     render_current_datetime_template,
 )
 
@@ -497,6 +503,191 @@ class WorkflowDataNodesTests(unittest.TestCase):
         self.assertEqual(headers, ["A"])
         self.assertEqual(rows, [["a"]])
         self.assertEqual(message, "字段名替换匹配值为空，未修改")
+
+    def test_numeric_helpers_parse_and_format_decimal_values(self):
+        self.assertEqual(parse_numeric_value_for_column_op(" 123456789012345678 "), Decimal("123456789012345678"))
+        self.assertEqual(parse_numeric_value_for_column_op("1.2300"), Decimal("1.2300"))
+
+        with self.assertRaisesRegex(ValueError, "空值"):
+            parse_numeric_value_for_column_op("")
+        with self.assertRaisesRegex(ValueError, "不是有效数字：abc"):
+            parse_numeric_value_for_column_op("abc")
+
+        self.assertEqual(format_numeric_column_result(Decimal("10.0"), {"decimal_places": "自动"}), "10")
+        self.assertEqual(format_numeric_column_result(Decimal("1.2300"), {"decimal_places": "自动"}), "1.23")
+        self.assertEqual(format_numeric_column_result(Decimal("1.235"), {"decimal_places": "2"}), "1.24")
+        self.assertEqual(format_numeric_column_result(Decimal("1.235"), {"decimal_places": "bad"}), "1")
+
+    def test_numeric_helpers_resolve_row_ranges(self):
+        headers = ["A", "Ref"]
+        rows = [["1", "x"], ["2", ""], ["3", "y"], ["4", ""]]
+
+        self.assertEqual(get_numeric_node_row_indexes(headers, rows, {"range_mode": "全部行"}), [0, 1, 2, 3])
+        self.assertEqual(
+            get_numeric_node_row_indexes(
+                headers,
+                rows,
+                {"range_mode": "指定起止行", "start_row": "3", "end_row": "2"},
+            ),
+            [1, 2],
+        )
+        self.assertEqual(
+            get_numeric_node_row_indexes(
+                headers,
+                rows,
+                {
+                    "range_mode": "填充到参考列数据边界",
+                    "start_row": "2",
+                    "reference_field": "Ref",
+                },
+            ),
+            [1, 2],
+        )
+        self.assertEqual(get_numeric_node_row_indexes(headers, [], {"range_mode": "全部行"}), [])
+
+    def test_numeric_fallback_value_policies(self):
+        self.assertEqual(numeric_node_fallback_value("old", "保留原值", "fixed", "计算失败"), "old")
+        self.assertEqual(numeric_node_fallback_value("old", "填写固定值", "fixed", "计算失败"), "fixed")
+        self.assertEqual(numeric_node_fallback_value("old", "标记为计算失败", "fixed", "计算失败"), "计算失败")
+        self.assertEqual(numeric_node_fallback_value("old", "标记为除零错误", "fixed", "除零错误"), "除零错误")
+        self.assertEqual(numeric_node_fallback_value("old", "留空", "fixed", "计算失败"), "")
+
+    def test_numeric_column_node_keeps_long_integer_precision(self):
+        headers, rows, message = apply_numeric_column_node(
+            ["N"],
+            [["123456789012345678"]],
+            {
+                "target_field": "N",
+                "output_field": "Out",
+                "operation": "加",
+                "operand_source": "固定值",
+                "operand_value": "1",
+                "decimal_places": "自动",
+            },
+        )
+
+        self.assertEqual(headers, ["N", "Out"])
+        self.assertEqual(rows, [["123456789012345678", "123456789012345679"]])
+        self.assertEqual(message, "列数字运算完成：成功 1 行")
+
+    def test_numeric_column_node_output_modes_and_operand_sources(self):
+        headers, rows, message = apply_numeric_column_node(
+            ["N", "Out"],
+            [["2", ""], ["3", "old"]],
+            {
+                "target_field": "N",
+                "output_mode": "写入已有字段",
+                "output_field": "Out",
+                "operation": "乘",
+                "operand_source": "序号",
+                "sequence_start": "10",
+                "sequence_step": "5",
+            },
+        )
+
+        self.assertEqual(headers, ["N", "Out"])
+        self.assertEqual(rows, [["2", "20"], ["3", "45"]])
+        self.assertEqual(message, "列数字运算完成：成功 2 行")
+
+        headers, rows, message = apply_numeric_column_node(
+            ["N"],
+            [["5"], ["6"]],
+            {
+                "target_field": "N",
+                "output_mode": "覆盖原字段",
+                "operation": "减",
+                "operand_source": "行号+N",
+                "row_offset": "1",
+            },
+        )
+
+        self.assertEqual(headers, ["N"])
+        self.assertEqual(rows, [["3"], ["3"]])
+        self.assertEqual(message, "列数字运算完成：成功 2 行")
+
+    def test_numeric_column_node_range_other_field_failures_and_divide_zero(self):
+        headers, rows, message = apply_numeric_column_node(
+            ["N", "Operand", "Ref"],
+            [["10", "2", "x"], ["bad", "3", "x"], ["30", "0", ""], ["40", "5", ""]],
+            {
+                "target_field": "N",
+                "output_field": "Out",
+                "operation": "除",
+                "operand_source": "另一列同行数值",
+                "operand_field": "Operand",
+                "range_mode": "填充到参考列数据边界",
+                "reference_field": "Ref",
+                "non_number_policy": "标记为计算失败",
+                "divide_zero_policy": "标记为除零错误",
+                "decimal_places": "自动",
+            },
+        )
+
+        self.assertEqual(headers, ["N", "Operand", "Ref", "Out"])
+        self.assertEqual(rows, [["10", "2", "x", "5"], ["bad", "3", "x", "计算失败"], ["30", "0", "", ""], ["40", "5", "", ""]])
+        self.assertEqual(message, "列数字运算完成：成功 1 行，非数字/运算失败 1 行")
+
+        headers, rows, message = apply_numeric_column_node(
+            ["N", "Operand"],
+            [["10", "0"]],
+            {
+                "target_field": "N",
+                "output_field": "Out",
+                "operation": "除",
+                "operand_source": "另一列同行数值",
+                "operand_field": "Operand",
+                "divide_zero_policy": "填写固定值",
+                "divide_zero_fixed": "ZERO",
+            },
+        )
+
+        self.assertEqual(rows, [["10", "0", "ZERO"]])
+        self.assertEqual(message, "列数字运算完成：成功 0 行，除零 1 行")
+
+    def test_numeric_column_node_empty_range_invalid_defaults_and_cancel_callback(self):
+        headers, rows, message = apply_numeric_column_node(
+            ["N"],
+            [["2"]],
+            {
+                "target_field": "N",
+                "output_field": "Out",
+                "range_mode": "指定起止行",
+                "start_row": "3",
+                "end_row": "4",
+                "operation": "加",
+                "operand_source": "固定值",
+                "operand_value": "bad",
+            },
+        )
+
+        self.assertEqual(headers, ["N", "Out"])
+        self.assertEqual(rows, [["2", ""]])
+        self.assertEqual(message, "列数字运算完成：成功 0 行，处理范围为空")
+
+        headers, rows, message = apply_numeric_column_node(
+            ["N"],
+            [["2"]],
+            {
+                "target_field": "N",
+                "output_field": "Out",
+                "operation": "加",
+                "operand_source": "固定值",
+                "operand_value": "bad",
+            },
+        )
+        self.assertEqual(rows, [["2", "2"]])
+        self.assertEqual(message, "列数字运算完成：成功 1 行")
+
+        with self.assertRaisesRegex(RuntimeError, "用户取消"):
+            apply_numeric_column_node(
+                ["N"],
+                [["2"]],
+                {
+                    "target_field": "N",
+                    "output_field": "Out",
+                },
+                context={"check_cancelled": lambda _index: (_ for _ in ()).throw(RuntimeError("用户取消"))},
+            )
 
     def test_fill_value_manual_expands_rows_and_skips_existing_cells(self):
         headers, rows, message = apply_fill_value_node(
