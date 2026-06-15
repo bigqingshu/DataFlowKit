@@ -67,7 +67,6 @@ from db import PluginDatabaseAPI, TableAccessManager
 from plugin_runtime.progress import handle_plugin_stdout_line
 from plugin_runtime.scanner import scan_plugins
 from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
-from shared.table_access_policy import table_pattern_matches
 from workflow.nodes.data_nodes import (
     apply_area_fill_node as workflow_apply_area_fill_node,
     apply_copy_column_node as workflow_apply_copy_column_node,
@@ -247,12 +246,15 @@ from workflow.nodes.writeback_nodes import (
     should_execute_writeback_update as workflow_should_execute_writeback_update,
 )
 from workflow.table_access_precheck import (
-    evaluate_expected_table_access as workflow_evaluate_expected_table_access,
-    evaluate_field_access as workflow_evaluate_field_access,
-    evaluate_unmatched_actual_table_access as workflow_evaluate_unmatched_actual_table_access,
+    evaluate_node_table_access_precheck as workflow_evaluate_node_table_access_precheck,
+    evaluate_workflow_output_precheck as workflow_evaluate_workflow_output_precheck,
+    find_table_access_field_rule as workflow_find_table_access_field_rule,
+    find_matching_table_access_entry as workflow_find_matching_table_access_entry,
     iter_nodes_for_table_access_precheck as workflow_iter_nodes_for_table_access_precheck,
     make_table_access_precheck_issue as workflow_make_table_access_precheck_issue,
     normalize_precheck_transit_name as workflow_normalize_precheck_transit_name,
+    table_access_entry_match_score as workflow_table_access_entry_match_score,
+    table_access_field_items as workflow_table_access_field_items,
     table_access_entry_status as workflow_table_access_entry_status,
     table_access_entry_table_label as workflow_table_access_entry_table_label,
     table_access_operation_summary as workflow_table_access_operation_summary,
@@ -5489,58 +5491,10 @@ class PlanWorkflowWindow:
         return "OK"
 
     def table_access_field_items(self, entry):
-        mapping = (entry or {}).get("field_mapping") or {}
-        if isinstance(mapping, dict):
-            items = []
-            for key, value in mapping.items():
-                if isinstance(value, dict):
-                    items.append((str(key), value))
-            return items
-        if isinstance(mapping, list):
-            items = []
-            for idx, value in enumerate(mapping):
-                if isinstance(value, dict):
-                    key = value.get("key") or f"field_{idx + 1}"
-                    items.append((str(key), value))
-            return items
-        return []
+        return workflow_table_access_field_items(entry)
 
     def find_table_access_field_rule(self, entry, target="", source="", field_index=None):
-        target = str(target or "").strip()
-        source = str(source or "").strip()
-        mapping_mode = str((entry or {}).get("field_mapping_mode", "") or "").strip()
-        by_order = mapping_mode in {"by_order", "按列顺序", "按顺序", "order"}
-        field_pos = None
-        if field_index is not None:
-            try:
-                field_pos = int(field_index) + 1
-            except Exception:
-                field_pos = None
-        for _, item in self.table_access_field_items(entry):
-            if not isinstance(item, dict):
-                continue
-            rule_mode = str(item.get("match_mode", "") or "").strip()
-            if (by_order or rule_mode in {"by_order", "按列顺序", "按顺序", "order"}) and field_pos is not None:
-                for key in ("target_index", "source_index", "index", "column_index"):
-                    raw_index = item.get(key)
-                    if raw_index in ("", None):
-                        continue
-                    try:
-                        if int(raw_index) == field_pos:
-                            return item
-                    except Exception:
-                        continue
-            candidates = [
-                str(item.get("target_field", "") or "").strip(),
-                str(item.get("source_field", "") or "").strip(),
-                str(item.get("field", "") or "").strip(),
-                str(item.get("name", "") or "").strip(),
-            ]
-            if target and target in candidates:
-                return item
-            if source and source in candidates:
-                return item
-        return None
+        return workflow_find_table_access_field_rule(entry, target=target, source=source, field_index=field_index)
 
     def make_table_access_field_key(self, mapping, source_field, target_field):
         base = str(target_field or source_field or "字段").strip() or "字段"
@@ -5692,55 +5646,10 @@ class PlanWorkflowWindow:
             log_only_var.set(preset == "默认读写只记录")
 
     def table_access_entry_match_score(self, actual, expected):
-        actual = actual or {}
-        expected = expected or {}
-        actual_table = str(actual.get("table", "") or "").strip()
-        expected_table = str(expected.get("table", "") or "").strip()
-        actual_pattern = str(actual.get("table_pattern", "") or "").strip()
-        expected_pattern = str(expected.get("table_pattern", "") or "").strip()
-        if expected_pattern:
-            if actual_pattern == expected_pattern:
-                score = 3
-            elif actual_table and table_pattern_matches(actual_table, expected_pattern, expected.get("pattern_type", "glob")):
-                score = 2
-            else:
-                return 0
-        elif actual_pattern and expected_table:
-            if table_pattern_matches(expected_table, actual_pattern, actual.get("pattern_type", "glob")):
-                score = 2
-            else:
-                return 0
-        else:
-            if not expected_table:
-                return 0
-            actual_names = {actual_table, TableAccessManager._sanitize_name_for_match(actual_table)}
-            expected_names = {expected_table, TableAccessManager._sanitize_name_for_match(expected_table)}
-            actual_names.discard("")
-            expected_names.discard("")
-            if not actual_names.intersection(expected_names):
-                return 0
-            score = 1
-        actual_source = str(actual.get("source_type", "") or "").strip()
-        expected_source = str(expected.get("source_type", "") or "").strip()
-        if expected_source and actual_source == expected_source:
-            score += 2
-        elif expected_source and actual_source and actual_source != expected_source:
-            return 0
-        if str(actual.get("role", "") or "").strip() == str(expected.get("role", "") or "").strip():
-            score += 1
-        return score
+        return workflow_table_access_entry_match_score(actual, expected)
 
     def find_matching_table_access_entry(self, actual_tables, expected):
-        best = None
-        best_score = 0
-        for entry in actual_tables or []:
-            if not isinstance(entry, dict):
-                continue
-            score = self.table_access_entry_match_score(entry, expected)
-            if score > best_score:
-                best = entry
-                best_score = score
-        return best
+        return workflow_find_matching_table_access_entry(actual_tables, expected)
 
     def normalize_precheck_transit_name(self, table_name):
         return workflow_normalize_precheck_transit_name(table_name)
@@ -5805,23 +5714,12 @@ class PlanWorkflowWindow:
         if execute_actions:
             output_mode = self.output_mode_var.get()
             output_table = self.output_table_var.get().strip()
-            if output_mode in ("保存为SQLite新表", "覆盖当前表"):
-                pseudo = self.make_table_access_entry(
-                    "workflow_output",
-                    output_table,
-                    permissions=self.table_permission_set(read=True, write=True, create=True, replace=output_mode == "覆盖当前表"),
-                    write_mode=output_mode,
-                )
-                if not db_path:
-                    self.add_table_access_precheck_issue(issues, "error", "工作流输出", {"type": "工作流输出"}, pseudo, "输出方式需要 SQLite 数据库，但当前未设置数据库路径。", "先在主界面选择或创建 SQLite 数据库。")
-                if not output_table:
-                    self.add_table_access_precheck_issue(issues, "error", "工作流输出", {"type": "工作流输出"}, pseudo, "输出方式需要表名，但输出表名为空。", "填写输出表名后再执行。")
-                if output_mode == "覆盖当前表":
-                    self.add_table_access_precheck_issue(
-                        issues, "warning", "工作流输出", {"type": "工作流输出"}, pseudo,
-                        f"执行后会覆盖 SQLite 表：{output_table}", "确认备份设置和目标表无误。",
-                        category="risk", blocking=False,
-                    )
+            issues.extend(workflow_evaluate_workflow_output_precheck(
+                output_mode,
+                output_table,
+                db_path=db_path,
+                write_mode_formatter=self.write_mode_display_text,
+            ))
 
         for node_label, node in self.iter_nodes_for_table_access_precheck(node_list, stop_index=stop_index):
             if not isinstance(node, dict):
@@ -5831,92 +5729,26 @@ class PlanWorkflowWindow:
 
             node_type = node.get("type", "")
             config = node.get("config", {}) or {}
-            if (
-                node_type == "插件节点"
-                and self.plugin_needs_table_access_declaration(config)
-                and not self.plugin_has_table_access_declaration(config)
-            ):
-                plugin_id = str(config.get("plugin_id", "") or "").strip()
-                self.add_table_access_precheck_issue(
-                    issues,
-                    "warning",
-                    node_label,
-                    node,
-                    {
-                        "role": "plugin_declared",
-                        "source_type": "SQLite表",
-                        "table": plugin_id,
-                    },
-                    "插件标记为数据库写入风险，但未声明表权限规格。",
-                    "为插件补充 get_table_access_spec() 或 PLUGIN_INFO.table_access_spec，便于执行前确认写库范围。",
-                )
-
             expected_access = self.default_table_access_for_node(node)
             actual_access = self.get_node_table_access(node)
-            actual_tables = actual_access.get("tables", []) if isinstance(actual_access, dict) else []
-            matched_actual_ids = set()
-
-            for expected in expected_access.get("tables", []):
-                if not isinstance(expected, dict):
-                    continue
-                actual = self.find_matching_table_access_entry(actual_tables, expected)
-                if actual is not None:
-                    matched_actual_ids.add(id(actual))
-
-                expected_result = workflow_evaluate_expected_table_access(
-                    node_label,
-                    node,
-                    expected,
-                    actual=actual,
-                    permission_label_map=permission_label_map,
-                    execute_actions=execute_actions,
-                    db_path=db_path,
-                    db_exists=db_exists,
-                    sqlite_tables=sqlite_tables,
-                    produced_transit=produced_transit,
-                    write_mode_formatter=self.write_mode_display_text,
-                )
-                issues.extend(expected_result.get("issues", []))
-                for transit_name in expected_result.get("produced_transit", []) or []:
-                    produced_transit.add(transit_name)
-                if expected_result.get("skip"):
-                    continue
-
-                if actual is not None:
-                    expected_fields = expected.get("field_mapping") or {}
-                    actual_fields = actual.get("field_mapping") or {}
-                    if isinstance(expected_fields, dict) and isinstance(actual_fields, dict):
-                        for field_index, (_, field_rule) in enumerate(expected_fields.items()):
-                            if not isinstance(field_rule, dict):
-                                continue
-                            target = str(field_rule.get("target_field") or field_rule.get("source_field") or "").strip()
-                            source = str(field_rule.get("source_field") or "").strip()
-                            expected_fperms = field_rule.get("permissions") or {}
-                            if not target:
-                                continue
-                            actual_rule = self.find_table_access_field_rule(actual, target=target, source=source, field_index=field_index)
-                            if actual_rule is None:
-                                continue
-                            actual_fperms = actual_rule.get("permissions") or {}
-                            issues.extend(workflow_evaluate_field_access(
-                                node_label,
-                                node,
-                                expected,
-                                target,
-                                expected_fperms,
-                                actual_fperms,
-                                write_mode_formatter=self.write_mode_display_text,
-                            ))
-
-            for actual in actual_tables:
-                if not isinstance(actual, dict) or id(actual) in matched_actual_ids:
-                    continue
-                issues.extend(workflow_evaluate_unmatched_actual_table_access(
-                    node_label,
-                    node,
-                    actual,
-                    write_mode_formatter=self.write_mode_display_text,
-                ))
+            node_result = workflow_evaluate_node_table_access_precheck(
+                node_label,
+                node,
+                expected_access,
+                actual_access,
+                permission_label_map=permission_label_map,
+                execute_actions=execute_actions,
+                db_path=db_path,
+                db_exists=db_exists,
+                sqlite_tables=sqlite_tables,
+                produced_transit=produced_transit,
+                needs_plugin_declaration=node_type == "插件节点" and self.plugin_needs_table_access_declaration(config),
+                has_plugin_declaration=node_type == "插件节点" and self.plugin_has_table_access_declaration(config),
+                write_mode_formatter=self.write_mode_display_text,
+            )
+            issues.extend(node_result.get("issues", []))
+            for transit_name in node_result.get("produced_transit", []) or []:
+                produced_transit.add(transit_name)
 
         issues.sort(key=self.table_access_precheck_sort_key)
         self.last_table_access_precheck = issues

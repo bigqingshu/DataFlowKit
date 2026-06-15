@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """Pure helpers for workflow table-access precheck."""
 
+import re
+
+from shared.table_access_policy import table_pattern_matches
+
 
 RISKY_TABLE_PERMISSIONS = {
     "replace_table": "替换整表",
@@ -139,6 +143,104 @@ def _has_any_permission(permissions, keys):
 def _permission_labels(keys, permission_label_map=None):
     labels = permission_label_map or {}
     return "、".join(labels.get(key, key) for key in keys)
+
+
+def make_workflow_output_access_entry(output_table, output_mode):
+    return {
+        "role": "workflow_output",
+        "table": str(output_table or "").strip(),
+        "table_pattern": "",
+        "pattern_type": "glob",
+        "declared_by": "",
+        "source_type": "SQLite表",
+        "is_current_table": False,
+        "permissions": {
+            "read_table": True,
+            "write_table": True,
+            "create_table": True,
+            "append_rows": False,
+            "update_rows": False,
+            "clear_table": False,
+            "replace_table": output_mode == "覆盖当前表",
+            "alter_schema": False,
+            "delete_rows": False,
+            "drop_table": False,
+        },
+        "write_mode": str(output_mode or "").strip(),
+        "field_mapping_mode": "by_name",
+        "field_mapping": {},
+        "log_only": False,
+    }
+
+
+def evaluate_workflow_output_precheck(output_mode, output_table, db_path="", write_mode_formatter=None):
+    if output_mode not in ("保存为SQLite新表", "覆盖当前表"):
+        return []
+    entry = make_workflow_output_access_entry(output_table, output_mode)
+    node = {"type": "工作流输出"}
+    issues = []
+    if not db_path:
+        issues.append(make_table_access_precheck_issue(
+            "error",
+            "工作流输出",
+            node,
+            entry,
+            "输出方式需要 SQLite 数据库，但当前未设置数据库路径。",
+            "先在主界面选择或创建 SQLite 数据库。",
+            write_mode_formatter=write_mode_formatter,
+        ))
+    if not str(output_table or "").strip():
+        issues.append(make_table_access_precheck_issue(
+            "error",
+            "工作流输出",
+            node,
+            entry,
+            "输出方式需要表名，但输出表名为空。",
+            "填写输出表名后再执行。",
+            write_mode_formatter=write_mode_formatter,
+        ))
+    if output_mode == "覆盖当前表":
+        issues.append(make_table_access_precheck_issue(
+            "warning",
+            "工作流输出",
+            node,
+            entry,
+            f"执行后会覆盖 SQLite 表：{str(output_table or '').strip()}",
+            "确认备份设置和目标表无误。",
+            category="risk",
+            blocking=False,
+            write_mode_formatter=write_mode_formatter,
+        ))
+    return issues
+
+
+def evaluate_plugin_access_declaration_precheck(
+    node_label,
+    node,
+    config,
+    needs_declaration,
+    has_declaration,
+    write_mode_formatter=None,
+):
+    if (node or {}).get("type", "") != "插件节点":
+        return []
+    if not needs_declaration or has_declaration:
+        return []
+    plugin_id = str((config or {}).get("plugin_id", "") or "").strip()
+    entry = {
+        "role": "plugin_declared",
+        "source_type": "SQLite表",
+        "table": plugin_id,
+    }
+    return [make_table_access_precheck_issue(
+        "warning",
+        node_label,
+        node,
+        entry,
+        "插件标记为数据库写入风险，但未声明表权限规格。",
+        "为插件补充 get_table_access_spec() 或 PLUGIN_INFO.table_access_spec，便于执行前确认写库范围。",
+        write_mode_formatter=write_mode_formatter,
+    )]
 
 
 def evaluate_expected_table_access(
@@ -336,6 +438,239 @@ def evaluate_field_access(node_label, node, expected, target, expected_fperms, a
             write_mode_formatter=write_mode_formatter,
         ))
     return issues
+
+
+def table_access_field_items(entry):
+    mapping = (entry or {}).get("field_mapping") or {}
+    if isinstance(mapping, dict):
+        items = []
+        for key, value in mapping.items():
+            if isinstance(value, dict):
+                items.append((str(key), value))
+        return items
+    if isinstance(mapping, list):
+        items = []
+        for idx, value in enumerate(mapping):
+            if isinstance(value, dict):
+                key = value.get("key") or f"field_{idx + 1}"
+                items.append((str(key), value))
+        return items
+    return []
+
+
+def find_table_access_field_rule(entry, target="", source="", field_index=None):
+    target = str(target or "").strip()
+    source = str(source or "").strip()
+    mapping_mode = str((entry or {}).get("field_mapping_mode", "") or "").strip()
+    by_order = mapping_mode in {"by_order", "按列顺序", "按顺序", "order"}
+    field_pos = None
+    if field_index is not None:
+        try:
+            field_pos = int(field_index) + 1
+        except Exception:
+            field_pos = None
+    for _, item in table_access_field_items(entry):
+        if not isinstance(item, dict):
+            continue
+        rule_mode = str(item.get("match_mode", "") or "").strip()
+        if (by_order or rule_mode in {"by_order", "按列顺序", "按顺序", "order"}) and field_pos is not None:
+            for key in ("target_index", "source_index", "index", "column_index"):
+                raw_index = item.get(key)
+                if raw_index in ("", None):
+                    continue
+                try:
+                    if int(raw_index) == field_pos:
+                        return item
+                except Exception:
+                    continue
+        candidates = [
+            str(item.get("target_field", "") or "").strip(),
+            str(item.get("source_field", "") or "").strip(),
+            str(item.get("field", "") or "").strip(),
+            str(item.get("name", "") or "").strip(),
+        ]
+        if target and target in candidates:
+            return item
+        if source and source in candidates:
+            return item
+    return None
+
+
+def evaluate_field_mapping_access(node_label, node, expected, actual, write_mode_formatter=None):
+    expected_fields = (expected or {}).get("field_mapping") or {}
+    actual_fields = (actual or {}).get("field_mapping") or {}
+    if not isinstance(expected_fields, dict) or not isinstance(actual_fields, dict):
+        return []
+
+    issues = []
+    for field_index, (_, field_rule) in enumerate(expected_fields.items()):
+        if not isinstance(field_rule, dict):
+            continue
+        target = str(field_rule.get("target_field") or field_rule.get("source_field") or "").strip()
+        source = str(field_rule.get("source_field") or "").strip()
+        expected_fperms = field_rule.get("permissions") or {}
+        if not target:
+            continue
+        actual_rule = find_table_access_field_rule(actual, target=target, source=source, field_index=field_index)
+        if actual_rule is None:
+            continue
+        actual_fperms = actual_rule.get("permissions") or {}
+        issues.extend(evaluate_field_access(
+            node_label,
+            node,
+            expected,
+            target,
+            expected_fperms,
+            actual_fperms,
+            write_mode_formatter=write_mode_formatter,
+        ))
+    return issues
+
+
+def sanitize_table_name_for_match(name):
+    name = str(name or "").strip()
+    if not name:
+        return ""
+    name = re.sub(r"\W+", "_", name, flags=re.UNICODE)
+    if re.match(r"^\d", name):
+        name = "t_" + name
+    return name
+
+
+def table_access_entry_match_score(actual, expected):
+    actual = actual or {}
+    expected = expected or {}
+    actual_table = str(actual.get("table", "") or "").strip()
+    expected_table = str(expected.get("table", "") or "").strip()
+    actual_pattern = str(actual.get("table_pattern", "") or "").strip()
+    expected_pattern = str(expected.get("table_pattern", "") or "").strip()
+    if expected_pattern:
+        if actual_pattern == expected_pattern:
+            score = 3
+        elif actual_table and table_pattern_matches(actual_table, expected_pattern, expected.get("pattern_type", "glob")):
+            score = 2
+        else:
+            return 0
+    elif actual_pattern and expected_table:
+        if table_pattern_matches(expected_table, actual_pattern, actual.get("pattern_type", "glob")):
+            score = 2
+        else:
+            return 0
+    else:
+        if not expected_table:
+            return 0
+        actual_names = {actual_table, sanitize_table_name_for_match(actual_table)}
+        expected_names = {expected_table, sanitize_table_name_for_match(expected_table)}
+        actual_names.discard("")
+        expected_names.discard("")
+        if not actual_names.intersection(expected_names):
+            return 0
+        score = 1
+    actual_source = str(actual.get("source_type", "") or "").strip()
+    expected_source = str(expected.get("source_type", "") or "").strip()
+    if expected_source and actual_source == expected_source:
+        score += 2
+    elif expected_source and actual_source and actual_source != expected_source:
+        return 0
+    if str(actual.get("role", "") or "").strip() == str(expected.get("role", "") or "").strip():
+        score += 1
+    return score
+
+
+def find_matching_table_access_entry(actual_tables, expected):
+    best = None
+    best_score = 0
+    for entry in actual_tables or []:
+        if not isinstance(entry, dict):
+            continue
+        score = table_access_entry_match_score(entry, expected)
+        if score > best_score:
+            best = entry
+            best_score = score
+    return best
+
+
+def evaluate_node_table_access_precheck(
+    node_label,
+    node,
+    expected_access,
+    actual_access,
+    permission_label_map=None,
+    execute_actions=True,
+    db_path="",
+    db_exists=None,
+    sqlite_tables=None,
+    produced_transit=None,
+    needs_plugin_declaration=False,
+    has_plugin_declaration=False,
+    write_mode_formatter=None,
+):
+    issues = []
+    produced_transit = set(produced_transit or set())
+    node_type = (node or {}).get("type", "")
+    config = (node or {}).get("config", {}) if isinstance(node, dict) else {}
+    issues.extend(evaluate_plugin_access_declaration_precheck(
+        node_label,
+        node,
+        config,
+        needs_declaration=node_type == "插件节点" and needs_plugin_declaration,
+        has_declaration=node_type == "插件节点" and has_plugin_declaration,
+        write_mode_formatter=write_mode_formatter,
+    ))
+
+    actual_tables = actual_access.get("tables", []) if isinstance(actual_access, dict) else []
+    matched_actual_ids = set()
+    produced_names = []
+    for expected in (expected_access or {}).get("tables", []):
+        if not isinstance(expected, dict):
+            continue
+        actual = find_matching_table_access_entry(actual_tables, expected)
+        if actual is not None:
+            matched_actual_ids.add(id(actual))
+
+        expected_result = evaluate_expected_table_access(
+            node_label,
+            node,
+            expected,
+            actual=actual,
+            permission_label_map=permission_label_map,
+            execute_actions=execute_actions,
+            db_path=db_path,
+            db_exists=db_exists,
+            sqlite_tables=sqlite_tables,
+            produced_transit=produced_transit,
+            write_mode_formatter=write_mode_formatter,
+        )
+        issues.extend(expected_result.get("issues", []))
+        for transit_name in expected_result.get("produced_transit", []) or []:
+            produced_transit.add(transit_name)
+            produced_names.append(transit_name)
+        if expected_result.get("skip"):
+            continue
+        if actual is not None:
+            issues.extend(evaluate_field_mapping_access(
+                node_label,
+                node,
+                expected,
+                actual,
+                write_mode_formatter=write_mode_formatter,
+            ))
+
+    for actual in actual_tables:
+        if not isinstance(actual, dict) or id(actual) in matched_actual_ids:
+            continue
+        issues.extend(evaluate_unmatched_actual_table_access(
+            node_label,
+            node,
+            actual,
+            write_mode_formatter=write_mode_formatter,
+        ))
+
+    return {
+        "issues": issues,
+        "produced_transit": produced_names,
+        "matched_actual_ids": matched_actual_ids,
+    }
 
 
 def evaluate_unmatched_actual_table_access(node_label, node, actual, write_mode_formatter=None):

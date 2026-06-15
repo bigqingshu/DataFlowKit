@@ -4,10 +4,19 @@ import unittest
 from workflow.table_access_precheck import (
     evaluate_expected_table_access,
     evaluate_field_access,
+    evaluate_field_mapping_access,
+    evaluate_node_table_access_precheck,
+    evaluate_plugin_access_declaration_precheck,
     evaluate_unmatched_actual_table_access,
+    evaluate_workflow_output_precheck,
+    find_table_access_field_rule,
+    find_matching_table_access_entry,
     iter_nodes_for_table_access_precheck,
     make_table_access_precheck_issue,
+    make_workflow_output_access_entry,
     normalize_precheck_transit_name,
+    table_access_field_items,
+    table_access_entry_match_score,
     table_access_entry_status,
     table_access_entry_table_label,
     table_access_operation_summary,
@@ -169,6 +178,166 @@ class TableAccessPrecheckHelperTests(unittest.TestCase):
         risky = evaluate_unmatched_actual_table_access("1.节点", {"type": "节点"}, {"table": "src", "permissions": {"drop_table": True}})
         self.assertEqual(risky[0]["category"], "risk")
         self.assertFalse(risky[0]["blocking"])
+
+    def test_field_mapping_items_and_rule_matching_helpers(self):
+        dict_entry = {
+            "field_mapping": {
+                "a": {"source_field": "A", "target_field": "B"},
+                "bad": "skip",
+            }
+        }
+        self.assertEqual(table_access_field_items(dict_entry), [("a", {"source_field": "A", "target_field": "B"})])
+        self.assertEqual(find_table_access_field_rule(dict_entry, target="B")["source_field"], "A")
+
+        list_entry = {
+            "field_mapping_mode": "by_order",
+            "field_mapping": [
+                {"key": "first", "source_index": 1, "target_field": "A"},
+                {"source_index": 2, "target_field": "B"},
+            ],
+        }
+        self.assertEqual([key for key, _item in table_access_field_items(list_entry)], ["first", "field_2"])
+        self.assertEqual(find_table_access_field_rule(list_entry, field_index=1)["target_field"], "B")
+
+    def test_field_mapping_access_helper_checks_matching_actual_rules(self):
+        expected = {
+            "table": "src",
+            "permissions": {"read_table": True},
+            "field_mapping": {
+                "a": {
+                    "source_field": "A",
+                    "target_field": "A",
+                    "permissions": {"write_field": True, "read_field": True},
+                }
+            },
+        }
+        actual = {
+            "table": "src",
+            "field_mapping": {
+                "a": {
+                    "source_field": "A",
+                    "target_field": "A",
+                    "permissions": {"protect_field": True, "read_field": False},
+                }
+            },
+        }
+
+        issues = evaluate_field_mapping_access("1.字段", {"type": "字段"}, expected, actual)
+        self.assertEqual([item["severity"] for item in issues], ["error", "warning"])
+        self.assertTrue(any("字段被保护" in item["message"] for item in issues))
+        self.assertTrue(any("字段读权限被关闭" in item["message"] for item in issues))
+
+    def test_table_entry_match_and_find_helpers(self):
+        expected = {"table": "源 表", "source_type": "SQLite表", "role": "source"}
+        actual = {"table": "源_表", "source_type": "SQLite表", "role": "source"}
+        self.assertGreater(table_access_entry_match_score(actual, expected), 0)
+
+        pattern_actual = {"table_pattern": "src_*", "source_type": "SQLite表"}
+        pattern_expected = {"table": "src_demo", "source_type": "SQLite表"}
+        self.assertIs(find_matching_table_access_entry([pattern_actual], pattern_expected), pattern_actual)
+
+    def test_node_table_access_precheck_helper_orchestrates_node_issues(self):
+        expected_access = {
+            "tables": [{
+                "role": "target",
+                "source_type": "中转副表",
+                "table": "中转: tmp",
+                "permissions": {"write_table": True, "create_table": True},
+                "field_mapping": {
+                    "a": {
+                        "source_field": "A",
+                        "target_field": "A",
+                        "permissions": {"write_field": True},
+                    }
+                },
+            }]
+        }
+        actual_access = {
+            "tables": [
+                {
+                    "role": "target",
+                    "source_type": "中转副表",
+                    "table": "中转: tmp",
+                    "permissions": {"write_table": True, "create_table": True},
+                    "field_mapping": {
+                        "a": {
+                            "source_field": "A",
+                            "target_field": "A",
+                            "permissions": {"protect_field": True},
+                        }
+                    },
+                },
+                {"role": "manual", "source_type": "SQLite表", "table": "danger", "permissions": {"drop_table": True}},
+            ]
+        }
+
+        result = evaluate_node_table_access_precheck(
+            "1.节点",
+            {"type": "节点"},
+            expected_access,
+            actual_access,
+        )
+
+        self.assertEqual(result["produced_transit"], ["tmp"])
+        messages = [item["message"] for item in result["issues"]]
+        self.assertTrue(any("字段被保护" in message for message in messages))
+        self.assertTrue(any("手动表角色包含高风险写入权限" in message for message in messages))
+
+    def test_node_table_access_precheck_helper_includes_plugin_declaration_warning(self):
+        result = evaluate_node_table_access_precheck(
+            "1.插件",
+            {"type": "插件节点", "config": {"plugin_id": "p1"}},
+            {"tables": []},
+            {"tables": []},
+            needs_plugin_declaration=True,
+            has_plugin_declaration=False,
+        )
+
+        self.assertEqual(len(result["issues"]), 1)
+        self.assertIn("未声明表权限规格", result["issues"][0]["message"])
+
+    def test_workflow_output_precheck_helper(self):
+        self.assertEqual(evaluate_workflow_output_precheck("输出到主界面预览区", "", db_path=""), [])
+
+        issues = evaluate_workflow_output_precheck("保存为SQLite新表", "", db_path="")
+        messages = [item["message"] for item in issues]
+        self.assertIn("输出方式需要 SQLite 数据库，但当前未设置数据库路径。", messages)
+        self.assertIn("输出方式需要表名，但输出表名为空。", messages)
+        self.assertTrue(all(item["blocking"] for item in issues))
+
+        overwrite_issues = evaluate_workflow_output_precheck("覆盖当前表", "目标表", db_path="demo.db")
+        self.assertEqual(len(overwrite_issues), 1)
+        self.assertEqual(overwrite_issues[0]["category"], "risk")
+        self.assertFalse(overwrite_issues[0]["blocking"])
+        self.assertIn("覆盖 SQLite 表：目标表", overwrite_issues[0]["message"])
+
+        entry = make_workflow_output_access_entry("目标表", "覆盖当前表")
+        self.assertTrue(entry["permissions"]["replace_table"])
+        self.assertEqual(entry["role"], "workflow_output")
+
+    def test_plugin_access_declaration_precheck_helper(self):
+        node = {"type": "插件节点"}
+        config = {"plugin_id": "p1"}
+
+        issues = evaluate_plugin_access_declaration_precheck(
+            "1.插件节点",
+            node,
+            config,
+            needs_declaration=True,
+            has_declaration=False,
+        )
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["table"], "p1")
+        self.assertIn("未声明表权限规格", issues[0]["message"])
+
+        self.assertEqual(
+            evaluate_plugin_access_declaration_precheck("1.插件节点", node, config, True, True),
+            [],
+        )
+        self.assertEqual(
+            evaluate_plugin_access_declaration_precheck("1.普通节点", {"type": "筛选"}, config, True, False),
+            [],
+        )
 
 
 if __name__ == "__main__":
