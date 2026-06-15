@@ -80,6 +80,7 @@ from workflow.nodes.data_nodes import (
     apply_extract_node as workflow_apply_extract_node,
     apply_format_datetime_node as workflow_apply_format_datetime_node,
     apply_fill_value_node as workflow_apply_fill_value_node,
+    apply_merge_node as workflow_apply_merge_node,
     apply_move_columns_node as workflow_apply_move_columns_node,
     apply_new_columns_node as workflow_apply_new_columns_node,
     apply_replace_node as workflow_apply_replace_node,
@@ -16631,48 +16632,9 @@ class PlanWorkflowWindow:
         return workflow_apply_extract_node(headers, rows, config)
 
     def apply_merge_node(self, headers, rows, config, context=None):
-        fields = list(config.get("fields", []))
-        if not fields:
-            raise ValueError("合并字段不能为空。")
-        indexes = [self.field_index(headers, f) for f in fields]
-        seps = [self.parse_separator_text(sep) for sep in list(config.get("separators", []))]
-        if len(seps) < max(len(fields)-1, 0):
-            seps += [""] * (len(fields)-1-len(seps))
-        output_field = self.get_unique_header(config.get("output_field", "合并结果"), headers)
-        new_headers = list(headers) + [output_field]
-        new_rows = self.normalize_rows(rows, len(headers))
-        skip_empty = bool(config.get("skip_empty", True))
-        trim_value = bool(config.get("trim_value", True))
-        placeholder = str(config.get("empty_placeholder", ""))
-        for row_index, row in enumerate(new_rows):
-            self.check_workflow_cancelled_periodically(context, row_index)
-            pieces = []
-            active_indexes = []
-            for i, idx in enumerate(indexes):
-                value = self.safe_cell(row, idx)
-                if trim_value:
-                    value = value.strip()
-                if value == "" and placeholder:
-                    value = placeholder
-                if skip_empty and value == "":
-                    continue
-                active_indexes.append(i)
-                pieces.append(value)
-            if not pieces:
-                merged = ""
-            elif skip_empty:
-                merged = pieces[0]
-                for p_i in range(1, len(pieces)):
-                    original_gap_index = active_indexes[p_i-1]
-                    sep = seps[original_gap_index] if original_gap_index < len(seps) else ""
-                    merged += sep + pieces[p_i]
-            else:
-                merged = pieces[0]
-                for i in range(1, len(pieces)):
-                    sep = seps[i-1] if i-1 < len(seps) else ""
-                    merged += sep + pieces[i]
-            row.append(merged)
-        return new_headers, new_rows, f"新增字段 {output_field}"
+        node_context = dict(context or {})
+        node_context["check_cancelled"] = lambda index: self.check_workflow_cancelled_periodically(context, index)
+        return workflow_apply_merge_node(headers, rows, config, context=node_context)
 
     def ensure_field_exists(self, headers, rows, field_name):
         return workflow_ensure_field_exists(headers, rows, field_name)

@@ -13,6 +13,7 @@ from workflow.nodes.data_nodes import (
     apply_extract_node,
     apply_format_datetime_node,
     apply_fill_value_node,
+    apply_merge_node,
     apply_move_columns_node,
     apply_new_columns_node,
     apply_replace_node,
@@ -288,6 +289,74 @@ class WorkflowDataNodesTests(unittest.TestCase):
                     "match_value": "a",
                     "replace_value": "x",
                 },
+                context={
+                    "check_cancelled": lambda _index: (
+                        (_ for _ in ()).throw(RuntimeError("用户取消")) if cancel_event.is_set() else None
+                    )
+                },
+            )
+
+    def test_merge_node_skips_empty_values_and_keeps_original_separator_gap(self):
+        headers, rows, message = apply_merge_node(
+            ["A", "B", "C"],
+            [[" left ", "", "right"], ["", "mid", "end"]],
+            {
+                "fields": ["A", "B", "C"],
+                "separators": ["-", "|"],
+                "output_field": "Merged",
+                "skip_empty": True,
+                "trim_value": True,
+            },
+        )
+
+        self.assertEqual(headers, ["A", "B", "C", "Merged"])
+        self.assertEqual(rows, [[" left ", "", "right", "left-right"], ["", "mid", "end", "mid|end"]])
+        self.assertEqual(message, "新增字段 Merged")
+
+    def test_merge_node_can_keep_empty_values_and_use_placeholders(self):
+        headers, rows, message = apply_merge_node(
+            ["A", "B", "C"],
+            [["a", "", "c"], ["", "", ""]],
+            {
+                "fields": ["A", "B", "C"],
+                "separators": ["{空格}", "{制表符}"],
+                "output_field": "A",
+                "skip_empty": False,
+                "trim_value": True,
+                "empty_placeholder": "NA",
+            },
+        )
+
+        self.assertEqual(headers, ["A", "B", "C", "A_2"])
+        self.assertEqual(rows, [["a", "", "c", "a NA\tc"], ["", "", "", "NA NA\tNA"]])
+        self.assertEqual(message, "新增字段 A_2")
+
+    def test_merge_node_parses_escaped_separators_and_validates_fields(self):
+        headers, rows, _message = apply_merge_node(
+            ["A", "B"],
+            [["a", "b"]],
+            {
+                "fields": ["A", "B"],
+                "separators": ["\\n"],
+                "output_field": "Merged",
+            },
+        )
+
+        self.assertEqual(headers, ["A", "B", "Merged"])
+        self.assertEqual(rows, [["a", "b", "a\nb"]])
+        with self.assertRaisesRegex(ValueError, "合并字段不能为空"):
+            apply_merge_node(["A"], [["a"]], {"fields": []})
+        with self.assertRaisesRegex(ValueError, "字段不存在：Missing"):
+            apply_merge_node(["A"], [["a"]], {"fields": ["Missing"]})
+
+    def test_merge_node_honors_cancel_callback(self):
+        cancel_event = threading.Event()
+        cancel_event.set()
+        with self.assertRaisesRegex(RuntimeError, "用户取消"):
+            apply_merge_node(
+                ["A", "B"],
+                [["a", "b"]],
+                {"fields": ["A", "B"]},
                 context={
                     "check_cancelled": lambda _index: (
                         (_ for _ in ()).throw(RuntimeError("用户取消")) if cancel_event.is_set() else None

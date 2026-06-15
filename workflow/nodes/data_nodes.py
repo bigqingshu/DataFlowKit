@@ -107,6 +107,33 @@ def safe_int(value, default=0):
         return default
 
 
+def parse_separator_text(text):
+    value = "" if text is None else str(text)
+    replacements = [
+        ("{Windows换行}", "\r\n"),
+        ("{windows换行}", "\r\n"),
+        ("{换行符}", "\n"),
+        ("{换行}", "\n"),
+        ("{newline}", "\n"),
+        ("{NEWLINE}", "\n"),
+        ("{制表符}", "\t"),
+        ("{tab}", "\t"),
+        ("{TAB}", "\t"),
+        ("{空格}", " "),
+        ("{space}", " "),
+        ("{SPACE}", " "),
+        ("{空字符}", ""),
+        ("{empty}", ""),
+        ("{EMPTY}", ""),
+    ]
+    for key, real in replacements:
+        value = value.replace(key, real)
+    value = value.replace("\\r\\n", "\r\n")
+    value = value.replace("\\n", "\n")
+    value = value.replace("\\t", "\t")
+    return value
+
+
 def compare_values(text, op, value, case_sensitive=True):
     text = "" if text is None else str(text)
     value = "" if value is None else str(value)
@@ -688,6 +715,55 @@ def apply_replace_node(headers, rows, config, context=None):
         extras.append(f"跳过无效取行 {skipped_invalid_row} 次")
     extra = "，" + "，".join(extras) if extras else ""
     return list(headers), new_rows, f"修改 {changed} 处{extra}"
+
+
+def apply_merge_node(headers, rows, config, context=None):
+    fields = list(config.get("fields", []))
+    if not fields:
+        raise ValueError("合并字段不能为空。")
+    indexes = [field_index(headers, field) for field in fields]
+    seps = [parse_separator_text(sep) for sep in list(config.get("separators", []))]
+    if len(seps) < max(len(fields) - 1, 0):
+        seps += [""] * (len(fields) - 1 - len(seps))
+
+    output_field = get_unique_header(config.get("output_field", "合并结果"), headers)
+    new_headers = list(headers) + [output_field]
+    new_rows = normalize_rows(rows, len(headers))
+    skip_empty = bool(config.get("skip_empty", True))
+    trim_value = bool(config.get("trim_value", True))
+    placeholder = str(config.get("empty_placeholder", ""))
+
+    for row_index, row in enumerate(new_rows):
+        _check_cancelled(context, row_index)
+        pieces = []
+        active_indexes = []
+        for index, field_idx in enumerate(indexes):
+            value = safe_cell(row, field_idx)
+            if trim_value:
+                value = value.strip()
+            if value == "" and placeholder:
+                value = placeholder
+            if skip_empty and value == "":
+                continue
+            active_indexes.append(index)
+            pieces.append(value)
+
+        if not pieces:
+            merged = ""
+        elif skip_empty:
+            merged = pieces[0]
+            for piece_index in range(1, len(pieces)):
+                original_gap_index = active_indexes[piece_index - 1]
+                sep = seps[original_gap_index] if original_gap_index < len(seps) else ""
+                merged += sep + pieces[piece_index]
+        else:
+            merged = pieces[0]
+            for piece_index in range(1, len(pieces)):
+                sep = seps[piece_index - 1] if piece_index - 1 < len(seps) else ""
+                merged += sep + pieces[piece_index]
+        row.append(merged)
+
+    return new_headers, new_rows, f"新增字段 {output_field}"
 
 
 def apply_fill_value_node(headers, rows, config, context=None):
