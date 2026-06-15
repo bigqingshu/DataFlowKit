@@ -66,6 +66,7 @@ from core.text_utils import (
     sanitize_sql_name as core_sanitize_sql_name,
 )
 from db import PluginDatabaseAPI, TableAccessManager
+from plugin_runtime.progress import handle_plugin_stdout_line
 from plugin_runtime.scanner import scan_plugins
 from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
 from shared.table_access_policy import table_pattern_matches
@@ -8748,26 +8749,6 @@ class PlanWorkflowWindow:
                 except Exception:
                     pass
 
-        def handle_stdout_line(line):
-            text = str(line or "").rstrip("\r\n")
-            if not text:
-                return
-            try:
-                msg = json.loads(text)
-                if isinstance(msg, dict) and msg.get("type") in ("node_progress", "node_log", "log"):
-                    if callable(progress_callback):
-                        m = dict(msg)
-                        m.setdefault("type", "node_progress")
-                        m.setdefault("node_name", config.get("name") or "插件节点")
-                        m.setdefault("plugin_id", plugin_id)
-                        progress_callback(m)
-                    if msg.get("message"):
-                        logs.append({"level": msg.get("level", "INFO"), "message": msg.get("message")})
-                else:
-                    logs.append({"level": "INFO", "message": text})
-            except Exception:
-                logs.append({"level": "INFO", "message": text})
-
         def terminate_process(proc, reason, exc):
             try:
                 if proc.poll() is None:
@@ -8797,7 +8778,13 @@ class PlanWorkflowWindow:
                         line = stdout_queue.get_nowait()
                     except queue.Empty:
                         break
-                    handle_stdout_line(line)
+                    handle_plugin_stdout_line(
+                        line,
+                        logs,
+                        progress_callback=progress_callback,
+                        node_name=config.get("name") or "插件节点",
+                        plugin_id=plugin_id,
+                    )
                     drained += 1
 
                 if cancel_event is not None and cancel_event.is_set():
