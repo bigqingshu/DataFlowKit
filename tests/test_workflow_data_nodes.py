@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import unittest
+import threading
 from datetime import datetime
 
 from workflow.nodes.data_nodes import (
@@ -14,6 +15,7 @@ from workflow.nodes.data_nodes import (
     apply_fill_value_node,
     apply_move_columns_node,
     apply_new_columns_node,
+    apply_replace_node,
     apply_sequence_fill_node,
     extract_one_value,
     get_datetime_parse_warning,
@@ -138,6 +140,160 @@ class WorkflowDataNodesTests(unittest.TestCase):
             {"delete_mode": "删除空行", "empty_mode": "整行为空"},
         )
         self.assertEqual(rows, [["x", ""]])
+
+    def test_replace_node_manual_text_modes(self):
+        headers, rows, message = apply_replace_node(
+            ["Text"],
+            [["abc abc"], ["ABC"]],
+            {
+                "target_field": "Text",
+                "match_mode": "包含",
+                "replace_mode": "局部替换匹配字符串",
+                "match_value": "abc",
+                "replace_value": "x",
+                "replace_count": "1",
+            },
+        )
+
+        self.assertEqual(headers, ["Text"])
+        self.assertEqual(rows, [["x abc"], ["ABC"]])
+        self.assertEqual(message, "修改 1 处")
+
+        _headers, rows, message = apply_replace_node(
+            ["Text"],
+            [["ABC"], ["nope"]],
+            {
+                "target_field": "Text",
+                "match_mode": "包含",
+                "replace_mode": "整格替换为新值",
+                "match_value": "abc",
+                "replace_value": "matched",
+                "case_sensitive": False,
+            },
+        )
+        self.assertEqual(rows, [["matched"], ["nope"]])
+        self.assertEqual(message, "修改 1 处")
+
+    def test_replace_node_regex_and_invalid_regex_errors(self):
+        headers, rows, message = apply_replace_node(
+            ["Text"],
+            [["A-001"], ["B-22"]],
+            {
+                "target_field": "Text",
+                "match_mode": "正则匹配",
+                "replace_mode": "局部替换匹配字符串",
+                "match_value": r"\d+",
+                "replace_value": "#",
+            },
+        )
+
+        self.assertEqual(rows, [["A-#"], ["B-#"]])
+        self.assertEqual(message, "修改 2 处")
+        with self.assertRaisesRegex(ValueError, "批量替换正则错误"):
+            apply_replace_node(
+                ["Text"],
+                [["abc"]],
+                {
+                    "target_field": "Text",
+                    "match_mode": "正则匹配",
+                    "match_value": "(",
+                    "replace_value": "x",
+                },
+            )
+
+    def test_replace_node_uses_column_values_by_current_and_pair_rows(self):
+        headers, rows, message = apply_replace_node(
+            ["Text", "Match", "Replace"],
+            [["red apple", "red", "green"], ["blue berry", "berry", "bird"]],
+            {
+                "target_field": "Text",
+                "match_value_source": "列字段",
+                "match_value_field": "Match",
+                "replace_value_source": "列字段",
+                "replace_value_field": "Replace",
+                "match_row_policy": "当前行",
+                "replace_row_policy": "当前行",
+                "match_mode": "包含",
+            },
+        )
+
+        self.assertEqual(rows, [["green apple", "red", "green"], ["blue bird", "berry", "bird"]])
+        self.assertEqual(message, "修改 2 处")
+
+        _headers, rows, message = apply_replace_node(
+            ["Text", "Match", "Replace"],
+            [["foo red", "red", "R"], ["foo blue", "blue", "B"]],
+            {
+                "target_field": "Text",
+                "match_value_source": "列字段",
+                "match_value_field": "Match",
+                "replace_value_source": "列字段",
+                "replace_value_field": "Replace",
+                "match_row_policy": "按匹配行号",
+                "replace_row_policy": "按匹配行号",
+                "match_mode": "包含",
+            },
+        )
+        self.assertEqual(rows, [["foo R", "red", "R"], ["foo B", "blue", "B"]])
+        self.assertEqual(message, "修改 2 处")
+
+    def test_replace_node_reports_empty_and_invalid_source_rows(self):
+        headers, rows, message = apply_replace_node(
+            ["Text", "Match", "Replace"],
+            [["abc", "", "x"], ["abc", "a", "y"]],
+            {
+                "target_field": "Text",
+                "match_value_source": "列字段",
+                "match_value_field": "Match",
+                "replace_value_source": "列字段",
+                "replace_value_field": "Replace",
+                "match_mode": "包含",
+                "match_row_policy": "按匹配行号",
+                "replace_row_policy": "当前行",
+            },
+        )
+
+        self.assertEqual(rows, [["xbc", "", "x"], ["ybc", "a", "y"]])
+        self.assertEqual(message, "修改 2 处，跳过空匹配值 2 次")
+
+        _headers, rows, message = apply_replace_node(
+            ["Text", "Match", "Replace"],
+            [["abc", "", "x"], ["abc", "a", "y"]],
+            {
+                "target_field": "Text",
+                "match_value_source": "列字段",
+                "match_value_field": "Match",
+                "replace_value_source": "列字段",
+                "replace_value_field": "Replace",
+                "match_mode": "包含",
+                "match_row_policy": "按匹配行号",
+                "replace_row_policy": "固定行号",
+                "replace_row_index": "99",
+            },
+        )
+
+        self.assertEqual(rows, [["abc", "", "x"], ["abc", "a", "y"]])
+        self.assertEqual(message, "修改 0 处，跳过无效取行 4 次")
+
+    def test_replace_node_honors_cancel_callback(self):
+        cancel_event = threading.Event()
+        cancel_event.set()
+        with self.assertRaisesRegex(RuntimeError, "用户取消"):
+            apply_replace_node(
+                ["Text"],
+                [["abc"]],
+                {
+                    "target_field": "Text",
+                    "match_mode": "包含",
+                    "match_value": "a",
+                    "replace_value": "x",
+                },
+                context={
+                    "check_cancelled": lambda _index: (
+                        (_ for _ in ()).throw(RuntimeError("用户取消")) if cancel_event.is_set() else None
+                    )
+                },
+            )
 
     def test_fill_value_manual_expands_rows_and_skips_existing_cells(self):
         headers, rows, message = apply_fill_value_node(
