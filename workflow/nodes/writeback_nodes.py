@@ -90,6 +90,27 @@ def build_writeback_full_structure_execute_stat(saved, full_rows, target_columns
     return f"已按来源完整结构覆盖 SQLite 表：{saved}（{len(full_rows)} 行 × {len(target_columns)} 列）"
 
 
+def get_writeback_non_execute_suffix(execute_actions, enable_write):
+    if execute_actions and not enable_write:
+        return "；正式执行但未勾选允许写入，未修改数据库"
+    if not execute_actions:
+        return "；预览模式未修改数据库"
+    return ""
+
+
+def should_execute_writeback_update(execute_actions, enable_write, action_counts, write_range_mode):
+    if not (execute_actions and enable_write):
+        return False
+    return action_counts.get("write_count", 0) > 0 or write_range_mode == "清空目标字段后覆盖，保留目标原行数"
+
+
+def finish_writeback_node_output(headers, rows, actions, stat, output_preview):
+    preview_headers, preview_rows = build_writeback_preview_rows(actions)
+    if output_preview:
+        return preview_headers, preview_rows, stat
+    return list(headers), [list(r) for r in rows], stat
+
+
 def build_writeback_full_structure_rows_for_sqlite(headers, rows, config, target_columns):
     """按来源完整结构生成 SQLite 目标表的新 rows，并生成预览动作。"""
     mappings = list(config.get("field_mappings", []))

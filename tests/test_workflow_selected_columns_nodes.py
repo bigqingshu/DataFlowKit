@@ -6,9 +6,11 @@ from workflow.nodes.selected_columns_nodes import (
     apply_selected_columns_to_memory_table,
     build_selected_columns_write_payload,
     build_selected_columns_write_preview_rows,
+    get_selected_columns_write_skip_stat,
     get_selected_columns_write_selected_fields,
     make_selected_columns_target_fields,
     normalize_selected_columns_write_mode,
+    resolve_selected_columns_write_target,
     selected_columns_should_write,
 )
 
@@ -119,6 +121,57 @@ class WorkflowSelectedColumnsNodesTests(unittest.TestCase):
         self.assertEqual(selected_fields, ["B", "A"])
         self.assertEqual(target_fields, ["B_out", "A_out"])
         self.assertEqual(selected_rows, [["b1", "a1"], ["", "a2"]])
+
+    def test_write_target_resolution_and_skip_stats(self):
+        self.assertEqual(resolve_selected_columns_write_target({"target_type": "当前工作表"}), ("当前工作表", "当前工作表"))
+        self.assertEqual(
+            resolve_selected_columns_write_target({"target_type": "中转副表", "target_transit_table": "T"}),
+            ("中转副表", "T"),
+        )
+        self.assertEqual(
+            resolve_selected_columns_write_target({"target_type": "SQLite表", "target_table": ""}),
+            ("SQLite表", "选定列结果"),
+        )
+
+        stat = get_selected_columns_write_skip_stat(
+            {"enable_write": False},
+            "来源",
+            ["A", "B"],
+            [["a", "b"]],
+        )
+        self.assertIn("未勾选实际写入", stat)
+        self.assertIn("2 列 × 1 行", stat)
+
+        stat = get_selected_columns_write_skip_stat(
+            {"enable_write": True},
+            "来源",
+            ["A"],
+            [["a"]],
+            execute_actions=False,
+            allow_preview_write=False,
+        )
+        self.assertIn("预览计划", stat)
+
+        stat = get_selected_columns_write_skip_stat(
+            {"enable_write": True, "target_type": "SQLite表"},
+            "来源",
+            ["A"],
+            [["a"]],
+            allow_preview_write=True,
+            config_preview_only=True,
+        )
+        self.assertIn("配置界面预运行", stat)
+
+        self.assertEqual(
+            get_selected_columns_write_skip_stat(
+                {"enable_write": True, "target_type": "当前工作表"},
+                "来源",
+                ["A"],
+                [["a"]],
+                allow_preview_write=True,
+            ),
+            "",
+        )
 
     def test_build_selected_columns_write_preview_rows(self):
         headers, rows = build_selected_columns_write_preview_rows(

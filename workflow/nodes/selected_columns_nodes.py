@@ -190,3 +190,43 @@ def build_selected_columns_write_payload(config, source_headers, source_rows):
     for row in normalize_rows(source_rows, len(source_headers)):
         selected_rows.append([row[i] if i < len(row) else "" for i in src_indexes])
     return selected_fields, target_fields, selected_rows
+
+
+def resolve_selected_columns_write_target(config):
+    target_type = config.get("target_type", "SQLite表")
+    if target_type == "SQLite表":
+        target_name = str(config.get("target_table", "选定列结果")).strip() or "选定列结果"
+    elif target_type == "中转副表":
+        target_name = str(config.get("target_transit_table", "选定列结果")).strip() or "选定列结果"
+    elif target_type == "当前工作表":
+        target_name = "当前工作表"
+    else:
+        target_name = str(config.get("target_table", "选定列结果")).strip() or "选定列结果"
+    return target_type, target_name
+
+
+def get_selected_columns_write_skip_stat(
+    config,
+    source_name,
+    selected_fields,
+    selected_rows,
+    execute_actions=False,
+    allow_preview_write=False,
+    config_preview_only=False,
+):
+    selected_count = len(list(selected_fields or []))
+    row_count = len(list(selected_rows or []))
+    if not bool(config.get("enable_write", False)):
+        return (
+            "选定列写入预览模式：未勾选实际写入，透传数据；"
+            f"来源 {source_name}，准备复制 {selected_count} 列 × {row_count} 行到目标字段"
+        )
+    if not bool(execute_actions or allow_preview_write):
+        return f"预览计划：不会实际写入目标表；来源 {source_name}，选定 {selected_count} 列 × {row_count} 行"
+    target_type, _target_name = resolve_selected_columns_write_target(config)
+    if target_type == "SQLite表" and config_preview_only:
+        return (
+            "配置界面预运行：跳过 SQLite 写入，避免刷新配置时误改数据库；"
+            f"来源 {source_name}，选定 {selected_count} 列 × {row_count} 行"
+        )
+    return ""

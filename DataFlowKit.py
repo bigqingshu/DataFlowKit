@@ -217,9 +217,11 @@ from workflow.nodes.selected_columns_nodes import (
     apply_selected_columns_to_memory_table as workflow_apply_selected_columns_to_memory_table,
     build_selected_columns_write_payload as workflow_build_selected_columns_write_payload,
     build_selected_columns_write_preview_rows as workflow_build_selected_columns_write_preview_rows,
+    get_selected_columns_write_skip_stat as workflow_get_selected_columns_write_skip_stat,
     get_selected_columns_write_selected_fields as workflow_get_selected_columns_write_selected_fields,
     make_selected_columns_target_fields as workflow_make_selected_columns_target_fields,
     normalize_selected_columns_write_mode as workflow_normalize_selected_columns_write_mode,
+    resolve_selected_columns_write_target as workflow_resolve_selected_columns_write_target,
     selected_columns_should_write as workflow_selected_columns_should_write,
 )
 from workflow.nodes.transit_nodes import (
@@ -237,7 +239,10 @@ from workflow.nodes.writeback_nodes import (
     build_writeback_preview_stat as workflow_build_writeback_preview_stat,
     count_writeback_actions as workflow_count_writeback_actions,
     compare_writeback_values as workflow_compare_writeback_values,
+    finish_writeback_node_output as workflow_finish_writeback_node_output,
+    get_writeback_non_execute_suffix as workflow_get_writeback_non_execute_suffix,
     get_writeback_target_fields as workflow_get_writeback_target_fields,
+    should_execute_writeback_update as workflow_should_execute_writeback_update,
 )
 
 
@@ -12968,32 +12973,22 @@ class PlanWorkflowWindow:
         context = context if context is not None else {"transit_tables": {}}
         context.setdefault("transit_tables", {})
         selected_fields, target_fields, selected_rows, source_name = self.get_selected_columns_write_payload(config, headers, rows, context)
-        target_type = config.get("target_type", "SQLite表")
-        if target_type == "SQLite表":
-            target_name = str(config.get("target_table", "选定列结果")).strip() or "选定列结果"
-        elif target_type == "中转副表":
-            target_name = str(config.get("target_transit_table", "选定列结果")).strip() or "选定列结果"
-        elif target_type == "当前工作表":
-            target_name = "当前工作表"
-        else:
-            target_name = str(config.get("target_table", "选定列结果")).strip() or "选定列结果"
-
-        if not bool(config.get("enable_write", False)):
-            return headers, rows, f"选定列写入预览模式：未勾选实际写入，透传数据；来源 {source_name}，准备复制 {len(selected_fields)} 列 × {len(selected_rows)} 行到目标字段"
-
+        target_type, target_name = workflow_resolve_selected_columns_write_target(config)
         allow_preview_write = bool(context.get("allow_selected_columns_write_in_preview", False))
-        do_write = bool(execute_actions or allow_preview_write)
-        if not do_write:
-            return headers, rows, f"预览计划：不会实际写入目标表；来源 {source_name}，选定 {len(selected_fields)} 列 × {len(selected_rows)} 行"
-
         # 配置界面刷新/切换节点时也会临时运行前置节点。
         # 这个场景只允许生成当前工作表字段和内存中转副表，严禁写真实 SQLite，避免误改数据库。
         config_preview_only = bool(context.get("selected_columns_config_preview_only", False))
-        if target_type == "SQLite表" and config_preview_only:
-            return headers, rows, (
-                f"配置界面预运行：跳过 SQLite 写入，避免刷新配置时误改数据库；"
-                f"来源 {source_name}，选定 {len(selected_fields)} 列 × {len(selected_rows)} 行"
-            )
+        skip_stat = workflow_get_selected_columns_write_skip_stat(
+            config,
+            source_name,
+            selected_fields,
+            selected_rows,
+            execute_actions=execute_actions,
+            allow_preview_write=allow_preview_write,
+            config_preview_only=config_preview_only,
+        )
+        if skip_stat:
+            return headers, rows, skip_stat
 
         if target_type == "当前工作表":
             return self.apply_selected_columns_write_current_table(headers, rows, config, target_fields, selected_rows)
@@ -16554,17 +16549,15 @@ class PlanWorkflowWindow:
             if execute_actions and enable_write:
                 saved = self.save_result_to_sqlite(target_columns, full_rows, table_name, overwrite=True, backup=backup_before_write, context=context)
                 stat = workflow_build_writeback_full_structure_execute_stat(saved, full_rows, target_columns)
-            elif execute_actions and not enable_write:
-                stat += "；正式执行但未勾选允许写入，未修改数据库"
             else:
-                stat += "；预览模式未修改数据库"
+                stat += workflow_get_writeback_non_execute_suffix(execute_actions, enable_write)
         else:
             actions, table_name = self.build_writeback_actions(headers, rows, config, context=context)
             action_counts = workflow_count_writeback_actions(actions)
             target_fields = workflow_get_writeback_target_fields(config)
             stat = workflow_build_writeback_preview_stat(write_range_mode, actions, target_fields=target_fields)
 
-            if execute_actions and enable_write and (action_counts["write_count"] > 0 or write_range_mode == "清空目标字段后覆盖，保留目标原行数"):
+            if workflow_should_execute_writeback_update(execute_actions, enable_write, action_counts, write_range_mode):
                 backup_name = ""
                 if backup_before_write:
                     backup_name = self.backup_sqlite_table_for_writeback(table_name, context=context)
@@ -16585,16 +16578,10 @@ class PlanWorkflowWindow:
                         context=context,
                     ) if action_counts["write_count"] > 0 else 0
                 stat = workflow_build_writeback_execute_stat(table_name, actual, cleared=cleared, backup_name=backup_name)
-            elif execute_actions and not enable_write:
-                stat += "；正式执行但未勾选允许写入，未修改数据库"
             else:
-                stat += "；预览模式未修改数据库"
+                stat += workflow_get_writeback_non_execute_suffix(execute_actions, enable_write)
 
-        preview_headers, preview_rows = workflow_build_writeback_preview_rows(actions)
-
-        if output_preview:
-            return preview_headers, preview_rows, stat
-        return headers, rows, stat
+        return workflow_finish_writeback_node_output(headers, rows, actions, stat, output_preview)
 
     def apply_filter_node(self, headers, rows, config, context=None):
         runtime_config = copy.deepcopy(config)

@@ -12,7 +12,10 @@ from workflow.nodes.writeback_nodes import (
     build_writeback_preview_stat,
     compare_writeback_values,
     count_writeback_actions,
+    finish_writeback_node_output,
+    get_writeback_non_execute_suffix,
     get_writeback_target_fields,
+    should_execute_writeback_update,
 )
 from DataFlowKit import PlanWorkflowWindow
 
@@ -109,6 +112,21 @@ class WorkflowWritebackNodesTests(unittest.TestCase):
         self.assertEqual(
             build_writeback_full_structure_execute_stat("saved target", [["x"]], ["a", "b"]),
             "已按来源完整结构覆盖 SQLite 表：saved target（1 行 × 2 列）",
+        )
+
+        self.assertEqual(get_writeback_non_execute_suffix(True, False), "；正式执行但未勾选允许写入，未修改数据库")
+        self.assertEqual(get_writeback_non_execute_suffix(False, True), "；预览模式未修改数据库")
+        self.assertEqual(get_writeback_non_execute_suffix(True, True), "")
+        self.assertTrue(should_execute_writeback_update(True, True, {"write_count": 1}, "局部覆盖，保留目标原行数"))
+        self.assertTrue(should_execute_writeback_update(True, True, {"write_count": 0}, "清空目标字段后覆盖，保留目标原行数"))
+        self.assertFalse(should_execute_writeback_update(True, False, {"write_count": 1}, "局部覆盖，保留目标原行数"))
+        self.assertEqual(
+            finish_writeback_node_output(["A"], [["a"]], [{"source_row": 1}], "stat", True),
+            (WRITEBACK_PREVIEW_HEADERS, [[1, "", "", "已有行", "", "", "", "", ""]], "stat"),
+        )
+        self.assertEqual(
+            finish_writeback_node_output(["A"], [["a"]], [{"source_row": 1}], "stat", False),
+            (["A"], [["a"]], "stat"),
         )
 
     def test_build_writeback_full_structure_rows_for_sqlite_maps_source_rows(self):
