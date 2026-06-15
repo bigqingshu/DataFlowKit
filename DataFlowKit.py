@@ -188,9 +188,15 @@ from workflow.nodes.transit_nodes import (
 )
 from workflow.nodes.writeback_nodes import (
     apply_external_table_to_current_node as workflow_apply_external_table_to_current_node,
+    build_writeback_execute_stat as workflow_build_writeback_execute_stat,
     build_writeback_actions as workflow_build_writeback_actions,
     build_writeback_full_structure_rows_for_sqlite as workflow_build_writeback_full_structure_rows_for_sqlite,
+    build_writeback_full_structure_execute_stat as workflow_build_writeback_full_structure_execute_stat,
+    build_writeback_preview_rows as workflow_build_writeback_preview_rows,
+    build_writeback_preview_stat as workflow_build_writeback_preview_stat,
+    count_writeback_actions as workflow_count_writeback_actions,
     compare_writeback_values as workflow_compare_writeback_values,
+    get_writeback_target_fields as workflow_get_writeback_target_fields,
 )
 
 
@@ -16890,33 +16896,31 @@ class PlanWorkflowWindow:
         if write_range_mode == "按来源完整结构覆盖":
             target_columns, _target_records = self.load_target_table_rows_for_writeback(table_name, context=context)
             actions, full_rows = self.build_writeback_full_structure_rows_for_sqlite(headers, rows, config, target_columns)
-            write_count = sum(1 for a in actions if a.get("write"))
-            stat = f"完整结构覆盖预览 {len(actions)} 条动作，待写入 {write_count} 个单元格；目标表最终 {len(full_rows)} 行 × {len(target_columns)} 列"
+            stat = workflow_build_writeback_preview_stat(
+                write_range_mode,
+                actions,
+                full_rows=full_rows,
+                target_columns=target_columns,
+            )
             if execute_actions and enable_write:
                 saved = self.save_result_to_sqlite(target_columns, full_rows, table_name, overwrite=True, backup=backup_before_write, context=context)
-                stat = f"已按来源完整结构覆盖 SQLite 表：{saved}（{len(full_rows)} 行 × {len(target_columns)} 列）"
+                stat = workflow_build_writeback_full_structure_execute_stat(saved, full_rows, target_columns)
             elif execute_actions and not enable_write:
                 stat += "；正式执行但未勾选允许写入，未修改数据库"
             else:
                 stat += "；预览模式未修改数据库"
         else:
             actions, table_name = self.build_writeback_actions(headers, rows, config, context=context)
-            write_count = sum(1 for a in actions if a.get("write"))
-            new_row_count = len({a.get("new_row_key") for a in actions if a.get("write") and a.get("is_new_row") and a.get("new_row_key")})
-            stat = f"写入预览 {len(actions)} 条动作，待写入 {write_count} 个单元格"
-            if write_range_mode == "清空目标字段后覆盖，保留目标原行数":
-                target_fields = [str(m.get("target_field", "")).strip() for m in config.get("field_mappings", []) if str(m.get("target_field", "")).strip()]
-                stat += f"；执行时会先清空 {len(set(target_fields))} 个目标字段的整列旧值"
-            if new_row_count:
-                stat += f"，将新增目标行 {new_row_count} 行"
+            action_counts = workflow_count_writeback_actions(actions)
+            target_fields = workflow_get_writeback_target_fields(config)
+            stat = workflow_build_writeback_preview_stat(write_range_mode, actions, target_fields=target_fields)
 
-            if execute_actions and enable_write and (write_count > 0 or write_range_mode == "清空目标字段后覆盖，保留目标原行数"):
+            if execute_actions and enable_write and (action_counts["write_count"] > 0 or write_range_mode == "清空目标字段后覆盖，保留目标原行数"):
                 backup_name = ""
                 if backup_before_write:
                     backup_name = self.backup_sqlite_table_for_writeback(table_name, context=context)
                 cleared = 0
                 if write_range_mode == "清空目标字段后覆盖，保留目标原行数":
-                    target_fields = [str(m.get("target_field", "")).strip() for m in config.get("field_mappings", []) if str(m.get("target_field", "")).strip()]
                     result = self.apply_writeback_transaction_to_sqlite(
                         table_name,
                         actions,
@@ -16930,29 +16934,14 @@ class PlanWorkflowWindow:
                         table_name,
                         actions,
                         context=context,
-                    ) if write_count > 0 else 0
-                stat = f"已写入目标表 {table_name}：{actual} 处"
-                if cleared:
-                    stat += f"，已先清空目标字段 {cleared} 列"
-                if backup_name:
-                    stat += f"，备份表：{backup_name}"
+                    ) if action_counts["write_count"] > 0 else 0
+                stat = workflow_build_writeback_execute_stat(table_name, actual, cleared=cleared, backup_name=backup_name)
             elif execute_actions and not enable_write:
                 stat += "；正式执行但未勾选允许写入，未修改数据库"
             else:
                 stat += "；预览模式未修改数据库"
 
-        preview_headers = ["当前行号", "目标rowid", "目标行号", "行类型", "匹配状态", "目标字段", "原值", "新值", "动作"]
-        preview_rows = [[
-            a.get("source_row", ""),
-            a.get("target_rowid", ""),
-            a.get("target_row_index", ""),
-            "新增行" if a.get("is_new_row") else "已有行",
-            a.get("match_status", ""),
-            a.get("target_field", ""),
-            a.get("old_value", ""),
-            a.get("new_value", ""),
-            a.get("action", ""),
-        ] for a in actions]
+        preview_headers, preview_rows = workflow_build_writeback_preview_rows(actions)
 
         if output_preview:
             return preview_headers, preview_rows, stat

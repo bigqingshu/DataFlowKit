@@ -2,10 +2,17 @@
 import unittest
 
 from workflow.nodes.writeback_nodes import (
+    WRITEBACK_PREVIEW_HEADERS,
     apply_external_table_to_current_node,
+    build_writeback_execute_stat,
     build_writeback_actions,
+    build_writeback_full_structure_execute_stat,
     build_writeback_full_structure_rows_for_sqlite,
+    build_writeback_preview_rows,
+    build_writeback_preview_stat,
     compare_writeback_values,
+    count_writeback_actions,
+    get_writeback_target_fields,
 )
 from DataFlowKit import PlanWorkflowWindow
 
@@ -51,6 +58,58 @@ class WorkflowWritebackNodesTests(unittest.TestCase):
         self.assertTrue(compare_writeback_values("a", "外部包含当前", "cat"))
         self.assertTrue(compare_writeback_values("abc", "双向包含", "b"))
         self.assertFalse(compare_writeback_values("abc", "当前包含目标", ""))
+
+    def test_build_writeback_preview_rows_projects_actions(self):
+        headers, rows = build_writeback_preview_rows([
+            {
+                "source_row": 2,
+                "target_rowid": 9,
+                "target_row_index": "新增第2行",
+                "is_new_row": True,
+                "match_status": "成功",
+                "target_field": "name",
+                "old_value": "",
+                "new_value": "Alice",
+                "action": "将覆盖",
+            }
+        ])
+
+        self.assertEqual(headers, WRITEBACK_PREVIEW_HEADERS)
+        self.assertEqual(rows, [[2, 9, "新增第2行", "新增行", "成功", "name", "", "Alice", "将覆盖"]])
+
+    def test_writeback_stat_helpers_keep_existing_messages(self):
+        actions = [
+            {"write": True, "is_new_row": True, "new_row_key": "row-1"},
+            {"write": True, "is_new_row": True, "new_row_key": "row-1"},
+            {"write": False, "is_new_row": True, "new_row_key": "row-2"},
+        ]
+        config = {
+            "field_mappings": [
+                {"target_field": "a"},
+                {"target_field": "b"},
+                {"target_field": "a"},
+                {"target_field": ""},
+            ]
+        }
+
+        self.assertEqual(count_writeback_actions(actions), {"total": 3, "write_count": 2, "new_row_count": 1})
+        self.assertEqual(get_writeback_target_fields(config), ["a", "b"])
+        self.assertEqual(
+            build_writeback_preview_stat("清空目标字段后覆盖，保留目标原行数", actions, target_fields=["a", "b"]),
+            "写入预览 3 条动作，待写入 2 个单元格；执行时会先清空 2 个目标字段的整列旧值，将新增目标行 1 行",
+        )
+        self.assertEqual(
+            build_writeback_preview_stat("按来源完整结构覆盖", actions, full_rows=[["x"], ["y"]], target_columns=["a"]),
+            "完整结构覆盖预览 3 条动作，待写入 2 个单元格；目标表最终 2 行 × 1 列",
+        )
+        self.assertEqual(
+            build_writeback_execute_stat("target", 5, cleared=2, backup_name="target_bak"),
+            "已写入目标表 target：5 处，已先清空目标字段 2 列，备份表：target_bak",
+        )
+        self.assertEqual(
+            build_writeback_full_structure_execute_stat("saved target", [["x"]], ["a", "b"]),
+            "已按来源完整结构覆盖 SQLite 表：saved target（1 行 × 2 列）",
+        )
 
     def test_build_writeback_full_structure_rows_for_sqlite_maps_source_rows(self):
         actions, new_rows = build_writeback_full_structure_rows_for_sqlite(

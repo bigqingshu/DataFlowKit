@@ -4,6 +4,9 @@
 from core.data_utils import normalize_rows, safe_cell
 
 
+WRITEBACK_PREVIEW_HEADERS = ["当前行号", "目标rowid", "目标行号", "行类型", "匹配状态", "目标字段", "原值", "新值", "动作"]
+
+
 def compare_writeback_values(left, op, right):
     left = "" if left is None else str(left)
     right = "" if right is None else str(right)
@@ -18,6 +21,73 @@ def compare_writeback_values(left, op, right):
     if op == "双向包含":
         return (right != "" and right in left) or (left != "" and left in right)
     return left == right
+
+
+def build_writeback_preview_rows(actions):
+    preview_rows = [[
+        a.get("source_row", ""),
+        a.get("target_rowid", ""),
+        a.get("target_row_index", ""),
+        "新增行" if a.get("is_new_row") else "已有行",
+        a.get("match_status", ""),
+        a.get("target_field", ""),
+        a.get("old_value", ""),
+        a.get("new_value", ""),
+        a.get("action", ""),
+    ] for a in (actions or [])]
+    return list(WRITEBACK_PREVIEW_HEADERS), preview_rows
+
+
+def count_writeback_actions(actions):
+    actions = list(actions or [])
+    write_count = sum(1 for a in actions if a.get("write"))
+    new_row_count = len({
+        a.get("new_row_key")
+        for a in actions
+        if a.get("write") and a.get("is_new_row") and a.get("new_row_key")
+    })
+    return {
+        "total": len(actions),
+        "write_count": write_count,
+        "new_row_count": new_row_count,
+    }
+
+
+def get_writeback_target_fields(config):
+    fields = []
+    for mapping in (config.get("field_mappings", []) or []):
+        target_field = str(mapping.get("target_field", "")).strip()
+        if target_field and target_field not in fields:
+            fields.append(target_field)
+    return fields
+
+
+def build_writeback_preview_stat(write_range_mode, actions, target_fields=None, full_rows=None, target_columns=None):
+    counts = count_writeback_actions(actions)
+    if write_range_mode == "按来源完整结构覆盖":
+        return (
+            f"完整结构覆盖预览 {counts['total']} 条动作，待写入 {counts['write_count']} 个单元格"
+            f"；目标表最终 {len(full_rows or [])} 行 × {len(target_columns or [])} 列"
+        )
+    stat = f"写入预览 {counts['total']} 条动作，待写入 {counts['write_count']} 个单元格"
+    if write_range_mode == "清空目标字段后覆盖，保留目标原行数":
+        stat += f"；执行时会先清空 {len(list(target_fields or []))} 个目标字段的整列旧值"
+    if counts["new_row_count"]:
+        stat += f"，将新增目标行 {counts['new_row_count']} 行"
+    return stat
+
+
+def build_writeback_execute_stat(table_name, actual, cleared=0, backup_name=""):
+    stat = f"已写入目标表 {table_name}：{actual} 处"
+    if cleared:
+        stat += f"，已先清空目标字段 {cleared} 列"
+    if backup_name:
+        stat += f"，备份表：{backup_name}"
+    return stat
+
+
+def build_writeback_full_structure_execute_stat(saved, full_rows, target_columns):
+    return f"已按来源完整结构覆盖 SQLite 表：{saved}（{len(full_rows)} 行 × {len(target_columns)} 列）"
 
 
 def build_writeback_full_structure_rows_for_sqlite(headers, rows, config, target_columns):
