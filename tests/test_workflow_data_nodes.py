@@ -15,6 +15,7 @@ from workflow.nodes.data_nodes import (
     apply_extract_node,
     apply_format_datetime_node,
     apply_fill_value_node,
+    apply_match_value_output_field_name_node,
     apply_merge_node,
     apply_move_columns_node,
     apply_new_columns_node,
@@ -26,6 +27,7 @@ from workflow.nodes.data_nodes import (
     format_numeric_column_result,
     get_datetime_parse_warning,
     get_numeric_node_row_indexes,
+    match_value_output_column_match,
     numeric_node_fallback_value,
     parse_format_datetime_value,
     parse_new_columns_specs,
@@ -803,6 +805,152 @@ class WorkflowDataNodesTests(unittest.TestCase):
                 [["x"]],
                 {"key_fields": ["A"]},
                 context={"check_cancelled": lambda _index: (_ for _ in ()).throw(RuntimeError("用户取消"))},
+            )
+
+    def test_match_value_output_match_modes(self):
+        self.assertTrue(match_value_output_column_match("ABC", "ABC", "完全相等"))
+        self.assertTrue(match_value_output_column_match("ABC", "bc", "忽略大小写当前值包含匹配值"))
+        self.assertTrue(match_value_output_column_match("abc123", r"\d+", "正则匹配"))
+        self.assertFalse(match_value_output_column_match("abc", "(", "正则匹配"))
+        self.assertFalse(match_value_output_column_match("abc", "x", "完全相等"))
+
+    def test_match_value_output_node_writes_single_multi_and_no_match(self):
+        lookup_context = {
+            "lookup_columns": ["ColA", "ColB"],
+            "lookup_records": [
+                {"__row_index__": 1, "ColA": "alpha", "ColB": "beta"},
+                {"__row_index__": 2, "ColA": "gamma", "ColB": "alpha"},
+            ],
+        }
+
+        headers, rows, message = apply_match_value_output_field_name_node(
+            ["Source"],
+            [["beta"], ["alpha"], ["none"]],
+            {
+                "source_field": "Source",
+                "lookup_table": "lookup",
+                "lookup_fields": ["ColA", "ColB"],
+                "match_mode": "完全相等",
+                "multi_match_policy": "合并所有字段名",
+                "multi_match_separator": "|",
+            },
+            context=lookup_context,
+        )
+
+        self.assertEqual(headers, ["Source", "匹配字段名", "匹配值", "匹配行号", "匹配状态"])
+        self.assertEqual(rows[0], ["beta", "ColB", "beta", "1", "成功"])
+        self.assertEqual(rows[1], ["alpha", "ColA|ColB", "alpha", "1|2", "多匹配，共2项"])
+        self.assertEqual(rows[2], ["none", "未匹配", "", "", "未匹配"])
+        self.assertEqual(message, "匹配值输出列名完成：成功 1 行，多匹配 1 行，未匹配 1 行")
+
+    def test_match_value_output_node_multi_policies_and_existing_fields(self):
+        lookup_context = {
+            "lookup_columns": ["A", "B"],
+            "lookup_records": [
+                {"__row_index__": 1, "A": "x", "B": "x"},
+            ],
+        }
+
+        headers, rows, message = apply_match_value_output_field_name_node(
+            ["Source", "Out", "Status"],
+            [["x", "old", "old-status"]],
+            {
+                "source_field": "Source",
+                "lookup_table": "lookup",
+                "lookup_fields": ["A", "B"],
+                "output_field": "Out",
+                "output_match_value": False,
+                "output_match_row": False,
+                "output_status": True,
+                "status_field": "Status",
+                "multi_match_policy": "取第一个匹配字段名",
+            },
+            context=lookup_context,
+        )
+
+        self.assertEqual(headers, ["Source", "Out", "Status"])
+        self.assertEqual(rows, [["x", "A", "多匹配取第一，共2项"]])
+        self.assertEqual(message, "匹配值输出列名完成：成功 0 行，多匹配 1 行，未匹配 0 行")
+
+        headers, rows, message = apply_match_value_output_field_name_node(
+            ["Source"],
+            [["x"]],
+            {
+                "source_field": "Source",
+                "lookup_table": "lookup",
+                "lookup_fields": ["A", "B"],
+                "multi_match_policy": "标记为多匹配",
+            },
+            context=lookup_context,
+        )
+
+        self.assertEqual(rows, [["x", "多匹配", "x", "1", "多匹配，共2项"]])
+        self.assertEqual(message, "匹配值输出列名完成：成功 0 行，多匹配 1 行，未匹配 0 行")
+
+    def test_match_value_output_node_skip_empty_lookup_and_contains_modes(self):
+        lookup_context = {
+            "lookup_columns": ["Needle", "Text"],
+            "lookup_records": [
+                {"__row_index__": 1, "Needle": "", "Text": "hello world"},
+                {"__row_index__": 2, "Needle": "world", "Text": "other"},
+            ],
+        }
+
+        headers, rows, message = apply_match_value_output_field_name_node(
+            ["Source"],
+            [["hello world"]],
+            {
+                "source_field": "Source",
+                "lookup_table": "lookup",
+                "lookup_fields": ["Needle"],
+                "match_mode": "当前值包含匹配值",
+                "skip_empty_lookup_value": True,
+            },
+            context=lookup_context,
+        )
+
+        self.assertEqual(rows, [["hello world", "Needle", "world", "2", "成功"]])
+        self.assertEqual(message, "匹配值输出列名完成：成功 1 行，多匹配 0 行，未匹配 0 行")
+
+        headers, rows, message = apply_match_value_output_field_name_node(
+            ["Source"],
+            [["hello"]],
+            {
+                "source_field": "Source",
+                "lookup_table": "lookup",
+                "lookup_fields": ["Text"],
+                "match_mode": "匹配值包含当前值",
+                "no_match_value": "MISS",
+            },
+            context=lookup_context,
+        )
+
+        self.assertEqual(rows, [["hello", "Text", "hello world", "1", "成功"]])
+        self.assertEqual(message, "匹配值输出列名完成：成功 1 行，多匹配 0 行，未匹配 0 行")
+
+    def test_match_value_output_node_errors_and_cancel_callback(self):
+        lookup_context = {"lookup_columns": ["A"], "lookup_records": [{"__row_index__": 1, "A": "x"}]}
+
+        with self.assertRaisesRegex(ValueError, "请选择当前表匹配字段"):
+            apply_match_value_output_field_name_node(["Source"], [["x"]], {"lookup_table": "lookup", "lookup_fields": ["A"]}, context=lookup_context)
+        with self.assertRaisesRegex(ValueError, "当前表字段不存在：Missing"):
+            apply_match_value_output_field_name_node(["Source"], [["x"]], {"source_field": "Missing", "lookup_table": "lookup", "lookup_fields": ["A"]}, context=lookup_context)
+        with self.assertRaisesRegex(ValueError, "请选择匹配表或中转副表"):
+            apply_match_value_output_field_name_node(["Source"], [["x"]], {"source_field": "Source", "lookup_fields": ["A"]}, context=lookup_context)
+        with self.assertRaisesRegex(ValueError, "请选择至少一个参与匹配的目标表字段"):
+            apply_match_value_output_field_name_node(["Source"], [["x"]], {"source_field": "Source", "lookup_table": "lookup"}, context=lookup_context)
+        with self.assertRaisesRegex(ValueError, "匹配表字段不存在：Missing"):
+            apply_match_value_output_field_name_node(["Source"], [["x"]], {"source_field": "Source", "lookup_table": "lookup", "lookup_fields": ["Missing"]}, context=lookup_context)
+        with self.assertRaisesRegex(RuntimeError, "用户取消"):
+            apply_match_value_output_field_name_node(
+                ["Source"],
+                [["x"]],
+                {"source_field": "Source", "lookup_table": "lookup", "lookup_fields": ["A"]},
+                context={
+                    "lookup_columns": ["A"],
+                    "lookup_records": [{"__row_index__": 1, "A": "x"}],
+                    "check_cancelled": lambda _index: (_ for _ in ()).throw(RuntimeError("用户取消")),
+                },
             )
 
     def test_fill_value_manual_expands_rows_and_skips_existing_cells(self):
