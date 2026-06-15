@@ -246,6 +246,21 @@ from workflow.nodes.writeback_nodes import (
     get_writeback_target_fields as workflow_get_writeback_target_fields,
     should_execute_writeback_update as workflow_should_execute_writeback_update,
 )
+from workflow.table_access_precheck import (
+    evaluate_expected_table_access as workflow_evaluate_expected_table_access,
+    evaluate_field_access as workflow_evaluate_field_access,
+    evaluate_unmatched_actual_table_access as workflow_evaluate_unmatched_actual_table_access,
+    iter_nodes_for_table_access_precheck as workflow_iter_nodes_for_table_access_precheck,
+    make_table_access_precheck_issue as workflow_make_table_access_precheck_issue,
+    normalize_precheck_transit_name as workflow_normalize_precheck_transit_name,
+    table_access_entry_status as workflow_table_access_entry_status,
+    table_access_entry_table_label as workflow_table_access_entry_table_label,
+    table_access_operation_summary as workflow_table_access_operation_summary,
+    table_access_precheck_actionable as workflow_table_access_precheck_actionable,
+    table_access_precheck_blocking as workflow_table_access_precheck_blocking,
+    table_access_precheck_sort_key as workflow_table_access_precheck_sort_key,
+    table_access_precheck_summary_text as workflow_table_access_precheck_summary_text,
+)
 
 
 def get_app_dir():
@@ -5446,70 +5461,16 @@ class PlanWorkflowWindow:
         return "/".join(labels[:4]) + ("..." if len(labels) > 4 else "")
 
     def table_access_entry_table_label(self, entry):
-        entry = entry or {}
-        table = str(entry.get("table", "") or "").strip()
-        pattern = str(entry.get("table_pattern", "") or "").strip()
-        if table:
-            return table
-        if pattern:
-            return f"范围:{pattern}"
-        return ""
+        return workflow_table_access_entry_table_label(entry)
 
     def table_access_operation_summary(self, entry):
-        entry = entry or {}
-        table = self.table_access_entry_table_label(entry)
-        perms = entry.get("permissions") or {}
-        mode = str(entry.get("write_mode", "") or "").strip()
-        ops = []
-        if entry.get("is_current_table") or table == "__CURRENT_TABLE__":
-            if perms.get("write_table") or perms.get("update_rows"):
-                return "当前表写入(只记录)" if entry.get("log_only") else "当前表写入"
-            if perms.get("read_table"):
-                return "当前表读取"
-            return "当前表"
-        if perms.get("read_table"):
-            ops.append("读表")
-        if perms.get("write_table"):
-            ops.append("写表")
-        if perms.get("create_table"):
-            ops.append("新建")
-        if perms.get("append_rows"):
-            ops.append("追加")
-        if perms.get("update_rows"):
-            ops.append("更新")
-        if perms.get("clear_table"):
-            ops.append("清空")
-        if perms.get("replace_table"):
-            ops.append("替换")
-        if perms.get("delete_rows"):
-            ops.append("删行")
-        if perms.get("drop_table"):
-            ops.append("删表")
-        if not ops:
-            return "无操作"
-        text = "/".join(ops)
-        return f"{text}；{self.write_mode_display_text(mode)}" if mode else text
+        return workflow_table_access_operation_summary(
+            entry,
+            write_mode_formatter=self.write_mode_display_text,
+        )
 
     def table_access_entry_status(self, entry):
-        entry = entry or {}
-        table = self.table_access_entry_table_label(entry)
-        perms = entry.get("permissions") or {}
-        if not table:
-            return "未绑定"
-        if entry.get("is_current_table") or table == "__CURRENT_TABLE__":
-            if perms.get("write_table") or perms.get("update_rows"):
-                return "写入只记录" if entry.get("log_only") else "当前表写入"
-            return "当前表读取" if perms.get("read_table") else "当前表"
-        if not any(bool(v) for v in perms.values()):
-            return "未授权"
-        risky = [k for k in ("replace_table", "clear_table", "drop_table", "delete_rows", "alter_schema") if perms.get(k)]
-        if risky:
-            return "危险写入"
-        if perms.get("write_table") or perms.get("append_rows") or perms.get("update_rows"):
-            return "已授权"
-        if perms.get("read_table"):
-            return "只读"
-        return "待检查"
+        return workflow_table_access_entry_status(entry)
 
     def table_access_node_status(self, node):
         access = self.get_node_table_access(node)
@@ -5782,56 +5743,33 @@ class PlanWorkflowWindow:
         return best
 
     def normalize_precheck_transit_name(self, table_name):
-        text = str(table_name or "").strip()
-        if text.startswith("中转:"):
-            return text.split(":", 1)[1].strip()
-        return text
+        return workflow_normalize_precheck_transit_name(table_name)
 
     def add_table_access_precheck_issue(self, issues, severity, node_label, node, entry, message,
                                         suggestion="", category="permission", blocking=None):
-        entry = entry or {}
-        if blocking is None:
-            blocking = severity in ("error", "warning")
-        issues.append({
-            "severity": severity,
-            "category": category,
-            "blocking": bool(blocking),
-            "node": node_label,
-            "node_type": (node or {}).get("type", ""),
-            "node_name": (node or {}).get("name", ""),
-            "role": entry.get("role", ""),
-            "source_type": entry.get("source_type", ""),
-            "table": self.table_access_entry_table_label(entry),
-            "operation": self.table_access_operation_summary(entry),
-            "message": message,
-            "suggestion": suggestion,
-        })
+        issues.append(workflow_make_table_access_precheck_issue(
+            severity,
+            node_label,
+            node,
+            entry,
+            message,
+            suggestion=suggestion,
+            category=category,
+            blocking=blocking,
+            write_mode_formatter=self.write_mode_display_text,
+        ))
 
     def table_access_precheck_sort_key(self, issue):
-        order = {"error": 0, "warning": 1, "info": 2, "ok": 3}
-        return (order.get(issue.get("severity"), 9), str(issue.get("node", "")), str(issue.get("table", "")))
+        return workflow_table_access_precheck_sort_key(issue)
 
     def table_access_precheck_summary_text(self, issues):
-        counts = {"error": 0, "warning": 0, "info": 0, "ok": 0}
-        for issue in issues or []:
-            sev = issue.get("severity", "info")
-            counts[sev] = counts.get(sev, 0) + 1
-        if not issues:
-            return "权限预检完成：未发现需要处理的表权限问题。"
-        blocking_count = len(self.table_access_precheck_blocking(issues))
-        return (
-            "权限预检完成："
-            f"错误 {counts.get('error', 0)} 项，"
-            f"警告 {counts.get('warning', 0)} 项，"
-            f"提示 {counts.get('info', 0)} 项，"
-            f"阻断 {blocking_count} 项。"
-        )
+        return workflow_table_access_precheck_summary_text(issues)
 
     def table_access_precheck_actionable(self, issues):
-        return [issue for issue in (issues or []) if issue.get("severity") in ("error", "warning")]
+        return workflow_table_access_precheck_actionable(issues)
 
     def table_access_precheck_blocking(self, issues):
-        return [issue for issue in (issues or []) if bool(issue.get("blocking"))]
+        return workflow_table_access_precheck_blocking(issues)
 
     def get_precheck_sqlite_tables(self):
         db_path = self.get_workflow_db_path()
@@ -5844,17 +5782,7 @@ class PlanWorkflowWindow:
 
     def iter_nodes_for_table_access_precheck(self, nodes=None, stop_index=None, prefix=""):
         node_list = nodes if nodes is not None else self.nodes
-        for idx, node in enumerate(node_list or []):
-            if stop_index is not None and not prefix and idx > int(stop_index):
-                break
-            node_type = (node or {}).get("type", "")
-            label = f"{prefix}{idx + 1}.{node_type}"
-            yield label, node
-            cfg = (node or {}).get("config", {}) if isinstance(node, dict) else {}
-            child_nodes = cfg.get("nodes") if isinstance(cfg, dict) else None
-            if isinstance(child_nodes, list):
-                child_prefix = f"{label} > "
-                yield from self.iter_nodes_for_table_access_precheck(child_nodes, stop_index=None, prefix=child_prefix)
+        yield from workflow_iter_nodes_for_table_access_precheck(node_list, stop_index=stop_index, prefix=prefix)
 
     def build_table_access_precheck(self, execute_actions=True, stop_index=None, nodes=None):
         """
@@ -5871,14 +5799,8 @@ class PlanWorkflowWindow:
         db_path = self.get_workflow_db_path()
         sqlite_tables = self.get_precheck_sqlite_tables()
         produced_transit = set((self.current_transit_tables or {}).keys())
-        risky_permissions = {
-            "replace_table": "替换整表",
-            "clear_table": "清空表/字段",
-            "drop_table": "删除表",
-            "delete_rows": "删除行",
-            "alter_schema": "改表结构",
-        }
-        write_permissions = {"write_table", "create_table", "append_rows", "update_rows", "clear_table", "replace_table", "alter_schema", "delete_rows", "drop_table"}
+        permission_label_map = dict(self.table_access_permission_items())
+        db_exists = os.path.exists(db_path) if db_path else None
 
         if execute_actions:
             output_mode = self.output_mode_var.get()
@@ -5937,36 +5859,30 @@ class PlanWorkflowWindow:
             for expected in expected_access.get("tables", []):
                 if not isinstance(expected, dict):
                     continue
-                raw_table = str(expected.get("table", "") or "").strip()
-                table_pattern = str(expected.get("table_pattern", "") or "").strip()
-                table = raw_table or table_pattern
-                dynamic_table = bool(table_pattern)
-                source_type = str(expected.get("source_type", "") or "").strip()
-                expected_perms = expected.get("permissions") or {}
-                required = [key for key, value in expected_perms.items() if value]
-
-                if expected.get("is_current_table") or raw_table == "__CURRENT_TABLE__":
-                    continue
-                if not table:
-                    self.add_table_access_precheck_issue(issues, "warning", node_label, node, expected, "节点配置会访问表，但表名为空。", "回到节点配置或字段权限层中补齐表名。")
-                    continue
-
                 actual = self.find_matching_table_access_entry(actual_tables, expected)
                 if actual is not None:
                     matched_actual_ids.add(id(actual))
-                if actual is None:
-                    severity = "error" if any(key in write_permissions for key in required) else "warning"
-                    self.add_table_access_precheck_issue(issues, severity, node_label, node, expected, "当前 table_access 中缺少该表角色。", "打开字段权限层，重建默认映射或手动添加表角色。")
-                    actual_perms = {}
-                else:
-                    actual_perms = actual.get("permissions") or {}
-                    missing = [key for key in required if not bool(actual_perms.get(key))]
-                    if missing:
-                        label_map = dict(self.table_access_permission_items())
-                        missing_text = "、".join(label_map.get(key, key) for key in missing)
-                        severity = "error" if any(key in write_permissions for key in missing) else "warning"
-                        self.add_table_access_precheck_issue(issues, severity, node_label, node, expected, f"实际授权缺少：{missing_text}。", "在字段权限层中补齐权限，或调整节点写入设置。")
 
+                expected_result = workflow_evaluate_expected_table_access(
+                    node_label,
+                    node,
+                    expected,
+                    actual=actual,
+                    permission_label_map=permission_label_map,
+                    execute_actions=execute_actions,
+                    db_path=db_path,
+                    db_exists=db_exists,
+                    sqlite_tables=sqlite_tables,
+                    produced_transit=produced_transit,
+                    write_mode_formatter=self.write_mode_display_text,
+                )
+                issues.extend(expected_result.get("issues", []))
+                for transit_name in expected_result.get("produced_transit", []) or []:
+                    produced_transit.add(transit_name)
+                if expected_result.get("skip"):
+                    continue
+
+                if actual is not None:
                     expected_fields = expected.get("field_mapping") or {}
                     actual_fields = actual.get("field_mapping") or {}
                     if isinstance(expected_fields, dict) and isinstance(actual_fields, dict):
@@ -5982,72 +5898,25 @@ class PlanWorkflowWindow:
                             if actual_rule is None:
                                 continue
                             actual_fperms = actual_rule.get("permissions") or {}
-                            if expected_fperms.get("write_field") and actual_fperms.get("protect_field"):
-                                self.add_table_access_precheck_issue(issues, "error", node_label, node, expected, f"字段被保护但节点需要写入：{target}", "取消字段保护，或调整节点输出字段。")
-                            if expected_fperms.get("read_field") and "read_field" in actual_fperms and not actual_fperms.get("read_field"):
-                                self.add_table_access_precheck_issue(issues, "warning", node_label, node, expected, f"字段读权限被关闭：{target}", "补齐字段读权限，或从节点配置中移除该字段。")
-
-                effective_perms = actual_perms or expected_perms
-                risky = [label for key, label in risky_permissions.items() if effective_perms.get(key)]
-                if risky and any(effective_perms.get(key) for key in write_permissions):
-                    severity = "warning" if execute_actions else "info"
-                    self.add_table_access_precheck_issue(
-                        issues, severity, node_label, node, expected,
-                        "包含高风险写入权限：" + "、".join(risky),
-                        "执行前确认目标表和备份策略。",
-                        category="risk", blocking=False,
-                    )
-                if (
-                    expected.get("declared_by")
-                    and source_type == "SQLite表"
-                    and table_pattern in {"*", "%"}
-                    and any(effective_perms.get(key) for key in write_permissions)
-                ):
-                    self.add_table_access_precheck_issue(
-                        issues,
-                        "warning" if execute_actions else "info",
-                        node_label,
-                        node,
-                        expected,
-                        "插件声明的动态写表范围过宽。",
-                        "尽量设置表名前缀或更窄的 table_pattern，避免插件写入任意 SQLite 表。",
-                        category="risk",
-                        blocking=False,
-                    )
-
-                if source_type == "SQLite表":
-                    if any(expected_perms.get(key) for key in ("read_table", "write_table", "create_table", "append_rows", "update_rows", "replace_table")) and not db_path:
-                        self.add_table_access_precheck_issue(issues, "error", node_label, node, expected, "节点需要访问 SQLite 表，但当前未设置数据库路径。", "先在主界面选择或创建 SQLite 数据库。")
-                    if db_path and not os.path.exists(db_path) and expected_perms.get("read_table") and not any(expected_perms.get(key) for key in ("write_table", "create_table", "replace_table")):
-                        self.add_table_access_precheck_issue(issues, "error", node_label, node, expected, f"SQLite 数据库文件不存在，无法读取表：{table}", "检查数据库路径，或先创建/导入该数据库。")
-                    if not dynamic_table and sqlite_tables is not None and expected_perms.get("read_table") and not any(expected_perms.get(key) for key in ("write_table", "create_table", "replace_table")):
-                        if table not in sqlite_tables:
-                            self.add_table_access_precheck_issue(issues, "error", node_label, node, expected, f"SQLite 来源表不存在：{table}", "检查表名或先创建/导入该表。")
-
-                if source_type == "中转副表":
-                    transit_name = self.normalize_precheck_transit_name(table)
-                    is_writer = any(expected_perms.get(key) for key in ("write_table", "create_table", "append_rows", "update_rows", "replace_table"))
-                    is_reader = expected_perms.get("read_table") and not is_writer
-                    if is_reader and transit_name and transit_name not in produced_transit:
-                        self.add_table_access_precheck_issue(issues, "warning", node_label, node, expected, f"读取的中转副表在当前节点之前未看到生成者：{table}", "确认前面有保存中转/插件输出/循环结果节点，或先运行生成该中转副表。")
-                    if is_writer and transit_name:
-                        produced_transit.add(transit_name)
+                            issues.extend(workflow_evaluate_field_access(
+                                node_label,
+                                node,
+                                expected,
+                                target,
+                                expected_fperms,
+                                actual_fperms,
+                                write_mode_formatter=self.write_mode_display_text,
+                            ))
 
             for actual in actual_tables:
                 if not isinstance(actual, dict) or id(actual) in matched_actual_ids:
                     continue
-                if actual.get("is_current_table") or actual.get("table") == "__CURRENT_TABLE__":
-                    continue
-                status = self.table_access_entry_status(actual)
-                if status in ("未绑定", "未授权"):
-                    self.add_table_access_precheck_issue(issues, "warning", node_label, node, actual, f"手动表角色状态异常：{status}", "删除无效表角色，或补齐表名/权限。")
-                elif status == "危险写入":
-                    self.add_table_access_precheck_issue(
-                        issues, "warning", node_label, node, actual,
-                        "手动表角色包含高风险写入权限。",
-                        "确认这是节点真实需要的写入范围。",
-                        category="risk", blocking=False,
-                    )
+                issues.extend(workflow_evaluate_unmatched_actual_table_access(
+                    node_label,
+                    node,
+                    actual,
+                    write_mode_formatter=self.write_mode_display_text,
+                ))
 
         issues.sort(key=self.table_access_precheck_sort_key)
         self.last_table_access_precheck = issues
@@ -9171,42 +9040,65 @@ class PlanWorkflowWindow:
         stat = workflow_build_plugin_probe_stat(plugin_name, schema_declared, final_headers, transit_parts)
         return final_headers, final_rows, stat
 
+    def run_plugin_node_runtime(self, headers, rows, config, item, params, runtime_context, execute_actions=False):
+        plugin_id = config.get("plugin_id", "")
+        input_tables = self.build_plugin_input_tables(config, headers, rows, runtime_context)
+        runtime_context["input_tables"] = input_tables
+        runtime_context["plugin_input_table_specs"] = copy.deepcopy(config.get("input_tables", []))
+        input_data = workflow_make_plugin_input_data(plugin_id, headers, rows, input_tables)
+        plugin_context = self.make_plugin_context(config, runtime_context, execute_actions=execute_actions)
+
+        if self.is_external_plugin_mode(config, item):
+            result = self.run_external_plugin_process(
+                item,
+                input_data,
+                params,
+                config,
+                runtime_context,
+                execute_actions=execute_actions,
+            )
+        else:
+            module = item.get("module")
+            if module is None:
+                raise RuntimeError("该插件未在主程序环境中导入。请将运行环境设置为“插件独立环境”，或改用单文件内置插件。")
+            validate = getattr(module, "validate_params", None)
+            if callable(validate):
+                ok_msg = validate(params, input_data, plugin_context)
+                if isinstance(ok_msg, tuple):
+                    ok, msg = ok_msg
+                    if not ok:
+                        raise ValueError(msg or "插件参数校验失败")
+                elif ok_msg is False:
+                    raise ValueError("插件参数校验失败")
+            result = module.run(input_data, params, plugin_context)
+
+        normalized_result = workflow_normalize_plugin_run_result(result, input_data, headers, rows)
+        return normalized_result, plugin_context, input_data
+
     def apply_plugin_node(self, headers, rows, config, context=None, execute_actions=False):
         plugin_id = config.get("plugin_id", "")
         item = self.plugin_registry.get(plugin_id)
         if not item:
             raise ValueError(f"插件未加载或缺失：{plugin_id}")
-        module = item.get("module")
         params = dict(config.get("params", {}))
         runtime_context = dict(context or {})
         if isinstance(context, dict):
             runtime_context["table_access_logs"] = context.setdefault("table_access_logs", [])
         if self.is_plugin_config_probe(runtime_context, execute_actions=execute_actions):
             return self.apply_lazy_plugin_probe_node(headers, rows, config, item, params, runtime_context)
-        input_tables = self.build_plugin_input_tables(config, headers, rows, runtime_context)
-        runtime_context["input_tables"] = input_tables
-        runtime_context["plugin_input_table_specs"] = copy.deepcopy(config.get("input_tables", []))
-        input_data = workflow_make_plugin_input_data(plugin_id, headers, rows, input_tables)
-        plugin_context = self.make_plugin_context(config, runtime_context, execute_actions=execute_actions)
+        plugin_context = None
         failure_policy = config.get("plugin_failure_policy", "停止工作流")
 
         try:
-            if self.is_external_plugin_mode(config, item):
-                result = self.run_external_plugin_process(item, input_data, params, config, runtime_context, execute_actions=execute_actions)
-            else:
-                if module is None:
-                    raise RuntimeError("该插件未在主程序环境中导入。请将运行环境设置为“插件独立环境”，或改用单文件内置插件。")
-                validate = getattr(module, "validate_params", None)
-                if callable(validate):
-                    ok_msg = validate(params, input_data, plugin_context)
-                    if isinstance(ok_msg, tuple):
-                        ok, msg = ok_msg
-                        if not ok:
-                            raise ValueError(msg or "插件参数校验失败")
-                    elif ok_msg is False:
-                        raise ValueError("插件参数校验失败")
-                result = module.run(input_data, params, plugin_context)
-            normalized_result = workflow_normalize_plugin_run_result(result, input_data, headers, rows)
+            normalized_result, plugin_context, _input_data = self.run_plugin_node_runtime(
+                headers,
+                rows,
+                config,
+                item,
+                params,
+                runtime_context,
+                execute_actions=execute_actions,
+            )
             message = normalized_result["message"]
             logs = normalized_result["logs"]
             summary = normalized_result["summary"]
@@ -14536,54 +14428,6 @@ class PlanWorkflowWindow:
             title="导出为 xlsx",
         )
 
-    def preview_to_selected_node(self):
-        idx = self.get_selected_node_index()
-        if idx is None:
-            messagebox.showwarning("提示", "请先选择一个节点。")
-            return
-        try:
-            # 如果用户已经在循环判断节点点过“执行循环一次”，且当前预览目标在该判断节点之后，
-            # 则从单步循环缓存继续往后预览，避免重新从头跑完整循环。
-            if self.manual_loop_context is not None and self.manual_loop_after_index is not None and idx >= self.manual_loop_after_index:
-                headers, rows, logs = self.run_plan(
-                    start_index=self.manual_loop_after_index,
-                    stop_index=idx,
-                    raise_error=True,
-                    initial_headers=self.manual_loop_headers,
-                    initial_rows=self.manual_loop_rows,
-                    initial_context=copy.deepcopy(self.manual_loop_context),
-                )
-                prefix = f"已基于单步循环缓存预览到节点 {idx + 1}"
-            else:
-                headers, rows, logs = self.run_plan(stop_index=idx, raise_error=True)
-                prefix = f"已预览到节点 {idx + 1}"
-            self.set_plan_preview_result(headers, rows, display=True)
-            self.status_var.set(f"{prefix}：{len(rows)} 行 × {len(headers)} 列。" + self.format_logs(logs))
-        except Exception as e:
-            messagebox.showerror("预览失败", str(e))
-
-    def preview_full_plan(self):
-        try:
-            # 有单步循环缓存时，完整预览默认从循环判断节点之后继续执行，
-            # 这样可以手动循环 N 次后，再预览后续汇总/保存/筛选节点。
-            if self.manual_loop_context is not None and self.manual_loop_after_index is not None:
-                headers, rows, logs = self.run_plan(
-                    start_index=self.manual_loop_after_index,
-                    stop_index=None,
-                    raise_error=True,
-                    initial_headers=self.manual_loop_headers,
-                    initial_rows=self.manual_loop_rows,
-                    initial_context=copy.deepcopy(self.manual_loop_context),
-                )
-                prefix = "已基于单步循环缓存完成后续计划预览"
-            else:
-                headers, rows, logs = self.run_plan(stop_index=None, raise_error=True)
-                prefix = "完整计划预览完成"
-            self.set_plan_preview_result(headers, rows, display=True)
-            self.status_var.set(f"{prefix}：{len(rows)} 行 × {len(headers)} 列。" + self.format_logs(logs))
-        except Exception as e:
-            messagebox.showerror("预览失败", str(e))
-
     def format_logs(self, logs):
         if not logs:
             return ""
@@ -16733,99 +16577,6 @@ class PlanWorkflowWindow:
 
     def apply_move_columns_node(self, headers, rows, config):
         return workflow_apply_move_columns_node(headers, rows, config)
-
-    def execute_plan(self):
-        context = {
-            "table_access_policy": self.normalize_table_access_policy(),
-            "table_access_logs": [],
-        }
-        snapshot_context = context
-        use_current_preview = False
-        has_actual_rename = any(
-            node.get("enabled", True) and node.get("type") == "批量重命名" and node.get("config", {}).get("actual_rename")
-            for node in self.nodes
-        )
-
-        if self.preview_dirty and self.preview_headers and self.preview_rows and not has_actual_rename:
-            use_current_preview = messagebox.askyesno(
-                "使用已修改的计划预览？",
-                "检测到结果预览区存在手动修改。\n\n"
-                "选择【是】：使用当前预览数据作为输出，不重新执行计划。\n"
-                "选择【否】：重新执行计划，当前预览修改会被覆盖。"
-            )
-
-        if use_current_preview:
-            headers = list(self.preview_headers)
-            rows = [list(row) for row in self.preview_rows]
-            logs = ["使用手动修改后的当前计划预览结果输出"]
-        else:
-            if has_actual_rename:
-                ok = messagebox.askyesno(
-                    "确认执行批量重命名",
-                    "当前计划中存在已勾选【实际执行重命名】的节点。\n\n"
-                    "执行后会修改磁盘上的文件/文件夹名称。建议先使用【预览完整计划】确认结果无误。\n\n是否继续执行？"
-                )
-                if not ok:
-                    return
-            try:
-                headers, rows, logs = self.run_plan(stop_index=None, raise_error=True, execute_actions=True)
-            except Exception as e:
-                messagebox.showerror("执行失败", str(e))
-                return
-
-        mode = self.output_mode_var.get()
-        if mode == "输出到主界面预览区":
-            self.app.headers = list(headers)
-            self.app.rows = [list(row) for row in rows]
-            self.app.raw_data = ""
-            self.app.refresh_tree()
-            self.set_plan_preview_result(headers, rows, display=True)
-            self.app.info_var.set(f"计划执行完成，已输出到主界面：{len(rows)} 行 × {len(headers)} 列。")
-            self.status_var.set("计划执行完成，已输出到主界面。" + self.format_logs(logs))
-            return
-
-        if mode in ["保存为SQLite新表", "覆盖当前表"]:
-            table_name = self.get_workflow_output_table(snapshot_context)
-            if not table_name:
-                messagebox.showwarning("提示", "请填写输出表名。")
-                return
-            overwrite = mode == "覆盖当前表"
-            if overwrite:
-                ok = messagebox.askyesno("确认覆盖", f"即将覆盖 SQLite 表：{table_name}\n覆盖前会按设置自动备份。是否继续？")
-                if not ok:
-                    return
-            try:
-                saved_name = self.save_result_to_sqlite(
-                    headers,
-                    rows,
-                    table_name,
-                    overwrite=overwrite,
-                    backup=self.get_workflow_backup_before_overwrite(snapshot_context),
-                    context=context,
-                )
-                self.last_table_access_logs = list(context.get("table_access_logs", []) or [])
-                self.app.refresh_table_list()
-                self.status_var.set(f"计划执行完成，已保存到 SQLite 表：{saved_name}。" + self.format_logs(logs))
-                messagebox.showinfo("保存成功", f"已保存计划结果。\n\n表名：{saved_name}\n行数：{len(rows)}\n列数：{len(headers)}")
-            except Exception as e:
-                messagebox.showerror("保存失败", str(e))
-            return
-
-        if mode == "导出为xlsx":
-            old_headers = self.app.headers
-            old_rows = self.app.rows
-            old_raw = self.app.raw_data
-            try:
-                self.app.headers = list(headers)
-                self.app.rows = [list(row) for row in rows]
-                self.app.raw_data = ""
-                self.app.export_current_preview_to_xlsx()
-                self.status_var.set("计划执行完成，已调用 xlsx 导出。" + self.format_logs(logs))
-            finally:
-                self.app.headers = old_headers
-                self.app.rows = old_rows
-                self.app.raw_data = old_raw
-            return
 
     def save_result_to_sqlite(self, headers, rows, table_name_raw, overwrite=False, backup=True, context=None):
         db_path = self.get_workflow_db_path(context)

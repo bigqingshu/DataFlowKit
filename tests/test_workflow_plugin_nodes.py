@@ -69,6 +69,92 @@ class WorkflowPluginNodesTests(unittest.TestCase):
         self.assertIn("done", stat)
         self.assertIn("log", stat)
 
+    def test_dataflowkit_run_plugin_node_runtime_validates_then_runs_internal_plugin(self):
+        calls = []
+
+        def validate(params, input_data, context):
+            calls.append(("validate", params.get("p"), input_data["headers"], context["execute_actions"]))
+            return True, ""
+
+        def run(input_data, params, context):
+            calls.append(("run", params.get("p"), input_data["rows"], context["execute_actions"]))
+            return {
+                "ok": True,
+                "output": {"type": "table", "headers": ["B"], "rows": [["b"]]},
+            }
+
+        module = types.SimpleNamespace(validate_params=validate, run=run)
+        window = self.make_plugin_window(module)
+        item = window.plugin_registry["test_plugin"]
+        runtime_context = {}
+
+        normalized, plugin_context, input_data = window.run_plugin_node_runtime(
+            ["A"],
+            [["a"]],
+            {"plugin_id": "test_plugin"},
+            item,
+            {"p": "x"},
+            runtime_context,
+            execute_actions=True,
+        )
+
+        self.assertEqual(calls, [
+            ("validate", "x", ["A"], True),
+            ("run", "x", [["a"]], True),
+        ])
+        self.assertEqual(normalized["headers"], ["B"])
+        self.assertEqual(normalized["rows"], [["b"]])
+        self.assertTrue(plugin_context["execute_actions"])
+        self.assertEqual(input_data["tables"]["primary"]["headers"], ["A"])
+        self.assertIn("input_tables", runtime_context)
+
+    def test_dataflowkit_run_plugin_node_runtime_validation_failure_raises(self):
+        module = types.SimpleNamespace(
+            validate_params=lambda params, input_data, context: (False, "bad params"),
+            run=lambda input_data, params, context: self.fail("run should not be called"),
+        )
+        window = self.make_plugin_window(module)
+        item = window.plugin_registry["test_plugin"]
+
+        with self.assertRaisesRegex(ValueError, "bad params"):
+            window.run_plugin_node_runtime(
+                ["A"],
+                [["a"]],
+                {"plugin_id": "test_plugin"},
+                item,
+                {},
+                {},
+            )
+
+    def test_dataflowkit_run_plugin_node_runtime_dispatches_external_plugin(self):
+        window = self.make_plugin_window(None)
+        item = window.plugin_registry["test_plugin"]
+        calls = []
+
+        def fake_run_external(item_arg, input_data, params, config, context, execute_actions=False):
+            calls.append((item_arg is item, input_data["headers"], params, config["run_mode"], execute_actions))
+            return {
+                "ok": True,
+                "output": {"type": "table", "headers": ["OUT"], "rows": [["ok"]]},
+            }
+
+        window.run_external_plugin_process = fake_run_external
+
+        normalized, plugin_context, _input_data = window.run_plugin_node_runtime(
+            ["A"],
+            [["a"]],
+            {"plugin_id": "test_plugin", "run_mode": "插件独立环境"},
+            item,
+            {"p": 1},
+            {},
+            execute_actions=False,
+        )
+
+        self.assertEqual(calls, [(True, ["A"], {"p": 1}, "插件独立环境", False)])
+        self.assertEqual(normalized["headers"], ["OUT"])
+        self.assertEqual(normalized["rows"], [["ok"]])
+        self.assertFalse(plugin_context["execute_actions"])
+
     def test_dataflowkit_apply_plugin_node_can_append_output_fields(self):
         module = types.SimpleNamespace(
             run=lambda input_data, params, context: {
