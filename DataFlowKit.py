@@ -172,6 +172,22 @@ from workflow.nodes.file_nodes import (
     make_numbered_path as workflow_make_numbered_path,
     parse_extensions_filter as workflow_parse_extensions_filter,
 )
+from workflow.nodes.plugin_nodes import (
+    build_plugin_failure_output as workflow_build_plugin_failure_output,
+    build_plugin_final_output as workflow_build_plugin_final_output,
+    build_plugin_probe_final_output as workflow_build_plugin_probe_final_output,
+    build_plugin_probe_stat as workflow_build_plugin_probe_stat,
+    build_plugin_status_text as workflow_build_plugin_status_text,
+    get_plugin_output_schema_table as workflow_get_plugin_output_schema_table,
+    is_external_plugin_mode as workflow_is_external_plugin_mode,
+    make_plugin_input_data as workflow_make_plugin_input_data,
+    merge_plugin_output_fields_to_current as workflow_merge_plugin_output_fields_to_current,
+    normalize_plugin_logs as workflow_normalize_plugin_logs,
+    normalize_plugin_output_schema as workflow_normalize_plugin_output_schema,
+    normalize_plugin_run_result as workflow_normalize_plugin_run_result,
+    plugin_log_items_to_table as workflow_plugin_log_items_to_table,
+    should_save_plugin_output_as_transit as workflow_should_save_plugin_output_as_transit,
+)
 from workflow.nodes.selected_columns_nodes import (
     apply_selected_columns_to_memory_table as workflow_apply_selected_columns_to_memory_table,
     build_selected_columns_write_payload as workflow_build_selected_columns_write_payload,
@@ -8578,37 +8594,7 @@ class PlanWorkflowWindow:
         ttk.Label(frame, text="插件节点会接收当前工作流表格，并返回新的表格；预览模式下 context['is_preview']=True。", foreground="gray", wraplength=1050).grid(row=row, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
 
     def normalize_plugin_logs(self, logs, plugin_id="", node_name="插件节点"):
-        """把插件返回的 logs 统一转为 dict 列表，便于写文件/SQLite/中转副表。"""
-        normalized = []
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        if logs is None:
-            logs = []
-        if isinstance(logs, (str, bytes)):
-            logs = [logs.decode("utf-8", "ignore") if isinstance(logs, bytes) else logs]
-        if isinstance(logs, dict):
-            logs = [logs]
-        for item in logs:
-            if isinstance(item, dict):
-                normalized.append({
-                    "time": item.get("time") or now,
-                    "level": str(item.get("level", "INFO")).upper(),
-                    "plugin_id": item.get("plugin_id") or plugin_id,
-                    "node_name": item.get("node_name") or node_name,
-                    "object": item.get("object", ""),
-                    "message": item.get("message", item.get("msg", "")),
-                    "traceback": item.get("traceback", ""),
-                })
-            else:
-                normalized.append({
-                    "time": now,
-                    "level": "INFO",
-                    "plugin_id": plugin_id,
-                    "node_name": node_name,
-                    "object": "",
-                    "message": str(item),
-                    "traceback": "",
-                })
-        return normalized
+        return workflow_normalize_plugin_logs(logs, plugin_id=plugin_id, node_name=node_name)
 
     def save_plugin_logs_to_file(self, plugin_id, log_items):
         if not log_items:
@@ -8649,12 +8635,7 @@ class PlanWorkflowWindow:
         return TableAccessManager(db_path, node_type="插件日志").write_plugin_logs(log_items)
 
     def plugin_log_items_to_table(self, log_items):
-        headers = ["时间", "级别", "插件ID", "节点名称", "对象", "信息", "错误堆栈"]
-        rows = [[
-            it.get("time", ""), it.get("level", ""), it.get("plugin_id", ""),
-            it.get("node_name", ""), it.get("object", ""), it.get("message", ""), it.get("traceback", "")
-        ] for it in log_items]
-        return headers, rows
+        return workflow_plugin_log_items_to_table(log_items)
 
     def save_plugin_output_to_transit(self, context, name, headers, rows, conflict_mode="覆盖", source="插件输出"):
         if context is None:
@@ -8704,42 +8685,10 @@ class PlanWorkflowWindow:
         return f"中转副表：{base_name}"
 
     def merge_plugin_output_fields_to_current(self, cur_headers, cur_rows, out_headers, out_rows):
-        """按行号把插件输出字段合并到当前表；重名字段覆盖，缺失行补空。"""
-        cur_headers = list(cur_headers or [])
-        cur_rows = [list(r) for r in self.normalize_rows(cur_rows, len(cur_headers))]
-        out_headers = list(out_headers or [])
-        out_rows = [list(r) for r in self.normalize_rows(out_rows, len(out_headers))]
-        merged_headers = list(cur_headers)
-        for h in out_headers:
-            if h not in merged_headers:
-                merged_headers.append(h)
-        total = max(len(cur_rows), len(out_rows))
-        result = []
-        cur_index = {h: i for i, h in enumerate(cur_headers)}
-        out_index = {h: i for i, h in enumerate(out_headers)}
-        for i in range(total):
-            base = []
-            cur_row = cur_rows[i] if i < len(cur_rows) else []
-            out_row = out_rows[i] if i < len(out_rows) else []
-            for h in merged_headers:
-                if h in out_index and i < len(out_rows):
-                    oi = out_index[h]
-                    base.append(out_row[oi] if oi < len(out_row) else "")
-                else:
-                    ci = cur_index.get(h)
-                    base.append(cur_row[ci] if ci is not None and ci < len(cur_row) else "")
-            result.append(base)
-        return merged_headers, result
+        return workflow_merge_plugin_output_fields_to_current(cur_headers, cur_rows, out_headers, out_rows)
 
     def is_external_plugin_mode(self, config, item=None):
-        mode = str(config.get("run_mode", "")).strip()
-        if mode in ("插件独立环境", "external_python", "独立环境"):
-            return True
-        if item:
-            default_mode = str(item.get("run_mode_default", item.get("info", {}).get("run_mode", ""))).strip()
-            if not mode and default_mode in ("插件独立环境", "external_python", "独立环境"):
-                return True
-        return False
+        return workflow_is_external_plugin_mode(config, item)
 
     def find_external_python(self, config, item=None, allow_current=False, return_info=False):
         """查找外部插件 Python。
@@ -9104,47 +9053,10 @@ class PlanWorkflowWindow:
         return tables
 
     def normalize_plugin_output_schema(self, schema, fallback_headers=None):
-        """把插件声明的输出 schema 规整为 table dict。"""
-        fallback_headers = list(fallback_headers or [])
-        if schema is None:
-            return None
-        if isinstance(schema, (list, tuple)):
-            headers = [str(h) for h in schema]
-            return {"type": "table", "headers": headers, "rows": [], "meta": {"lazy_schema": True}}
-        if isinstance(schema, dict):
-            if "output" in schema and isinstance(schema.get("output"), dict):
-                schema = schema.get("output")
-            headers = (
-                schema.get("headers")
-                or schema.get("fields")
-                or schema.get("columns")
-                or fallback_headers
-            )
-            rows = schema.get("rows", [])
-            meta = dict(schema.get("meta") or {})
-            meta.setdefault("lazy_schema", True)
-            return {
-                "type": schema.get("type", "table"),
-                "headers": [str(h) for h in (headers or [])],
-                "rows": [list(r) for r in (rows or [])],
-                "meta": meta,
-            }
-        return None
+        return workflow_normalize_plugin_output_schema(schema, fallback_headers=fallback_headers)
 
     def get_plugin_output_schema_table(self, item, input_data, params, plugin_context, fallback_headers=None):
-        """优先调用插件 get_output_schema；未声明时读取元信息里的静态字段。"""
-        module = item.get("module")
-        schema = None
-        provider = getattr(module, "get_output_schema", None) if module is not None else None
-        if callable(provider):
-            try:
-                schema = provider(dict(params or {}), input_data, plugin_context)
-            except Exception:
-                schema = None
-        if schema is None:
-            info = item.get("info", {}) or {}
-            schema = info.get("output_schema") or info.get("output_headers") or info.get("headers")
-        return self.normalize_plugin_output_schema(schema, fallback_headers=fallback_headers)
+        return workflow_get_plugin_output_schema_table(item, input_data, params, plugin_context, fallback_headers=fallback_headers)
 
     def apply_lazy_plugin_probe_node(self, headers, rows, config, item, params, runtime_context):
         """配置阶段插件懒加载：返回字段和空值，不调用插件 run。"""
@@ -9152,14 +9064,7 @@ class PlanWorkflowWindow:
         input_tables = self.build_plugin_probe_input_tables(config, headers, runtime_context)
         runtime_context["input_tables"] = input_tables
         runtime_context["plugin_input_table_specs"] = copy.deepcopy(config.get("input_tables", []))
-        input_data = {
-            "type": "table",
-            "headers": list(headers),
-            "rows": [],
-            "source_name": "workflow_current",
-            "meta": {"plugin_id": plugin_id, "lazy_schema": True},
-            "tables": input_tables,
-        }
+        input_data = workflow_make_plugin_input_data(plugin_id, headers, [], input_tables, lazy_schema=True)
         plugin_context = self.make_plugin_context(config, runtime_context, execute_actions=False)
         schema_table = self.get_plugin_output_schema_table(item, input_data, params, plugin_context, fallback_headers=headers)
         schema_declared = schema_table is not None
@@ -9174,7 +9079,7 @@ class PlanWorkflowWindow:
         new_headers = list(schema_table.get("headers", headers))
         new_rows = [list(r) for r in schema_table.get("rows", [])]
         output_mode = config.get("output_mode", "使用插件返回结果")
-        save_as_transit = bool(config.get("save_output_as_transit", False)) or output_mode.startswith("保存为中转副表")
+        save_as_transit = workflow_should_save_plugin_output_as_transit(config)
         transit_parts = []
         if save_as_transit:
             name = config.get("transit_name") or item.get("info", {}).get("name", plugin_id)
@@ -9188,25 +9093,17 @@ class PlanWorkflowWindow:
             )
             transit_parts.append(part)
 
-        if output_mode == "保存为中转副表并保持当前表":
-            final_headers = list(headers)
-            final_rows = [list(r) for r in rows] if not schema_declared else []
-        elif output_mode == "追加字段到当前表":
-            final_headers = list(headers)
-            for h in new_headers:
-                if h not in final_headers:
-                    final_headers.append(h)
-            final_rows = []
-        else:
-            final_headers, final_rows = new_headers, new_rows
+        final_headers, final_rows = workflow_build_plugin_probe_final_output(
+            headers,
+            rows,
+            new_headers,
+            new_rows,
+            output_mode,
+            schema_declared,
+        )
 
         plugin_name = item.get("info", {}).get("name", plugin_id)
-        if schema_declared:
-            stat = f"插件 {plugin_name} 字段懒加载：未执行插件，已返回 {len(final_headers)} 个字段"
-        else:
-            stat = f"插件 {plugin_name} 字段懒加载：插件未声明输出字段，暂按上游字段透传"
-        if transit_parts:
-            stat += "；" + "；".join(transit_parts)
+        stat = workflow_build_plugin_probe_stat(plugin_name, schema_declared, final_headers, transit_parts)
         return final_headers, final_rows, stat
 
     def apply_plugin_node(self, headers, rows, config, context=None, execute_actions=False):
@@ -9224,14 +9121,7 @@ class PlanWorkflowWindow:
         input_tables = self.build_plugin_input_tables(config, headers, rows, runtime_context)
         runtime_context["input_tables"] = input_tables
         runtime_context["plugin_input_table_specs"] = copy.deepcopy(config.get("input_tables", []))
-        input_data = {
-            "type": "table",
-            "headers": list(headers),
-            "rows": [list(r) for r in rows],
-            "source_name": "workflow_current",
-            "meta": {"plugin_id": plugin_id},
-            "tables": input_tables,
-        }
+        input_data = workflow_make_plugin_input_data(plugin_id, headers, rows, input_tables)
         plugin_context = self.make_plugin_context(config, runtime_context, execute_actions=execute_actions)
         failure_policy = config.get("plugin_failure_policy", "停止工作流")
 
@@ -9251,28 +9141,12 @@ class PlanWorkflowWindow:
                     elif ok_msg is False:
                         raise ValueError("插件参数校验失败")
                 result = module.run(input_data, params, plugin_context)
-            message = ""
-            output = None
-            logs = []
-            summary = {}
-            if isinstance(result, dict) and ("ok" in result or "output" in result):
-                if result.get("ok", True) is False:
-                    logs = result.get("logs", []) or []
-                    raise RuntimeError(result.get("message") or "插件执行失败")
-                message = result.get("message", "")
-                logs = result.get("logs", []) or []
-                summary = result.get("summary", {}) or {}
-                output = result.get("output", input_data)
-            else:
-                output = result
-            if output is None:
-                output = input_data
-            if not isinstance(output, dict):
-                raise ValueError("插件返回值必须是 table dict 或包含 output 的 dict")
-            if output.get("type", "table") != "table":
-                raise ValueError(f"暂不支持插件输出类型：{output.get('type')}")
-            new_headers = list(output.get("headers", headers))
-            new_rows = [list(r) for r in output.get("rows", rows)]
+            normalized_result = workflow_normalize_plugin_run_result(result, input_data, headers, rows)
+            message = normalized_result["message"]
+            logs = normalized_result["logs"]
+            summary = normalized_result["summary"]
+            new_headers = normalized_result["headers"]
+            new_rows = normalized_result["rows"]
             ok = True
             error_message = ""
         except Exception as e:
@@ -9296,12 +9170,15 @@ class PlanWorkflowWindow:
                     except Exception:
                         pass
                 raise
-            elif failure_policy == "输出错误表继续":
-                new_headers = ["插件ID", "错误信息", "错误堆栈"]
-                new_rows = [[plugin_id, error_message, traceback.format_exc()]]
             else:
-                new_headers = list(headers)
-                new_rows = [list(r) for r in rows]
+                new_headers, new_rows = workflow_build_plugin_failure_output(
+                    plugin_id,
+                    error_message,
+                    traceback.format_exc(),
+                    headers,
+                    rows,
+                    failure_policy,
+                )
 
         log_items = self.normalize_plugin_logs(logs, plugin_id=plugin_id, node_name=config.get("name") or "插件节点")
         log_saved_parts = []
@@ -9329,7 +9206,7 @@ class PlanWorkflowWindow:
                 log_saved_parts.append(f"日志中转保存失败：{e}")
 
         output_mode = config.get("output_mode", "使用插件返回结果")
-        save_as_transit = bool(config.get("save_output_as_transit", False)) or output_mode.startswith("保存为中转副表")
+        save_as_transit = workflow_should_save_plugin_output_as_transit(config)
         transit_parts = []
         if save_as_transit:
             name = config.get("transit_name") or item.get("info", {}).get("name", plugin_id)
@@ -9338,32 +9215,25 @@ class PlanWorkflowWindow:
             )
             transit_parts.append(part)
 
-        if output_mode == "保存为中转副表并保持当前表":
-            final_headers = list(headers)
-            final_rows = [list(r) for r in rows]
-        elif output_mode == "追加字段到当前表":
-            final_headers, final_rows = self.merge_plugin_output_fields_to_current(headers, rows, new_headers, new_rows)
-        else:
-            final_headers, final_rows = new_headers, new_rows
-
-        short_log = "；".join(str(x.get("message", x)) if isinstance(x, dict) else str(x) for x in log_items[:3])
-        stat_parts = [f"插件 {item.get('info', {}).get('name', plugin_id)} 完成"]
-        if not ok:
-            stat_parts.append(f"失败处理：{failure_policy}")
-        if message:
-            stat_parts.append(str(message))
-        if summary:
-            try:
-                stat_parts.append("摘要:" + json.dumps(summary, ensure_ascii=False)[:200])
-            except Exception:
-                pass
-        if transit_parts:
-            stat_parts.extend(transit_parts)
-        if log_saved_parts:
-            stat_parts.extend(log_saved_parts)
-        if short_log:
-            stat_parts.append(short_log)
-        return final_headers, final_rows, "；".join(stat_parts)
+        final_headers, final_rows = workflow_build_plugin_final_output(
+            headers,
+            rows,
+            new_headers,
+            new_rows,
+            output_mode,
+        )
+        stat = workflow_build_plugin_status_text(
+            item.get("info", {}).get("name", plugin_id),
+            plugin_id,
+            ok,
+            failure_policy,
+            message,
+            summary,
+            transit_parts,
+            log_saved_parts,
+            log_items,
+        )
+        return final_headers, final_rows, stat
 
     def default_config_for_type(self, node_type):
         first = self.preview_headers[0] if self.preview_headers else ""
