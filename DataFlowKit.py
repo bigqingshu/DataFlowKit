@@ -172,6 +172,20 @@ from workflow.nodes.file_nodes import (
     make_numbered_path as workflow_make_numbered_path,
     parse_extensions_filter as workflow_parse_extensions_filter,
 )
+from workflow.nodes.group_nodes import (
+    build_empty_group_stat as workflow_build_empty_group_stat,
+    build_group_final_output as workflow_build_group_final_output,
+    build_group_input_table as workflow_build_group_input_table,
+    build_group_node_log as workflow_build_group_node_log,
+    build_group_status_text as workflow_build_group_status_text,
+    ensure_group_parent_context as workflow_ensure_group_parent_context,
+    make_group_child_context as workflow_make_group_child_context,
+    merge_group_child_audit_logs as workflow_merge_group_child_audit_logs,
+    normalize_group_sqlite_mode as workflow_normalize_group_sqlite_mode,
+    normalize_group_transit_conflict_mode as workflow_normalize_group_transit_conflict_mode,
+    parse_group_input_fields as workflow_parse_group_input_fields,
+    unique_keep_order as workflow_unique_keep_order,
+)
 from workflow.nodes.plugin_nodes import (
     build_plugin_failure_output as workflow_build_plugin_failure_output,
     build_plugin_final_output as workflow_build_plugin_final_output,
@@ -15004,27 +15018,10 @@ class PlanWorkflowWindow:
 
 
     def unique_keep_order(self, values):
-        """按原顺序去重，保留第一个非空字符串。"""
-        result = []
-        seen = set()
-        for v in values or []:
-            text = str(v).strip()
-            if not text or text in seen:
-                continue
-            seen.add(text)
-            result.append(text)
-        return result
+        return workflow_unique_keep_order(values)
 
     def parse_group_input_fields(self, config):
-        """解析节点组入口字段。为空时表示兼容旧版：直接传入来源整表。"""
-        raw = config.get("input_fields", [])
-        if isinstance(raw, str):
-            fields = [x.strip() for x in re.split(r"[,，;；\n]+", raw) if x.strip()]
-        elif isinstance(raw, (list, tuple)):
-            fields = [str(x).strip() for x in raw if str(x).strip()]
-        else:
-            fields = []
-        return self.unique_keep_order(fields)
+        return workflow_parse_group_input_fields(config)
 
 
     def parse_new_column_names_for_group_analysis(self, text, strip_name=True, allow_empty=False):
@@ -15487,22 +15484,10 @@ class PlanWorkflowWindow:
         return "\n".join(lines)
 
     def normalize_group_transit_conflict_mode(self, mode):
-        text = str(mode or "覆盖整表")
-        if "追加" in text:
-            return "追加"
-        if "时间戳" in text or "新建" in text:
-            return "自动加时间戳"
-        return "覆盖"
+        return workflow_normalize_group_transit_conflict_mode(mode)
 
     def normalize_group_sqlite_mode(self, mode):
-        text = str(mode or "自动加时间戳新表")
-        if "追加" in text:
-            return "append"
-        if "覆盖" in text:
-            return "replace"
-        if "报错" in text or "不覆盖" in text:
-            return "fail"
-        return "timestamp"
+        return workflow_normalize_group_sqlite_mode(mode)
 
     def get_group_source_table_data(self, headers, rows, config, context=None):
         """读取节点组入口数据源：当前工作表 / 中转副表 / SQLite表。"""
@@ -15539,74 +15524,10 @@ class PlanWorkflowWindow:
         return list(headers), [list(r) for r in rows], "当前工作表"
 
     def build_group_input_table(self, source_headers, source_rows, config):
-        """
-        根据入口字段和映射生成组内标准表。
-        - input_fields 为空：兼容旧版，直接把来源整表传给组内。
-        - input_fields 非空：组内 headers 固定为 input_fields，rows 按 input_mapping 取值。
-        """
-        input_fields = self.parse_group_input_fields(config)
-        if not input_fields:
-            return list(source_headers), [list(r) for r in source_rows], "入口字段未设置，使用来源整表"
-
-        source_headers = list(source_headers or [])
-        source_rows = [list(r) for r in self.normalize_rows(source_rows, len(source_headers))]
-        mapping = config.get("input_mapping", {}) or {}
-        defaults = config.get("input_defaults", {}) or {}
-        missing_policy = config.get("missing_input_policy", "缺失填空")
-        src_index = {h: i for i, h in enumerate(source_headers)}
-
-        missing = []
-        result_rows = []
-        for row in source_rows:
-            out = []
-            for field in input_fields:
-                mapped = str(mapping.get(field, "")).strip()
-                if mapped and mapped in src_index:
-                    out.append(self.safe_cell(row, src_index[mapped]))
-                else:
-                    if mapped:
-                        missing.append(f"{field}->{mapped}")
-                    else:
-                        missing.append(field)
-                    out.append(str(defaults.get(field, "")))
-            result_rows.append(out)
-
-        if missing_policy == "缺失报错" and missing:
-            show = "、".join(self.unique_keep_order(missing)[:20])
-            raise ValueError(f"节点组入口映射缺失字段：{show}")
-
-        return input_fields, result_rows, f"入口字段映射 {len(input_fields)} 列"
+        return workflow_build_group_input_table(source_headers, source_rows, config)
 
     def make_group_child_context(self, parent_context, config):
-        """为子工作流创建上下文。默认隔离，避免组内保存的临时中转污染父级。"""
-        parent_context = parent_context if parent_context is not None else {"transit_tables": {}, "loop_states": {}, "loop_results": {}}
-        parent_context.setdefault("transit_tables", {})
-        parent_context.setdefault("loop_states", {})
-        parent_context.setdefault("loop_results", {})
-
-        if config.get("transit_scope", "组内中转私有") == "允许输出到外部":
-            # 兼容旧版“允许输出到外部”：组内保存中转数据可直接进入父级 context。
-            return parent_context
-
-        child = {
-            "transit_tables": copy.deepcopy(parent_context.get("transit_tables", {})),
-            "loop_states": {},
-            "loop_results": {},
-            "group_runtime": True,
-            "group_name": config.get("group_name", "节点组"),
-        }
-        # 继承预览写入控制、进度回调和取消事件，避免子工作流行为与外层不一致。
-        for key in [
-            "workflow_snapshot",
-            "allow_selected_columns_write_in_preview",
-            "selected_columns_config_preview_only",
-            "progress_callback",
-            "cancel_event",
-            "table_access_policy",
-        ]:
-            if key in parent_context:
-                child[key] = parent_context[key]
-        return child
+        return workflow_make_group_child_context(parent_context, config)
 
     def write_group_outputs(self, result_headers, result_rows, config, parent_context, execute_actions=False):
         """根据节点组输出设置，把结果保存到中转副表或 SQLite。返回状态文本列表。"""
@@ -15642,10 +15563,7 @@ class PlanWorkflowWindow:
         nodes = config.get("nodes", [])
         group_name = config.get("group_name") or "节点组"
 
-        context = context if context is not None else {"transit_tables": {}, "loop_states": {}, "loop_results": {}}
-        context.setdefault("transit_tables", {})
-        context.setdefault("loop_states", {})
-        context.setdefault("loop_results", {})
+        context = workflow_ensure_group_parent_context(context)
 
         # 1. 读取入口数据源，并映射为组内标准表。
         source_headers, source_rows, source_name = self.get_group_source_table_data(headers, rows, config, context=context)
@@ -15654,18 +15572,15 @@ class PlanWorkflowWindow:
         if not nodes:
             output_parts = self.write_group_outputs(cur_headers, cur_rows, config, context, execute_actions=execute_actions)
             if config.get("main_output_mode", "输出为当前工作表") == "透传原当前表":
-                return list(headers), [list(r) for r in rows], f"节点组【{group_name}】为空，透传原当前表；{input_stat}" + ("；" + "；".join(output_parts) if output_parts else "")
-            return cur_headers, cur_rows, f"节点组【{group_name}】为空，输出入口表；来源={source_name}；{input_stat}" + ("；" + "；".join(output_parts) if output_parts else "")
+                stat = workflow_build_empty_group_stat(group_name, source_name, input_stat, output_parts, passthrough_current=True)
+                return list(headers), [list(r) for r in rows], stat
+            stat = workflow_build_empty_group_stat(group_name, source_name, input_stat, output_parts)
+            return cur_headers, cur_rows, stat
 
         child_context = self.make_group_child_context(context, config)
         logs = []
         def merge_child_audit_logs():
-            if child_context is context:
-                return
-            child_logs = child_context.get("table_access_logs", []) if isinstance(child_context, dict) else []
-            if child_logs:
-                context.setdefault("table_access_logs", []).extend(child_logs)
-                child_context["table_access_logs"] = []
+            workflow_merge_group_child_audit_logs(context, child_context)
 
         try:
             for i, node in enumerate(nodes):
@@ -15710,7 +15625,7 @@ class PlanWorkflowWindow:
                     node_type=node_type,
                 )
                 after_shape = (len(cur_rows), len(cur_headers))
-                logs.append(f"{i+1}.{node_type} {before_shape[0]}×{before_shape[1]}→{after_shape[0]}×{after_shape[1]} {stat}")
+                logs.append(workflow_build_group_node_log(i + 1, node_type, before_shape, after_shape, stat))
         except Exception:
             merge_child_audit_logs()
             raise
@@ -15720,24 +15635,9 @@ class PlanWorkflowWindow:
         output_parts = self.write_group_outputs(cur_headers, cur_rows, config, context, execute_actions=execute_actions)
 
         # 3. 主输出决定后续节点拿到什么表。
-        if config.get("main_output_mode", "输出为当前工作表") == "透传原当前表":
-            final_headers = list(headers)
-            final_rows = [list(r) for r in rows]
-            main_stat = "主输出=透传原当前表"
-        else:
-            final_headers = cur_headers
-            final_rows = cur_rows
-            main_stat = "主输出=组结果作为当前表"
-
-        short = "；".join(logs[:5])
-        if len(logs) > 5:
-            short += f"；... 共 {len(logs)} 个内部节点"
-        parts = [f"来源={source_name}", input_stat, main_stat]
-        if output_parts:
-            parts.extend(output_parts)
-        if short:
-            parts.append(short)
-        return final_headers, final_rows, f"节点组【{group_name}】完成：" + "；".join(parts)
+        final_headers, final_rows, main_stat = workflow_build_group_final_output(headers, rows, cur_headers, cur_rows, config)
+        stat = workflow_build_group_status_text(group_name, source_name, input_stat, main_stat, logs=logs, output_parts=output_parts)
+        return final_headers, final_rows, stat
 
     def append_jump_runtime_log(self, context, event):
         if not isinstance(context, dict):

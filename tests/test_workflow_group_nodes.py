@@ -1,0 +1,121 @@
+# -*- coding: utf-8 -*-
+import unittest
+
+from workflow.nodes.group_nodes import (
+    build_empty_group_stat,
+    build_group_final_output,
+    build_group_input_table,
+    build_group_node_log,
+    build_group_status_text,
+    ensure_group_parent_context,
+    make_group_child_context,
+    merge_group_child_audit_logs,
+    normalize_group_sqlite_mode,
+    normalize_group_transit_conflict_mode,
+    parse_group_input_fields,
+    unique_keep_order,
+)
+
+
+class WorkflowGroupNodesTests(unittest.TestCase):
+    def test_parse_group_input_fields_dedupes_and_supports_text(self):
+        self.assertEqual(unique_keep_order([" A ", "B", "A", "", " C "]), ["A", "B", "C"])
+        self.assertEqual(parse_group_input_fields({"input_fields": "A, B；A\nC"}), ["A", "B", "C"])
+        self.assertEqual(parse_group_input_fields({"input_fields": ["A", " B ", "A"]}), ["A", "B"])
+
+    def test_build_group_input_table_maps_fields_and_defaults(self):
+        headers, rows, stat = build_group_input_table(
+            ["姓名", "年龄"],
+            [["张三", "18"], ["李四"]],
+            {
+                "input_fields": ["name", "age", "city"],
+                "input_mapping": {"name": "姓名", "age": "年龄"},
+                "input_defaults": {"city": "广州"},
+            },
+        )
+
+        self.assertEqual(headers, ["name", "age", "city"])
+        self.assertEqual(rows, [["张三", "18", "广州"], ["李四", "", "广州"]])
+        self.assertEqual(stat, "入口字段映射 3 列")
+
+    def test_build_group_input_table_raises_on_missing_mapping_when_configured(self):
+        with self.assertRaisesRegex(ValueError, "节点组入口映射缺失字段：city"):
+            build_group_input_table(
+                ["姓名"],
+                [["张三"]],
+                {
+                    "input_fields": ["name", "city"],
+                    "input_mapping": {"name": "姓名"},
+                    "missing_input_policy": "缺失报错",
+                },
+            )
+
+    def test_build_group_input_table_passes_through_when_no_input_fields(self):
+        self.assertEqual(
+            build_group_input_table(["A"], [["a"]], {"input_fields": []}),
+            (["A"], [["a"]], "入口字段未设置，使用来源整表"),
+        )
+
+    def test_make_group_child_context_isolates_transit_by_default(self):
+        parent = {
+            "transit_tables": {"T": {"headers": ["A"], "rows": [["a"]]}},
+            "loop_states": {"x": 1},
+            "loop_results": {"y": 2},
+            "table_access_policy": {"mode": "test"},
+        }
+
+        child = make_group_child_context(parent, {"group_name": "G"})
+
+        self.assertIsNot(child, parent)
+        self.assertEqual(child["group_name"], "G")
+        self.assertEqual(child["table_access_policy"], {"mode": "test"})
+        child["transit_tables"]["T"]["rows"][0][0] = "changed"
+        self.assertEqual(parent["transit_tables"]["T"]["rows"], [["a"]])
+
+    def test_make_group_child_context_can_share_parent_when_enabled(self):
+        parent = ensure_group_parent_context({})
+
+        child = make_group_child_context(parent, {"transit_scope": "允许输出到外部"})
+
+        self.assertIs(child, parent)
+        self.assertIn("transit_tables", parent)
+        self.assertIn("loop_states", parent)
+        self.assertIn("loop_results", parent)
+
+    def test_merge_group_child_audit_logs_moves_child_logs(self):
+        parent = {}
+        child = {"table_access_logs": [{"action": "read"}]}
+
+        merge_group_child_audit_logs(parent, child)
+
+        self.assertEqual(parent["table_access_logs"], [{"action": "read"}])
+        self.assertEqual(child["table_access_logs"], [])
+
+    def test_group_output_modes_and_status_text(self):
+        self.assertEqual(normalize_group_transit_conflict_mode("追加到原表"), "追加")
+        self.assertEqual(normalize_group_transit_conflict_mode("自动加时间戳新表"), "自动加时间戳")
+        self.assertEqual(normalize_group_transit_conflict_mode("覆盖整表"), "覆盖")
+        self.assertEqual(normalize_group_sqlite_mode("追加"), "append")
+        self.assertEqual(normalize_group_sqlite_mode("覆盖"), "replace")
+        self.assertEqual(normalize_group_sqlite_mode("存在则报错"), "fail")
+        self.assertEqual(normalize_group_sqlite_mode("新表"), "timestamp")
+
+        self.assertEqual(
+            build_group_final_output(["A"], [["a"]], ["B"], [["b"]], {"main_output_mode": "透传原当前表"}),
+            (["A"], [["a"]], "主输出=透传原当前表"),
+        )
+        self.assertEqual(
+            build_group_final_output(["A"], [["a"]], ["B"], [["b"]], {}),
+            (["B"], [["b"]], "主输出=组结果作为当前表"),
+        )
+
+        self.assertEqual(build_group_node_log(1, "新建列", (2, 1), (2, 2), "OK"), "1.新建列 2×1→2×2 OK")
+        self.assertIn("节点组【G】为空，输出入口表", build_empty_group_stat("G", "当前工作表", "入口", ["中转副表：T"]))
+        stat = build_group_status_text("G", "当前工作表", "入口", "主输出=组结果作为当前表", logs=["1.A", "2.B"], output_parts=["SQLite表：T"])
+        self.assertIn("节点组【G】完成：来源=当前工作表", stat)
+        self.assertIn("SQLite表：T", stat)
+        self.assertIn("1.A；2.B", stat)
+
+
+if __name__ == "__main__":
+    unittest.main()
