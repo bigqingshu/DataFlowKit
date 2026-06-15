@@ -78,17 +78,25 @@ from workflow.nodes.data_nodes import (
     apply_delete_columns_node as workflow_apply_delete_columns_node,
     apply_delete_rows_node as workflow_apply_delete_rows_node,
     apply_extract_node as workflow_apply_extract_node,
+    apply_format_datetime_node as workflow_apply_format_datetime_node,
     apply_fill_value_node as workflow_apply_fill_value_node,
     apply_move_columns_node as workflow_apply_move_columns_node,
     apply_new_columns_node as workflow_apply_new_columns_node,
     apply_sequence_fill_node as workflow_apply_sequence_fill_node,
+    apply_unmatched_format_value as workflow_apply_unmatched_format_value,
     apply_unmatched_extract as workflow_apply_unmatched_extract,
+    build_date_parts as workflow_build_date_parts,
+    build_format_component_columns as workflow_build_format_component_columns,
+    build_time_parts as workflow_build_time_parts,
+    complete_format_year as workflow_complete_format_year,
     ensure_column_count as workflow_ensure_column_count,
     ensure_field_exists as workflow_ensure_field_exists,
     ensure_row_count as workflow_ensure_row_count,
     ensure_target_cell_limit as workflow_ensure_target_cell_limit,
     extract_one_value as workflow_extract_one_value,
+    format_output_value as workflow_format_output_value,
     format_sequence_value as workflow_format_sequence_value,
+    get_datetime_parse_warning as workflow_get_datetime_parse_warning,
     get_config_cell_value as workflow_get_config_cell_value,
     get_cycle_source_values_by_config as workflow_get_cycle_source_values_by_config,
     get_fill_targets as workflow_get_fill_targets,
@@ -96,16 +104,28 @@ from workflow.nodes.data_nodes import (
     get_source_column_values_by_config as workflow_get_source_column_values_by_config,
     get_source_row_multi_field_values_by_config as workflow_get_source_row_multi_field_values_by_config,
     last_non_empty_row_index_by_field as workflow_last_non_empty_row_index_by_field,
+    normalize_datetime_source_text as workflow_normalize_datetime_source_text,
     parse_new_columns_specs as workflow_parse_new_columns_specs,
+    parse_date_auto_common as workflow_parse_date_auto_common,
+    parse_date_delimited as workflow_parse_date_delimited,
+    parse_date_fixed as workflow_parse_date_fixed,
+    parse_format_datetime_value as workflow_parse_format_datetime_value,
+    parse_format_int as workflow_parse_format_int,
     parse_int as workflow_parse_int,
     parse_row_spec_to_indexes as workflow_parse_row_spec_to_indexes,
+    parse_time_auto_common as workflow_parse_time_auto_common,
+    parse_time_delimited as workflow_parse_time_delimited,
+    parse_time_fixed as workflow_parse_time_fixed,
     post_extract_result as workflow_post_extract_result,
     render_current_datetime_template as workflow_render_current_datetime_template,
+    render_format_template as workflow_render_format_template,
     resolve_area_end_row_index as workflow_resolve_area_end_row_index,
     resolve_sequence_count_by_source as workflow_resolve_sequence_count_by_source,
     resolve_start_row_index_by_mode as workflow_resolve_start_row_index_by_mode,
     row_is_empty as workflow_row_is_empty,
     should_write_cell as workflow_should_write_cell,
+    slice_by_position as workflow_slice_by_position,
+    split_by_config_delimiter as workflow_split_by_config_delimiter,
 )
 
 
@@ -16648,343 +16668,64 @@ class PlanWorkflowWindow:
         return f"{name}_{counter}"
 
     def normalize_datetime_source_text(self, value):
-        from shared.datetime_parse_utils import normalize_datetime_text
-        return normalize_datetime_text(value)
+        return workflow_normalize_datetime_source_text(value)
 
     def parse_format_int(self, value, name, allow_zero=False):
-        try:
-            n = int(str(value).strip())
-        except Exception:
-            raise ValueError(f"{name} 必须是整数。")
-        if allow_zero:
-            if n < 0:
-                raise ValueError(f"{name} 不能小于 0。")
-        else:
-            if n <= 0:
-                raise ValueError(f"{name} 必须大于 0。")
-        return n
+        return workflow_parse_format_int(value, name, allow_zero=allow_zero)
 
     def slice_by_position(self, text, start, length, base, name):
-        length = self.parse_format_int(length, f"{name}长度", allow_zero=True)
-        if length == 0:
-            return ""
-        start = self.parse_format_int(start, f"{name}起始")
-        idx = start - 1 if base == "从1开始" else start
-        if idx < 0 or idx + length > len(text):
-            raise ValueError(f"{name}位置越界")
-        return text[idx:idx + length]
+        return workflow_slice_by_position(text, start, length, base, name)
 
     def complete_format_year(self, value, config):
-        from shared.datetime_parse_utils import complete_year
-        return complete_year(value, config)
+        return workflow_complete_format_year(value, config)
 
     def build_date_parts(self, year, month, day, config):
-        y = self.complete_format_year(year, config)
-        try:
-            m = int(str(month).strip())
-            d = int(str(day).strip())
-        except Exception:
-            raise ValueError("月/日不是数字")
-        try:
-            datetime(y, m, d)  # 校验真实日期，例如 260631 会失败
-        except Exception:
-            raise ValueError(f"日期无效：{y:04d}-{m:02d}-{d:02d}")
-        return {"year": y, "month": m, "day": d}
+        return workflow_build_date_parts(year, month, day, config)
 
     def build_time_parts(self, hour, minute="0", second="0"):
-        try:
-            h = int(str(hour).strip())
-            mi = int(str(minute).strip()) if str(minute).strip() != "" else 0
-            sec = int(str(second).strip()) if str(second).strip() != "" else 0
-        except Exception:
-            raise ValueError("时/分/秒不是数字")
-        if not (0 <= h <= 23):
-            raise ValueError("小时超出范围 0-23")
-        if not (0 <= mi <= 59):
-            raise ValueError("分钟超出范围 0-59")
-        if not (0 <= sec <= 59):
-            raise ValueError("秒超出范围 0-59")
-        return {"hour": h, "minute": mi, "second": sec}
+        return workflow_build_time_parts(hour, minute, second)
 
     def parse_date_fixed(self, text, config):
-        base = config.get("position_base", "从1开始")
-        y = self.slice_by_position(text, config.get("year_start", "1"), config.get("year_len", "2"), base, "年")
-        m = self.slice_by_position(text, config.get("month_start", "3"), config.get("month_len", "2"), base, "月")
-        d = self.slice_by_position(text, config.get("day_start", "5"), config.get("day_len", "2"), base, "日")
-        return self.build_date_parts(y, m, d, config)
+        return workflow_parse_date_fixed(text, config)
 
     def parse_time_fixed(self, text, config):
-        base = config.get("position_base", "从1开始")
-        h = self.slice_by_position(text, config.get("hour_start", "1"), config.get("hour_len", "2"), base, "时")
-        mi = self.slice_by_position(text, config.get("minute_start", "3"), config.get("minute_len", "2"), base, "分")
-        sec = self.slice_by_position(text, config.get("second_start", "5"), config.get("second_len", "0"), base, "秒")
-        return self.build_time_parts(h, mi, sec or "0")
+        return workflow_parse_time_fixed(text, config)
 
     def split_by_config_delimiter(self, text, kind, config):
-        if kind == "date":
-            mode = config.get("date_delimiter", "自动识别")
-            custom = config.get("custom_date_delimiter", "-")
-            if mode == "年/月/日":
-                nums = re.findall(r"\d+", text)
-                return nums
-            if mode == "自定义":
-                if custom == "":
-                    raise ValueError("自定义日期分隔符不能为空")
-                return text.split(custom)
-            if mode == "自动识别":
-                nums = re.findall(r"\d+", text)
-                return nums
-            return text.split(mode)
-        mode = config.get("time_delimiter", "自动识别")
-        custom = config.get("custom_time_delimiter", ":")
-        if mode == "时/分/秒":
-            return re.findall(r"\d+", text)
-        if mode == "自定义":
-            if custom == "":
-                raise ValueError("自定义时间分隔符不能为空")
-            return text.split(custom)
-        if mode == "自动识别":
-            return re.findall(r"\d+", text)
-        return text.split(mode)
+        return workflow_split_by_config_delimiter(text, kind, config)
 
     def parse_date_delimited(self, text, config):
-        parts = [p.strip() for p in self.split_by_config_delimiter(text, "date", config) if str(p).strip() != ""]
-        if len(parts) < 3:
-            raise ValueError("日期分隔后不足 3 段")
-        order = config.get("date_order", "年-月-日")
-        if order == "月-日-年":
-            m, d, y = parts[0], parts[1], parts[2]
-        elif order == "日-月-年":
-            d, m, y = parts[0], parts[1], parts[2]
-        else:
-            y, m, d = parts[0], parts[1], parts[2]
-        return self.build_date_parts(y, m, d, config)
+        return workflow_parse_date_delimited(text, config)
 
     def parse_time_delimited(self, text, config):
-        parts = [p.strip() for p in self.split_by_config_delimiter(text, "time", config) if str(p).strip() != ""]
-        if len(parts) < 2:
-            raise ValueError("时间分隔后不足 2 段")
-        h = parts[0]
-        mi = parts[1]
-        sec = parts[2] if len(parts) >= 3 else "0"
-        return self.build_time_parts(h, mi, sec)
+        return workflow_parse_time_delimited(text, config)
 
     def parse_date_auto_common(self, text, config):
-        from shared.datetime_parse_utils import parse_date_auto_common
-        return parse_date_auto_common(text, config)
+        return workflow_parse_date_auto_common(text, config)
 
     def parse_time_auto_common(self, text, config):
-        t = self.normalize_datetime_source_text(text)
-        # 带分隔符 / 中文时分秒
-        m = re.search(r"(?<!\d)(\d{1,2})\s*[:时]\s*(\d{1,2})(?:\s*[:分]\s*(\d{1,2}))?(?:\s*秒)?(?!\d)", t)
-        if m:
-            return self.build_time_parts(m.group(1), m.group(2), m.group(3) or "0")
-        # 纯数字 HHMMSS / HHMM，避免误把 260603 这种日期当时间；只在解析类型为时间时使用
-        m = re.search(r"(?<!\d)(\d{6})(?!\d)", t)
-        if m:
-            s = m.group(1)
-            return self.build_time_parts(s[:2], s[2:4], s[4:6])
-        m = re.search(r"(?<!\d)(\d{4})(?!\d)", t)
-        if m:
-            s = m.group(1)
-            return self.build_time_parts(s[:2], s[2:4], "0")
-        raise ValueError("未识别到常见时间格式")
+        return workflow_parse_time_auto_common(text, config)
 
     def parse_format_datetime_value(self, date_text, time_text, config):
-        date_text = self.normalize_datetime_source_text(date_text)
-        time_text = self.normalize_datetime_source_text(time_text)
-        if config.get("strip_value", True):
-            date_text = date_text.strip()
-            time_text = time_text.strip()
-        parse_type = config.get("parse_type", "日期")
-        structure = config.get("input_structure", "固定位置")
-        parts = {"year": None, "month": None, "day": None, "hour": None, "minute": None, "second": None}
-        if parse_type in ("日期", "日期时间"):
-            if structure == "固定位置":
-                date_parts = self.parse_date_fixed(date_text, config)
-            elif structure == "分隔符":
-                date_parts = self.parse_date_delimited(date_text, config)
-            else:
-                date_parts = self.parse_date_auto_common(date_text, config)
-            parts.update(date_parts)
-        if parse_type in ("时间", "日期时间"):
-            t_source = time_text if (parse_type == "日期时间" and config.get("use_separate_time_field", False)) else date_text
-            if structure == "固定位置":
-                time_parts = self.parse_time_fixed(t_source, config)
-            elif structure == "分隔符":
-                time_parts = self.parse_time_delimited(t_source, config)
-            else:
-                time_parts = self.parse_time_auto_common(t_source, config)
-            parts.update(time_parts)
-        return parts
+        return workflow_parse_format_datetime_value(date_text, time_text, config)
 
     def render_format_template(self, parts, template):
-        y = parts.get("year")
-        mo = parts.get("month")
-        d = parts.get("day")
-        h = parts.get("hour")
-        mi = parts.get("minute")
-        s = parts.get("second")
-        values = {
-            "YYYY": f"{y:04d}" if y is not None else "",
-            "YY": f"{y % 100:02d}" if y is not None else "",
-            "MM": f"{mo:02d}" if mo is not None else "",
-            "M": str(mo) if mo is not None else "",
-            "DD": f"{d:02d}" if d is not None else "",
-            "D": str(d) if d is not None else "",
-            "HH": f"{h:02d}" if h is not None else "",
-            "H": str(h) if h is not None else "",
-            "mm": f"{mi:02d}" if mi is not None else "",
-            "m": str(mi) if mi is not None else "",
-            "ss": f"{s:02d}" if s is not None else "",
-            "s": str(s) if s is not None else "",
-        }
-        text = str(template or "")
-        # 先替换长 token，避免 {m} 影响 {mm}
-        for key in sorted(values.keys(), key=len, reverse=True):
-            text = text.replace("{" + key + "}", values[key])
-        return text
+        return workflow_render_format_template(parts, template)
 
     def format_output_value(self, parts, config):
-        parse_type = config.get("parse_type", "日期")
-        if parse_type == "时间":
-            template = config.get("time_output_template", "{HH}:{mm}")
-        elif parse_type == "日期时间":
-            template = config.get("datetime_output_template", "{YYYY}-{MM}-{DD} {HH}:{mm}")
-        else:
-            template = config.get("output_template", "{YYYY}-{MM}-{DD}")
-        return self.render_format_template(parts, template)
+        return workflow_format_output_value(parts, config)
 
     def apply_unmatched_format_value(self, original, status, config):
-        mode = config.get("unmatched_mode", "留空")
-        if mode == "保留原值":
-            return original, status
-        if mode == "填写固定值":
-            return str(config.get("unmatched_fixed", "未匹配")), status
-        if mode == "跳过该行":
-            return "", "跳过"
-        return "", status
+        return workflow_apply_unmatched_format_value(original, status, config)
 
     def build_format_component_columns(self, parts, parse_type, prefix):
-        prefix = str(prefix or "解析").strip() or "解析"
-        values = []
-        if parse_type in ("日期", "日期时间"):
-            values.extend([
-                (f"{prefix}年", f"{parts.get('year'):04d}" if parts.get("year") is not None else ""),
-                (f"{prefix}月", f"{parts.get('month'):02d}" if parts.get("month") is not None else ""),
-                (f"{prefix}日", f"{parts.get('day'):02d}" if parts.get("day") is not None else ""),
-            ])
-        if parse_type in ("时间", "日期时间"):
-            values.extend([
-                (f"{prefix}时", f"{parts.get('hour'):02d}" if parts.get("hour") is not None else ""),
-                (f"{prefix}分", f"{parts.get('minute'):02d}" if parts.get("minute") is not None else ""),
-                (f"{prefix}秒", f"{parts.get('second'):02d}" if parts.get("second") is not None else ""),
-            ])
-        return values
+        return workflow_build_format_component_columns(parts, parse_type, prefix)
 
     def apply_format_datetime_node(self, headers, rows, config):
-        source_idx = self.field_index(headers, config.get("source_field", ""))
-        time_idx = None
-        if config.get("parse_type") == "日期时间" and config.get("use_separate_time_field", False):
-            time_idx = self.field_index(headers, config.get("time_source_field", ""))
-        headers = list(headers)
-        new_rows = self.normalize_rows(rows, len(headers))
-        output_mode = config.get("output_mode", "生成新字段")
-        parse_type = config.get("parse_type", "日期")
-        main_field = str(config.get("new_field", "标准日期")).strip() or "标准日期"
-        status_enabled = bool(config.get("output_status", True))
-        status_field = str(config.get("status_field", "格式解析状态")).strip() or "格式解析状态"
-        output_indexes = []
-        status_idx = None
-
-        if output_mode == "生成新字段":
-            main_field = self.get_unique_header(main_field, headers)
-            headers.append(main_field)
-            output_indexes.append(("main", len(headers) - 1, main_field))
-            for row in new_rows:
-                row.append("")
-        elif output_mode == "生成多个字段":
-            main_field = self.get_unique_header(main_field, headers)
-            headers.append(main_field)
-            output_indexes.append(("main", len(headers) - 1, main_field))
-            for row in new_rows:
-                row.append("")
-            for base_name, _dummy in self.build_format_component_columns({}, parse_type, config.get("component_prefix", "解析")):
-                name = self.get_unique_header(base_name, headers)
-                headers.append(name)
-                output_indexes.append((base_name, len(headers) - 1, name))
-                for row in new_rows:
-                    row.append("")
-        else:
-            output_indexes.append(("main", source_idx, headers[source_idx]))
-
-        if status_enabled:
-            status_name = self.get_unique_header(status_field, headers)
-            headers.append(status_name)
-            status_idx = len(headers) - 1
-            for row in new_rows:
-                row.append("")
-
-        changed = 0
-        skipped = 0
-        failed = 0
-        for row in new_rows:
-            original = self.safe_cell(row, source_idx)
-            time_text = self.safe_cell(row, time_idx) if time_idx is not None else original
-            try:
-                parts = self.parse_format_datetime_value(original, time_text, config)
-                out_value = self.format_output_value(parts, config)
-                warning = self.get_datetime_parse_warning(original, config, parts)
-                status = "成功但存在歧义：" + warning if warning else "成功"
-            except Exception as e:
-                failed += 1
-                out_value, status = self.apply_unmatched_format_value(original, str(e), config)
-                parts = {"year": None, "month": None, "day": None, "hour": None, "minute": None, "second": None}
-
-            if status == "跳过":
-                skipped += 1
-                if status_idx is not None:
-                    row[status_idx] = "跳过"
-                continue
-
-            component_values = dict(self.build_format_component_columns(parts, parse_type, config.get("component_prefix", "解析")))
-            for kind, idx, name in output_indexes:
-                if kind == "main":
-                    row[idx] = out_value
-                else:
-                    row[idx] = component_values.get(kind, "")
-            if status_idx is not None:
-                row[status_idx] = status
-            changed += 1
-
-        return headers, new_rows, f"格式规范化完成：写入 {changed} 行，失败 {failed} 行，跳过 {skipped} 行"
+        return workflow_apply_format_datetime_node(headers, rows, config)
 
     def get_datetime_parse_warning(self, original, config, parts):
-        warnings = []
-        if config.get("input_structure") == "分隔符":
-            values = [
-                item.strip()
-                for item in self.split_by_config_delimiter(
-                    self.normalize_datetime_source_text(original),
-                    "date",
-                    config,
-                )
-                if str(item).strip()
-            ]
-            order = config.get("date_order", "年-月-日")
-            if order in ("月-日-年", "日-月-年") and len(values) >= 2:
-                try:
-                    first = int(values[0])
-                    second = int(values[1])
-                    if 1 <= first <= 12 and 1 <= second <= 12:
-                        warnings.append("月和日均不超过12，请确认月日顺序")
-                except Exception:
-                    pass
-        if config.get("year_rule") == "不补全":
-            year = parts.get("year")
-            if year is not None and int(year) < 1000:
-                warnings.append("年份未补全且不足四位")
-        return "；".join(warnings)
+        return workflow_get_datetime_parse_warning(original, config, parts)
 
     def render_current_datetime_template(self, dt, config):
         return workflow_render_current_datetime_template(dt, config)

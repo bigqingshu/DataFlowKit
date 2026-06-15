@@ -10,11 +10,14 @@ from workflow.nodes.data_nodes import (
     apply_delete_columns_node,
     apply_delete_rows_node,
     apply_extract_node,
+    apply_format_datetime_node,
     apply_fill_value_node,
     apply_move_columns_node,
     apply_new_columns_node,
     apply_sequence_fill_node,
     extract_one_value,
+    get_datetime_parse_warning,
+    parse_format_datetime_value,
     parse_new_columns_specs,
     render_current_datetime_template,
 )
@@ -456,6 +459,126 @@ class WorkflowDataNodesTests(unittest.TestCase):
         self.assertEqual(headers, ["A"])
         self.assertEqual(rows, [["20260615"]])
         self.assertEqual(message, "新建日期时间列完成：字段【A】，写入 1 行，示例：20260615")
+
+    def test_format_datetime_node_fixed_date_generates_status_field(self):
+        headers, rows, message = apply_format_datetime_node(
+            ["Raw"],
+            [["260615"], ["260631"]],
+            {
+                "source_field": "Raw",
+                "parse_type": "日期",
+                "input_structure": "固定位置",
+                "year_start": "1",
+                "year_len": "2",
+                "month_start": "3",
+                "month_len": "2",
+                "day_start": "5",
+                "day_len": "2",
+                "year_rule": "20xx",
+                "new_field": "Date",
+                "output_template": "{YYYY}/{MM}/{DD}",
+                "output_status": True,
+                "status_field": "Status",
+                "unmatched_mode": "填写固定值",
+                "unmatched_fixed": "BAD",
+            },
+        )
+
+        self.assertEqual(headers, ["Raw", "Date", "Status"])
+        self.assertEqual(rows, [["260615", "2026/06/15", "成功"], ["260631", "BAD", "日期无效：2026-06-31"]])
+        self.assertEqual(message, "格式规范化完成：写入 2 行，失败 1 行，跳过 0 行")
+
+    def test_format_datetime_node_delimited_date_warns_about_ambiguous_order(self):
+        headers, rows, message = apply_format_datetime_node(
+            ["Raw"],
+            [["03/06/26"]],
+            {
+                "source_field": "Raw",
+                "parse_type": "日期",
+                "input_structure": "分隔符",
+                "date_delimiter": "自动识别",
+                "date_order": "月-日-年",
+                "year_rule": "20xx",
+                "output_mode": "覆盖源字段",
+                "output_template": "{YYYY}-{MM}-{DD}",
+                "output_status": True,
+            },
+        )
+
+        self.assertEqual(headers, ["Raw", "格式解析状态"])
+        self.assertEqual(rows, [["2026-03-06", "成功但存在歧义：月和日均不超过12，请确认月日顺序"]])
+        self.assertEqual(message, "格式规范化完成：写入 1 行，失败 0 行，跳过 0 行")
+
+    def test_format_datetime_node_outputs_component_columns_for_separate_time_field(self):
+        headers, rows, message = apply_format_datetime_node(
+            ["Date", "Time"],
+            [["2026-06-15", "09:08:07"]],
+            {
+                "source_field": "Date",
+                "time_source_field": "Time",
+                "parse_type": "日期时间",
+                "use_separate_time_field": True,
+                "input_structure": "自动识别常见格式",
+                "output_mode": "生成多个字段",
+                "new_field": "Stamp",
+                "datetime_output_template": "{YYYY}-{MM}-{DD} {HH}:{mm}:{ss}",
+                "component_prefix": "Part",
+                "output_status": False,
+            },
+        )
+
+        self.assertEqual(headers, ["Date", "Time", "Stamp", "Part年", "Part月", "Part日", "Part时", "Part分", "Part秒"])
+        self.assertEqual(rows, [["2026-06-15", "09:08:07", "2026-06-15 09:08:07", "2026", "06", "15", "09", "08", "07"]])
+        self.assertEqual(message, "格式规范化完成：写入 1 行，失败 0 行，跳过 0 行")
+
+    def test_format_datetime_node_can_skip_failed_rows_when_overwriting(self):
+        headers, rows, message = apply_format_datetime_node(
+            ["Raw"],
+            [["20260615"], ["not-a-date"]],
+            {
+                "source_field": "Raw",
+                "parse_type": "日期",
+                "input_structure": "自动识别常见格式",
+                "output_mode": "覆盖源字段",
+                "output_template": "{YY}{MM}{DD}",
+                "output_status": True,
+                "unmatched_mode": "跳过该行",
+            },
+        )
+
+        self.assertEqual(headers, ["Raw", "格式解析状态"])
+        self.assertEqual(rows, [["260615", "成功"], ["not-a-date", "跳过"]])
+        self.assertEqual(message, "格式规范化完成：写入 1 行，失败 1 行，跳过 1 行")
+
+    def test_parse_format_datetime_value_and_warning_helpers_are_pure(self):
+        parts = parse_format_datetime_value(
+            "２６／０６／１５",
+            "",
+            {
+                "parse_type": "日期",
+                "input_structure": "分隔符",
+                "date_delimiter": "自动识别",
+                "date_order": "年-月-日",
+                "year_rule": "20xx",
+            },
+        )
+
+        self.assertEqual(parts["year"], 2026)
+        self.assertEqual(parts["month"], 6)
+        self.assertEqual(parts["day"], 15)
+        self.assertIn(
+            "确认月日顺序",
+            get_datetime_parse_warning(
+                "03/06/26",
+                {
+                    "input_structure": "分隔符",
+                    "date_delimiter": "自动识别",
+                    "date_order": "月-日-年",
+                    "year_rule": "20xx",
+                },
+                {"year": 2026, "month": 3, "day": 6},
+            ),
+        )
 
     def test_extract_node_regex_generates_unique_field_and_handles_unmatched(self):
         headers, rows, message = apply_extract_node(
