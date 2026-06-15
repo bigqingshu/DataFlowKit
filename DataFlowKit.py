@@ -186,6 +186,17 @@ from workflow.nodes.group_nodes import (
     parse_group_input_fields as workflow_parse_group_input_fields,
     unique_keep_order as workflow_unique_keep_order,
 )
+from workflow.nodes.loop_nodes import (
+    apply_loop_judge_to_state as workflow_apply_loop_judge_to_state,
+    build_loop_judge_output as workflow_build_loop_judge_output,
+    build_loop_start_output as workflow_build_loop_start_output,
+    evaluate_loop_condition as workflow_evaluate_loop_condition,
+    find_loop_judge_index as workflow_find_loop_judge_index,
+    find_loop_start_index as workflow_find_loop_start_index,
+    init_loop_state_from_source as workflow_init_loop_state_from_source,
+    loop_last_non_empty_row_index as workflow_loop_last_non_empty_row_index,
+    take_next_loop_item as workflow_take_next_loop_item,
+)
 from workflow.nodes.plugin_nodes import (
     build_plugin_failure_output as workflow_build_plugin_failure_output,
     build_plugin_final_output as workflow_build_plugin_final_output,
@@ -11046,64 +11057,11 @@ class PlanWorkflowWindow:
         return list(headers), [list(r) for r in rows], "当前表"
 
     def loop_last_non_empty_row_index(self, headers, rows, field):
-        if field not in headers:
-            return len(rows) - 1
-        idx = headers.index(field)
-        for i in range(len(rows) - 1, -1, -1):
-            if self.safe_cell(rows[i], idx).strip() != "":
-                return i
-        return -1
+        return workflow_loop_last_non_empty_row_index(headers, rows, field)
 
     def init_loop_state(self, headers, rows, config, context=None):
-        loop_id = config.get("loop_id", "loop") or "loop"
         source_headers, source_rows, source_name = self.get_loop_source_table_data(headers, rows, config, context=context)
-        normalized = self.normalize_rows(source_rows, len(source_headers))
-        boundary_mode = config.get("boundary_mode", "整体表格数据边界")
-        if boundary_mode == "指定参考列数据边界":
-            last_idx = self.loop_last_non_empty_row_index(source_headers, normalized, config.get("reference_field", ""))
-            source_rows_use = normalized[:last_idx + 1] if last_idx >= 0 else []
-        elif boundary_mode == "手动指定行数":
-            try:
-                n = max(0, int(str(config.get("manual_count", "0")).strip()))
-            except Exception:
-                n = len(normalized)
-            source_rows_use = normalized[:n]
-        else:
-            source_rows_use = normalized
-
-        selected_fields = [f for f in (config.get("fields") or source_headers) if f in source_headers]
-        if not selected_fields:
-            selected_fields = list(source_headers)
-        flag_field = config.get("flag_field", "执行标志") or "执行标志"
-        flag_idx = source_headers.index(flag_field) if flag_field in source_headers else None
-        init_mode = config.get("init_flag_mode", "空值填0，非0不执行")
-        running_policy = config.get("running_flag_policy", "执行中1标记失败3")
-        queue_headers = [flag_field, "原始行号"] + selected_fields
-        queue_rows = []
-        for i, row in enumerate(source_rows_use):
-            if init_mode == "强制重置全部为0" or flag_idx is None:
-                flag = "0"
-            else:
-                flag = self.safe_cell(row, flag_idx).strip()
-                if flag == "" and init_mode == "空值填0，非0不执行":
-                    flag = "0"
-                if flag == "1":
-                    if running_policy == "执行中1标记失败3":
-                        flag = "3"
-                    elif running_policy == "执行中1重置为0":
-                        flag = "0"
-            queue_rows.append([flag, str(i + 1)] + [self.safe_cell(row, source_headers.index(f)) for f in selected_fields])
-        return {
-            "loop_id": loop_id,
-            "queue_headers": queue_headers,
-            "queue_rows": queue_rows,
-            "selected_fields": selected_fields,
-            "current_index": None,
-            "iterations": 0,
-            "source_name": source_name,
-            "current_table_name": config.get("current_table_name", "当前循环项") or "当前循环项",
-            "max_loop_count": int(str(config.get("max_loop_count", "10000") or "10000")),
-        }
+        return workflow_init_loop_state_from_source(source_headers, source_rows, source_name, config)
 
     def apply_loop_start_node(self, headers, rows, config, context=None):
         context = context if context is not None else {}
@@ -11113,37 +11071,10 @@ class PlanWorkflowWindow:
         if state is None:
             state = self.init_loop_state(headers, rows, config, context=context)
             states[loop_id] = state
-        if state.get("iterations", 0) > state.get("max_loop_count", 10000):
-            raise ValueError(f"循环 {loop_id} 超过最大循环次数，疑似死循环。")
-
-        flag_idx = 0
-        pending_idx = None
-        for i, row in enumerate(state["queue_rows"]):
-            if str(row[flag_idx]).strip() == "0":
-                pending_idx = i
-                break
-        if pending_idx is None:
-            table_name = state["current_table_name"]
-            transit_tables = context.setdefault("transit_tables", {})
-            current_headers = state["queue_headers"][2:]
-            manager = self.check_transit_table_write_permission(
-                context,
-                table_name,
-                exists=table_name in transit_tables,
-                write_mode="覆盖当前循环项",
-                fields=current_headers,
-                node_type="循环执行起点",
-            )
-            transit_tables[table_name] = {"headers": current_headers, "rows": [], "source": f"循环:{loop_id}:无待执行"}
-            self.log_transit_table_event(manager, "write_transit_table", table_name, current_headers, [], write_mode="覆盖当前循环项", message=f"循环执行起点写入空当前项中转副表 {table_name}")
-            return headers, rows, f"循环 {loop_id} 无待执行项", {"no_pending": True}
-
-        state["queue_rows"][pending_idx][flag_idx] = "1"
-        state["current_index"] = pending_idx
-        state["iterations"] = state.get("iterations", 0) + 1
-        current_headers = state["queue_headers"][2:]
-        current_row = state["queue_rows"][pending_idx][2:]
-        table_name = state["current_table_name"]
+        start_result = workflow_take_next_loop_item(state)
+        table_name = start_result["table_name"]
+        current_headers = start_result["current_headers"]
+        transit_rows = start_result["transit_rows"]
         transit_tables = context.setdefault("transit_tables", {})
         manager = self.check_transit_table_write_permission(
             context,
@@ -11155,63 +11086,26 @@ class PlanWorkflowWindow:
         )
         transit_tables[table_name] = {
             "headers": list(current_headers),
-            "rows": [list(current_row)],
-            "source": f"循环:{loop_id}:当前项",
+            "rows": [list(r) for r in transit_rows],
+            "source": start_result["transit_source"],
         }
-        self.log_transit_table_event(manager, "write_transit_table", table_name, current_headers, [current_row], write_mode="覆盖当前循环项", message=f"循环执行起点写入当前项中转副表 {table_name}：1 行 × {len(current_headers)} 列")
-        if config.get("output_current_as_table", True):
-            return list(current_headers), [list(current_row)], f"循环 {loop_id} 取第 {pending_idx + 1} 条，标志 0→1", {"no_pending": False}
-        return headers, rows, f"循环 {loop_id} 取第 {pending_idx + 1} 条，标志 0→1，当前表保持不变", {"no_pending": False}
+        if start_result.get("no_pending"):
+            message = f"循环执行起点写入空当前项中转副表 {table_name}"
+        else:
+            message = f"循环执行起点写入当前项中转副表 {table_name}：1 行 × {len(current_headers)} 列"
+        self.log_transit_table_event(manager, "write_transit_table", table_name, current_headers, transit_rows, write_mode="覆盖当前循环项", message=message)
+        return workflow_build_loop_start_output(headers, rows, start_result, output_current_as_table=config.get("output_current_as_table", True))
 
     def evaluate_loop_condition(self, headers, rows, config, context=None, loop_state=None):
-        mode = config.get("condition_mode", "始终成功")
-        if mode == "始终成功":
-            return True, "始终成功"
-        if mode == "结果表行数>0":
-            return len(rows) > 0, f"当前结果行数={len(rows)}"
-        check_headers, check_rows = headers, rows
-        if config.get("condition_source") == "当前循环项表" and loop_state is not None:
-            check_headers = loop_state.get("queue_headers", [])[2:]
-            ci = loop_state.get("current_index")
-            check_rows = [loop_state.get("queue_rows", [])[ci][2:]] if ci is not None else []
-        field = config.get("condition_field", "")
-        if field not in check_headers:
-            return False, f"判断字段不存在：{field}"
-        idx = check_headers.index(field)
-        value = config.get("condition_value", "")
-        if not check_rows:
-            return False, "判断数据为空"
-        text = self.safe_cell(check_rows[0], idx)
-        if mode == "字段等于":
-            return text == value, f"{field}={text}"
-        if mode == "字段不等于":
-            return text != value, f"{field}={text}"
-        if mode == "字段包含":
-            return str(value) in text, f"{field}={text}"
-        if mode == "字段不为空":
-            return text.strip() != "", f"{field}={text}"
-        if mode == "正则匹配":
-            try:
-                return re.search(str(value), text) is not None, f"{field}={text}"
-            except Exception as e:
-                return False, f"正则错误：{e}"
-        return True, "默认成功"
+        return workflow_evaluate_loop_condition(headers, rows, config, loop_state=loop_state)
 
     def find_loop_start_index(self, loop_id, current_idx, nodes=None):
         node_list = nodes if nodes is not None else self.nodes
-        for i in range(current_idx - 1, -1, -1):
-            node = node_list[i]
-            if node.get("enabled", True) and node.get("type") == "循环执行起点" and node.get("config", {}).get("loop_id") == loop_id:
-                return i
-        return None
+        return workflow_find_loop_start_index(loop_id, current_idx, node_list)
 
     def find_loop_judge_index(self, loop_id, start_idx, end_idx, nodes=None):
         node_list = nodes if nodes is not None else self.nodes
-        for i in range(start_idx + 1, min(len(node_list), end_idx + 1)):
-            node = node_list[i]
-            if node.get("enabled", True) and node.get("type") == "循环判断回跳" and node.get("config", {}).get("loop_id") == loop_id:
-                return i
-        return None
+        return workflow_find_loop_judge_index(loop_id, start_idx, end_idx, node_list)
 
     def apply_loop_judge_node(self, headers, rows, config, context=None):
         context = context if context is not None else {}
@@ -11221,28 +11115,11 @@ class PlanWorkflowWindow:
         state = context.setdefault("loop_states", {}).get(loop_id)
         if not state:
             raise ValueError(f"未找到循环状态：{loop_id}。请确认循环执行起点在本节点之前。")
-        current_index = state.get("current_index")
-        if current_index is None:
-            return headers, rows, f"循环 {loop_id} 当前无执行项", {"jump_to": None}
-        ok, detail = self.evaluate_loop_condition(headers, rows, config, context=context, loop_state=state)
-        if ok:
-            state["queue_rows"][current_index][0] = "2"
-            status_text = "完成2"
-        else:
-            fail_policy = config.get("on_fail", "标记失败3并继续下一条")
-            if fail_policy == "重置为0稍后重试":
-                state["queue_rows"][current_index][0] = "0"
-                status_text = "重置0"
-            elif fail_policy == "标记跳过4并继续下一条":
-                state["queue_rows"][current_index][0] = "4"
-                status_text = "跳过4"
-            else:
-                state["queue_rows"][current_index][0] = "3"
-                status_text = "失败3"
-                if fail_policy == "标记失败3并停止工作流":
-                    raise ValueError(f"循环 {loop_id} 条件不满足，已标记失败：{detail}")
-        result_headers = ["循环名称", "循环序号", "队列行号", "判断结果", "标记状态", "说明", "时间"]
-        result_row = [loop_id, str(state.get("iterations", 0)), str(current_index + 1), "满足" if ok else "不满足", status_text, detail, datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
+        judge_result = workflow_apply_loop_judge_to_state(headers, rows, config, state)
+        if judge_result.get("no_current"):
+            return headers, rows, judge_result["stat"], judge_result["ctrl"]
+        result_headers = judge_result["result_headers"]
+        result_row = judge_result["result_row"]
         results = context.setdefault("loop_results", {}).setdefault(loop_id, {"headers": result_headers, "rows": []})
         results["rows"].append(result_row)
         result_name = config.get("result_table_name", "循环结果") or "循环结果"
@@ -11258,32 +11135,20 @@ class PlanWorkflowWindow:
         )
         transit_tables[result_name] = {"headers": result_headers, "rows": result_rows, "source": f"循环:{loop_id}:结果"}
         self.log_transit_table_event(result_manager, "write_transit_table", result_name, result_headers, result_rows, write_mode="覆盖循环结果", message=f"循环判断回跳写入结果中转副表 {result_name}：{len(result_rows)} 行 × {len(result_headers)} 列")
-        queue_name = f"循环队列_{loop_id}"
-        queue_rows = [list(r) for r in state["queue_rows"]]
+        queue_name = judge_result["queue_name"]
+        queue_rows = judge_result["queue_rows"]
+        queue_headers = judge_result["queue_headers"]
         queue_manager = self.check_transit_table_write_permission(
             context,
             queue_name,
             exists=queue_name in transit_tables,
             write_mode="覆盖循环队列",
-            fields=state["queue_headers"],
+            fields=queue_headers,
             node_type="循环判断回跳",
         )
-        transit_tables[queue_name] = {"headers": list(state["queue_headers"]), "rows": queue_rows, "source": f"循环:{loop_id}:队列"}
-        self.log_transit_table_event(queue_manager, "write_transit_table", queue_name, state["queue_headers"], queue_rows, write_mode="覆盖循环队列", message=f"循环判断回跳写入队列中转副表 {queue_name}：{len(queue_rows)} 行 × {len(state['queue_headers'])} 列")
-        state["current_index"] = None
-
-        has_pending = any(str(r[0]).strip() == "0" for r in state["queue_rows"])
-        if has_pending:
-            start_idx = self.find_loop_start_index(loop_id, len(self.nodes))
-            # 上面按最后一个同名循环起点找；运行时会由 run_plan 用当前节点反向查找更稳。
-            return headers, rows, f"循环 {loop_id} {status_text}，仍有待执行项，准备回跳", {"jump_to": "__LOOP_START__"}
-
-        mode = config.get("end_output_mode", "循环队列表")
-        if mode == "循环队列表":
-            return list(state["queue_headers"]), [list(r) for r in state["queue_rows"]], f"循环 {loop_id} 已全部结束，输出循环队列表", {"jump_to": None}
-        if mode == "循环结果表":
-            return result_headers, [list(r) for r in results["rows"]], f"循环 {loop_id} 已全部结束，输出循环结果表", {"jump_to": None}
-        return headers, rows, f"循环 {loop_id} 已全部结束，保持当前表", {"jump_to": None}
+        transit_tables[queue_name] = {"headers": list(queue_headers), "rows": queue_rows, "source": f"循环:{loop_id}:队列"}
+        self.log_transit_table_event(queue_manager, "write_transit_table", queue_name, queue_headers, queue_rows, write_mode="覆盖循环队列", message=f"循环判断回跳写入队列中转副表 {queue_name}：{len(queue_rows)} 行 × {len(queue_headers)} 列")
+        return workflow_build_loop_judge_output(headers, rows, config, state, judge_result, results["rows"])
 
     def build_file_list_config(self, config):
         frame = ttk.LabelFrame(self.config_frame, text="获取文件列表节点", padding=8)
