@@ -113,6 +113,78 @@ class WorkflowPluginNodesTests(unittest.TestCase):
         self.assertEqual(rows[0][:2], ["test_plugin", "boom"])
         self.assertIn("失败处理：输出错误表继续", stat)
 
+    def test_dataflowkit_apply_plugin_node_reports_saved_log_and_transit_outputs(self):
+        module = types.SimpleNamespace(
+            run=lambda input_data, params, context: {
+                "ok": True,
+                "logs": [{"message": "log"}],
+                "output": {"type": "table", "headers": ["B"], "rows": [["b"]]},
+            }
+        )
+        window = self.make_plugin_window(module)
+        transit_calls = []
+        window.save_plugin_logs_to_file = lambda plugin_id, log_items: "plugin.log"
+        window.save_plugin_logs_to_sqlite = lambda log_items, db_path=None, context=None: 2
+
+        def fake_save_transit(context, name, headers, rows, conflict_mode="覆盖", source="插件输出"):
+            transit_calls.append((name, source, headers, rows))
+            return f"中转副表：{name}"
+
+        window.save_plugin_output_to_transit = fake_save_transit
+
+        headers, rows, stat = window.apply_plugin_node(
+            ["A"],
+            [["a"]],
+            {
+                "plugin_id": "test_plugin",
+                "params": {},
+                "save_plugin_log_file": True,
+                "save_plugin_log_sqlite": True,
+                "save_plugin_log_transit": True,
+                "plugin_log_in_preview": True,
+                "save_output_as_transit": True,
+                "plugin_log_transit_name": "日志表",
+                "transit_name": "结果表",
+            },
+            context={},
+        )
+
+        self.assertEqual(headers, ["B"])
+        self.assertEqual(rows, [["b"]])
+        self.assertIn("日志文件：plugin.log", stat)
+        self.assertIn("SQLite日志：2条", stat)
+        self.assertIn("中转副表：日志表", stat)
+        self.assertIn("中转副表：结果表", stat)
+        self.assertEqual([call[0] for call in transit_calls], ["日志表", "结果表"])
+
+    def test_dataflowkit_apply_plugin_node_stop_policy_saves_logs_before_reraising(self):
+        module = types.SimpleNamespace(run=lambda input_data, params, context: (_ for _ in ()).throw(RuntimeError("boom")))
+        window = self.make_plugin_window(module)
+        calls = []
+        window.save_plugin_logs_to_file = lambda plugin_id, log_items: calls.append(("file", plugin_id, log_items)) or "plugin.log"
+        window.save_plugin_logs_to_sqlite = lambda log_items, db_path=None, context=None: calls.append(("sqlite", db_path, log_items)) or 1
+        window.save_plugin_output_to_transit = lambda *args, **kwargs: calls.append(("transit", args, kwargs)) or "中转副表：日志表"
+
+        with self.assertRaisesRegex(RuntimeError, "boom"):
+            window.apply_plugin_node(
+                ["A"],
+                [["a"]],
+                {
+                    "plugin_id": "test_plugin",
+                    "params": {},
+                    "plugin_failure_policy": "停止工作流",
+                    "save_plugin_log_file": True,
+                    "save_plugin_log_sqlite": True,
+                    "save_plugin_log_transit": True,
+                    "plugin_log_in_preview": True,
+                },
+                context={},
+            )
+
+        self.assertEqual([call[0] for call in calls], ["file", "sqlite"])
+        self.assertEqual(calls[0][1], "test_plugin")
+        self.assertIn("boom", calls[0][2][0]["message"])
+
     def test_normalize_plugin_logs_accepts_strings_bytes_and_dicts(self):
         logs = normalize_plugin_logs(
             ["hello", b"bytes", {"level": "warning", "msg": "dict msg"}],

@@ -8684,6 +8684,51 @@ class PlanWorkflowWindow:
         self.log_transit_table_event(manager, "write_transit_table", base_name, headers, rows, write_mode=conflict_mode or "覆盖", message=f"写入中转副表 {base_name}：{len(rows)} 行 × {len(headers)} 列")
         return f"中转副表：{base_name}"
 
+    def save_plugin_log_outputs(self, plugin_id, plugin_name, config, log_items, plugin_context=None, context=None, execute_actions=False, include_transit=True, suppress_errors=False):
+        log_saved_parts = []
+        plugin_context = plugin_context or {}
+        should_save_persistent = execute_actions or config.get("plugin_log_in_preview", False)
+        if config.get("save_plugin_log_file", True) and should_save_persistent:
+            try:
+                path = self.save_plugin_logs_to_file(plugin_id, log_items)
+                if path:
+                    log_saved_parts.append(f"日志文件：{path}")
+            except Exception as e:
+                if not suppress_errors:
+                    log_saved_parts.append(f"日志文件保存失败：{e}")
+        if config.get("save_plugin_log_sqlite", False) and should_save_persistent:
+            try:
+                cnt = self.save_plugin_logs_to_sqlite(log_items, db_path=plugin_context.get("db_path"), context=context)
+                if cnt:
+                    log_saved_parts.append(f"SQLite日志：{cnt}条")
+            except Exception as e:
+                if not suppress_errors:
+                    log_saved_parts.append(f"SQLite日志保存失败：{e}")
+        if include_transit and config.get("save_plugin_log_transit", False):
+            try:
+                lh, lr = self.plugin_log_items_to_table(log_items)
+                log_name = config.get("plugin_log_transit_name") or f"{plugin_name or plugin_id}_日志"
+                part = self.save_plugin_output_to_transit(context, log_name, lh, lr, config.get("transit_conflict_mode", "覆盖"), source=f"插件日志:{plugin_id}")
+                log_saved_parts.append(part)
+            except Exception as e:
+                if not suppress_errors:
+                    log_saved_parts.append(f"日志中转保存失败：{e}")
+        return log_saved_parts
+
+    def save_plugin_result_transit_output(self, config, item, plugin_id, context, headers, rows, source_prefix="插件"):
+        if not workflow_should_save_plugin_output_as_transit(config):
+            return []
+        name = config.get("transit_name") or item.get("info", {}).get("name", plugin_id)
+        part = self.save_plugin_output_to_transit(
+            context,
+            name,
+            headers,
+            rows,
+            config.get("transit_conflict_mode", "覆盖"),
+            source=f"{source_prefix}:{plugin_id}",
+        )
+        return [part]
+
     def merge_plugin_output_fields_to_current(self, cur_headers, cur_rows, out_headers, out_rows):
         return workflow_merge_plugin_output_fields_to_current(cur_headers, cur_rows, out_headers, out_rows)
 
@@ -9079,19 +9124,7 @@ class PlanWorkflowWindow:
         new_headers = list(schema_table.get("headers", headers))
         new_rows = [list(r) for r in schema_table.get("rows", [])]
         output_mode = config.get("output_mode", "使用插件返回结果")
-        save_as_transit = workflow_should_save_plugin_output_as_transit(config)
-        transit_parts = []
-        if save_as_transit:
-            name = config.get("transit_name") or item.get("info", {}).get("name", plugin_id)
-            part = self.save_plugin_output_to_transit(
-                runtime_context,
-                name,
-                new_headers,
-                new_rows,
-                config.get("transit_conflict_mode", "覆盖"),
-                source=f"插件字段探测:{plugin_id}",
-            )
-            transit_parts.append(part)
+        transit_parts = self.save_plugin_result_transit_output(config, item, plugin_id, runtime_context, new_headers, new_rows, source_prefix="插件字段探测")
 
         final_headers, final_rows = workflow_build_plugin_probe_final_output(
             headers,
@@ -9159,16 +9192,17 @@ class PlanWorkflowWindow:
             new_rows = [list(r) for r in rows]
             if failure_policy == "停止工作流":
                 log_items = self.normalize_plugin_logs(logs, plugin_id=plugin_id, node_name=config.get("name") or "插件节点")
-                if config.get("save_plugin_log_file", True) and (execute_actions or config.get("plugin_log_in_preview", False)):
-                    try:
-                        self.save_plugin_logs_to_file(plugin_id, log_items)
-                    except Exception:
-                        pass
-                if config.get("save_plugin_log_sqlite", False) and (execute_actions or config.get("plugin_log_in_preview", False)):
-                    try:
-                        self.save_plugin_logs_to_sqlite(log_items, db_path=plugin_context.get("db_path"), context=runtime_context)
-                    except Exception:
-                        pass
+                self.save_plugin_log_outputs(
+                    plugin_id,
+                    item.get("info", {}).get("name", plugin_id),
+                    config,
+                    log_items,
+                    plugin_context=plugin_context,
+                    context=runtime_context,
+                    execute_actions=execute_actions,
+                    include_transit=False,
+                    suppress_errors=True,
+                )
                 raise
             else:
                 new_headers, new_rows = workflow_build_plugin_failure_output(
@@ -9181,39 +9215,19 @@ class PlanWorkflowWindow:
                 )
 
         log_items = self.normalize_plugin_logs(logs, plugin_id=plugin_id, node_name=config.get("name") or "插件节点")
-        log_saved_parts = []
-        if config.get("save_plugin_log_file", True) and (execute_actions or config.get("plugin_log_in_preview", False)):
-            try:
-                path = self.save_plugin_logs_to_file(plugin_id, log_items)
-                if path:
-                    log_saved_parts.append(f"日志文件：{path}")
-            except Exception as e:
-                log_saved_parts.append(f"日志文件保存失败：{e}")
-        if config.get("save_plugin_log_sqlite", False) and (execute_actions or config.get("plugin_log_in_preview", False)):
-            try:
-                cnt = self.save_plugin_logs_to_sqlite(log_items, db_path=plugin_context.get("db_path"), context=context)
-                if cnt:
-                    log_saved_parts.append(f"SQLite日志：{cnt}条")
-            except Exception as e:
-                log_saved_parts.append(f"SQLite日志保存失败：{e}")
-        if config.get("save_plugin_log_transit", False):
-            try:
-                lh, lr = self.plugin_log_items_to_table(log_items)
-                log_name = config.get("plugin_log_transit_name") or f"{item.get('info', {}).get('name', plugin_id)}_日志"
-                part = self.save_plugin_output_to_transit(context, log_name, lh, lr, config.get("transit_conflict_mode", "覆盖"), source=f"插件日志:{plugin_id}")
-                log_saved_parts.append(part)
-            except Exception as e:
-                log_saved_parts.append(f"日志中转保存失败：{e}")
+        plugin_name = item.get("info", {}).get("name", plugin_id)
+        log_saved_parts = self.save_plugin_log_outputs(
+            plugin_id,
+            plugin_name,
+            config,
+            log_items,
+            plugin_context=plugin_context,
+            context=context,
+            execute_actions=execute_actions,
+        )
 
         output_mode = config.get("output_mode", "使用插件返回结果")
-        save_as_transit = workflow_should_save_plugin_output_as_transit(config)
-        transit_parts = []
-        if save_as_transit:
-            name = config.get("transit_name") or item.get("info", {}).get("name", plugin_id)
-            part = self.save_plugin_output_to_transit(
-                context, name, new_headers, new_rows, config.get("transit_conflict_mode", "覆盖"), source=f"插件:{plugin_id}"
-            )
-            transit_parts.append(part)
+        transit_parts = self.save_plugin_result_transit_output(config, item, plugin_id, context, new_headers, new_rows)
 
         final_headers, final_rows = workflow_build_plugin_final_output(
             headers,
@@ -9223,7 +9237,7 @@ class PlanWorkflowWindow:
             output_mode,
         )
         stat = workflow_build_plugin_status_text(
-            item.get("info", {}).get("name", plugin_id),
+            plugin_name,
             plugin_id,
             ok,
             failure_policy,
