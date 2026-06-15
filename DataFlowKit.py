@@ -57,6 +57,17 @@ import uuid
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
+from core.data_utils import (
+    make_unique_headers as core_make_unique_headers,
+    make_unique_headers_for_append as core_make_unique_headers_for_append,
+    normalize_rows as core_normalize_rows,
+    safe_cell as core_safe_cell,
+)
+from core.text_utils import (
+    make_sql_columns as core_make_sql_columns,
+    quote_ident as core_quote_ident,
+    sanitize_sql_name as core_sanitize_sql_name,
+)
 from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
 from shared.table_access_policy import extract_read_tables, table_pattern_matches
 
@@ -307,28 +318,11 @@ class TableAccessManager:
 
     @staticmethod
     def quote_ident(name):
-        name = str(name)
-        return '"' + name.replace('"', '""') + '"'
+        return core_quote_ident(name)
 
     @staticmethod
     def make_unique_headers(headers):
-        result = []
-        used = {}
-        for idx, header in enumerate(headers, start=1):
-            name = str(header).strip() if header is not None else ""
-            if not name:
-                name = f"列{idx}"
-            base = name
-            if base in used:
-                used[base] += 1
-                name = f"{base}_{used[base]}"
-            else:
-                used[base] = 1
-            while name in result:
-                used[base] = used.get(base, 1) + 1
-                name = f"{base}_{used[base]}"
-            result.append(name)
-        return result
+        return core_make_unique_headers(headers)
 
     @staticmethod
     def format_value(value):
@@ -1835,40 +1829,13 @@ class ClipboardTableApp:
         )
 
     def sanitize_sql_name(self, name, default_name):
-        name = str(name).strip()
-
-        if not name:
-            name = default_name
-
-        name = re.sub(r"\W+", "_", name, flags=re.UNICODE)
-
-        if re.match(r"^\d", name):
-            name = "t_" + name
-
-        if not name:
-            name = default_name
-
-        return name
+        return core_sanitize_sql_name(name, default_name)
 
     def make_sql_columns(self, headers):
-        result = []
-        used = {}
-
-        for index, header in enumerate(headers, start=1):
-            col = self.sanitize_sql_name(header, f"col_{index}")
-
-            if col in used:
-                used[col] += 1
-                col = f"{col}_{used[col]}"
-            else:
-                used[col] = 1
-
-            result.append(col)
-
-        return result
+        return core_make_sql_columns(headers)
 
     def quote_ident(self, name):
-        return '"' + str(name).replace('"', '""') + '"'
+        return core_quote_ident(name)
 
     def table_exists(self, conn, table_name):
         cur = conn.cursor()
@@ -17302,21 +17269,10 @@ class PlanWorkflowWindow:
         return headers.index(field)
 
     def safe_cell(self, row, idx):
-        if idx < 0 or idx >= len(row):
-            return ""
-        value = row[idx]
-        return "" if value is None else str(value)
+        return core_safe_cell(row, idx)
 
     def normalize_rows(self, rows, col_count):
-        result = []
-        for row in rows:
-            fixed = list(row)
-            if len(fixed) < col_count:
-                fixed += [""] * (col_count - len(fixed))
-            if len(fixed) > col_count:
-                fixed = fixed[:col_count]
-            result.append(fixed)
-        return result
+        return core_normalize_rows(rows, col_count)
 
     def compare_values(self, text, op, value, case_sensitive=True):
         text = "" if text is None else str(text)
@@ -21296,18 +21252,7 @@ class PlanWorkflowWindow:
 
     def make_unique_headers_for_append(self, existing_headers, new_headers):
         """给追加字段生成不重复字段名。"""
-        result = []
-        used = set(str(h) for h in existing_headers)
-        for raw in new_headers:
-            base = str(raw).strip() or "字段"
-            name = base
-            n = 2
-            while name in used or name in result:
-                name = f"{base}_{n}"
-                n += 1
-            result.append(name)
-            used.add(name)
-        return result
+        return core_make_unique_headers_for_append(existing_headers, new_headers)
 
     def apply_delete_columns_node(self, headers, rows, config):
         delete_fields = set(config.get("fields", []))
