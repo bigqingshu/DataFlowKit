@@ -71,8 +71,12 @@ from plugin_runtime.scanner import scan_plugins
 from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
 from shared.table_access_policy import table_pattern_matches
 from workflow.nodes.data_nodes import (
+    apply_copy_column_node as workflow_apply_copy_column_node,
+    apply_copy_row_node as workflow_apply_copy_row_node,
     apply_delete_columns_node as workflow_apply_delete_columns_node,
+    apply_delete_rows_node as workflow_apply_delete_rows_node,
     apply_move_columns_node as workflow_apply_move_columns_node,
+    parse_row_spec_to_indexes as workflow_parse_row_spec_to_indexes,
 )
 
 
@@ -17585,137 +17589,17 @@ class PlanWorkflowWindow:
         return True, False
 
     def apply_copy_column_node(self, headers, rows, config):
-        src_idx = self.field_index(headers, config.get("source_field", ""))
-        headers = list(headers)
-        new_rows = self.normalize_rows(rows, len(headers))
-        values = []
-        trim_value = bool(config.get("trim_value", False))
-        empty_default = str(config.get("empty_default", ""))
-        for row in new_rows:
-            value = self.safe_cell(row, src_idx)
-            if trim_value:
-                value = value.strip()
-            if value == "" and empty_default != "":
-                value = empty_default
-            values.append(value)
-        if config.get("output_mode", "生成新字段") == "覆盖已有字段":
-            headers, new_rows, target_idx = self.ensure_field_exists(headers, new_rows, config.get("target_field", ""))
-            for i, row in enumerate(new_rows):
-                row[target_idx] = values[i]
-            return headers, new_rows, f"复制列并覆盖字段 {headers[target_idx]}"
-        new_header = self.get_unique_header(config.get("new_field", "复制列"), headers)
-        headers.append(new_header)
-        for i, row in enumerate(new_rows):
-            row.append(values[i])
-        return headers, new_rows, f"复制列为新字段 {new_header}"
+        return workflow_apply_copy_column_node(headers, rows, config)
 
     def apply_copy_row_node(self, headers, rows, config):
-        headers = list(headers)
-        new_rows = self.normalize_rows(rows, len(headers))
-        if not new_rows:
-            raise ValueError("当前没有可复制的数据行。")
-        source_idx = self.parse_row_number(config.get("source_row", "1"), "源行号") - 1
-        if source_idx < 0 or source_idx >= len(new_rows):
-            raise ValueError("源行号超出当前数据范围。")
-        copy_count = self.get_positive_int(config.get("copy_count", "1"), 1)
-        copies = [list(new_rows[source_idx]) for _ in range(copy_count)]
-        mode = config.get("insert_mode", "表尾")
-        if mode == "表尾":
-            insert_at = len(new_rows)
-        elif mode == "原行下方":
-            insert_at = source_idx + 1
-        else:
-            insert_row = self.parse_row_number(config.get("insert_row", "1"), "指定行号") - 1
-            insert_row = max(0, min(insert_row, len(new_rows)))
-            insert_at = insert_row if mode == "指定行前" else min(insert_row + 1, len(new_rows))
-        new_rows[insert_at:insert_at] = copies
-        return headers, new_rows, f"复制第 {source_idx + 1} 行 {copy_count} 次"
+        return workflow_apply_copy_row_node(headers, rows, config)
 
     def parse_row_spec_to_indexes(self, spec, max_rows):
         """解析 1,3,5-8 这样的行号列表，返回 0 基下标集合。"""
-        indexes = set()
-        text = str(spec or "").replace("，", ",").strip()
-        if not text:
-            return indexes
-        for part in text.split(","):
-            part = part.strip()
-            if not part:
-                continue
-            part_norm = part.replace("~", "-").replace("～", "-")
-            if "-" in part_norm:
-                left, right = part_norm.split("-", 1)
-                try:
-                    start = int(left.strip())
-                    end = int(right.strip())
-                except Exception:
-                    continue
-                if start > end:
-                    start, end = end, start
-                for row_no in range(start, end + 1):
-                    if 1 <= row_no <= max_rows:
-                        indexes.add(row_no - 1)
-            else:
-                try:
-                    row_no = int(part_norm)
-                except Exception:
-                    continue
-                if 1 <= row_no <= max_rows:
-                    indexes.add(row_no - 1)
-        return indexes
+        return workflow_parse_row_spec_to_indexes(spec, max_rows)
 
     def apply_delete_rows_node(self, headers, rows, config):
-        headers = list(headers)
-        normalized = self.normalize_rows(rows, len(headers))
-        total = len(normalized)
-        mode = config.get("delete_mode", "按行号列表")
-        delete_indexes = set()
-
-        if mode == "按行号列表":
-            delete_indexes = self.parse_row_spec_to_indexes(config.get("row_spec", ""), total)
-
-        elif mode == "按行号范围":
-            start_row = self.parse_row_number(config.get("start_row", "1"), "起始行")
-            end_row = self.parse_row_number(config.get("end_row", "1"), "结束行")
-            if start_row > end_row:
-                start_row, end_row = end_row, start_row
-            start_row = max(1, start_row)
-            end_row = min(total, end_row)
-            if start_row <= end_row:
-                delete_indexes = set(range(start_row - 1, end_row))
-
-        elif mode == "按条件删除":
-            field = config.get("condition_field", "")
-            if field not in headers:
-                raise ValueError(f"条件字段不存在：{field}")
-            idx = headers.index(field)
-            op = config.get("condition_op", "包含")
-            value = config.get("condition_value", "")
-            case_sensitive = bool(config.get("case_sensitive", True))
-            for row_idx, row in enumerate(normalized):
-                if self.compare_values(self.safe_cell(row, idx), op, value, case_sensitive=case_sensitive):
-                    delete_indexes.add(row_idx)
-
-        elif mode == "删除空行":
-            empty_mode = config.get("empty_mode", "整行为空")
-            if empty_mode == "指定字段为空":
-                field = config.get("empty_field", "")
-                if field not in headers:
-                    raise ValueError(f"空行判断字段不存在：{field}")
-                idx = headers.index(field)
-                for row_idx, row in enumerate(normalized):
-                    if self.safe_cell(row, idx).strip() == "":
-                        delete_indexes.add(row_idx)
-            else:
-                for row_idx, row in enumerate(normalized):
-                    if all(self.safe_cell(row, i).strip() == "" for i in range(len(headers))):
-                        delete_indexes.add(row_idx)
-        else:
-            raise ValueError(f"未知删除行方式：{mode}")
-
-        if not delete_indexes:
-            return headers, normalized, "未删除任何行"
-        new_rows = [row for i, row in enumerate(normalized) if i not in delete_indexes]
-        return headers, new_rows, f"删除 {len(delete_indexes)} 行"
+        return workflow_apply_delete_rows_node(headers, rows, config)
 
     def apply_fill_value_node(self, headers, rows, config, context=None):
         headers = list(headers)
