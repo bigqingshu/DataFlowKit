@@ -44,7 +44,6 @@ import re
 import os
 import sys
 import json
-import fnmatch
 import traceback
 import copy
 import threading
@@ -164,6 +163,14 @@ from workflow.nodes.data_nodes import (
     should_write_cell as workflow_should_write_cell,
     slice_by_position as workflow_slice_by_position,
     split_by_config_delimiter as workflow_split_by_config_delimiter,
+)
+from workflow.nodes.file_nodes import (
+    BATCH_RENAME_LOG_HEADERS,
+    apply_batch_rename_node as workflow_apply_batch_rename_node,
+    apply_file_list_node as workflow_apply_file_list_node,
+    is_hidden_path as workflow_is_hidden_path,
+    make_numbered_path as workflow_make_numbered_path,
+    parse_extensions_filter as workflow_parse_extensions_filter,
 )
 
 
@@ -16239,31 +16246,10 @@ class PlanWorkflowWindow:
         return False
 
     def parse_extensions_filter(self, text_value):
-        parts = re.split(r"[;,，；\s]+", str(text_value or ""))
-        result = set()
-        for part in parts:
-            part = part.strip().lower()
-            if not part:
-                continue
-            if not part.startswith("."):
-                part = "." + part
-            result.add(part)
-        return result
+        return workflow_parse_extensions_filter(text_value)
 
     def is_hidden_path(self, path):
-        name = os.path.basename(path)
-        if name.startswith("."):
-            return True
-        if os.name == "nt":
-            try:
-                import ctypes
-                attrs = ctypes.windll.kernel32.GetFileAttributesW(str(path))
-                if attrs == -1:
-                    return False
-                return bool(attrs & 2)
-            except Exception:
-                return False
-        return False
+        return workflow_is_hidden_path(path)
 
     def check_workflow_cancelled(self, context=None):
         """长循环节点内部调用：用户点击取消后，在安全检查点停止。"""
@@ -16292,103 +16278,19 @@ class PlanWorkflowWindow:
             pass
 
     def apply_file_list_node(self, headers, rows, config, context=None):
-        directory = config.get("directory") or getattr(self.app, "app_dir", get_app_dir())
-        directory = os.path.abspath(os.path.expanduser(directory))
-        if not os.path.isdir(directory):
-            raise ValueError(f"目录不存在：{directory}")
-
-        recursive = bool(config.get("recursive", True))
-        include_files = bool(config.get("include_files", True))
-        include_dirs = bool(config.get("include_dirs", False))
-        include_hidden = bool(config.get("include_hidden", False))
-        name_contains = str(config.get("name_contains", "") or "")
-        name_contains_lower = name_contains.lower()
-        glob_pattern = str(config.get("glob_pattern", "*") or "*")
-        ext_filter = self.parse_extensions_filter(config.get("extensions", ""))
-        max_files = self.get_positive_int(config.get("max_files", "20000"), 20000)
-        context = context or {}
-        scanned_count = 0
-
-        out_headers = [
-            "文件名", "完整路径", "所在目录", "扩展名", "文件大小", "修改时间", "创建时间",
-            "是否文件夹", "新文件名", "新完整路径", "重命名状态"
-        ]
-        out_rows = []
-
-        def should_include(path, is_dir):
-            name = os.path.basename(path)
-            if not include_hidden and self.is_hidden_path(path):
-                return False
-            if is_dir and not include_dirs:
-                return False
-            if (not is_dir) and not include_files:
-                return False
-            if name_contains and name_contains_lower not in name.lower():
-                return False
-            if glob_pattern and glob_pattern != "*" and not fnmatch.fnmatch(name, glob_pattern):
-                return False
-            ext = os.path.splitext(name)[1].lower()
-            if (not is_dir) and ext_filter and ext not in ext_filter:
-                return False
-            return True
-
-        def add_path(path, is_dir):
-            try:
-                stat = os.stat(path)
-                size = "" if is_dir else str(stat.st_size)
-                mtime = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-                ctime = datetime.fromtimestamp(stat.st_ctime).strftime("%Y-%m-%d %H:%M:%S")
-            except Exception:
-                size, mtime, ctime = "", "", ""
-            name = os.path.basename(path)
-            folder = os.path.dirname(path)
-            ext = os.path.splitext(name)[1]
-            out_rows.append([
-                name, os.path.abspath(path), folder, ext, size, mtime, ctime,
-                "是" if is_dir else "否", name, os.path.abspath(path), "待处理"
-            ])
-
-        if recursive:
-            for root_dir, dirnames, filenames in os.walk(directory):
-                self.check_workflow_cancelled(context)
-                scanned_count += 1
-                if scanned_count % 50 == 0:
-                    self.report_workflow_node_progress(context, len(out_rows), max_files, f"正在扫描目录：{root_dir}", node_name="获取文件列表")
-                if not include_hidden:
-                    dirnames[:] = [d for d in dirnames if not self.is_hidden_path(os.path.join(root_dir, d))]
-                if include_dirs:
-                    for d in dirnames:
-                        path = os.path.join(root_dir, d)
-                        if should_include(path, True):
-                            add_path(path, True)
-                            if len(out_rows) >= max_files:
-                                break
-                if len(out_rows) >= max_files:
-                    break
-                if include_files:
-                    for f in filenames:
-                        path = os.path.join(root_dir, f)
-                        if should_include(path, False):
-                            add_path(path, False)
-                            if len(out_rows) >= max_files:
-                                break
-                if len(out_rows) >= max_files:
-                    break
-        else:
-            names = os.listdir(directory)
-            total_names = len(names)
-            for idx_name, name in enumerate(names, start=1):
-                if idx_name % 200 == 0:
-                    self.check_workflow_cancelled(context)
-                    self.report_workflow_node_progress(context, idx_name, total_names, f"正在扫描 {idx_name}/{total_names}", node_name="获取文件列表")
-                path = os.path.join(directory, name)
-                is_dir = os.path.isdir(path)
-                if should_include(path, is_dir):
-                    add_path(path, is_dir)
-                    if len(out_rows) >= max_files:
-                        break
-
-        return out_headers, out_rows, f"读取文件列表 {len(out_rows)} 项，目录：{directory}"
+        node_context = dict(context or {})
+        node_context.setdefault("default_directory", getattr(self.app, "app_dir", get_app_dir()))
+        node_context["check_cancelled"] = lambda index=None: self.check_workflow_cancelled(context)
+        node_context["report_progress"] = (
+            lambda current=None, total=None, message="", node_name="获取文件列表": self.report_workflow_node_progress(
+                context,
+                current=current,
+                total=total,
+                message=message,
+                node_name=node_name,
+            )
+        )
+        return workflow_apply_file_list_node(headers, rows, config, context=node_context)
 
     def get_or_add_column_index(self, headers, rows, column_name):
         column_name = str(column_name or "").strip()
@@ -16404,161 +16306,46 @@ class PlanWorkflowWindow:
         return len(headers) - 1, headers, rows
 
     def make_numbered_path(self, path):
-        folder = os.path.dirname(path)
-        name = os.path.basename(path)
-        stem, ext = os.path.splitext(name)
-        for i in range(1, 10000):
-            candidate = os.path.join(folder, f"{stem}_{i}{ext}")
-            if not os.path.exists(candidate):
-                return candidate
-        raise ValueError(f"无法自动生成不冲突文件名：{path}")
+        return workflow_make_numbered_path(path)
 
     def apply_batch_rename_node(self, headers, rows, config, execute_actions=False, context=None):
-        headers = list(headers)
-        rows = [list(row) for row in rows]
-        context = context or {}
-        path_field = config.get("path_field", "完整路径")
-        new_name_field = config.get("new_name_field", "新文件名")
-        if path_field not in headers:
-            raise ValueError(f"找不到原路径字段：{path_field}")
-        if new_name_field not in headers:
-            raise ValueError(f"找不到新名称字段：{new_name_field}")
+        node_context = dict(context or {})
+        node_context.update({
+            "check_cancelled": lambda index=None: self.check_workflow_cancelled(context),
+            "report_progress": lambda current=None, total=None, message="", node_name="批量重命名": self.report_workflow_node_progress(
+                context,
+                current=current,
+                total=total,
+                message=message,
+                node_name=node_name,
+            ),
+            "path_exists": os.path.exists,
+            "path_is_dir": os.path.isdir,
+            "make_dirs": lambda path: os.makedirs(path, exist_ok=True),
+            "rename_file": os.rename,
+            "replace_file": os.replace,
+            "make_numbered_path": self.make_numbered_path,
+        })
+        headers, rows, message = workflow_apply_batch_rename_node(
+            headers,
+            rows,
+            config,
+            execute_actions=execute_actions,
+            context=node_context,
+        )
 
-        path_idx = headers.index(path_field)
-        new_idx = headers.index(new_name_field)
-        new_path_idx, headers, rows = self.get_or_add_column_index(headers, rows, config.get("new_path_field", "新完整路径"))
-        status_idx, headers, rows = self.get_or_add_column_index(headers, rows, config.get("status_field", "重命名状态"))
-
-        name_value_type = config.get("name_value_type", "仅文件名")
-        conflict_mode = config.get("conflict_mode", "跳过目标已存在")
-        auto_append_ext = bool(config.get("auto_append_ext", False))
-        allow_dirs = bool(config.get("allow_dirs", False))
-        create_target_dirs = bool(config.get("create_target_dirs", False))
-        actual_rename = bool(config.get("actual_rename", False))
-        do_rename = execute_actions and actual_rename
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        changed = 0
-        preview_ok = 0
-        skipped = 0
-        log_rows = []
-
-        total_rename_rows = len(rows)
-        for row_num, row in enumerate(rows, start=1):
-            if row_num == 1 or row_num % 100 == 0:
-                self.check_workflow_cancelled(context)
-                self.report_workflow_node_progress(context, row_num, total_rename_rows, f"正在处理重命名 {row_num}/{total_rename_rows}", node_name="批量重命名")
-            while len(row) < len(headers):
-                row.append("")
-            src = str(row[path_idx] or "").strip()
-            new_value = str(row[new_idx] or "").strip()
-            status = ""
-            dst = ""
-            try:
-                if not src:
-                    status = "跳过：原路径为空"
-                    skipped += 1
-                elif not new_value:
-                    status = "跳过：新名称为空"
-                    skipped += 1
-                elif not os.path.exists(src):
-                    status = "跳过：原路径不存在"
-                    skipped += 1
-                elif os.path.isdir(src) and not allow_dirs:
-                    status = "跳过：不允许重命名文件夹"
-                    skipped += 1
-                else:
-                    if name_value_type == "完整路径":
-                        dst = os.path.abspath(os.path.expanduser(new_value))
-                    else:
-                        safe_name = os.path.basename(new_value)
-                        if not safe_name:
-                            status = "跳过：新文件名无效"
-                            skipped += 1
-                            row[new_path_idx] = ""
-                            row[status_idx] = status
-                            log_rows.append([row_num, src, "", status, timestamp])
-                            continue
-                        if auto_append_ext and not os.path.splitext(safe_name)[1]:
-                            safe_name += os.path.splitext(src)[1]
-                        dst = os.path.abspath(os.path.join(os.path.dirname(src), safe_name))
-
-                    target_dir = os.path.dirname(os.path.abspath(dst))
-                    target_dir_missing = bool(target_dir) and not os.path.isdir(target_dir)
-                    target_dir_created_note = ""
-                    if target_dir_missing:
-                        if create_target_dirs:
-                            if do_rename:
-                                os.makedirs(target_dir, exist_ok=True)
-                                target_dir_created_note = "，已创建目标目录"
-                            else:
-                                target_dir_created_note = "，将创建目标目录"
-                        else:
-                            status = f"跳过：目标目录不存在：{target_dir}"
-                            skipped += 1
-                            row[new_path_idx] = dst
-                            row[status_idx] = status
-                            log_rows.append([row_num, src, dst, status, timestamp])
-                            continue
-
-                    if os.path.abspath(src) == os.path.abspath(dst):
-                        status = "无需重命名：路径相同"
-                        preview_ok += 1
-                    elif os.path.exists(dst):
-                        if conflict_mode == "跳过目标已存在":
-                            status = "跳过：目标已存在"
-                            skipped += 1
-                        elif conflict_mode == "自动加编号":
-                            dst = self.make_numbered_path(dst)
-                            if do_rename:
-                                os.rename(src, dst)
-                                status = "已重命名：自动加编号" + target_dir_created_note
-                                changed += 1
-                            else:
-                                status = "预览可重命名：自动加编号" + target_dir_created_note
-                                preview_ok += 1
-                        elif conflict_mode == "覆盖目标（危险）":
-                            if do_rename:
-                                os.replace(src, dst)
-                                status = "已重命名：覆盖目标" + target_dir_created_note
-                                changed += 1
-                            else:
-                                status = "预览可重命名：将覆盖目标" + target_dir_created_note
-                                preview_ok += 1
-                        else:
-                            status = "跳过：未知冲突处理"
-                            skipped += 1
-                    else:
-                        if do_rename:
-                            os.rename(src, dst)
-                            status = "已重命名" + target_dir_created_note
-                            changed += 1
-                        else:
-                            status = ("预览可重命名" if actual_rename else "仅预览未执行") + target_dir_created_note
-                            preview_ok += 1
-            except Exception as e:
-                status = f"失败：{e}"
-                skipped += 1
-
-            row[new_path_idx] = dst
-            row[status_idx] = status
-            log_rows.append([row_num, src, dst, status, timestamp])
-
-        self.report_workflow_node_progress(context, total_rename_rows, total_rename_rows, "批量重命名节点处理完成", node_name="批量重命名")
-
-        if do_rename and bool(config.get("write_log", True)):
+        if node_context.get("batch_rename_do_rename") and bool(config.get("write_log", True)):
             log_path = config.get("log_path") or os.path.abspath("rename_log.csv")
             try:
                 os.makedirs(os.path.dirname(os.path.abspath(log_path)), exist_ok=True)
                 with open(log_path, "w", encoding="utf-8-sig", newline="") as f:
                     writer = csv.writer(f)
-                    writer.writerow(["行号", "原路径", "新路径", "状态", "时间"])
-                    writer.writerows(log_rows)
+                    writer.writerow(BATCH_RENAME_LOG_HEADERS)
+                    writer.writerows(node_context.get("batch_rename_log_rows", []))
             except Exception as e:
-                return headers, rows, f"重命名完成 {changed} 项，但日志写入失败：{e}"
+                return headers, rows, f"重命名完成 {node_context.get('batch_rename_changed', 0)} 项，但日志写入失败：{e}"
 
-        if do_rename:
-            return headers, rows, f"实际重命名 {changed} 项，跳过/失败 {skipped} 项"
-        return headers, rows, f"重命名预览：可处理 {preview_ok} 项，跳过/失败 {skipped} 项"
+        return headers, rows, message
 
     def apply_replace_node(self, headers, rows, config, context=None):
         node_context = dict(context or {})
