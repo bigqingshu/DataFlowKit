@@ -11,6 +11,7 @@ from workflow.nodes.data_nodes import (
     apply_current_datetime_column_node,
     apply_delete_columns_node,
     apply_delete_rows_node,
+    apply_dedupe_node,
     apply_extract_node,
     apply_format_datetime_node,
     apply_fill_value_node,
@@ -686,6 +687,121 @@ class WorkflowDataNodesTests(unittest.TestCase):
                     "target_field": "N",
                     "output_field": "Out",
                 },
+                context={"check_cancelled": lambda _index: (_ for _ in ()).throw(RuntimeError("用户取消"))},
+            )
+
+    def test_dedupe_node_outputs_deduped_rows_by_key(self):
+        headers, rows, message = apply_dedupe_node(
+            ["ID", "Name"],
+            [["A", "x"], [" A ", "y"], ["B", "z"], ["", "blank"]],
+            {
+                "key_fields": ["ID"],
+                "trim": True,
+                "output_mode": "输出去重后的数据",
+                "add_marker_columns": False,
+            },
+        )
+
+        self.assertEqual(headers, ["ID", "Name"])
+        self.assertEqual(rows, [["A", "x"], ["B", "z"], ["", "blank"]])
+        self.assertEqual(message, "去重完成：原 4 行，输出 3 行，重复组 1 个，重复行 2 行，模式：输出去重后的数据")
+
+    def test_dedupe_node_keep_last_and_non_empty_count(self):
+        headers, rows, message = apply_dedupe_node(
+            ["ID", "A", "B"],
+            [["K", "first", ""], ["K", "last", "x"], ["U", "", ""]],
+            {
+                "key_fields": ["ID"],
+                "keep_policy": "保留最后一条",
+                "output_mode": "输出去重后的数据",
+                "add_marker_columns": False,
+            },
+        )
+
+        self.assertEqual(rows, [["K", "last", "x"], ["U", "", ""]])
+        self.assertEqual(message, "去重完成：原 3 行，输出 2 行，重复组 1 个，重复行 2 行，模式：输出去重后的数据")
+
+        headers, rows, message = apply_dedupe_node(
+            ["ID", "A", "B"],
+            [["K", "first", ""], ["K", "", ""], ["K", "more", "x"]],
+            {
+                "key_fields": ["ID"],
+                "keep_policy": "保留非空字段最多",
+                "output_mode": "输出去重后的数据",
+                "add_marker_columns": False,
+            },
+        )
+
+        self.assertEqual(rows, [["K", "more", "x"]])
+        self.assertEqual(message, "去重完成：原 3 行，输出 1 行，重复组 1 个，重复行 3 行，模式：输出去重后的数据")
+
+    def test_dedupe_node_marker_columns_and_unique_names(self):
+        headers, rows, message = apply_dedupe_node(
+            ["ID", "重复组编号"],
+            [["A", "old"], ["A", "old2"], ["B", "unique"]],
+            {
+                "key_fields": ["ID"],
+                "output_mode": "原表增加重复标记列",
+                "duplicate_group_field": "重复组编号",
+            },
+        )
+
+        self.assertEqual(headers, ["ID", "重复组编号", "重复组编号_2", "重复状态", "组内序号", "重复次数", "是否保留"])
+        self.assertEqual(rows[0], ["A", "old", "DUP_0001", "重复", "1", "2", "是"])
+        self.assertEqual(rows[1], ["A", "old2", "DUP_0001", "重复", "2", "2", "否"])
+        self.assertEqual(rows[2], ["B", "unique", "", "唯一", "1", "1", "是"])
+        self.assertEqual(message, "去重完成：原 3 行，输出 3 行，重复组 1 个，重复行 2 行，模式：增加重复标记列")
+
+    def test_dedupe_node_duplicate_unique_and_stat_outputs(self):
+        headers, rows, message = apply_dedupe_node(
+            ["ID", "Name"],
+            [["A", "x"], ["A", "y"], ["B", "z"], ["C", "w"]],
+            {"key_fields": ["ID"], "output_mode": "输出重复项数据", "add_marker_columns": False},
+        )
+
+        self.assertEqual(headers, ["ID", "Name"])
+        self.assertEqual(rows, [["A", "x"], ["A", "y"]])
+        self.assertEqual(message, "去重完成：原 4 行，输出 2 行，重复组 1 个，重复行 2 行，模式：输出重复项数据")
+
+        headers, rows, message = apply_dedupe_node(
+            ["ID", "Name"],
+            [["A", "x"], ["A", "y"], ["B", "z"], ["C", "w"]],
+            {"key_fields": ["ID"], "output_mode": "输出唯一项数据", "add_marker_columns": False},
+        )
+
+        self.assertEqual(rows, [["B", "z"], ["C", "w"]])
+        self.assertEqual(message, "去重完成：原 4 行，输出 2 行，重复组 1 个，重复行 2 行，模式：输出唯一项数据")
+
+        headers, rows, message = apply_dedupe_node(
+            ["ID", "Name"],
+            [["A", "x"], ["A", "y"], ["B", "z"], ["", "blank"]],
+            {
+                "key_fields": ["ID"],
+                "empty_key_policy": "空键跳过去重",
+                "output_mode": "输出重复统计表",
+            },
+        )
+
+        self.assertEqual(headers, ["ID", "重复次数", "重复组编号", "是否重复"])
+        self.assertEqual(rows, [["A", "2", "DUP_0001", "是"], ["B", "1", "", "否"], ["", "1", "", "空键跳过"]])
+        self.assertEqual(message, "去重统计：共 3 个统计项，重复组 1 个")
+
+    def test_dedupe_node_errors_empty_table_and_cancel_callback(self):
+        headers, rows, message = apply_dedupe_node([], [["extra"]], {})
+
+        self.assertEqual(headers, [])
+        self.assertEqual(rows, [[]])
+        self.assertEqual(message, "去重：无字段，未处理")
+
+        with self.assertRaisesRegex(ValueError, "去重节点需要至少选择一个去重字段"):
+            apply_dedupe_node(["A"], [["x"]], {"key_fields": []})
+        with self.assertRaisesRegex(ValueError, "去重字段不存在：Missing"):
+            apply_dedupe_node(["A"], [["x"]], {"key_fields": ["Missing"]})
+        with self.assertRaisesRegex(RuntimeError, "用户取消"):
+            apply_dedupe_node(
+                ["A"],
+                [["x"]],
+                {"key_fields": ["A"]},
                 context={"check_cancelled": lambda _index: (_ for _ in ()).throw(RuntimeError("用户取消"))},
             )
 
