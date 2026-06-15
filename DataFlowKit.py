@@ -44,9 +44,7 @@ import re
 import os
 import sys
 import json
-import ast
 import fnmatch
-import importlib.util
 import traceback
 import copy
 import threading
@@ -68,6 +66,7 @@ from core.text_utils import (
     sanitize_sql_name as core_sanitize_sql_name,
 )
 from db import PluginDatabaseAPI, TableAccessManager
+from plugin_runtime.scanner import scan_plugins
 from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
 from shared.table_access_policy import table_pattern_matches
 
@@ -4691,256 +4690,14 @@ class PlanWorkflowWindow:
         self.rebuild_current_config()
 
     def load_plugins(self, show_status=False):
-        """扫描 plugins 目录并注册插件。
-
-        新版插件注册分为“元信息识别”和“运行环境加载”两层：
-        1. 优先读取 plugins/插件目录/plugin.json，不 import 插件业务代码。
-        2. 其次静态解析单文件 .py 里的 PLUGIN_INFO / PARAMETER_SCHEMA，不执行插件代码。
-        3. 最后才尝试 import 插件，兼容旧版只提供 get_parameter_schema() 的插件。
-
-        如果单文件插件 import 失败，但已经能静态读取元信息，则仍注册为“仅插件独立环境运行”。
-        这样 exe 环境下即使缺少 intelhex、python-docx、pywin32 等插件依赖，插件也不会在扫描阶段消失。
-        """
+        """扫描 plugins 目录并注册插件。"""
         self.plugin_registry = {}
         self.plugin_display_map = {}
         self.plugin_load_errors = []
         plugins_dir = self.get_plugins_dir()
-
-        def normalize_run_mode(value, default="主程序内置环境"):
-            text = str(value or default or "").strip()
-            if text in ("external_python", "独立环境", "插件独立环境", "external", "external-python"):
-                return "插件独立环境"
-            return "主程序内置环境"
-
-        def normalize_info_schema(info, schema, source_name):
-            if not isinstance(info, dict):
-                raise RuntimeError("缺少 PLUGIN_INFO / plugin_info 字典")
-            plugin_id = str(info.get("id", "")).strip()
-            if not plugin_id:
-                raise RuntimeError("插件 id 不能为空")
-            api_version = str(info.get("api_version", "1.0")).strip()
-            if api_version != "1.0":
-                raise RuntimeError(f"插件协议版本不兼容：{api_version}，当前支持 1.0")
-            if schema is None:
-                schema = []
-            if not isinstance(schema, list):
-                raise RuntimeError("插件参数 schema 必须是 list")
-            if plugin_id in self.plugin_registry:
-                raise RuntimeError(f"插件 id 重复：{plugin_id}（来源：{source_name}）")
-            return plugin_id, dict(info), schema
-
-        def static_read_py_metadata(path):
-            """静态读取 .py 插件中的 PLUGIN_INFO / PARAMETER_SCHEMA，避免执行业务依赖 import。"""
-            with open(path, "r", encoding="utf-8") as f:
-                source = f.read()
-            tree = ast.parse(source, filename=path)
-            values = {}
-            for node in tree.body:
-                target_name = None
-                value_node = None
-                if isinstance(node, ast.Assign):
-                    if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-                        target_name = node.targets[0].id
-                        value_node = node.value
-                elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-                    target_name = node.target.id
-                    value_node = node.value
-                if target_name in ("PLUGIN_INFO", "plugin_info", "PARAMETER_SCHEMA", "parameter_schema", "PLUGIN_SCHEMA", "SCHEMA") and value_node is not None:
-                    try:
-                        values[target_name] = ast.literal_eval(value_node)
-                    except Exception:
-                        # 非常量表达式无法静态解析，交给后续 import 兜底。
-                        pass
-            info = values.get("PLUGIN_INFO") or values.get("plugin_info")
-            schema = (
-                values.get("PARAMETER_SCHEMA")
-                or values.get("parameter_schema")
-                or values.get("PLUGIN_SCHEMA")
-                or values.get("SCHEMA")
-                or []
-            )
-            return info, schema
-
-        def import_plugin_module(path, filename):
-            module_name = f"workflow_plugin_{os.path.splitext(filename)[0]}_{abs(hash(path))}"
-            spec = importlib.util.spec_from_file_location(module_name, path)
-            if spec is None or spec.loader is None:
-                raise RuntimeError("无法创建插件导入 spec")
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            return module
-
-        def build_registry_item(plugin_id, info, schema, path, *, module=None, external_entry=None,
-                                requirements_path="", manifest_path="", run_mode_default="主程序内置环境",
-                                import_ok=True, import_error="", metadata_source="import"):
-            run_mode_default = normalize_run_mode(run_mode_default, "主程序内置环境")
-            if import_ok:
-                available_run_modes = ["主程序内置环境", "插件独立环境"]
-                load_status = "可内置运行"
-            else:
-                available_run_modes = ["插件独立环境"]
-                load_status = "仅独立环境运行"
-                run_mode_default = "插件独立环境"
-            self.plugin_registry[plugin_id] = {
-                "id": plugin_id,
-                "info": info,
-                "module": module,
-                "schema": schema,
-                "path": path,
-                "external_entry": external_entry or path,
-                "requirements_path": requirements_path,
-                "manifest_path": manifest_path,
-                "run_mode_default": run_mode_default,
-                "import_ok": bool(import_ok),
-                "import_error": import_error or "",
-                "load_status": load_status,
-                "available_run_modes": available_run_modes,
-                "metadata_source": metadata_source,
-            }
-
-        def register_py_file(path, filename):
-            static_info = None
-            static_schema = []
-            static_error = ""
-            try:
-                static_info, static_schema = static_read_py_metadata(path)
-            except Exception as e:
-                static_error = str(e)
-
-            # 如果插件静态声明默认独立环境，则扫描阶段不强制 import，避免业务依赖缺失导致插件消失。
-            declared_mode = ""
-            if isinstance(static_info, dict):
-                declared_mode = normalize_run_mode(static_info.get("run_mode") or static_info.get("run_mode_default"), "")
-            if static_info and declared_mode == "插件独立环境":
-                plugin_id, info, schema = normalize_info_schema(static_info, static_schema, filename)
-                build_registry_item(
-                    plugin_id, info, schema, path,
-                    module=None,
-                    external_entry=path,
-                    run_mode_default="插件独立环境",
-                    import_ok=False,
-                    import_error="插件声明默认使用独立环境，扫描阶段已跳过主程序 import。",
-                    metadata_source="static_py",
-                )
-                return
-
-            try:
-                module = import_plugin_module(path, filename)
-                info = getattr(module, "PLUGIN_INFO", None) or static_info
-                schema_func = getattr(module, "get_parameter_schema", None)
-                if callable(schema_func):
-                    schema = schema_func()
-                else:
-                    schema = getattr(module, "PARAMETER_SCHEMA", None) or static_schema or []
-                plugin_id, info, schema = normalize_info_schema(info, schema, filename)
-                if not callable(getattr(module, "run", None)):
-                    raise RuntimeError("插件缺少 run(input_data, params, context) 函数")
-                build_registry_item(
-                    plugin_id, info, schema, path,
-                    module=module,
-                    external_entry=path,
-                    run_mode_default=info.get("run_mode", "主程序内置环境"),
-                    import_ok=True,
-                    metadata_source="import_py",
-                )
-            except Exception as import_exc:
-                if static_info:
-                    # import 失败但元信息已静态读取成功：仍注册，让用户可选择插件独立环境运行。
-                    plugin_id, info, schema = normalize_info_schema(static_info, static_schema, filename)
-                    build_registry_item(
-                        plugin_id, info, schema, path,
-                        module=None,
-                        external_entry=path,
-                        run_mode_default="插件独立环境",
-                        import_ok=False,
-                        import_error=str(import_exc),
-                        metadata_source="static_py_import_failed",
-                    )
-                else:
-                    detail = str(import_exc)
-                    if static_error:
-                        detail = f"静态元信息读取失败：{static_error}；导入失败：{detail}"
-                    raise RuntimeError(detail)
-
-        def register_manifest(plugin_dir, manifest_path):
-            with open(manifest_path, "r", encoding="utf-8") as f:
-                manifest = json.load(f)
-            info = manifest.get("PLUGIN_INFO") or manifest.get("plugin_info") or manifest.get("info")
-            if info is None and "id" in manifest:
-                info = manifest
-            schema = manifest.get("schema") or manifest.get("parameters") or manifest.get("parameter_schema") or []
-            plugin_id, info, schema = normalize_info_schema(info, schema, manifest_path)
-            entry = manifest.get("entry") or manifest.get("main") or info.get("entry") or "plugin.py"
-            entry_path = entry if os.path.isabs(entry) else os.path.join(plugin_dir, entry)
-            req = manifest.get("requirements") or info.get("requirements") or "requirements.txt"
-            req_path = req if os.path.isabs(req) else os.path.join(plugin_dir, req)
-            run_mode_default = normalize_run_mode(manifest.get("run_mode") or info.get("run_mode") or "插件独立环境", "插件独立环境")
-
-            # plugin.json 是推荐的独立环境格式：默认不 import 业务入口。
-            # 如果 manifest 明确要求主程序内置环境，则尝试 import；失败时仍注册为仅独立环境运行。
-            module = None
-            import_ok = False
-            import_error = ""
-            metadata_source = "plugin_json"
-            if run_mode_default == "主程序内置环境":
-                try:
-                    module = import_plugin_module(entry_path, os.path.basename(entry_path))
-                    if not callable(getattr(module, "run", None)):
-                        raise RuntimeError("插件缺少 run(input_data, params, context) 函数")
-                    import_ok = True
-                    metadata_source = "plugin_json_imported"
-                except Exception as e:
-                    import_error = str(e)
-                    run_mode_default = "插件独立环境"
-            else:
-                import_error = "plugin.json 注册插件，扫描阶段默认不导入业务入口。"
-
-            build_registry_item(
-                plugin_id, info, schema, entry_path,
-                module=module,
-                external_entry=entry_path,
-                requirements_path=req_path if os.path.exists(req_path) else "",
-                manifest_path=manifest_path,
-                run_mode_default=run_mode_default,
-                import_ok=import_ok,
-                import_error=import_error,
-                metadata_source=metadata_source,
-            )
-
-        # 先扫描插件包目录，避免与同名 py 文件冲突时信息不完整。
-        for name in sorted(os.listdir(plugins_dir)):
-            full = os.path.join(plugins_dir, name)
-            if not os.path.isdir(full):
-                continue
-            manifest_path = os.path.join(full, "plugin.json")
-            if not os.path.exists(manifest_path):
-                continue
-            try:
-                register_manifest(full, manifest_path)
-            except Exception as e:
-                self.plugin_load_errors.append({
-                    "file": f"{name}/plugin.json",
-                    "path": manifest_path,
-                    "error": str(e),
-                    "traceback": traceback.format_exc(),
-                })
-
-        # 再扫描旧版单文件插件。
-        for filename in sorted(os.listdir(plugins_dir)):
-            path = os.path.join(plugins_dir, filename)
-            if os.path.isdir(path):
-                continue
-            if not filename.endswith(".py") or filename.startswith("_"):
-                continue
-            try:
-                register_py_file(path, filename)
-            except Exception as e:
-                self.plugin_load_errors.append({
-                    "file": filename,
-                    "path": path,
-                    "error": str(e),
-                    "traceback": traceback.format_exc(),
-                })
+        registry, errors = scan_plugins(plugins_dir)
+        self.plugin_registry = registry
+        self.plugin_load_errors = errors
 
         used_names = {}
         external_only_count = 0
@@ -4967,6 +4724,7 @@ class PlanWorkflowWindow:
                 first = self.plugin_load_errors[0]
                 msg += f"；示例：{first.get('file')} - {first.get('error')}"
             self.status_var.set(msg)
+
 
     def default_config_for_plugin(self, plugin_id):
         item = self.plugin_registry.get(plugin_id, {})
