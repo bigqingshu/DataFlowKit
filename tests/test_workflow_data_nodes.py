@@ -9,10 +9,12 @@ from workflow.nodes.data_nodes import (
     apply_current_datetime_column_node,
     apply_delete_columns_node,
     apply_delete_rows_node,
+    apply_extract_node,
     apply_fill_value_node,
     apply_move_columns_node,
     apply_new_columns_node,
     apply_sequence_fill_node,
+    extract_one_value,
     parse_new_columns_specs,
     render_current_datetime_template,
 )
@@ -454,6 +456,131 @@ class WorkflowDataNodesTests(unittest.TestCase):
         self.assertEqual(headers, ["A"])
         self.assertEqual(rows, [["20260615"]])
         self.assertEqual(message, "新建日期时间列完成：字段【A】，写入 1 行，示例：20260615")
+
+    def test_extract_node_regex_generates_unique_field_and_handles_unmatched(self):
+        headers, rows, message = apply_extract_node(
+            ["Text", "Code"],
+            [["订单 A-001", ""], ["无编号", ""]],
+            {
+                "source_field": "Text",
+                "method": "正则提取",
+                "regex_pattern": r"([A-Z]-\d+)",
+                "regex_group": "1",
+                "new_field": "Code",
+                "unmatched_mode": "填写固定值",
+                "unmatched_fixed": "NA",
+            },
+        )
+
+        self.assertEqual(headers, ["Text", "Code", "Code_2"])
+        self.assertEqual(rows, [["订单 A-001", "", "A-001"], ["无编号", "", "NA"]])
+        self.assertEqual(message, "写入 2 行，跳过 0 行")
+
+    def test_extract_node_overwrites_source_and_skips_unmatched_rows(self):
+        headers, rows, message = apply_extract_node(
+            ["Text"],
+            [["abc-123"], ["missing"]],
+            {
+                "source_field": "Text",
+                "output_mode": "覆盖源字段",
+                "method": "正则提取",
+                "regex_pattern": r"(\d+)",
+                "regex_group": "1",
+                "unmatched_mode": "跳过该行",
+            },
+        )
+
+        self.assertEqual(headers, ["Text"])
+        self.assertEqual(rows, [["123"], ["missing"]])
+        self.assertEqual(message, "写入 1 行，跳过 1 行")
+
+    def test_extract_one_value_supports_regex_find_all_and_position_modes(self):
+        value, status = extract_one_value(
+            "a=1;b=22;c=333",
+            {
+                "method": "正则提取",
+                "regex_pattern": r"=(\d+)",
+                "regex_group": "1",
+                "regex_find_all": True,
+                "regex_joiner": "|",
+            },
+        )
+        self.assertEqual((value, status), ("1|22|333", "成功"))
+
+        self.assertEqual(
+            extract_one_value(
+                "abcdef",
+                {"method": "固定位置提取", "start_pos": "2", "extract_len": "3", "position_base": "从1开始"},
+            ),
+            ("bcd", "成功"),
+        )
+        self.assertEqual(extract_one_value("abcdef", {"method": "从左取N位", "n_chars": "2"}), ("ab", "成功"))
+        self.assertEqual(extract_one_value("abcdef", {"method": "从右取N位", "n_chars": "2"}), ("ef", "成功"))
+
+    def test_extract_one_value_supports_delimiter_between_and_marker_modes(self):
+        self.assertEqual(
+            extract_one_value(
+                "a--b--c",
+                {"method": "按分隔符提取", "delimiter": "--", "part_index": "-1"},
+            ),
+            ("c", "成功"),
+        )
+        self.assertEqual(
+            extract_one_value(
+                "pre[one] mid [two]",
+                {
+                    "method": "前后关键字之间提取",
+                    "before_key": "[",
+                    "after_key": "]",
+                    "between_occurrence": "2",
+                },
+            ),
+            ("two", "成功"),
+        )
+        self.assertEqual(
+            extract_one_value(
+                "a-b-c",
+                {"method": "指定字符前提取", "marker": "-", "find_mode": "最后一次出现"},
+            ),
+            ("a-b", "成功"),
+        )
+        self.assertEqual(
+            extract_one_value(
+                "a-b-c",
+                {"method": "指定字符后提取", "marker": "-", "find_mode": "第一次出现"},
+            ),
+            ("b-c", "成功"),
+        )
+
+    def test_extract_one_value_supports_prefix_suffix_case_and_unmatched_modes(self):
+        self.assertEqual(
+            extract_one_value(
+                "PRE-value",
+                {"method": "删除前缀", "prefix": "pre-", "case_sensitive": False},
+            ),
+            ("value", "成功"),
+        )
+        self.assertEqual(
+            extract_one_value(
+                "value.TXT",
+                {"method": "删除后缀", "suffix": ".txt", "case_sensitive": False},
+            ),
+            ("value", "成功"),
+        )
+        self.assertEqual(
+            extract_one_value(
+                "raw",
+                {"method": "删除前缀", "prefix": "x", "unmatched_mode": "保留原值"},
+            ),
+            ("raw", "未匹配"),
+        )
+        self.assertEqual(
+            extract_one_value(
+                "raw",
+                {"method": "固定位置提取", "start_pos": "99", "extract_len": "1", "unmatched_mode": "跳过该行"},
+            ),
+            ("", "跳过"),
+        )
 
 
 if __name__ == "__main__":

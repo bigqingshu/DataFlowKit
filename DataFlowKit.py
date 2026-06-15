@@ -77,14 +77,17 @@ from workflow.nodes.data_nodes import (
     apply_current_datetime_column_node as workflow_apply_current_datetime_column_node,
     apply_delete_columns_node as workflow_apply_delete_columns_node,
     apply_delete_rows_node as workflow_apply_delete_rows_node,
+    apply_extract_node as workflow_apply_extract_node,
     apply_fill_value_node as workflow_apply_fill_value_node,
     apply_move_columns_node as workflow_apply_move_columns_node,
     apply_new_columns_node as workflow_apply_new_columns_node,
     apply_sequence_fill_node as workflow_apply_sequence_fill_node,
+    apply_unmatched_extract as workflow_apply_unmatched_extract,
     ensure_column_count as workflow_ensure_column_count,
     ensure_field_exists as workflow_ensure_field_exists,
     ensure_row_count as workflow_ensure_row_count,
     ensure_target_cell_limit as workflow_ensure_target_cell_limit,
+    extract_one_value as workflow_extract_one_value,
     format_sequence_value as workflow_format_sequence_value,
     get_config_cell_value as workflow_get_config_cell_value,
     get_cycle_source_values_by_config as workflow_get_cycle_source_values_by_config,
@@ -94,7 +97,9 @@ from workflow.nodes.data_nodes import (
     get_source_row_multi_field_values_by_config as workflow_get_source_row_multi_field_values_by_config,
     last_non_empty_row_index_by_field as workflow_last_non_empty_row_index_by_field,
     parse_new_columns_specs as workflow_parse_new_columns_specs,
+    parse_int as workflow_parse_int,
     parse_row_spec_to_indexes as workflow_parse_row_spec_to_indexes,
+    post_extract_result as workflow_post_extract_result,
     render_current_datetime_template as workflow_render_current_datetime_template,
     resolve_area_end_row_index as workflow_resolve_area_end_row_index,
     resolve_sequence_count_by_source as workflow_resolve_sequence_count_by_source,
@@ -16616,10 +16621,7 @@ class PlanWorkflowWindow:
         return list(headers), new_rows, f"修改 {changed} 处{extra}"
 
     def parse_int(self, value, name):
-        try:
-            return int(str(value).strip())
-        except Exception:
-            raise ValueError(f"{name} 必须是整数。")
+        return workflow_parse_int(value, name)
 
     def safe_int(self, value, default=0):
         try:
@@ -16628,131 +16630,13 @@ class PlanWorkflowWindow:
             return default
 
     def apply_unmatched_extract(self, text, status, config):
-        mode = config.get("unmatched_mode", "留空")
-        if mode == "留空":
-            return "", status
-        if mode == "保留原值":
-            return text, status
-        if mode == "填写固定值":
-            return str(config.get("unmatched_fixed", "未匹配")), status
-        if mode == "跳过该行":
-            return "", "跳过"
-        return "", status
+        return workflow_apply_unmatched_extract(text, status, config)
 
     def post_extract_result(self, result, config):
-        result = "" if result is None else str(result)
-        if config.get("strip_result", True):
-            result = result.strip()
-        return result
+        return workflow_post_extract_result(result, config)
 
     def extract_one_value(self, original, config):
-        text = "" if original is None else str(original)
-        method = config.get("method", "正则提取")
-        case_sensitive = bool(config.get("case_sensitive", True))
-        def norm(s):
-            return s if case_sensitive else s.lower()
-        try:
-            if method == "正则提取":
-                pattern = config.get("regex_pattern", "")
-                if not pattern:
-                    raise ValueError("正则表达式不能为空。")
-                flags = 0 if case_sensitive else re.IGNORECASE
-                group_index = self.parse_int(config.get("regex_group", "0"), "提取分组")
-                if config.get("regex_find_all", False):
-                    results = []
-                    for m in re.finditer(pattern, text, flags):
-                        try:
-                            results.append(m.group(group_index))
-                        except IndexError:
-                            return self.apply_unmatched_extract(text, "分组不存在", config)
-                    if not results:
-                        return self.apply_unmatched_extract(text, "未匹配", config)
-                    return self.post_extract_result(str(config.get("regex_joiner", ";")).join(results), config), "成功"
-                m = re.search(pattern, text, flags)
-                if not m:
-                    return self.apply_unmatched_extract(text, "未匹配", config)
-                try:
-                    return self.post_extract_result(m.group(group_index), config), "成功"
-                except IndexError:
-                    return self.apply_unmatched_extract(text, "分组不存在", config)
-            if method == "固定位置提取":
-                start = self.parse_int(config.get("start_pos", "1"), "起始位置")
-                length = self.parse_int(config.get("extract_len", "1"), "提取长度")
-                start_idx = start - 1 if config.get("position_base", "从1开始") == "从1开始" else start
-                if start_idx < 0 or start_idx >= len(text):
-                    return self.apply_unmatched_extract(text, "越界", config)
-                return self.post_extract_result(text[start_idx:start_idx+length], config), "成功"
-            if method == "从左取N位":
-                n = self.parse_int(config.get("n_chars", "1"), "N")
-                return self.post_extract_result(text[:max(n, 0)], config), "成功"
-            if method == "从右取N位":
-                n = self.parse_int(config.get("n_chars", "1"), "N")
-                return self.post_extract_result(text[-n:] if n > 0 else "", config), "成功"
-            if method == "按分隔符提取":
-                delimiter = str(config.get("delimiter", "-"))
-                if delimiter == "":
-                    raise ValueError("分隔符不能为空。")
-                parts = text.split(delimiter)
-                if config.get("ignore_empty_part", False):
-                    parts = [p for p in parts if p != ""]
-                part_index = self.parse_int(config.get("part_index", "1"), "取第几段")
-                if part_index == 0:
-                    raise ValueError("段序号不能为0。")
-                idx = part_index - 1 if part_index > 0 else part_index
-                if idx < -len(parts) or idx >= len(parts):
-                    return self.apply_unmatched_extract(text, "越界", config)
-                return self.post_extract_result(parts[idx], config), "成功"
-            if method == "前后关键字之间提取":
-                start_key = str(config.get("before_key", ""))
-                end_key = str(config.get("after_key", ""))
-                if not start_key or not end_key:
-                    raise ValueError("开始关键字和结束关键字不能为空。")
-                occurrence = self.parse_int(config.get("between_occurrence", "1"), "第几个匹配")
-                search_text = norm(text)
-                search_start = norm(start_key)
-                search_end = norm(end_key)
-                pos = 0
-                found = None
-                for _ in range(occurrence):
-                    s = search_text.find(search_start, pos)
-                    if s < 0:
-                        return self.apply_unmatched_extract(text, "未匹配", config)
-                    content_start = s + len(start_key)
-                    e = search_text.find(search_end, content_start)
-                    if e < 0:
-                        return self.apply_unmatched_extract(text, "未匹配", config)
-                    found = text[content_start:e]
-                    pos = e + len(end_key)
-                return self.post_extract_result(found, config), "成功"
-            if method in ["指定字符前提取", "指定字符后提取"]:
-                marker = str(config.get("marker", "-"))
-                if marker == "":
-                    raise ValueError("指定字符不能为空。")
-                search_text = norm(text)
-                search_marker = norm(marker)
-                idx = search_text.rfind(search_marker) if config.get("find_mode", "第一次出现") == "最后一次出现" else search_text.find(search_marker)
-                if idx < 0:
-                    return self.apply_unmatched_extract(text, "未匹配", config)
-                if method == "指定字符前提取":
-                    return self.post_extract_result(text[:idx], config), "成功"
-                return self.post_extract_result(text[idx + len(marker):], config), "成功"
-            if method == "删除前缀":
-                prefix = str(config.get("prefix", ""))
-                if prefix == "":
-                    raise ValueError("前缀不能为空。")
-                if norm(text).startswith(norm(prefix)):
-                    return self.post_extract_result(text[len(prefix):], config), "成功"
-                return self.apply_unmatched_extract(text, "未匹配", config)
-            if method == "删除后缀":
-                suffix = str(config.get("suffix", ""))
-                if suffix == "":
-                    raise ValueError("后缀不能为空。")
-                if norm(text).endswith(norm(suffix)):
-                    return self.post_extract_result(text[:-len(suffix)], config), "成功"
-                return self.apply_unmatched_extract(text, "未匹配", config)
-            raise ValueError(f"未知提取方式：{method}")
-        except re.error as e:
-            raise ValueError(f"正则错误：{e}")
+        return workflow_extract_one_value(original, config)
 
     def get_unique_header(self, base_name, headers):
         name = str(base_name or "新字段").strip() or "新字段"
@@ -17115,31 +16999,7 @@ class PlanWorkflowWindow:
         return workflow_apply_current_datetime_column_node(headers, rows, config)
 
     def apply_extract_node(self, headers, rows, config):
-        idx = self.field_index(headers, config.get("source_field", ""))
-        headers = list(headers)
-        new_rows = self.normalize_rows(rows, len(headers))
-        changed = 0
-        skipped = 0
-        if config.get("output_mode", "生成新字段") == "生成新字段":
-            new_header = self.get_unique_header(config.get("new_field", "提取结果"), headers)
-            headers.append(new_header)
-            for row in new_rows:
-                extracted, status = self.extract_one_value(self.safe_cell(row, idx), config)
-                if status == "跳过":
-                    skipped += 1
-                    row.append("")
-                else:
-                    row.append(extracted)
-                    changed += 1
-        else:
-            for row in new_rows:
-                extracted, status = self.extract_one_value(self.safe_cell(row, idx), config)
-                if status == "跳过":
-                    skipped += 1
-                    continue
-                row[idx] = extracted
-                changed += 1
-        return headers, new_rows, f"写入 {changed} 行，跳过 {skipped} 行"
+        return workflow_apply_extract_node(headers, rows, config)
 
     def apply_merge_node(self, headers, rows, config, context=None):
         fields = list(config.get("fields", []))
