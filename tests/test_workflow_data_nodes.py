@@ -17,6 +17,7 @@ from workflow.nodes.data_nodes import (
     apply_move_columns_node,
     apply_new_columns_node,
     apply_replace_node,
+    apply_rename_columns_node,
     apply_sequence_fill_node,
     extract_one_value,
     get_datetime_parse_warning,
@@ -363,6 +364,139 @@ class WorkflowDataNodesTests(unittest.TestCase):
                     )
                 },
             )
+
+    def test_rename_columns_node_manual_mapping_warns_and_dedupes(self):
+        headers, rows, message = apply_rename_columns_node(
+            ["A", "B", "C"],
+            [["a", "b", "c"]],
+            {
+                "mode": "手动映射改名",
+                "mappings": [
+                    {"old": "A", "new": " X "},
+                    {"old": "B", "new": "X"},
+                    {"old": "Missing", "new": "Y"},
+                ],
+                "trim_names": True,
+                "duplicate_policy": "自动追加编号",
+                "missing_policy": "跳过并记录警告",
+            },
+        )
+
+        self.assertEqual(headers, ["X", "X_2", "C"])
+        self.assertEqual(rows, [["a", "b", "c"]])
+        self.assertEqual(message, "已更改 2 个字段名，警告 1 项")
+
+    def test_rename_columns_node_missing_and_duplicate_errors(self):
+        with self.assertRaisesRegex(ValueError, "字段不存在：Missing"):
+            apply_rename_columns_node(
+                ["A"],
+                [["a"]],
+                {
+                    "mode": "手动映射改名",
+                    "mappings": [{"old": "Missing", "new": "X"}],
+                    "missing_policy": "报错并停止",
+                },
+            )
+
+        with self.assertRaisesRegex(ValueError, "字段名重复：X"):
+            apply_rename_columns_node(
+                ["A", "B"],
+                [["a", "b"]],
+                {
+                    "mode": "手动映射改名",
+                    "mappings": [{"old": "A", "new": "X"}, {"old": "B", "new": "X"}],
+                    "duplicate_policy": "报错并停止",
+                },
+            )
+
+    def test_rename_columns_node_prefix_suffix_and_scope(self):
+        headers, rows, message = apply_rename_columns_node(
+            ["A", "B", "C"],
+            [["a", "b", "c"]],
+            {
+                "mode": "批量添加前缀",
+                "prefix": "src_",
+                "scope": "选中字段",
+                "scope_fields": ["A", "C"],
+            },
+        )
+
+        self.assertEqual(headers, ["src_A", "B", "src_C"])
+        self.assertEqual(rows, [["a", "b", "c"]])
+        self.assertEqual(message, "已更改 2 个字段名")
+
+        headers, rows, message = apply_rename_columns_node(
+            ["A", "B"],
+            [["a", "b"]],
+            {"mode": "批量添加后缀", "suffix": "_out"},
+        )
+        self.assertEqual(headers, ["A_out", "B_out"])
+        self.assertEqual(message, "已更改 2 个字段名")
+
+    def test_rename_columns_node_replace_characters_and_empty_fallback(self):
+        headers, rows, message = apply_rename_columns_node(
+            ["old_A", "old_B", "C"],
+            [["a", "b", "c"]],
+            {
+                "mode": "批量替换字段名字符",
+                "replace_match": "old_",
+                "replace_value": "",
+            },
+        )
+
+        self.assertEqual(headers, ["A", "B", "C"])
+        self.assertEqual(message, "已更改 2 个字段名")
+
+        headers, rows, message = apply_rename_columns_node(
+            ["A"],
+            [["a"]],
+            {
+                "mode": "手动映射改名",
+                "mappings": [{"old": "A", "new": "   "}],
+                "trim_names": True,
+            },
+        )
+        self.assertEqual(headers, ["A"])
+        self.assertEqual(rows, [["a"]])
+        self.assertEqual(message, "已更改 0 个字段名")
+
+        headers, rows, message = apply_rename_columns_node(
+            ["A"],
+            [["a"]],
+            {
+                "mode": "批量添加前缀",
+                "prefix": "",
+                "trim_names": True,
+            },
+        )
+        self.assertEqual(headers, ["A"])
+        self.assertEqual(message, "已更改 0 个字段名")
+
+        headers, rows, message = apply_rename_columns_node(
+            ["A"],
+            [["a"]],
+            {
+                "mode": "手动映射改名",
+                "mappings": [{"old": "A", "new": ""}],
+            },
+        )
+        self.assertEqual(headers, ["A"])
+        self.assertEqual(message, "已更改 0 个字段名")
+
+    def test_rename_columns_node_empty_replace_match_is_noop(self):
+        headers, rows, message = apply_rename_columns_node(
+            ["A"],
+            [["a"]],
+            {
+                "mode": "批量替换字段名字符",
+                "replace_match": "",
+                "replace_value": "X",
+            },
+        )
+
+        self.assertEqual(headers, ["A"])
+        self.assertEqual(rows, [["a"]])
+        self.assertEqual(message, "字段名替换匹配值为空，未修改")
 
     def test_fill_value_manual_expands_rows_and_skips_existing_cells(self):
         headers, rows, message = apply_fill_value_node(
