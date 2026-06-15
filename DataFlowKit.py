@@ -70,6 +70,10 @@ from plugin_runtime.progress import handle_plugin_stdout_line
 from plugin_runtime.scanner import scan_plugins
 from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
 from shared.table_access_policy import table_pattern_matches
+from workflow.nodes.data_nodes import (
+    apply_delete_columns_node as workflow_apply_delete_columns_node,
+    apply_move_columns_node as workflow_apply_move_columns_node,
+)
 
 
 def get_app_dir():
@@ -20084,23 +20088,10 @@ class PlanWorkflowWindow:
         return core_make_unique_headers_for_append(existing_headers, new_headers)
 
     def apply_delete_columns_node(self, headers, rows, config):
-        delete_fields = set(config.get("fields", []))
-        keep_indexes = [i for i, h in enumerate(headers) if h not in delete_fields]
-        new_headers = [headers[i] for i in keep_indexes]
-        normalized = self.normalize_rows(rows, len(headers))
-        new_rows = [[self.safe_cell(row, i) for i in keep_indexes] for row in normalized]
-        return new_headers, new_rows, f"删除 {len(headers)-len(new_headers)} 列"
+        return workflow_apply_delete_columns_node(headers, rows, config)
 
     def apply_move_columns_node(self, headers, rows, config):
-        order = list(config.get("order", []))
-        final_order = [h for h in order if h in headers]
-        for h in headers:
-            if h not in final_order:
-                final_order.append(h)
-        indexes = [headers.index(h) for h in final_order]
-        normalized = self.normalize_rows(rows, len(headers))
-        new_rows = [[self.safe_cell(row, i) for i in indexes] for row in normalized]
-        return final_order, new_rows, "已调整列顺序"
+        return workflow_apply_move_columns_node(headers, rows, config)
 
     def execute_plan(self):
         context = {
