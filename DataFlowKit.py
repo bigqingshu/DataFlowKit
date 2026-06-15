@@ -71,12 +71,36 @@ from plugin_runtime.scanner import scan_plugins
 from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
 from shared.table_access_policy import table_pattern_matches
 from workflow.nodes.data_nodes import (
+    apply_area_fill_node as workflow_apply_area_fill_node,
     apply_copy_column_node as workflow_apply_copy_column_node,
     apply_copy_row_node as workflow_apply_copy_row_node,
+    apply_current_datetime_column_node as workflow_apply_current_datetime_column_node,
     apply_delete_columns_node as workflow_apply_delete_columns_node,
     apply_delete_rows_node as workflow_apply_delete_rows_node,
+    apply_fill_value_node as workflow_apply_fill_value_node,
     apply_move_columns_node as workflow_apply_move_columns_node,
+    apply_new_columns_node as workflow_apply_new_columns_node,
+    apply_sequence_fill_node as workflow_apply_sequence_fill_node,
+    ensure_column_count as workflow_ensure_column_count,
+    ensure_field_exists as workflow_ensure_field_exists,
+    ensure_row_count as workflow_ensure_row_count,
+    ensure_target_cell_limit as workflow_ensure_target_cell_limit,
+    format_sequence_value as workflow_format_sequence_value,
+    get_config_cell_value as workflow_get_config_cell_value,
+    get_cycle_source_values_by_config as workflow_get_cycle_source_values_by_config,
+    get_fill_targets as workflow_get_fill_targets,
+    get_source_area_values_by_config as workflow_get_source_area_values_by_config,
+    get_source_column_values_by_config as workflow_get_source_column_values_by_config,
+    get_source_row_multi_field_values_by_config as workflow_get_source_row_multi_field_values_by_config,
+    last_non_empty_row_index_by_field as workflow_last_non_empty_row_index_by_field,
+    parse_new_columns_specs as workflow_parse_new_columns_specs,
     parse_row_spec_to_indexes as workflow_parse_row_spec_to_indexes,
+    render_current_datetime_template as workflow_render_current_datetime_template,
+    resolve_area_end_row_index as workflow_resolve_area_end_row_index,
+    resolve_sequence_count_by_source as workflow_resolve_sequence_count_by_source,
+    resolve_start_row_index_by_mode as workflow_resolve_start_row_index_by_mode,
+    row_is_empty as workflow_row_is_empty,
+    should_write_cell as workflow_should_write_cell,
 )
 
 
@@ -17079,151 +17103,16 @@ class PlanWorkflowWindow:
         return "；".join(warnings)
 
     def render_current_datetime_template(self, dt, config):
-        mode = config.get("format_mode", "占位符模板")
-        if mode == "Python strftime":
-            fmt = str(config.get("strftime_template", "%Y-%m-%d %H:%M:%S") or "%Y-%m-%d %H:%M:%S")
-            try:
-                return dt.strftime(fmt)
-            except Exception as e:
-                raise ValueError(f"strftime格式错误：{e}")
-
-        values = {
-            "YYYY": f"{dt.year:04d}",
-            "YY": f"{dt.year % 100:02d}",
-            "MM": f"{dt.month:02d}",
-            "M": str(dt.month),
-            "DD": f"{dt.day:02d}",
-            "D": str(dt.day),
-            "HH": f"{dt.hour:02d}",
-            "H": str(dt.hour),
-            "mm": f"{dt.minute:02d}",
-            "m": str(dt.minute),
-            "ss": f"{dt.second:02d}",
-            "s": str(dt.second),
-            "fff": f"{dt.microsecond // 1000:03d}",
-            "ffffff": f"{dt.microsecond:06d}",
-            "timestamp": str(int(dt.timestamp())),
-            "unix_ms": str(int(dt.timestamp() * 1000)),
-        }
-        text = str(config.get("template", "{YYYY}-{MM}-{DD} {HH}:{mm}:{ss}") or "")
-        for key in sorted(values.keys(), key=len, reverse=True):
-            text = text.replace("{" + key + "}", values[key])
-        return text
+        return workflow_render_current_datetime_template(dt, config)
 
     def parse_new_columns_specs(self, config):
-        text = str(config.get("columns_text", "") or "")
-        strip_name = bool(config.get("strip_column_name", True))
-        allow_empty = bool(config.get("allow_empty_name", False))
-        value_mode = config.get("value_mode", "统一默认值")
-        default_value = str(config.get("default_value", "") or "")
-        specs = []
-        auto_index = 1
-        for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-            line = raw_line.strip() if strip_name else raw_line
-            if line == "":
-                continue
-            if "=" in line:
-                name, value = line.split("=", 1)
-                name = name.strip() if strip_name else name
-                if value_mode == "按列配置值":
-                    fill_value = value
-                elif value_mode == "空值":
-                    fill_value = ""
-                else:
-                    fill_value = default_value
-            else:
-                name = line
-                fill_value = "" if value_mode == "空值" else default_value
-            if name == "":
-                if allow_empty:
-                    name = f"新字段{auto_index}"
-                    auto_index += 1
-                else:
-                    raise ValueError("新建列节点存在空字段名。可删除空行，或勾选允许空字段名自动命名。")
-            specs.append((name, "" if fill_value is None else str(fill_value)))
-        if not specs:
-            raise ValueError("新建列节点没有填写任何字段名。")
-        return specs
+        return workflow_parse_new_columns_specs(config)
 
     def apply_new_columns_node(self, headers, rows, config):
-        headers = list(headers)
-        new_rows = self.normalize_rows(rows, len(headers))
-        specs = self.parse_new_columns_specs(config)
-        conflict_mode = config.get("conflict_mode", "自动改名")
-        added = 0
-        overwritten = 0
-        skipped = 0
-        output_names = []
-
-        for name, fill_value in specs:
-            if name in headers:
-                if conflict_mode == "自动改名":
-                    final_name = self.get_unique_header(name, headers)
-                    headers.append(final_name)
-                    for row in new_rows:
-                        row.append(fill_value)
-                    added += 1
-                    output_names.append(final_name)
-                elif conflict_mode == "跳过已有字段":
-                    skipped += 1
-                    continue
-                elif conflict_mode == "覆盖已有字段":
-                    idx = headers.index(name)
-                    for row in new_rows:
-                        row[idx] = fill_value
-                    overwritten += 1
-                    output_names.append(name)
-                elif conflict_mode == "存在则报错":
-                    raise ValueError(f"新建列节点字段已存在：{name}")
-                else:
-                    raise ValueError(f"未知同名字段处理方式：{conflict_mode}")
-            else:
-                headers.append(name)
-                for row in new_rows:
-                    row.append(fill_value)
-                added += 1
-                output_names.append(name)
-
-        shown = ", ".join(output_names[:8])
-        if len(output_names) > 8:
-            shown += f" ... 共{len(output_names)}个"
-        return headers, new_rows, f"新建列完成：新增 {added} 列，覆盖 {overwritten} 列，跳过 {skipped} 列；字段：{shown}"
+        return workflow_apply_new_columns_node(headers, rows, config)
 
     def apply_current_datetime_column_node(self, headers, rows, config):
-        headers = list(headers)
-        new_rows = self.normalize_rows(rows, len(headers))
-        output_mode = config.get("output_mode", "生成新字段")
-        output_idx = None
-        output_name = ""
-
-        if output_mode == "覆盖已有字段":
-            target = str(config.get("target_field", "")).strip()
-            if not target:
-                raise ValueError("新建日期时间列节点选择了覆盖已有字段，但未选择覆盖字段。")
-            output_idx = self.field_index(headers, target)
-            output_name = headers[output_idx]
-        else:
-            output_name = self.get_unique_header(config.get("new_field", "当前日期时间"), headers)
-            headers.append(output_name)
-            output_idx = len(headers) - 1
-            for row in new_rows:
-                row.append("")
-
-        fixed_time = datetime.now()
-        same_time = config.get("time_mode", "整次运行固定同一时间") == "整次运行固定同一时间"
-        changed = 0
-        sample = ""
-        for row in new_rows:
-            dt = fixed_time if same_time else datetime.now()
-            value = self.render_current_datetime_template(dt, config)
-            row[output_idx] = value
-            if sample == "":
-                sample = value
-            changed += 1
-
-        if not new_rows:
-            sample = self.render_current_datetime_template(fixed_time, config)
-        return headers, new_rows, f"新建日期时间列完成：字段【{output_name}】，写入 {changed} 行，示例：{sample}"
+        return workflow_apply_current_datetime_column_node(headers, rows, config)
 
     def apply_extract_node(self, headers, rows, config):
         idx = self.field_index(headers, config.get("source_field", ""))
@@ -17297,48 +17186,25 @@ class PlanWorkflowWindow:
         return new_headers, new_rows, f"新增字段 {output_field}"
 
     def ensure_field_exists(self, headers, rows, field_name):
-        """确保字段存在；不存在则新增一列空值，返回字段索引。"""
-        field_name = str(field_name or "新字段").strip() or "新字段"
-        headers = list(headers)
-        rows = self.normalize_rows(rows, len(headers))
-        if field_name in headers:
-            return headers, rows, headers.index(field_name)
-        new_name = self.get_unique_header(field_name, headers)
-        headers.append(new_name)
-        for row in rows:
-            row.append("")
-        return headers, rows, len(headers) - 1
+        return workflow_ensure_field_exists(headers, rows, field_name)
 
     def ensure_row_count(self, rows, row_count, col_count):
-        if row_count > self.MAX_EXPANDED_ROWS:
-            raise ValueError(
-                f"目标行数 {row_count} 超过安全上限 {self.MAX_EXPANDED_ROWS}，"
-                "请缩小填充范围或分批处理。"
-            )
-        rows = self.normalize_rows(rows, col_count)
-        while len(rows) < row_count:
-            rows.append([""] * col_count)
-        return rows
+        return workflow_ensure_row_count(
+            rows,
+            row_count,
+            col_count,
+            max_expanded_rows=self.MAX_EXPANDED_ROWS,
+        )
 
     def ensure_target_cell_limit(self, row_count, col_count):
-        total = max(0, int(row_count)) * max(0, int(col_count))
-        if total > self.MAX_TARGET_CELLS:
-            raise ValueError(
-                f"目标单元格数量 {total} 超过安全上限 {self.MAX_TARGET_CELLS}，"
-                "请缩小处理区域或分批执行。"
-            )
-        return total
+        return workflow_ensure_target_cell_limit(
+            row_count,
+            col_count,
+            max_target_cells=self.MAX_TARGET_CELLS,
+        )
 
     def ensure_column_count(self, headers, rows, col_count, base_name="区域复制列"):
-        """确保表格至少有 col_count 列；不足时在末尾追加新字段。"""
-        headers = list(headers)
-        rows = self.normalize_rows(rows, len(headers))
-        while len(headers) < col_count:
-            new_name = self.get_unique_header(f"{base_name}{len(headers) + 1}", headers)
-            headers.append(new_name)
-            for row in rows:
-                row.append("")
-        return headers, rows
+        return workflow_ensure_column_count(headers, rows, col_count, base_name)
 
     def parse_row_number(self, value, name="行号"):
         n = self.parse_int(value, name)
@@ -17347,246 +17213,55 @@ class PlanWorkflowWindow:
         return n
 
     def get_config_cell_value(self, headers, rows, config, target_row_idx=None):
-        value_source = config.get("value_source", "手动输入值")
-        if value_source == "同行来源字段":
-            src_idx = self.field_index(headers, config.get("source_field", ""))
-            if target_row_idx is None or target_row_idx < 0 or target_row_idx >= len(rows):
-                return ""
-            return self.safe_cell(rows[target_row_idx], src_idx)
-        if value_source == "指定单元格值":
-            src_idx = self.field_index(headers, config.get("source_field", ""))
-            src_row = self.parse_row_number(config.get("source_row", "1"), "取值行号") - 1
-            if src_row < 0 or src_row >= len(rows):
-                return ""
-            return self.safe_cell(rows[src_row], src_idx)
-        return str(config.get("manual_value", ""))
+        return workflow_get_config_cell_value(headers, rows, config, target_row_idx=target_row_idx)
 
     def resolve_start_row_index_by_mode(self, headers, rows, target_field, config):
-        """根据起始位置模式解析 0 基起始行。"""
-        mode = config.get("start_row_mode", "手动指定起始行")
-        if mode == "目标列最后数据行之后":
-            try:
-                last_idx = self.last_non_empty_row_index_by_field(headers, rows, target_field)
-            except Exception:
-                last_idx = -1
-            return max(0, last_idx + 1)
-        if mode == "参考列最后数据行之后":
-            last_idx = self.last_non_empty_row_index_by_field(headers, rows, config.get("reference_field", ""))
-            return max(0, last_idx + 1)
-        if mode == "整体表格最后行之后":
-            return max(0, len(rows))
-        return self.parse_row_number(config.get("start_row", "1"), "起始行号") - 1
+        return workflow_resolve_start_row_index_by_mode(headers, rows, target_field, config)
 
     def get_source_column_values_by_config(self, headers, rows, config):
-        """按来源范围取出来源字段的一整段列结构。"""
-        src_idx = self.field_index(headers, config.get("source_field", ""))
-        normalized = self.normalize_rows(rows, len(headers))
-        mode = config.get("source_range_mode", "来源列数据边界")
-        start_row = self.parse_row_number(config.get("source_start_row", "1"), "来源起始行") - 1
-        if mode == "整体表格数据边界":
-            end_row = len(normalized) - 1
-        elif mode == "手动指定范围":
-            end_row = self.parse_row_number(config.get("source_end_row", "1"), "来源结束行") - 1
-        else:
-            # 单来源字段逻辑：这里只处理填充值节点等“单列循环源”。
-            # 多来源字段循环由 get_source_area_values_by_config(...)/multi_field=True 处理，
-            # 不应在这里引用 c1/c2，否则填充值节点使用“循环源列填充”时会报 c1 未定义。
-            end_row = self.last_non_empty_row_index_by_field(
-                headers,
-                normalized,
-                config.get("source_field", "")
-            )
-        if end_row < 0 or start_row > end_row:
-            return []
-        start_row = max(0, start_row)
-        end_row = min(end_row, len(normalized) - 1)
-        return [self.safe_cell(normalized[r], src_idx) for r in range(start_row, end_row + 1)]
+        return workflow_get_source_column_values_by_config(headers, rows, config)
 
     def get_cycle_source_values_by_config(self, headers, rows, config, multi_field=False):
-        """
-        循环源列填充：获取循环周期值。
-        multi_field=False：仅使用 source_field 这一列。
-        multi_field=True：使用 source_field 到 source_end_field 的多个源字段，按行优先展开为循环周期。
-        """
-        if multi_field:
-            source_area = self.get_source_area_values_by_config(headers, rows, config)
-            raw_values = []
-            for source_row in source_area:
-                raw_values.extend(source_row)
-        else:
-            raw_values = self.get_source_column_values_by_config(headers, rows, config)
-
-        empty_mode = config.get("source_empty_mode", "跳过空值")
-        placeholder = str(config.get("source_empty_placeholder", ""))
-        values = []
-        for value in raw_values:
-            text = "" if value is None else str(value)
-            if text == "":
-                if empty_mode == "跳过空值":
-                    continue
-                if empty_mode == "替换为空值占位符":
-                    text = placeholder
-            values.append(text)
-        return values
+        return workflow_get_cycle_source_values_by_config(headers, rows, config, multi_field=multi_field)
 
     def get_source_row_multi_field_values_by_config(self, headers, rows, config):
-        """区域填充：指定行多字段取值。取指定行中起始字段到结束字段的多个值。"""
-        normalized = self.normalize_rows(rows, len(headers))
-        src_row = self.parse_row_number(config.get("source_row", "1"), "取值行号") - 1
-        if src_row < 0 or src_row >= len(normalized):
-            return []
-        start_idx = self.field_index(headers, config.get("source_field", ""))
-        end_field = config.get("source_end_field", config.get("source_field", ""))
-        end_idx = self.field_index(headers, end_field)
-        c1, c2 = sorted([start_idx, end_idx])
-        return [self.safe_cell(normalized[src_row], c) for c in range(c1, c2 + 1)]
+        return workflow_get_source_row_multi_field_values_by_config(headers, rows, config)
 
     def get_source_area_values_by_config(self, headers, rows, config):
-        """区域填充：来源区域完整复制。按来源字段范围和来源行范围取出二维区域。"""
-        normalized = self.normalize_rows(rows, len(headers))
-        if not normalized:
-            return []
-
-        start_col = self.field_index(headers, config.get("source_field", ""))
-        end_field = config.get("source_end_field", config.get("source_field", ""))
-        end_col = self.field_index(headers, end_field)
-        c1, c2 = sorted([start_col, end_col])
-
-        mode = config.get("source_range_mode", "来源列数据边界")
-        start_row = self.parse_row_number(config.get("source_start_row", "1"), "来源起始行") - 1
-        if mode == "整体表格数据边界":
-            end_row = len(normalized) - 1
-        elif mode == "手动指定范围":
-            end_row = self.parse_row_number(config.get("source_end_row", "1"), "来源结束行") - 1
-        else:
-            end_row = self.last_non_empty_row_index_by_field(headers, normalized, config.get("source_field", ""))
-
-        if end_row < 0 or start_row > end_row:
-            return []
-        start_row = max(0, start_row)
-        end_row = min(end_row, len(normalized) - 1)
-        return [
-            [self.safe_cell(normalized[r], c) for c in range(c1, c2 + 1)]
-            for r in range(start_row, end_row + 1)
-        ]
+        return workflow_get_source_area_values_by_config(headers, rows, config)
 
     def resolve_sequence_count_by_source(self, headers, rows, config):
-        """序列填充数量来源解析。返回 None 表示仍使用原结束条件。"""
-        mode = config.get("count_source_mode", "使用结束条件")
-        if mode == "整体表格数据行数":
-            return max(0, len(rows))
-        if mode == "指定参考列数据数量":
-            last_idx = self.last_non_empty_row_index_by_field(headers, rows, config.get("reference_field", ""))
-            return max(0, last_idx + 1)
-        if mode == "来源列数据数量":
-            return len(self.get_source_column_values_by_config(headers, rows, config))
-        return None
+        return workflow_resolve_sequence_count_by_source(headers, rows, config)
 
     def row_is_empty(self, row, col_count):
-        fixed = list(row) + [""] * max(0, col_count - len(row))
-        return all(str(v).strip() == "" for v in fixed[:col_count])
+        return workflow_row_is_empty(row, col_count)
 
     def last_non_empty_row_index_by_field(self, headers, rows, field_name):
-        """返回指定字段最后一个非空单元格所在的 0 基行号；如果无数据，返回 -1。"""
-        idx = self.field_index(headers, field_name)
-        normalized = self.normalize_rows(rows, len(headers))
-        for row_idx in range(len(normalized) - 1, -1, -1):
-            if self.safe_cell(normalized[row_idx], idx).strip() != "":
-                return row_idx
-        return -1
+        return workflow_last_non_empty_row_index_by_field(headers, rows, field_name)
 
     def resolve_area_end_row_index(self, headers, rows, config):
-        mode = config.get("end_row_mode", "手动指定结束行")
-        if mode == "整体表格数据边界":
-            return max(0, len(rows) - 1)
-        if mode == "指定参考列数据边界":
-            return self.last_non_empty_row_index_by_field(headers, rows, config.get("reference_field", ""))
-        return self.parse_row_number(config.get("end_row", "1"), "结束行号") - 1
+        return workflow_resolve_area_end_row_index(headers, rows, config)
 
     def get_fill_targets(self, headers, rows, target_field, start_row_value, direction, end_mode, count_value, end_row_value, end_field_value, reference_field_value="", allow_expand_rows=True, allow_expand_cols=False):
-        headers, rows, target_col = self.ensure_field_exists(headers, rows, target_field)
-        start_row = self.parse_row_number(start_row_value, "起始行号") - 1
-        rows = self.ensure_row_count(rows, start_row + 1, len(headers))
-        direction = direction or "向下"
-        end_mode = end_mode or "固定数量"
-        count = self.get_positive_int(count_value, 1)
-        targets = []
-
-        def ensure_cols(col_index):
-            nonlocal headers, rows
-            while col_index >= len(headers):
-                headers.append(self.get_unique_header(f"填充列{len(headers)+1}", headers))
-                for r in rows:
-                    r.append("")
-
-        if direction in ["向下", "向上"]:
-            if end_mode == "固定数量":
-                end_row = start_row + count - 1 if direction == "向下" else start_row - count + 1
-            elif end_mode == "填充到指定行":
-                end_row = self.parse_row_number(end_row_value, "结束行号") - 1
-            elif end_mode == "填充到参考列数据边界":
-                ref_last = self.last_non_empty_row_index_by_field(headers, rows, reference_field_value)
-                end_row = ref_last if direction == "向下" else 0
-            elif end_mode in ["填充到数据边界", "填充到指定列"]:
-                end_row = len(rows) - 1 if direction == "向下" else 0
-            elif end_mode in ["遇到已有数据停止", "填充到空行前"]:
-                end_row = len(rows) - 1 if direction == "向下" else 0
-            else:
-                end_row = len(rows) - 1 if direction == "向下" else 0
-            target_count = abs(end_row - start_row) + 1
-            if target_count > self.MAX_TARGET_CELLS:
-                raise ValueError(
-                    f"目标单元格数量 {target_count} 超过安全上限 {self.MAX_TARGET_CELLS}，"
-                    "请缩小填充范围或分批处理。"
-                )
-            if allow_expand_rows and direction == "向下" and end_row >= len(rows):
-                rows = self.ensure_row_count(rows, end_row + 1, len(headers))
-            step = 1 if direction == "向下" else -1
-            r = start_row
-            while 0 <= r < len(rows) and ((step > 0 and r <= end_row) or (step < 0 and r >= end_row)):
-                if end_mode == "填充到空行前" and self.row_is_empty(rows[r], len(headers)):
-                    break
-                targets.append((r, target_col))
-                r += step
-        else:
-            if end_mode == "固定数量":
-                end_col = target_col + count - 1 if direction == "向右" else target_col - count + 1
-            elif end_mode == "填充到指定列":
-                if end_field_value not in headers:
-                    if allow_expand_cols and direction == "向右":
-                        headers, rows, end_col = self.ensure_field_exists(headers, rows, end_field_value)
-                    else:
-                        raise ValueError(f"结束字段不存在：{end_field_value}")
-                else:
-                    end_col = headers.index(end_field_value)
-            else:
-                end_col = len(headers) - 1 if direction == "向右" else 0
-            target_count = abs(end_col - target_col) + 1
-            if target_count > self.MAX_TARGET_CELLS:
-                raise ValueError(
-                    f"目标单元格数量 {target_count} 超过安全上限 {self.MAX_TARGET_CELLS}，"
-                    "请缩小填充范围或分批处理。"
-                )
-            if allow_expand_cols and direction == "向右" and end_col >= len(headers):
-                ensure_cols(end_col)
-            step = 1 if direction == "向右" else -1
-            c = target_col
-            while 0 <= c < len(headers) and ((step > 0 and c <= end_col) or (step < 0 and c >= end_col)):
-                targets.append((start_row, c))
-                c += step
-        return headers, rows, targets
+        return workflow_get_fill_targets(
+            headers,
+            rows,
+            target_field,
+            start_row_value,
+            direction,
+            end_mode,
+            count_value,
+            end_row_value,
+            end_field_value,
+            reference_field_value=reference_field_value,
+            allow_expand_rows=allow_expand_rows,
+            allow_expand_cols=allow_expand_cols,
+            max_expanded_rows=self.MAX_EXPANDED_ROWS,
+            max_target_cells=self.MAX_TARGET_CELLS,
+        )
 
     def should_write_cell(self, current_value, overwrite_rule):
-        current = "" if current_value is None else str(current_value)
-        if overwrite_rule == "覆盖所有目标单元格":
-            return True, False
-        if overwrite_rule == "只填充空单元格":
-            return current == "", False
-        if overwrite_rule == "遇到已有数据停止":
-            return current == "", current != ""
-        if overwrite_rule == "不覆盖已有数据，只跳过":
-            return current == "", False
-        return True, False
+        return workflow_should_write_cell(current_value, overwrite_rule)
 
     def apply_copy_column_node(self, headers, rows, config):
         return workflow_apply_copy_column_node(headers, rows, config)
@@ -17602,336 +17277,34 @@ class PlanWorkflowWindow:
         return workflow_apply_delete_rows_node(headers, rows, config)
 
     def apply_fill_value_node(self, headers, rows, config, context=None):
-        headers = list(headers)
-        rows = self.normalize_rows(rows, len(headers))
-        value_source = config.get("value_source", "手动输入值")
-        target_field = config.get("target_field", "")
-
-        # 新增：循环源列填充。把来源列有效值作为循环周期，重复写入目标区域。
-        if value_source == "循环源列填充":
-            effective_start_row = self.resolve_start_row_index_by_mode(headers, rows, target_field, config) + 1
-            headers, rows, targets = self.get_fill_targets(
-                headers, rows,
-                target_field,
-                str(effective_start_row),
-                config.get("direction", "向下"),
-                config.get("end_mode", "填充到数据边界"),
-                config.get("count", "1"),
-                config.get("end_row", "1"),
-                config.get("end_field", ""),
-                config.get("reference_field", ""),
-                allow_expand_rows=True,
-                allow_expand_cols=True,
-            )
-            cycle_values = self.get_cycle_source_values_by_config(headers, rows, config)
-            if not cycle_values:
-                return headers, rows, "循环源列无可用数据，未执行填充"
-            overwrite_rule = config.get("overwrite_rule", "只填充空单元格")
-            changed = skipped = write_index = 0
-            for target_index, (r, c) in enumerate(targets):
-                self.check_workflow_cancelled_periodically(context, target_index)
-                rows = self.ensure_row_count(rows, r + 1, len(headers))
-                can_write, stop = self.should_write_cell(self.safe_cell(rows[r], c), overwrite_rule)
-                if stop:
-                    break
-                if can_write:
-                    rows[r][c] = cycle_values[write_index % len(cycle_values)]
-                    changed += 1
-                    write_index += 1
-                else:
-                    skipped += 1
-            return headers, rows, f"循环源列填充 {changed} 个单元格，跳过 {skipped} 个，循环周期 {len(cycle_values)}"
-
-        # 新增：来源列完整结构填充。把来源列的一整段数据，按顺序写入目标列。
-        if value_source == "来源列完整结构":
-            headers, rows, target_col = self.ensure_field_exists(headers, rows, target_field)
-            start_row = self.resolve_start_row_index_by_mode(headers, rows, target_field, config)
-            values = self.get_source_column_values_by_config(headers, rows, config)
-            if not values:
-                return headers, rows, "来源列无可填充数据，未执行填充"
-            rows = self.ensure_row_count(rows, start_row + len(values), len(headers))
-            overwrite_rule = config.get("overwrite_rule", "只填充空单元格")
-            changed = skipped = 0
-            for offset, value in enumerate(values):
-                self.check_workflow_cancelled_periodically(context, offset)
-                r = start_row + offset
-                can_write, stop = self.should_write_cell(self.safe_cell(rows[r], target_col), overwrite_rule)
-                if stop:
-                    break
-                if can_write:
-                    rows[r][target_col] = value
-                    changed += 1
-                else:
-                    skipped += 1
-            return headers, rows, f"来源列完整结构填充 {changed} 个单元格，跳过 {skipped} 个"
-
-        effective_start_row = self.resolve_start_row_index_by_mode(headers, rows, target_field, config) + 1
-        headers, rows, targets = self.get_fill_targets(
-            headers, rows,
-            target_field,
-            str(effective_start_row),
-            config.get("direction", "向下"),
-            config.get("end_mode", "填充到数据边界"),
-            config.get("count", "1"),
-            config.get("end_row", "1"),
-            config.get("end_field", ""),
-            config.get("reference_field", ""),
-            allow_expand_rows=True,
-            allow_expand_cols=True,
-        )
-        changed = skipped = 0
-        overwrite_rule = config.get("overwrite_rule", "只填充空单元格")
-        for target_index, (r, c) in enumerate(targets):
-            self.check_workflow_cancelled_periodically(context, target_index)
-            rows = self.ensure_row_count(rows, r + 1, len(headers))
-            can_write, stop = self.should_write_cell(self.safe_cell(rows[r], c), overwrite_rule)
-            if stop:
-                break
-            if can_write:
-                rows[r][c] = self.get_config_cell_value(headers, rows, config, target_row_idx=r)
-                changed += 1
-            else:
-                skipped += 1
-        return headers, rows, f"填充 {changed} 个单元格，跳过 {skipped} 个"
+        node_context = dict(context or {})
+        node_context.update({
+            "check_cancelled": lambda index: self.check_workflow_cancelled_periodically(context, index),
+            "max_expanded_rows": self.MAX_EXPANDED_ROWS,
+            "max_target_cells": self.MAX_TARGET_CELLS,
+        })
+        return workflow_apply_fill_value_node(headers, rows, config, context=node_context)
 
     def format_sequence_value(self, value, config):
-        zero_pad = self.get_positive_int(config.get("zero_pad", "0"), 0) if str(config.get("zero_pad", "0")).strip() != "0" else 0
-        if abs(value - int(value)) < 1e-12:
-            text = str(int(value))
-            if zero_pad > 0:
-                text = text.zfill(zero_pad)
-        else:
-            text = str(value).rstrip("0").rstrip(".") if "." in str(value) else str(value)
-        return f"{config.get('prefix', '')}{text}{config.get('suffix', '')}"
+        return workflow_format_sequence_value(value, config)
 
     def apply_sequence_fill_node(self, headers, rows, config, context=None):
-        headers = list(headers)
-        rows = self.normalize_rows(rows, len(headers))
-        try:
-            start_value = float(str(config.get("start_value", "1")).strip())
-            step = float(str(config.get("step", "1")).strip())
-        except Exception:
-            raise ValueError("起始值和步长必须是数字。")
-
-        target_field = config.get("target_field", "")
-        effective_start_row = self.resolve_start_row_index_by_mode(headers, rows, target_field, config) + 1
-        count_override = self.resolve_sequence_count_by_source(headers, rows, config)
-        end_mode = config.get("end_mode", "填充到数据边界")
-        count_value = config.get("count", "1")
-        if count_override is not None:
-            end_mode = "固定数量"
-            count_value = str(count_override)
-
-        headers, rows, targets = self.get_fill_targets(
-            headers, rows,
-            target_field,
-            str(effective_start_row),
-            config.get("direction", "向下"),
-            end_mode,
-            count_value,
-            config.get("end_row", "1"),
-            config.get("end_field", ""),
-            config.get("reference_field", ""),
-            allow_expand_rows=True,
-            allow_expand_cols=True,
-        )
-        changed = skipped = seq_index = 0
-        overwrite_rule = config.get("overwrite_rule", "覆盖所有目标单元格")
-        for target_index, (r, c) in enumerate(targets):
-            self.check_workflow_cancelled_periodically(context, target_index)
-            rows = self.ensure_row_count(rows, r + 1, len(headers))
-            can_write, stop = self.should_write_cell(self.safe_cell(rows[r], c), overwrite_rule)
-            if stop:
-                break
-            if can_write:
-                rows[r][c] = self.format_sequence_value(start_value + step * seq_index, config)
-                changed += 1
-                seq_index += 1
-            else:
-                skipped += 1
-        return headers, rows, f"序列填充 {changed} 个单元格，跳过 {skipped} 个"
+        node_context = dict(context or {})
+        node_context.update({
+            "check_cancelled": lambda index: self.check_workflow_cancelled_periodically(context, index),
+            "max_expanded_rows": self.MAX_EXPANDED_ROWS,
+            "max_target_cells": self.MAX_TARGET_CELLS,
+        })
+        return workflow_apply_sequence_fill_node(headers, rows, config, context=node_context)
 
     def apply_area_fill_node(self, headers, rows, config, context=None):
-        headers = list(headers)
-        rows = self.normalize_rows(rows, len(headers))
-        if config.get("start_field", "") not in headers:
-            headers, rows, start_col = self.ensure_field_exists(headers, rows, config.get("start_field", ""))
-        else:
-            start_col = headers.index(config.get("start_field", ""))
-        if config.get("end_field", "") not in headers:
-            headers, rows, end_col = self.ensure_field_exists(headers, rows, config.get("end_field", ""))
-        else:
-            end_col = headers.index(config.get("end_field", ""))
-
-        start_row = self.resolve_start_row_index_by_mode(headers, rows, config.get("start_field", ""), config)
-        value_source = config.get("value_source", "手动输入值")
-        c1, c2 = sorted([start_col, end_col])
-        overwrite_rule = config.get("overwrite_rule", "只填充空单元格")
-        changed = skipped = 0
-
-        # 新增：循环源列填充。区域填充默认使用“取值/来源字段”到“取值/结束字段”的多个源字段作为循环周期，按目标区域逐格填充。
-        if value_source == "循环源列填充":
-            cycle_values = self.get_cycle_source_values_by_config(headers, rows, config, multi_field=True)
-            if not cycle_values:
-                return headers, rows, "循环源列无可用数据，未执行区域填充"
-            end_row = self.resolve_area_end_row_index(headers, rows, config)
-            if end_row < 0:
-                return headers, rows, "参考列无数据，未执行区域填充"
-            r1, r2 = sorted([start_row, end_row])
-            self.ensure_target_cell_limit(r2 - r1 + 1, c2 - c1 + 1)
-            rows = self.ensure_row_count(rows, r2 + 1, len(headers))
-            stop_all = False
-            write_index = 0
-            for r in range(r1, r2 + 1):
-                self.check_workflow_cancelled_periodically(context, r - r1)
-                if stop_all:
-                    break
-                for c in range(c1, c2 + 1):
-                    can_write, stop = self.should_write_cell(self.safe_cell(rows[r], c), overwrite_rule)
-                    if stop:
-                        stop_all = True
-                        break
-                    if can_write:
-                        rows[r][c] = cycle_values[write_index % len(cycle_values)]
-                        changed += 1
-                        write_index += 1
-                    else:
-                        skipped += 1
-            return headers, rows, f"循环源列区域填充 {changed} 个单元格，跳过 {skipped} 个，循环周期 {len(cycle_values)}（多源字段）"
-
-        # 新增：来源区域完整复制。把二维源区域按统一左上角锚点复制到目标起点。
-        if value_source == "来源区域完整复制":
-            source_area = self.get_source_area_values_by_config(headers, rows, config)
-            if not source_area:
-                return headers, rows, "来源区域为空或越界，未执行区域完整复制"
-            source_height = len(source_area)
-            source_width = max((len(row) for row in source_area), default=0)
-            if source_height <= 0 or source_width <= 0:
-                return headers, rows, "来源区域为空，未执行区域完整复制"
-            self.ensure_target_cell_limit(source_height, source_width)
-
-            # 目标区域以“起始字段 + 起始位置”作为统一左上角锚点，按源区域行列偏移完整复制。
-            headers, rows = self.ensure_column_count(headers, rows, start_col + source_width, "区域复制列")
-            rows = self.ensure_row_count(rows, start_row + source_height, len(headers))
-            stop_all = False
-            for r_offset, source_row in enumerate(source_area):
-                self.check_workflow_cancelled_periodically(context, r_offset)
-                if stop_all:
-                    break
-                target_r = start_row + r_offset
-                for c_offset, value in enumerate(source_row):
-                    target_c = start_col + c_offset
-                    can_write, stop = self.should_write_cell(self.safe_cell(rows[target_r], target_c), overwrite_rule)
-                    if stop:
-                        stop_all = True
-                        break
-                    if can_write:
-                        rows[target_r][target_c] = value
-                        changed += 1
-                    else:
-                        skipped += 1
-            return headers, rows, f"来源区域完整复制 {changed} 个单元格，跳过 {skipped} 个"
-
-        # 新增：来源列完整结构区域填充。把来源列的一整段数据从起始行开始写入目标列/区域。
-        if value_source == "来源列完整结构":
-            values = self.get_source_column_values_by_config(headers, rows, config)
-            if not values:
-                return headers, rows, "来源列无可填充数据，未执行区域填充"
-            self.ensure_target_cell_limit(len(values), c2 - c1 + 1)
-            rows = self.ensure_row_count(rows, start_row + len(values), len(headers))
-            stop_all = False
-            for offset, value in enumerate(values):
-                self.check_workflow_cancelled_periodically(context, offset)
-                if stop_all:
-                    break
-                r = start_row + offset
-                for c in range(c1, c2 + 1):
-                    can_write, stop = self.should_write_cell(self.safe_cell(rows[r], c), overwrite_rule)
-                    if stop:
-                        stop_all = True
-                        break
-                    if can_write:
-                        rows[r][c] = value
-                        changed += 1
-                    else:
-                        skipped += 1
-            return headers, rows, f"来源列完整结构区域填充 {changed} 个单元格，跳过 {skipped} 个"
-
-        # 新增：指定行多字段取值。取指定行中从“取值/来源字段”到“取值/结束字段”的值，按横向或纵向填充目标区域。
-        if value_source == "指定行多字段取值":
-            values = self.get_source_row_multi_field_values_by_config(headers, rows, config)
-            if not values:
-                return headers, rows, "指定行多字段取值为空或越界，未执行区域填充"
-            direction = config.get("multi_field_fill_direction", "横向填充")
-            if direction == "纵向填充":
-                self.ensure_target_cell_limit(len(values), c2 - c1 + 1)
-                rows = self.ensure_row_count(rows, start_row + len(values), len(headers))
-                stop_all = False
-                for offset, value in enumerate(values):
-                    self.check_workflow_cancelled_periodically(context, offset)
-                    if stop_all:
-                        break
-                    r = start_row + offset
-                    for c in range(c1, c2 + 1):
-                        can_write, stop = self.should_write_cell(self.safe_cell(rows[r], c), overwrite_rule)
-                        if stop:
-                            stop_all = True
-                            break
-                        if can_write:
-                            rows[r][c] = value
-                            changed += 1
-                        else:
-                            skipped += 1
-            else:
-                end_row = self.resolve_area_end_row_index(headers, rows, config)
-                if end_row < 0:
-                    return headers, rows, "参考列无数据，未执行区域填充"
-                r1, r2 = sorted([start_row, end_row])
-                self.ensure_target_cell_limit(r2 - r1 + 1, min(c2 - c1 + 1, len(values)))
-                rows = self.ensure_row_count(rows, r2 + 1, len(headers))
-                target_cols = list(range(c1, c2 + 1))
-                stop_all = False
-                for r in range(r1, r2 + 1):
-                    self.check_workflow_cancelled_periodically(context, r - r1)
-                    if stop_all:
-                        break
-                    for offset, c in enumerate(target_cols):
-                        if offset >= len(values):
-                            break
-                        value = values[offset]
-                        can_write, stop = self.should_write_cell(self.safe_cell(rows[r], c), overwrite_rule)
-                        if stop:
-                            stop_all = True
-                            break
-                        if can_write:
-                            rows[r][c] = value
-                            changed += 1
-                        else:
-                            skipped += 1
-            return headers, rows, f"指定行多字段取值区域填充 {changed} 个单元格，跳过 {skipped} 个"
-
-        end_row = self.resolve_area_end_row_index(headers, rows, config)
-        if end_row < 0:
-            return headers, rows, "参考列无数据，未执行区域填充"
-        r1, r2 = sorted([start_row, end_row])
-        self.ensure_target_cell_limit(r2 - r1 + 1, c2 - c1 + 1)
-        rows = self.ensure_row_count(rows, r2 + 1, len(headers))
-        stop_all = False
-        for r in range(r1, r2 + 1):
-            self.check_workflow_cancelled_periodically(context, r - r1)
-            if stop_all:
-                break
-            for c in range(c1, c2 + 1):
-                can_write, stop = self.should_write_cell(self.safe_cell(rows[r], c), overwrite_rule)
-                if stop:
-                    stop_all = True
-                    break
-                if can_write:
-                    rows[r][c] = self.get_config_cell_value(headers, rows, config, target_row_idx=r)
-                    changed += 1
-                else:
-                    skipped += 1
-        return headers, rows, f"区域填充 {changed} 个单元格，跳过 {skipped} 个"
+        node_context = dict(context or {})
+        node_context.update({
+            "check_cancelled": lambda index: self.check_workflow_cancelled_periodically(context, index),
+            "max_expanded_rows": self.MAX_EXPANDED_ROWS,
+            "max_target_cells": self.MAX_TARGET_CELLS,
+        })
+        return workflow_apply_area_fill_node(headers, rows, config, context=node_context)
 
     def get_positive_int(self, value, default_value):
         try:

@@ -1,12 +1,20 @@
 # -*- coding: utf-8 -*-
 import unittest
+from datetime import datetime
 
 from workflow.nodes.data_nodes import (
+    apply_area_fill_node,
     apply_copy_column_node,
     apply_copy_row_node,
+    apply_current_datetime_column_node,
     apply_delete_columns_node,
     apply_delete_rows_node,
+    apply_fill_value_node,
     apply_move_columns_node,
+    apply_new_columns_node,
+    apply_sequence_fill_node,
+    parse_new_columns_specs,
+    render_current_datetime_template,
 )
 
 
@@ -125,6 +133,327 @@ class WorkflowDataNodesTests(unittest.TestCase):
             {"delete_mode": "删除空行", "empty_mode": "整行为空"},
         )
         self.assertEqual(rows, [["x", ""]])
+
+    def test_fill_value_manual_expands_rows_and_skips_existing_cells(self):
+        headers, rows, message = apply_fill_value_node(
+            ["A"],
+            [["old"], [""]],
+            {
+                "target_field": "A",
+                "value_source": "手动输入值",
+                "manual_value": "new",
+                "direction": "向下",
+                "end_mode": "固定数量",
+                "count": "3",
+                "overwrite_rule": "只填充空单元格",
+            },
+        )
+
+        self.assertEqual(headers, ["A"])
+        self.assertEqual(rows, [["old"], ["new"], ["new"]])
+        self.assertEqual(message, "填充 2 个单元格，跳过 1 个")
+
+    def test_fill_value_from_same_row_source_field(self):
+        headers, rows, message = apply_fill_value_node(
+            ["Source", "Target"],
+            [["s1", ""], ["s2", "occupied"]],
+            {
+                "target_field": "Target",
+                "value_source": "同行来源字段",
+                "source_field": "Source",
+                "direction": "向下",
+                "end_mode": "固定数量",
+                "count": "2",
+                "overwrite_rule": "覆盖所有目标单元格",
+            },
+        )
+
+        self.assertEqual(headers, ["Source", "Target"])
+        self.assertEqual(rows, [["s1", "s1"], ["s2", "s2"]])
+        self.assertEqual(message, "填充 2 个单元格，跳过 0 个")
+
+    def test_fill_value_with_cycle_source_column_skips_empty_values(self):
+        headers, rows, message = apply_fill_value_node(
+            ["Source", "Target"],
+            [["a", ""], ["", ""], ["b", ""], ["", ""]],
+            {
+                "target_field": "Target",
+                "value_source": "循环源列填充",
+                "source_field": "Source",
+                "source_range_mode": "整体表格数据边界",
+                "source_empty_mode": "跳过空值",
+                "direction": "向下",
+                "end_mode": "固定数量",
+                "count": "4",
+                "overwrite_rule": "覆盖所有目标单元格",
+            },
+        )
+
+        self.assertEqual(rows, [["a", "a"], ["", "b"], ["b", "a"], ["", "b"]])
+        self.assertEqual(message, "循环源列填充 4 个单元格，跳过 0 个，循环周期 2")
+
+    def test_fill_value_copies_source_column_structure_to_new_field(self):
+        headers, rows, message = apply_fill_value_node(
+            ["Source"],
+            [["x"], [""], ["z"]],
+            {
+                "target_field": "Copied",
+                "value_source": "来源列完整结构",
+                "source_field": "Source",
+                "source_range_mode": "整体表格数据边界",
+                "overwrite_rule": "覆盖所有目标单元格",
+            },
+        )
+
+        self.assertEqual(headers, ["Source", "Copied"])
+        self.assertEqual(rows, [["x", "x"], ["", ""], ["z", "z"]])
+        self.assertEqual(message, "来源列完整结构填充 3 个单元格，跳过 0 个")
+
+    def test_sequence_fill_supports_padding_prefix_suffix_and_skip_rule(self):
+        headers, rows, message = apply_sequence_fill_node(
+            ["Seq"],
+            [[""], ["keep"], [""]],
+            {
+                "target_field": "Seq",
+                "start_value": "7",
+                "step": "2",
+                "zero_pad": "3",
+                "prefix": "NO-",
+                "suffix": "-X",
+                "direction": "向下",
+                "end_mode": "固定数量",
+                "count": "3",
+                "overwrite_rule": "不覆盖已有数据，只跳过",
+            },
+        )
+
+        self.assertEqual(headers, ["Seq"])
+        self.assertEqual(rows, [["NO-007-X"], ["keep"], ["NO-009-X"]])
+        self.assertEqual(message, "序列填充 2 个单元格，跳过 1 个")
+
+    def test_sequence_fill_count_can_follow_source_column_data_count(self):
+        headers, rows, message = apply_sequence_fill_node(
+            ["Source", "Seq"],
+            [["x", ""], ["", ""], ["y", ""], ["", ""]],
+            {
+                "target_field": "Seq",
+                "start_value": "1",
+                "step": "1",
+                "count_source_mode": "来源列数据数量",
+                "source_field": "Source",
+                "source_range_mode": "来源列数据边界",
+                "direction": "向下",
+                "overwrite_rule": "覆盖所有目标单元格",
+            },
+        )
+
+        self.assertEqual(rows, [["x", "1"], ["", "2"], ["y", "3"], ["", ""]])
+        self.assertEqual(message, "序列填充 3 个单元格，跳过 0 个")
+
+    def test_area_fill_manual_value_fills_rectangular_target(self):
+        headers, rows, message = apply_area_fill_node(
+            ["A", "B"],
+            [["", ""], ["", "occupied"]],
+            {
+                "start_field": "A",
+                "end_field": "B",
+                "start_row": "1",
+                "end_row": "2",
+                "value_source": "手动输入值",
+                "manual_value": "x",
+                "overwrite_rule": "只填充空单元格",
+            },
+        )
+
+        self.assertEqual(headers, ["A", "B"])
+        self.assertEqual(rows, [["x", "x"], ["x", "occupied"]])
+        self.assertEqual(message, "区域填充 3 个单元格，跳过 1 个")
+
+    def test_area_fill_copies_source_area_and_expands_columns(self):
+        headers, rows, message = apply_area_fill_node(
+            ["S1", "S2", "T"],
+            [["a1", "b1", ""], ["a2", "b2", ""]],
+            {
+                "start_field": "T",
+                "end_field": "T",
+                "start_row": "1",
+                "value_source": "来源区域完整复制",
+                "source_field": "S1",
+                "source_end_field": "S2",
+                "source_range_mode": "整体表格数据边界",
+                "overwrite_rule": "覆盖所有目标单元格",
+            },
+        )
+
+        self.assertEqual(headers, ["S1", "S2", "T", "区域复制列4"])
+        self.assertEqual(rows, [["a1", "b1", "a1", "b1"], ["a2", "b2", "a2", "b2"]])
+        self.assertEqual(message, "来源区域完整复制 4 个单元格，跳过 0 个")
+
+    def test_area_fill_source_column_structure_spreads_to_target_columns(self):
+        headers, rows, message = apply_area_fill_node(
+            ["Source", "T1", "T2"],
+            [["a", "", ""], ["b", "", ""], ["", "", ""]],
+            {
+                "start_field": "T1",
+                "end_field": "T2",
+                "start_row": "1",
+                "value_source": "来源列完整结构",
+                "source_field": "Source",
+                "source_range_mode": "来源列数据边界",
+                "overwrite_rule": "覆盖所有目标单元格",
+            },
+        )
+
+        self.assertEqual(rows, [["a", "a", "a"], ["b", "b", "b"], ["", "", ""]])
+        self.assertEqual(message, "来源列完整结构区域填充 4 个单元格，跳过 0 个")
+
+    def test_area_fill_multi_field_row_horizontal_and_vertical(self):
+        headers, rows, message = apply_area_fill_node(
+            ["S1", "S2", "T1", "T2"],
+            [["v1", "v2", "", ""], ["", "", "", ""]],
+            {
+                "start_field": "T1",
+                "end_field": "T2",
+                "start_row": "1",
+                "end_row": "2",
+                "value_source": "指定行多字段取值",
+                "source_field": "S1",
+                "source_end_field": "S2",
+                "source_row": "1",
+                "multi_field_fill_direction": "横向填充",
+                "overwrite_rule": "覆盖所有目标单元格",
+            },
+        )
+        self.assertEqual(rows, [["v1", "v2", "v1", "v2"], ["", "", "v1", "v2"]])
+        self.assertEqual(message, "指定行多字段取值区域填充 4 个单元格，跳过 0 个")
+
+        _headers, rows, message = apply_area_fill_node(
+            headers,
+            [["v1", "v2", "", ""], ["", "", "", ""]],
+            {
+                "start_field": "T1",
+                "end_field": "T2",
+                "start_row": "1",
+                "value_source": "指定行多字段取值",
+                "source_field": "S1",
+                "source_end_field": "S2",
+                "source_row": "1",
+                "multi_field_fill_direction": "纵向填充",
+                "overwrite_rule": "覆盖所有目标单元格",
+            },
+        )
+        self.assertEqual(rows, [["v1", "v2", "v1", "v1"], ["", "", "v2", "v2"]])
+        self.assertEqual(message, "指定行多字段取值区域填充 4 个单元格，跳过 0 个")
+
+    def test_area_fill_cycles_multi_field_source_values(self):
+        headers, rows, message = apply_area_fill_node(
+            ["S1", "S2", "T1", "T2"],
+            [["a", "b", "", ""], ["", "c", "", ""]],
+            {
+                "start_field": "T1",
+                "end_field": "T2",
+                "start_row": "1",
+                "end_row": "2",
+                "value_source": "循环源列填充",
+                "source_field": "S1",
+                "source_end_field": "S2",
+                "source_range_mode": "整体表格数据边界",
+                "source_empty_mode": "跳过空值",
+                "overwrite_rule": "覆盖所有目标单元格",
+            },
+        )
+
+        self.assertEqual(rows, [["a", "b", "a", "b"], ["", "c", "c", "a"]])
+        self.assertEqual(message, "循环源列区域填充 4 个单元格，跳过 0 个，循环周期 3（多源字段）")
+
+    def test_parse_new_columns_specs_supports_per_column_values(self):
+        specs = parse_new_columns_specs(
+            {
+                "columns_text": " A = one \nB=two\nC",
+                "value_mode": "按列配置值",
+                "default_value": "default",
+                "strip_column_name": True,
+            }
+        )
+
+        self.assertEqual(specs, [("A", " one"), ("B", "two"), ("C", "default")])
+
+    def test_new_columns_node_handles_conflicts(self):
+        headers, rows, message = apply_new_columns_node(
+            ["A"],
+            [["old"], ["keep", "ignored"]],
+            {
+                "columns_text": "A=overwrite\nB=new",
+                "value_mode": "按列配置值",
+                "conflict_mode": "覆盖已有字段",
+            },
+        )
+
+        self.assertEqual(headers, ["A", "B"])
+        self.assertEqual(rows, [["overwrite", "new"], ["overwrite", "new"]])
+        self.assertEqual(message, "新建列完成：新增 1 列，覆盖 1 列，跳过 0 列；字段：A, B")
+
+        headers, rows, message = apply_new_columns_node(
+            ["A"],
+            [["old"]],
+            {
+                "columns_text": "A\nB",
+                "default_value": "x",
+                "conflict_mode": "自动改名",
+            },
+        )
+
+        self.assertEqual(headers, ["A", "A_2", "B"])
+        self.assertEqual(rows, [["old", "x", "x"]])
+        self.assertEqual(message, "新建列完成：新增 2 列，覆盖 0 列，跳过 0 列；字段：A_2, B")
+
+    def test_render_current_datetime_template_supports_tokens_and_strftime(self):
+        dt = datetime(2026, 6, 15, 9, 8, 7, 123456)
+
+        self.assertEqual(
+            render_current_datetime_template(dt, {"template": "{YYYY}/{M}/{D} {HH}:{mm}:{ss}.{fff}"}),
+            "2026/6/15 09:08:07.123",
+        )
+        self.assertEqual(
+            render_current_datetime_template(
+                dt,
+                {"format_mode": "Python strftime", "strftime_template": "%Y%m%d-%H%M%S"},
+            ),
+            "20260615-090807",
+        )
+
+    def test_current_datetime_column_can_generate_or_overwrite(self):
+        dt = datetime(2026, 6, 15, 9, 8, 7)
+        headers, rows, message = apply_current_datetime_column_node(
+            ["A"],
+            [["x"], ["y"]],
+            {
+                "new_field": "Now",
+                "template": "{YYYY}-{MM}-{DD} {HH}:{mm}:{ss}",
+                "time_mode": "整次运行固定同一时间",
+            },
+            now_func=lambda: dt,
+        )
+
+        self.assertEqual(headers, ["A", "Now"])
+        self.assertEqual(rows, [["x", "2026-06-15 09:08:07"], ["y", "2026-06-15 09:08:07"]])
+        self.assertEqual(message, "新建日期时间列完成：字段【Now】，写入 2 行，示例：2026-06-15 09:08:07")
+
+        headers, rows, message = apply_current_datetime_column_node(
+            ["A"],
+            [["old"]],
+            {
+                "output_mode": "覆盖已有字段",
+                "target_field": "A",
+                "format_mode": "Python strftime",
+                "strftime_template": "%Y%m%d",
+            },
+            now_func=lambda: dt,
+        )
+
+        self.assertEqual(headers, ["A"])
+        self.assertEqual(rows, [["20260615"]])
+        self.assertEqual(message, "新建日期时间列完成：字段【A】，写入 1 行，示例：20260615")
 
 
 if __name__ == "__main__":
