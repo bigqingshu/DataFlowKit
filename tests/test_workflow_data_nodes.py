@@ -22,11 +22,13 @@ from workflow.nodes.data_nodes import (
     apply_numeric_column_node,
     apply_replace_node,
     apply_rename_columns_node,
+    apply_row_data_mapping_node,
     apply_sequence_fill_node,
     extract_one_value,
     format_numeric_column_result,
     get_datetime_parse_warning,
     get_numeric_node_row_indexes,
+    get_row_mapping_end_index,
     match_value_output_column_match,
     numeric_node_fallback_value,
     parse_format_datetime_value,
@@ -952,6 +954,97 @@ class WorkflowDataNodesTests(unittest.TestCase):
                     "check_cancelled": lambda _index: (_ for _ in ()).throw(RuntimeError("用户取消")),
                 },
             )
+
+    def test_row_mapping_end_index_modes(self):
+        rows = [["a"], ["b"], ["c"]]
+
+        self.assertEqual(get_row_mapping_end_index(rows, 1, {"end_mode": "固定行数", "count": "5"}), 2)
+        self.assertEqual(get_row_mapping_end_index(rows, 0, {"end_mode": "填充到指定行", "end_row": "2"}), 1)
+        self.assertEqual(get_row_mapping_end_index(rows, 1, {"end_mode": "填充到指定行", "end_row": "1"}), 1)
+        self.assertEqual(get_row_mapping_end_index([], 0, {}), -1)
+
+    def test_row_data_mapping_expands_values_with_keep_fields(self):
+        headers, rows, message = apply_row_data_mapping_node(
+            ["ID", "A", "B"],
+            [["R1", " x ", ""], ["R2", "y", "z"]],
+            {
+                "keep_fields": ["ID"],
+                "value_fields": ["A", "B"],
+                "start_row": "1",
+                "end_mode": "填充到数据边界",
+                "empty_mode": "跳过空值",
+                "trim_value": True,
+            },
+        )
+
+        self.assertEqual(headers, ["ID", "原始行号", "来源字段", "输出内容", "状态"])
+        self.assertEqual(rows, [["R1", "1", "A", "x", "成功"], ["R2", "2", "A", "y", "成功"], ["R2", "2", "B", "z", "成功"]])
+        self.assertEqual(message, "按行取值展开 3 行，跳过空值 1 个")
+
+    def test_row_data_mapping_empty_fixed_and_column_toggles(self):
+        headers, rows, message = apply_row_data_mapping_node(
+            ["ID", "A", "B"],
+            [["R1", "", " b "]],
+            {
+                "keep_fields": ["ID"],
+                "value_fields": ["A", "B"],
+                "start_row": "1",
+                "empty_mode": "填写固定值",
+                "empty_fixed": "NA",
+                "trim_value": False,
+                "output_original_row": False,
+                "output_source_field": False,
+                "output_status": False,
+                "output_value_field": "ID",
+            },
+        )
+
+        self.assertEqual(headers, ["ID", "ID_2"])
+        self.assertEqual(rows, [["R1", "NA"], ["R1", " b "]])
+        self.assertEqual(message, "按行取值展开 2 行")
+
+    def test_row_data_mapping_end_modes_and_empty_row_stop(self):
+        headers, rows, message = apply_row_data_mapping_node(
+            ["ID", "A"],
+            [["R1", "a"], ["", ""], ["R3", "c"]],
+            {
+                "keep_fields": ["ID"],
+                "value_fields": ["A"],
+                "start_row": "1",
+                "end_mode": "遇到空行停止",
+                "empty_mode": "保留空值",
+            },
+        )
+
+        self.assertEqual(rows, [["R1", "1", "A", "a", "成功"]])
+        self.assertEqual(message, "按行取值展开 1 行，遇到空行停止")
+
+        headers, rows, message = apply_row_data_mapping_node(
+            ["ID", "A"],
+            [["R1", "a"], ["R2", "b"], ["R3", "c"]],
+            {
+                "keep_fields": ["ID"],
+                "value_fields": ["A"],
+                "start_row": "2",
+                "end_mode": "固定行数",
+                "count": "1",
+            },
+        )
+
+        self.assertEqual(rows, [["R2", "2", "A", "b", "成功"]])
+        self.assertEqual(message, "按行取值展开 1 行")
+
+    def test_row_data_mapping_empty_data_and_errors(self):
+        headers, rows, message = apply_row_data_mapping_node(["A"], [], {"value_fields": ["A"]})
+
+        self.assertEqual(headers, ["A"])
+        self.assertEqual(rows, [])
+        self.assertEqual(message, "当前无数据，未展开")
+
+        with self.assertRaisesRegex(ValueError, "请至少选择一个取值字段"):
+            apply_row_data_mapping_node(["A"], [["x"]], {"value_fields": ["Missing"]})
+        with self.assertRaisesRegex(ValueError, "起始行号超出当前数据范围"):
+            apply_row_data_mapping_node(["A"], [["x"]], {"value_fields": ["A"], "start_row": "2"})
 
     def test_fill_value_manual_expands_rows_and_skips_existing_cells(self):
         headers, rows, message = apply_fill_value_node(
