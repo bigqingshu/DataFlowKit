@@ -172,6 +172,11 @@ from workflow.nodes.file_nodes import (
     make_numbered_path as workflow_make_numbered_path,
     parse_extensions_filter as workflow_parse_extensions_filter,
 )
+from workflow.nodes.transit_nodes import (
+    append_headers_rows as workflow_append_headers_rows,
+    apply_save_transit_node as workflow_apply_save_transit_node,
+    make_unique_transit_name as workflow_make_unique_transit_name,
+)
 
 
 def get_app_dir():
@@ -16733,40 +16738,10 @@ class PlanWorkflowWindow:
         return workflow_apply_row_data_mapping_node(headers, rows, config)
 
     def make_unique_transit_name(self, base_name, transit_tables):
-        name = str(base_name or "中转数据").strip() or "中转数据"
-        if name not in transit_tables:
-            return name
-        counter = 2
-        while f"{name}_{counter}" in transit_tables:
-            counter += 1
-        return f"{name}_{counter}"
+        return workflow_make_unique_transit_name(base_name, transit_tables)
 
     def append_headers_rows(self, old_headers, old_rows, new_headers, new_rows):
-        """按字段名对齐追加 rows，字段不一致时自动取并集。"""
-        old_headers = list(old_headers or [])
-        new_headers = list(new_headers or [])
-        merged_headers = list(old_headers)
-        for h in new_headers:
-            if h not in merged_headers:
-                merged_headers.append(h)
-
-        def convert_rows(src_headers, src_rows):
-            index = {h: i for i, h in enumerate(src_headers)}
-            converted = []
-            for row in src_rows or []:
-                row = list(row)
-                out = []
-                for h in merged_headers:
-                    i = index.get(h)
-                    if i is None or i >= len(row):
-                        out.append("")
-                    else:
-                        out.append("" if row[i] is None else str(row[i]))
-                converted.append(out)
-            return converted
-
-        merged_rows = convert_rows(old_headers, old_rows) + convert_rows(new_headers, new_rows)
-        return merged_headers, merged_rows
+        return workflow_append_headers_rows(old_headers, old_rows, new_headers, new_rows)
 
     def save_result_to_sqlite_append(self, headers, rows, table_name_raw, context=None):
         """追加写入 SQLite 表；表不存在则创建，字段不足则自动 ADD COLUMN。"""
@@ -16808,79 +16783,96 @@ class PlanWorkflowWindow:
         except Exception:
             return False
 
+    def apply_save_transit_memory_plan(self, context, memory_plan, headers_copy, rows_copy):
+        if not memory_plan:
+            return
+        manager = self.check_transit_table_write_permission(
+            context,
+            memory_plan["table_name"],
+            exists=bool(memory_plan.get("exists_before")),
+            write_mode=memory_plan.get("write_mode", ""),
+            fields=memory_plan.get("headers", headers_copy),
+            node_type="保存中转数据",
+        )
+        extra = {
+            "write_mode": memory_plan.get("write_mode", ""),
+            "message": memory_plan.get("log_message", ""),
+        }
+        if memory_plan.get("operation") == "append_transit_table":
+            extra["appended_rows"] = memory_plan.get("appended_rows", 0)
+        context["transit_tables"][memory_plan["table_name"]] = {
+            "headers": list(memory_plan.get("headers", headers_copy)),
+            "rows": [list(r) for r in memory_plan.get("rows", rows_copy)],
+            "source": memory_plan.get("source", "保存中转数据:覆盖"),
+        }
+        self.log_transit_table_event(
+            manager,
+            memory_plan.get("operation", "write_transit_table"),
+            memory_plan["table_name"],
+            memory_plan.get("headers", headers_copy),
+            memory_plan.get("rows", rows_copy),
+            **extra,
+        )
+
+    def execute_save_transit_sqlite(self, options, headers_copy, rows_copy, context=None):
+        table_raw = options.get("sqlite_table_raw", options.get("base_name", "中转数据"))
+        table_name = self.app.sanitize_sql_name(table_raw, "中转数据")
+        mode = options.get("sqlite_mode", "自动加时间戳")
+        if mode == "覆盖同名表":
+            saved_name = self.save_result_to_sqlite(headers_copy, rows_copy, table_name, overwrite=True, backup=True, context=context)
+        elif mode == "追加写入":
+            saved_name = self.save_result_to_sqlite_append(headers_copy, rows_copy, table_name, context=context)
+        elif mode == "报错停止":
+            if self.sqlite_table_exists_by_name(table_name, context=context):
+                raise ValueError(f"SQLite 表已存在，按设置停止：{table_name}")
+            saved_name = self.save_result_to_sqlite(headers_copy, rows_copy, table_name, overwrite=False, backup=False, context=context)
+        else:
+            saved_name = self.save_result_to_sqlite(headers_copy, rows_copy, table_name, overwrite=False, backup=False, context=context)
+        return f"SQLite表：{saved_name}" + ("（追加写入）" if mode == "追加写入" else "")
+
+    def execute_save_transit_xlsx(self, options, headers_copy, rows_copy):
+        xlsx_path = str(options.get("xlsx_path", "")).strip()
+        if not xlsx_path:
+            export_dir = os.path.join(getattr(self.app, "app_dir", get_app_dir()), "export")
+            xlsx_path = os.path.join(export_dir, f"{options.get('base_name', '中转数据')}.xlsx")
+        self.export_headers_rows_to_xlsx_file(headers_copy, rows_copy, xlsx_path)
+        return f"xlsx：{xlsx_path}"
+
     def apply_save_transit_node(self, headers, rows, config, context=None, execute_actions=False):
         """保存中转数据：保存当前数据副本，默认不改变主流程数据。"""
         context = context if context is not None else {"transit_tables": {}}
-        transit_tables = context.setdefault("transit_tables", {})
-        base_name = str(config.get("transit_name", "中转数据")).strip() or "中转数据"
-        save_memory = bool(config.get("save_memory", True))
-        append_memory = bool(config.get("append_memory", False))
-        save_sqlite = bool(config.get("save_sqlite", False))
-        save_xlsx = bool(config.get("save_xlsx", False))
-        saved_parts = []
+        context.setdefault("transit_tables", {})
+        result_headers, result_rows, message = workflow_apply_save_transit_node(
+            headers,
+            rows,
+            config,
+            context=context,
+            execute_actions=execute_actions,
+        )
+        options = context.get("save_transit_options", {}) or {}
+        headers_copy = context.get("save_transit_headers")
+        if headers_copy is None:
+            headers_copy = list(headers)
+        rows_copy = context.get("save_transit_rows")
+        if rows_copy is None:
+            rows_copy = [list(row) for row in self.normalize_rows(rows, len(headers_copy))]
+        saved_parts = message.split("；") if message else []
 
-        headers_copy = list(headers)
-        rows_copy = [list(row) for row in self.normalize_rows(rows, len(headers_copy))]
-
-        if save_memory:
-            exists_before = base_name in transit_tables
-            write_mode = "追加" if append_memory else "覆盖"
-            manager = self.check_transit_table_write_permission(
-                context,
-                base_name,
-                exists=exists_before,
-                write_mode=write_mode,
-                fields=headers_copy,
-                node_type="保存中转数据",
-            )
-            if append_memory and base_name in transit_tables:
-                old_item = transit_tables.get(base_name, {}) or {}
-                old_headers = old_item.get("headers", []) or []
-                old_rows = old_item.get("rows", []) or []
-                merged_headers, merged_rows = self.append_headers_rows(old_headers, old_rows, headers_copy, rows_copy)
-                transit_tables[base_name] = {"headers": merged_headers, "rows": [list(r) for r in merged_rows], "source": "保存中转数据:追加"}
-                self.log_transit_table_event(manager, "append_transit_table", base_name, merged_headers, merged_rows, write_mode=write_mode, appended_rows=len(rows_copy), message=f"保存中转数据追加内存副表 {base_name}：新增 {len(rows_copy)} 行，累计 {len(merged_rows)} 行")
-                saved_parts.append(f"内存副表追加：{base_name}（新增 {len(rows_copy)} 行，累计 {len(merged_rows)} 行）")
-            else:
-                # 默认覆盖，保证后续节点引用的是最近一次执行结果。
-                transit_tables[base_name] = {"headers": headers_copy, "rows": [list(r) for r in rows_copy], "source": "保存中转数据:覆盖"}
-                self.log_transit_table_event(manager, "write_transit_table", base_name, headers_copy, rows_copy, write_mode=write_mode, message=f"保存中转数据写入内存副表 {base_name}：{len(rows_copy)} 行 × {len(headers_copy)} 列")
-                saved_parts.append(f"内存副表：{base_name}")
-
-        if save_sqlite:
-            if execute_actions:
-                table_raw = str(config.get("sqlite_table", base_name)).strip() or base_name
-                table_name = self.app.sanitize_sql_name(table_raw, "中转数据")
-                mode = config.get("sqlite_mode", "自动加时间戳")
-                if mode == "覆盖同名表":
-                    saved_name = self.save_result_to_sqlite(headers_copy, rows_copy, table_name, overwrite=True, backup=True, context=context)
-                elif mode == "追加写入":
-                    saved_name = self.save_result_to_sqlite_append(headers_copy, rows_copy, table_name, context=context)
-                elif mode == "报错停止":
-                    if self.sqlite_table_exists_by_name(table_name, context=context):
-                        raise ValueError(f"SQLite 表已存在，按设置停止：{table_name}")
-                    saved_name = self.save_result_to_sqlite(headers_copy, rows_copy, table_name, overwrite=False, backup=False, context=context)
-                else:
-                    saved_name = self.save_result_to_sqlite(headers_copy, rows_copy, table_name, overwrite=False, backup=False, context=context)
-                saved_parts.append(f"SQLite表：{saved_name}" + ("（追加写入）" if mode == "追加写入" else ""))
-            else:
-                saved_parts.append("SQLite表：预览模式未写入")
-
-        if save_xlsx:
-            if execute_actions:
-                xlsx_path = str(config.get("xlsx_path", "")).strip()
-                if not xlsx_path:
-                    export_dir = os.path.join(getattr(self.app, "app_dir", get_app_dir()), "export")
-                    xlsx_path = os.path.join(export_dir, f"{base_name}.xlsx")
-                self.export_headers_rows_to_xlsx_file(headers_copy, rows_copy, xlsx_path)
-                saved_parts.append(f"xlsx：{xlsx_path}")
-            else:
-                saved_parts.append("xlsx：预览模式未导出")
+        self.apply_save_transit_memory_plan(
+            context,
+            context.get("save_transit_memory_plan"),
+            headers_copy,
+            rows_copy,
+        )
+        if execute_actions and options.get("save_sqlite"):
+            saved_parts.append(self.execute_save_transit_sqlite(options, headers_copy, rows_copy, context=context))
+        if execute_actions and options.get("save_xlsx"):
+            saved_parts.append(self.execute_save_transit_xlsx(options, headers_copy, rows_copy))
 
         if not saved_parts:
             saved_parts.append("未选择保存位置，仅透传数据")
 
-        return headers, rows, "；".join(saved_parts)
+        return result_headers, result_rows, "；".join(saved_parts)
 
 
     def compare_writeback_values(self, left, op, right):

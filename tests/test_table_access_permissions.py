@@ -928,6 +928,51 @@ class TableAccessPermissionTests(unittest.TestCase):
         self.assertEqual(info["read_fields"], ["当前表.编码"])
         self.assertEqual(info["write_fields"], ["当前表.编码"])
 
+    def test_save_transit_checks_permission_before_memory_write(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+
+        def deny_write(*_args, **_kwargs):
+            raise PermissionError("blocked transit write")
+
+        window.check_transit_table_write_permission = deny_write
+        window.log_transit_table_event = lambda *args, **kwargs: None
+        context = {"transit_tables": {}}
+
+        with self.assertRaisesRegex(PermissionError, "blocked transit write"):
+            window.apply_save_transit_node(
+                ["A"],
+                [["x"]],
+                {"transit_name": "副表", "save_memory": True},
+                context=context,
+            )
+
+        self.assertEqual(context["transit_tables"], {})
+
+    def test_save_transit_writes_memory_after_permission_and_logs(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+        events = []
+        window.check_transit_table_write_permission = lambda *args, **kwargs: "manager"
+        window.log_transit_table_event = lambda *args, **kwargs: events.append((args, kwargs))
+        context = {"transit_tables": {"副表": {"headers": ["A"], "rows": [["old"]]}}}
+
+        headers, rows, message = window.apply_save_transit_node(
+            ["B"],
+            [["new"]],
+            {"transit_name": "副表", "save_memory": True, "append_memory": True},
+            context=context,
+        )
+
+        self.assertEqual(headers, ["B"])
+        self.assertEqual(rows, [["new"]])
+        self.assertEqual(context["transit_tables"]["副表"], {
+            "headers": ["A", "B"],
+            "rows": [["old", ""], ["", "new"]],
+            "source": "保存中转数据:追加",
+        })
+        self.assertIn("内存副表追加：副表", message)
+        self.assertEqual(events[0][0][1], "append_transit_table")
+        self.assertEqual(events[0][1]["appended_rows"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
