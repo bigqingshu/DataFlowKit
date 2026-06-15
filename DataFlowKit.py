@@ -93,6 +93,8 @@ from workflow.nodes.data_nodes import (
     apply_unmatched_extract as workflow_apply_unmatched_extract,
     add_plan_filter_required_field as workflow_add_plan_filter_required_field,
     build_plan_filter_right_index as workflow_build_plan_filter_right_index,
+    build_filter_config_probe_result as workflow_build_filter_config_probe_result,
+    build_filter_runtime_plan as workflow_build_filter_runtime_plan,
     build_date_parts as workflow_build_date_parts,
     build_format_component_columns as workflow_build_format_component_columns,
     build_time_parts as workflow_build_time_parts,
@@ -16584,54 +16586,29 @@ class PlanWorkflowWindow:
         return workflow_finish_writeback_node_output(headers, rows, actions, stat, output_preview)
 
     def apply_filter_node(self, headers, rows, config, context=None):
-        runtime_config = copy.deepcopy(config)
-        self.normalize_plan_filter_config_field_references(
-            runtime_config,
-            headers,
-            runtime_config.get("extra_tables", []),
-        )
-        conditions = list(runtime_config.get("conditions", []))
-        join_rules = list(runtime_config.get("join_rules", []))
         extra_tables = list(config.get("extra_tables", []))
-        logic = config.get("logic", "AND")
-        join_logic = config.get("join_logic", "AND")
-        output_fields = list(runtime_config.get("output_fields", []))
-        result_limit = self.get_positive_int(config.get("result_limit", "5000"), 5000)
-        max_intermediate = self.get_positive_int(config.get("max_intermediate", "200000"), 200000)
-        remove_duplicates = bool(config.get("remove_duplicates", False))
-
-        # 字段输出规则：不选择输出字段时，单表保持旧逻辑输出当前表字段；多表则输出所有可用字段。
-        if output_fields:
-            lookup_fields = output_fields
-        elif extra_tables:
-            lookup_fields = self.get_plan_filter_available_fields(headers, extra_tables, context)
-        else:
-            lookup_fields = list(headers)
-        output_headers = self.get_plan_filter_output_headers(lookup_fields, headers)
+        available_fields = self.get_plan_filter_available_fields(headers, extra_tables, context) if extra_tables else None
+        runtime_plan = workflow_build_filter_runtime_plan(headers, config, available_fields=available_fields)
 
         if (context or {}).get("is_config_probe") and extra_tables:
-            return output_headers, [], (
-                f"配置探测：跳过高级筛选多表匹配，仅返回字段结构 "
-                f"{len(output_headers)} 列；正式预览/执行时会按规则计算。"
-            )
+            return workflow_build_filter_config_probe_result(runtime_plan["output_headers"])
 
-        current_required, table_required = self.collect_plan_filter_required_fields(
-            headers, extra_tables, conditions, join_rules, output_fields, lookup_fields
-        )
         table_records = {}
-        for table in extra_tables:
+        for table in runtime_plan["extra_tables"]:
             table_records[table] = self.load_plan_table_records(
-                table, context=context, required_fields=table_required.get(table)
+                table,
+                context=context,
+                required_fields=runtime_plan["table_required"].get(table),
             )
 
         node_context = {
-            "lookup_fields": lookup_fields,
-            "output_headers": output_headers,
-            "current_required": current_required,
-            "table_required": table_required,
+            "lookup_fields": runtime_plan["lookup_fields"],
+            "output_headers": runtime_plan["output_headers"],
+            "current_required": runtime_plan["current_required"],
+            "table_required": runtime_plan["table_required"],
             "table_records": table_records,
         }
-        return workflow_apply_filter_node(headers, rows, runtime_config, context=node_context)
+        return workflow_apply_filter_node(headers, rows, runtime_plan["runtime_config"], context=node_context)
 
     def match_value_output_column_match(self, source_value, lookup_value, mode):
         return workflow_match_value_output_column_match(source_value, lookup_value, mode)

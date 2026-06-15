@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Pure data-shaping workflow nodes."""
 
+import copy
 import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -401,6 +402,53 @@ def collect_plan_filter_required_fields(headers, extra_tables, conditions, join_
         if normalize_filter_condition_value_source(cond) == "字段值":
             add_plan_filter_required_field(cond.get("value", ""), headers, extra_tables, current_headers, table_fields)
     return current_headers, table_fields
+
+
+def choose_plan_filter_lookup_fields(headers, extra_tables, output_fields, available_fields=None):
+    if output_fields:
+        return list(output_fields)
+    if extra_tables:
+        return list(available_fields or [])
+    return list(headers)
+
+
+def build_filter_config_probe_result(output_headers):
+    return (
+        list(output_headers),
+        [],
+        f"配置探测：跳过高级筛选多表匹配，仅返回字段结构 {len(output_headers)} 列；正式预览/执行时会按规则计算。",
+    )
+
+
+def build_filter_runtime_plan(headers, config, available_fields=None):
+    """构建高级筛选运行计划；副表字段列表由调用方传入，避免纯层触碰外部存储。"""
+    runtime_config = copy.deepcopy(config)
+    extra_tables = list(runtime_config.get("extra_tables", []))
+    normalize_plan_filter_config_field_references(runtime_config, headers, extra_tables)
+    conditions = list(runtime_config.get("conditions", []))
+    join_rules = list(runtime_config.get("join_rules", []))
+    output_fields = list(runtime_config.get("output_fields", []))
+    lookup_fields = choose_plan_filter_lookup_fields(headers, extra_tables, output_fields, available_fields=available_fields)
+    output_headers = get_plan_filter_output_headers(lookup_fields, headers)
+    current_required, table_required = collect_plan_filter_required_fields(
+        headers,
+        extra_tables,
+        conditions,
+        join_rules,
+        output_fields,
+        lookup_fields,
+    )
+    return {
+        "runtime_config": runtime_config,
+        "conditions": conditions,
+        "join_rules": join_rules,
+        "extra_tables": extra_tables,
+        "output_fields": output_fields,
+        "lookup_fields": lookup_fields,
+        "output_headers": output_headers,
+        "current_required": current_required,
+        "table_required": table_required,
+    }
 
 
 def get_required_columns_for_plan_table(table_name, columns, required_fields):

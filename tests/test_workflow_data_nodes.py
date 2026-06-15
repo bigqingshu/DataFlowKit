@@ -25,7 +25,10 @@ from workflow.nodes.data_nodes import (
     apply_rename_columns_node,
     apply_row_data_mapping_node,
     apply_sequence_fill_node,
+    build_filter_config_probe_result,
+    build_filter_runtime_plan,
     build_plan_filter_right_index,
+    choose_plan_filter_lookup_fields,
     collect_plan_filter_required_fields,
     extract_one_value,
     format_numeric_column_result,
@@ -1161,6 +1164,33 @@ class WorkflowDataNodesTests(unittest.TestCase):
         self.assertEqual(
             get_plan_filter_config_warnings(["A"], ["t"], [], [], "AND"),
             ["未设置筛选条件，副表会先按匹配规则读取全部可用行", "已选择副表但没有多表匹配规则，正式运行可能形成全组合"],
+        )
+
+    def test_filter_runtime_plan_selects_fields_and_probe_result(self):
+        self.assertEqual(choose_plan_filter_lookup_fields(["A"], [], [], available_fields=["ignored"]), ["A"])
+        self.assertEqual(choose_plan_filter_lookup_fields(["A"], ["t"], [], available_fields=["当前表.A", "t.B"]), ["当前表.A", "t.B"])
+        self.assertEqual(choose_plan_filter_lookup_fields(["A"], ["t"], ["t.B"], available_fields=["当前表.A"]), ["t.B"])
+
+        plan = build_filter_runtime_plan(
+            ["A", "B"],
+            {
+                "conditions": [{"field": "当前表.当前表.A", "op": "等于", "value_source": "字段值", "value": "当前表.当前表.B"}],
+                "join_rules": [{"left": "当前表.当前表.A", "op": "等于", "right": "t.Code"}],
+                "extra_tables": ["t"],
+                "output_fields": [],
+            },
+            available_fields=["当前表.A", "t.Name"],
+        )
+
+        self.assertEqual(plan["runtime_config"]["conditions"][0]["field"], "当前表.A")
+        self.assertEqual(plan["runtime_config"]["conditions"][0]["value"], "当前表.B")
+        self.assertEqual(plan["lookup_fields"], ["当前表.A", "t.Name"])
+        self.assertEqual(plan["output_headers"], ["A", "t.Name"])
+        self.assertEqual(plan["current_required"], None)
+        self.assertEqual(plan["table_required"], {"t": None})
+        self.assertEqual(
+            build_filter_config_probe_result(["A", "t.Name"]),
+            (["A", "t.Name"], [], "配置探测：跳过高级筛选多表匹配，仅返回字段结构 2 列；正式预览/执行时会按规则计算。"),
         )
 
     def test_filter_node_filters_current_table_and_dedupes(self):
