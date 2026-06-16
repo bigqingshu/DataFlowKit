@@ -264,15 +264,21 @@ from workflow.table_access_precheck import (
     table_access_precheck_summary_text as workflow_table_access_precheck_summary_text,
 )
 from workflow.table_access_window_ui import (
+    add_table_access_entry as workflow_add_table_access_entry,
+    build_table_access_impact_preview as workflow_build_table_access_impact_preview,
+    build_table_access_permission_check as workflow_build_table_access_permission_check,
     clear_field_mapping as workflow_clear_field_mapping,
+    delete_table_access_entry as workflow_delete_table_access_entry,
     delete_field_mapping_entry as workflow_delete_field_mapping_entry,
     field_mapping_item as workflow_field_mapping_item,
     field_mapping_mode_display as workflow_field_mapping_mode_display,
     field_mapping_mode_value as workflow_field_mapping_mode_value,
     load_field_form as workflow_load_field_form,
+    rebuild_table_access as workflow_rebuild_table_access,
     render_field_mapping_tree as workflow_render_field_mapping_tree,
     render_table_access_tree as workflow_render_table_access_tree,
     reset_field_form as workflow_reset_field_form,
+    save_table_access_entry as workflow_save_table_access_entry,
     selected_field_key as workflow_selected_field_key,
     upsert_field_mapping_entry as workflow_upsert_field_mapping_entry,
 )
@@ -7120,24 +7126,23 @@ class PlanWorkflowWindow:
             if node is None:
                 return
             access = self.mark_node_table_access_manual(node)
-            tables = access.setdefault("tables", [])
-            idx = state.get("table_index")
-            if idx is None or idx < 0 or idx >= len(tables):
-                entry = self.make_table_access_entry("target", "")
-                tables.append(entry)
-                idx = len(tables) - 1
-                state["table_index"] = idx
-            entry = tables[idx]
-            entry["role"] = role_var.get().strip() or "target"
-            entry["source_type"] = source_type_var.get().strip() or "SQLite表"
-            entry["table"] = table_var.get().strip()
-            entry["is_current_table"] = bool(is_current_var.get() or entry["table"] == "__CURRENT_TABLE__")
-            entry["log_only"] = bool(log_only_var.get())
-            entry["write_mode"] = self.normalize_table_access_write_mode(write_mode_var.get())
-            entry["field_mapping_mode"] = workflow_field_mapping_mode_value(field_mapping_mode_var.get())
-            entry["permissions"] = {key: bool(var.get()) for key, var in permission_vars.items()}
-            if entry["is_current_table"] and not entry["table"]:
-                entry["table"] = "__CURRENT_TABLE__"
+            result = workflow_save_table_access_entry(
+                access,
+                state.get("table_index"),
+                {
+                    "role": role_var.get(),
+                    "source_type": source_type_var.get(),
+                    "table": table_var.get(),
+                    "is_current_table": is_current_var.get(),
+                    "log_only": log_only_var.get(),
+                    "write_mode": self.normalize_table_access_write_mode(write_mode_var.get()),
+                    "field_mapping_mode": workflow_field_mapping_mode_value(field_mapping_mode_var.get()),
+                    "permissions": {key: bool(var.get()) for key, var in permission_vars.items()},
+                },
+                lambda: self.make_table_access_entry("target", ""),
+            )
+            idx = result["table_index"]
+            state["table_index"] = idx
             refresh_table_tree(select_index=idx)
             status_var.set("表角色设置已保存。")
 
@@ -7146,13 +7151,15 @@ class PlanWorkflowWindow:
             if node is None:
                 return
             access = self.mark_node_table_access_manual(node)
-            entry = self.make_table_access_entry(
-                "target",
-                "",
-                permissions=self.table_permission_set(read=True),
+            result = workflow_add_table_access_entry(
+                access,
+                self.make_table_access_entry(
+                    "target",
+                    "",
+                    permissions=self.table_permission_set(read=True),
+                ),
             )
-            access.setdefault("tables", []).append(entry)
-            state["table_index"] = len(access["tables"]) - 1
+            state["table_index"] = result["table_index"]
             refresh_table_tree(select_index=state["table_index"])
 
         def delete_table_entry():
@@ -7161,10 +7168,8 @@ class PlanWorkflowWindow:
             if node is None or idx is None:
                 return
             access = self.mark_node_table_access_manual(node)
-            tables = access.get("tables", [])
-            if 0 <= idx < len(tables):
-                del tables[idx]
-            state["table_index"] = min(idx, len(tables) - 1) if tables else None
+            result = workflow_delete_table_access_entry(access, idx)
+            state["table_index"] = result["table_index"]
             refresh_table_tree(select_index=state["table_index"])
             status_var.set("表角色已删除。")
 
@@ -7174,7 +7179,7 @@ class PlanWorkflowWindow:
                 return
             if not messagebox.askyesno("重建默认映射", "将根据当前节点配置重建 table_access，并覆盖手动设置。继续吗？", parent=win):
                 return
-            node["table_access"] = self.default_table_access_for_node(node)
+            workflow_rebuild_table_access(node, self.default_table_access_for_node(node))
             state["table_index"] = None
             refresh_table_tree()
             status_var.set("已重建默认映射。")
@@ -7256,46 +7261,31 @@ class PlanWorkflowWindow:
             status_var.set("字段映射已清空。")
 
         def check_all_permissions():
-            total = 0
-            need_config = []
-            risky = []
-            for idx, node in enumerate(self.nodes):
-                access = self.get_node_table_access(node)
-                for entry in access.get("tables", []):
-                    total += 1
-                    status = self.table_access_entry_status(entry)
-                    label = f"{idx + 1}.{node.get('type')} / {entry.get('role')} / {entry.get('table')}"
-                    if status in ("未绑定", "未授权"):
-                        need_config.append(label)
-                    if status == "危险写入":
-                        risky.append(label)
-            message = f"检查完成：共 {len(self.nodes)} 个节点，{total} 个表角色。"
-            if need_config:
-                message += f"\n\n待配置：{len(need_config)} 项\n" + "\n".join(need_config[:8])
-            if risky:
-                message += f"\n\n危险写入：{len(risky)} 项\n" + "\n".join(risky[:8])
-            if not need_config and not risky:
-                message += "\n\n当前没有明显缺失或危险项。"
-            messagebox.showinfo("权限检查", message, parent=win)
+            result = workflow_build_table_access_permission_check(
+                self.nodes,
+                self.get_node_table_access,
+                self.table_access_entry_status,
+            )
+            messagebox.showinfo("权限检查", result["message"], parent=win)
             status_var.set("权限检查完成。")
 
         def preview_impact():
             node = current_node()
             entry = current_table_entry()
-            if node is None or entry is None:
+            message = workflow_build_table_access_impact_preview(
+                state.get("node_index") or 0,
+                node,
+                entry,
+                self.table_access_field_items(entry) if entry is not None else [],
+                self.table_access_entry_table_label,
+                self.table_access_operation_summary,
+                self.table_access_entry_status,
+                self.table_permission_summary,
+                self.write_mode_display_text,
+            )
+            if message is None:
                 messagebox.showwarning("预览影响", "请先选择节点和表角色。", parent=win)
                 return
-            fields = self.table_access_field_items(entry)
-            message = (
-                f"节点：{state['node_index'] + 1}.{node.get('type')} / {node.get('name', '')}\n"
-                f"表角色：{entry.get('role', '')}\n"
-                f"实际表：{self.table_access_entry_table_label(entry)}\n"
-                f"操作：{self.table_access_operation_summary(entry)}\n"
-                f"状态：{self.table_access_entry_status(entry)}\n"
-                f"权限：{self.table_permission_summary(entry)}\n"
-                f"写入模式：{self.write_mode_display_text(entry.get('write_mode', '')) or '未设置'}\n"
-                f"字段映射：{len(fields)} 个"
-            )
             messagebox.showinfo("预览影响", message, parent=win)
 
         def apply_table_preset(event=None):

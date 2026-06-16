@@ -167,3 +167,125 @@ def delete_field_mapping_entry(entry, key):
 
 def clear_field_mapping(entry):
     entry["field_mapping"] = {}
+
+
+def ensure_table_entries(access):
+    tables = (access or {}).get("tables") if isinstance(access, dict) else None
+    if not isinstance(tables, list):
+        tables = []
+        if isinstance(access, dict):
+            access["tables"] = tables
+    return tables
+
+
+def save_table_access_entry(access, table_index, values, make_default_entry):
+    tables = ensure_table_entries(access)
+    idx = table_index
+    if idx is None or idx < 0 or idx >= len(tables):
+        entry = make_default_entry() if callable(make_default_entry) else {}
+        tables.append(entry)
+        idx = len(tables) - 1
+    entry = tables[idx]
+    values = values or {}
+    table = str(values.get("table", "") or "").strip()
+    is_current = bool(values.get("is_current_table") or table == "__CURRENT_TABLE__")
+    entry["role"] = str(values.get("role", "") or "").strip() or "target"
+    entry["source_type"] = str(values.get("source_type", "") or "").strip() or "SQLite表"
+    entry["table"] = table
+    entry["is_current_table"] = is_current
+    entry["log_only"] = bool(values.get("log_only"))
+    entry["write_mode"] = str(values.get("write_mode", "") or "").strip()
+    entry["field_mapping_mode"] = str(values.get("field_mapping_mode", "") or "").strip() or "by_name"
+    entry["permissions"] = {key: bool(value) for key, value in (values.get("permissions") or {}).items()}
+    if entry["is_current_table"] and not entry["table"]:
+        entry["table"] = "__CURRENT_TABLE__"
+    return {"table_index": idx, "entry": entry}
+
+
+def add_table_access_entry(access, entry):
+    tables = ensure_table_entries(access)
+    tables.append(entry)
+    return {"table_index": len(tables) - 1, "entry": entry}
+
+
+def delete_table_access_entry(access, table_index):
+    tables = ensure_table_entries(access)
+    try:
+        idx = int(table_index)
+    except Exception:
+        idx = None
+    deleted = False
+    if idx is not None and 0 <= idx < len(tables):
+        del tables[idx]
+        deleted = True
+    new_index = min(idx, len(tables) - 1) if idx is not None and tables else None
+    return {"table_index": new_index, "deleted": deleted}
+
+
+def rebuild_table_access(node, default_access):
+    if isinstance(node, dict):
+        node["table_access"] = default_access
+        return default_access
+    return None
+
+
+def build_table_access_permission_check(nodes, get_access, entry_status):
+    node_list = list(nodes or [])
+    total = 0
+    need_config = []
+    risky = []
+    for idx, node in enumerate(node_list):
+        access = get_access(node) if callable(get_access) else (node or {}).get("table_access", {})
+        for entry in (access or {}).get("tables", []):
+            total += 1
+            status = entry_status(entry) if callable(entry_status) else ""
+            label = f"{idx + 1}.{(node or {}).get('type')} / {(entry or {}).get('role')} / {(entry or {}).get('table')}"
+            if status in ("未绑定", "未授权"):
+                need_config.append(label)
+            if status == "危险写入":
+                risky.append(label)
+    message = f"检查完成：共 {len(node_list)} 个节点，{total} 个表角色。"
+    if need_config:
+        message += f"\n\n待配置：{len(need_config)} 项\n" + "\n".join(need_config[:8])
+    if risky:
+        message += f"\n\n危险写入：{len(risky)} 项\n" + "\n".join(risky[:8])
+    if not need_config and not risky:
+        message += "\n\n当前没有明显缺失或危险项。"
+    return {
+        "total_nodes": len(node_list),
+        "total_entries": total,
+        "need_config": need_config,
+        "risky": risky,
+        "message": message,
+    }
+
+
+def build_table_access_impact_preview(
+    node_index,
+    node,
+    entry,
+    fields,
+    table_label,
+    operation_summary,
+    entry_status,
+    permission_summary,
+    write_mode_text,
+):
+    if node is None or entry is None:
+        return None
+    fields = list(fields or [])
+    try:
+        display_index = int(node_index) + 1
+    except Exception:
+        display_index = 1
+    write_mode = write_mode_text(entry.get("write_mode", "")) if callable(write_mode_text) else entry.get("write_mode", "")
+    return (
+        f"节点：{display_index}.{node.get('type')} / {node.get('name', '')}\n"
+        f"表角色：{entry.get('role', '')}\n"
+        f"实际表：{table_label(entry) if callable(table_label) else entry.get('table', '')}\n"
+        f"操作：{operation_summary(entry) if callable(operation_summary) else ''}\n"
+        f"状态：{entry_status(entry) if callable(entry_status) else ''}\n"
+        f"权限：{permission_summary(entry) if callable(permission_summary) else ''}\n"
+        f"写入模式：{write_mode or '未设置'}\n"
+        f"字段映射：{len(fields)} 个"
+    )
