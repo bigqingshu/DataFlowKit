@@ -77,6 +77,13 @@ def build_plugin_input_spec(alias, source_type, sqlite_table="", transit_table="
     }
 
 
+def build_plugin_input_table_choices(sqlite_tables=None, transit_context=None):
+    return {
+        "sqlite_tables": list(sqlite_tables or []),
+        "transit_names": sorted((transit_context or {}).get("transit_tables", {}) or {}),
+    }
+
+
 def plugin_config_transit_reuse_note(transit_context=None):
     reused = list((transit_context or {}).get("_reused_preview_transit_tables", []) or [])
     if not reused:

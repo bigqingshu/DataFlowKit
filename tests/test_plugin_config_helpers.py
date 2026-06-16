@@ -7,6 +7,7 @@ from workflow.plugin_config_helpers import (
     build_plugin_dynamic_select_choices,
     build_plugin_field_select_initial_value,
     build_plugin_input_spec,
+    build_plugin_input_table_choices,
     build_plugin_load_status_state,
     build_plugin_select_initial_value,
     default_plugin_input_spec,
@@ -73,6 +74,10 @@ class PluginConfigHelpersTests(unittest.TestCase):
                 "transit_table": "m",
                 "enabled": False,
             },
+        )
+        self.assertEqual(
+            build_plugin_input_table_choices(["sqlite_b", "sqlite_a"], {"transit_tables": {"tmp_b": {}, "tmp_a": {}}}),
+            {"sqlite_tables": ["sqlite_b", "sqlite_a"], "transit_names": ["tmp_a", "tmp_b"]},
         )
 
     def test_transit_reuse_note_limits_names(self):
