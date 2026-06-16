@@ -8802,36 +8802,8 @@ class PlanWorkflowWindow:
             "next_row": row + 1,
         }
 
-    def build_plugin_node_config(self, config, headers, transit_context=None, current_rows=None):
-        frame = ttk.LabelFrame(self.config_frame, text="外部插件节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        plugin_id = config.get("plugin_id", "")
-        item = self.plugin_registry.get(plugin_id)
-        if not item:
-            ttk.Label(frame, text=f"插件未加载或缺失：{plugin_id}", foreground="red").grid(row=0, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
-            ttk.Label(frame, text="请将对应插件 .py 放入 plugins 目录后点击左侧“刷新插件”。", foreground="gray").grid(row=1, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
-            return
-
-        info = item.get("info", {})
-        params = config.setdefault("params", {})
-        ttk.Label(frame, text=f"插件：{info.get('name', plugin_id)}", font=("TkDefaultFont", 10, "bold")).grid(row=0, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
-        ttk.Label(frame, text=f"ID：{plugin_id}    版本：{info.get('version', '')}    分类：{info.get('category', '')}", foreground="gray").grid(row=1, column=0, columnspan=4, sticky=tk.W, padx=4, pady=2)
-        ttk.Label(frame, text=info.get("description", ""), foreground="gray", wraplength=1050).grid(row=2, column=0, columnspan=4, sticky=tk.W, padx=4, pady=(0, 8))
-
-        row = self.build_plugin_run_environment_section(frame, config, item, plugin_id, start_row=3)
-        transit_context = self.plugin_config_context_with_live_transit(transit_context, include_rows=False)
-        reuse_note = self.plugin_config_transit_reuse_note(transit_context)
-        if reuse_note:
-            ttk.Label(frame, text=reuse_note, foreground="#0f766e", wraplength=1050).grid(row=row, column=0, columnspan=4, sticky=tk.W, padx=4, pady=(2, 6))
-            row += 1
-        try:
-            sqlite_tables = self.app.get_table_names()
-        except Exception:
-            sqlite_tables = self.get_sqlite_table_names()
-        table_choices = workflow_build_plugin_input_table_choices(sqlite_tables, transit_context)
-
-        dynamic_param_controls = []
-        refreshing_dynamic_controls = False
+    def create_plugin_dynamic_config_context(self, item, config, params, headers, transit_context, current_rows, dynamic_param_controls):
+        state = {"refreshing_dynamic_controls": False}
 
         def set_param(key, value):
             params[key] = value
@@ -8879,8 +8851,7 @@ class PlanWorkflowWindow:
             return []
 
         def refresh_plugin_dynamic_controls():
-            nonlocal refreshing_dynamic_controls
-            refreshing_dynamic_controls = True
+            state["refreshing_dynamic_controls"] = True
             try:
                 self.refresh_plugin_dynamic_config_controls(
                     dynamic_param_controls,
@@ -8888,23 +8859,38 @@ class PlanWorkflowWindow:
                     dynamic_choices_for_control,
                 )
             finally:
-                refreshing_dynamic_controls = False
+                state["refreshing_dynamic_controls"] = False
 
-        input_section = self.build_plugin_input_tables_section(
-            frame,
-            config,
-            row,
-            table_choices["sqlite_tables"],
-            table_choices["transit_names"],
-            refresh_plugin_dynamic_controls,
-        )
-        input_specs = input_section["input_specs"]
-        row = input_section["next_row"]
+        return {
+            "set_param": set_param,
+            "get_input_table_alias_choices": get_input_table_alias_choices,
+            "get_field_choices_for_table_param": get_field_choices_for_table_param,
+            "get_dynamic_parameter_choices": get_dynamic_parameter_choices,
+            "refresh_plugin_dynamic_controls": refresh_plugin_dynamic_controls,
+            "is_refreshing_dynamic_controls": lambda: state["refreshing_dynamic_controls"],
+        }
 
-        schema = item.get("schema", [])
+    def build_plugin_schema_parameter_controls(
+        self,
+        frame,
+        schema,
+        config,
+        params,
+        headers,
+        row,
+        dynamic_param_controls,
+        dynamic_context,
+    ):
         if not schema:
             ttk.Label(frame, text="该插件没有声明参数。", foreground="gray").grid(row=row, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
-            row += 1
+            return row + 1
+
+        set_param = dynamic_context["set_param"]
+        get_input_table_alias_choices = dynamic_context["get_input_table_alias_choices"]
+        get_field_choices_for_table_param = dynamic_context["get_field_choices_for_table_param"]
+        get_dynamic_parameter_choices = dynamic_context["get_dynamic_parameter_choices"]
+        refresh_plugin_dynamic_controls = dynamic_context["refresh_plugin_dynamic_controls"]
+        is_refreshing_dynamic_controls = dynamic_context["is_refreshing_dynamic_controls"]
 
         for spec in schema:
             if not isinstance(spec, dict):
@@ -8950,10 +8936,12 @@ class PlanWorkflowWindow:
                 combo = ttk.Combobox(frame, textvariable=var, values=choices, width=28, state="readonly")
                 combo.grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
                 dynamic_param_controls.append({"type": typ, "spec": spec, "key": key, "var": var, "combo": combo})
+
                 def update_table_param(*_, k=key, v=var):
                     set_param(k, v.get())
-                    if not refreshing_dynamic_controls:
+                    if not is_refreshing_dynamic_controls():
                         refresh_plugin_dynamic_controls()
+
                 var.trace_add("write", update_table_param)
             elif typ == "input_table_field_select":
                 choices = get_field_choices_for_table_param(spec)
@@ -8984,25 +8972,33 @@ class PlanWorkflowWindow:
                         lb.selection_set(i)
                 lb.pack(side=tk.LEFT, fill=tk.BOTH)
                 scr.pack(side=tk.LEFT, fill=tk.Y)
+
                 def update_multi(event=None, k=key, lbox=lb):
                     set_param(k, [lbox.get(i) for i in lbox.curselection()])
+
                 lb.bind("<<ListboxSelect>>", update_multi)
             elif typ == "file_path":
                 var = tk.StringVar(value="" if value is None else str(value))
                 ttk.Entry(frame, textvariable=var, width=50).grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
+
                 def choose_file(v=var, k=key):
                     p = filedialog.askopenfilename(title="选择文件")
                     if p:
-                        v.set(p); set_param(k, p)
+                        v.set(p)
+                        set_param(k, p)
+
                 ttk.Button(frame, text="选择", command=choose_file).grid(row=row, column=2, sticky=tk.W, padx=4, pady=4)
                 var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
             elif typ == "folder_path":
                 var = tk.StringVar(value="" if value is None else str(value))
                 ttk.Entry(frame, textvariable=var, width=50).grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
+
                 def choose_folder(v=var, k=key):
                     p = filedialog.askdirectory(title="选择文件夹")
                     if p:
-                        v.set(p); set_param(k, p)
+                        v.set(p)
+                        set_param(k, p)
+
                 ttk.Button(frame, text="选择", command=choose_folder).grid(row=row, column=2, sticky=tk.W, padx=4, pady=4)
                 var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
             elif typ == "table_select":
@@ -9019,7 +9015,23 @@ class PlanWorkflowWindow:
             if help_text:
                 ttk.Label(frame, text=help_text, foreground="gray", wraplength=600).grid(row=row, column=3, sticky=tk.W, padx=4, pady=4)
             row += 1
+        return row
 
+    def build_plugin_output_and_log_section(
+        self,
+        frame,
+        config,
+        item,
+        params,
+        headers,
+        current_rows,
+        transit_context,
+        dynamic_param_controls,
+        refresh_plugin_dynamic_controls,
+        row,
+    ):
+        plugin_id = config.get("plugin_id", "")
+        info = item.get("info", {})
         ttk.Separator(frame, orient=tk.HORIZONTAL).grid(row=row, column=0, columnspan=4, sticky="ew", pady=8)
         row += 1
 
@@ -9082,10 +9094,86 @@ class PlanWorkflowWindow:
                     )
                 except Exception as e:
                     messagebox.showerror("插件设置窗口错误", str(e))
+
             ttk.Button(frame, text="打开插件自带设置窗口", command=open_custom_config).grid(row=row, column=0, sticky=tk.W, padx=4, pady=8)
             row += 1
 
         ttk.Label(frame, text="插件节点会接收当前工作流表格，并返回新的表格；预览模式下 context['is_preview']=True。", foreground="gray", wraplength=1050).grid(row=row, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
+        return row + 1
+
+    def build_plugin_node_config(self, config, headers, transit_context=None, current_rows=None):
+        frame = ttk.LabelFrame(self.config_frame, text="外部插件节点", padding=8)
+        frame.pack(fill=tk.BOTH, expand=True, pady=8)
+        plugin_id = config.get("plugin_id", "")
+        item = self.plugin_registry.get(plugin_id)
+        if not item:
+            ttk.Label(frame, text=f"插件未加载或缺失：{plugin_id}", foreground="red").grid(row=0, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
+            ttk.Label(frame, text="请将对应插件 .py 放入 plugins 目录后点击左侧“刷新插件”。", foreground="gray").grid(row=1, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
+            return
+
+        info = item.get("info", {})
+        params = config.setdefault("params", {})
+        ttk.Label(frame, text=f"插件：{info.get('name', plugin_id)}", font=("TkDefaultFont", 10, "bold")).grid(row=0, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(frame, text=f"ID：{plugin_id}    版本：{info.get('version', '')}    分类：{info.get('category', '')}", foreground="gray").grid(row=1, column=0, columnspan=4, sticky=tk.W, padx=4, pady=2)
+        ttk.Label(frame, text=info.get("description", ""), foreground="gray", wraplength=1050).grid(row=2, column=0, columnspan=4, sticky=tk.W, padx=4, pady=(0, 8))
+
+        row = self.build_plugin_run_environment_section(frame, config, item, plugin_id, start_row=3)
+        transit_context = self.plugin_config_context_with_live_transit(transit_context, include_rows=False)
+        reuse_note = self.plugin_config_transit_reuse_note(transit_context)
+        if reuse_note:
+            ttk.Label(frame, text=reuse_note, foreground="#0f766e", wraplength=1050).grid(row=row, column=0, columnspan=4, sticky=tk.W, padx=4, pady=(2, 6))
+            row += 1
+        try:
+            sqlite_tables = self.app.get_table_names()
+        except Exception:
+            sqlite_tables = self.get_sqlite_table_names()
+        table_choices = workflow_build_plugin_input_table_choices(sqlite_tables, transit_context)
+
+        dynamic_param_controls = []
+        dynamic_context = self.create_plugin_dynamic_config_context(
+            item,
+            config,
+            params,
+            headers,
+            transit_context,
+            current_rows,
+            dynamic_param_controls,
+        )
+        refresh_plugin_dynamic_controls = dynamic_context["refresh_plugin_dynamic_controls"]
+
+        input_section = self.build_plugin_input_tables_section(
+            frame,
+            config,
+            row,
+            table_choices["sqlite_tables"],
+            table_choices["transit_names"],
+            refresh_plugin_dynamic_controls,
+        )
+        row = input_section["next_row"]
+
+        schema = item.get("schema", [])
+        row = self.build_plugin_schema_parameter_controls(
+            frame,
+            schema,
+            config,
+            params,
+            headers,
+            row,
+            dynamic_param_controls,
+            dynamic_context,
+        )
+        self.build_plugin_output_and_log_section(
+            frame,
+            config,
+            item,
+            params,
+            headers,
+            current_rows,
+            transit_context,
+            dynamic_param_controls,
+            refresh_plugin_dynamic_controls,
+            row,
+        )
 
     def normalize_plugin_logs(self, logs, plugin_id="", node_name="插件节点"):
         return workflow_normalize_plugin_logs(logs, plugin_id=plugin_id, node_name=node_name)
