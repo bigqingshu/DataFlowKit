@@ -214,6 +214,20 @@ from workflow.nodes.plugin_nodes import (
     plugin_log_items_to_table as workflow_plugin_log_items_to_table,
     should_save_plugin_output_as_transit as workflow_should_save_plugin_output_as_transit,
 )
+from workflow.filter_config_helpers import (
+    build_filter_actual_output_text as workflow_build_filter_actual_output_text,
+    build_filter_field_refresh_state as workflow_build_filter_field_refresh_state,
+    build_filter_selectable_tables as workflow_build_filter_selectable_tables,
+    ensure_filter_config_defaults as workflow_ensure_filter_config_defaults,
+    filter_condition_from_row as workflow_filter_condition_from_row,
+    filter_conditions_from_rows as workflow_filter_conditions_from_rows,
+    filter_conditions_to_rows as workflow_filter_conditions_to_rows,
+    filter_join_rules_from_rows as workflow_filter_join_rules_from_rows,
+    filter_join_rules_to_rows as workflow_filter_join_rules_to_rows,
+    invert_filter_output_fields_by_indexes as workflow_invert_filter_output_fields_by_indexes,
+    select_all_filter_output_fields as workflow_select_all_filter_output_fields,
+    select_current_table_filter_output_fields as workflow_select_current_table_filter_output_fields,
+)
 from workflow.nodes.selected_columns_nodes import (
     apply_selected_columns_to_memory_table as workflow_apply_selected_columns_to_memory_table,
     build_selected_columns_write_payload as workflow_build_selected_columns_write_payload,
@@ -12734,15 +12748,7 @@ class PlanWorkflowWindow:
         主输入固定为“上一步结果”，在字段列表中显示为“当前表.字段”。
         可额外勾选 SQLite 数据库中的表，并通过匹配规则把当前表和副表关联起来。
         """
-        config.setdefault("logic", "AND")
-        config.setdefault("join_logic", "AND")
-        config.setdefault("conditions", [])
-        config.setdefault("join_rules", [])
-        config.setdefault("extra_tables", [])
-        config.setdefault("output_fields", [])
-        config.setdefault("result_limit", "5000")
-        config.setdefault("max_intermediate", "200000")
-        config.setdefault("remove_duplicates", False)
+        workflow_ensure_filter_config_defaults(config)
         self.normalize_plan_filter_config_field_references(
             config,
             headers,
@@ -12798,7 +12804,7 @@ class PlanWorkflowWindow:
         except Exception:
             db_tables = []
         transit_names = sorted((transit_context or {}).get("transit_tables", {}).keys())
-        selectable_tables = list(db_tables) + [f"中转:{name}" for name in transit_names]
+        selectable_tables = workflow_build_filter_selectable_tables(db_tables, transit_names)
         for i, table in enumerate(selectable_tables):
             table_list.insert(tk.END, table)
             if table in selected_tables:
@@ -12878,46 +12884,32 @@ class PlanWorkflowWindow:
         cond_x_scroll.grid(row=4, column=0, columnspan=8, sticky="ew", padx=4)
         condition_frame.rowconfigure(3, weight=1)
         condition_frame.columnconfigure(7, weight=1)
-        for cond in config.get("conditions", []):
-            cond_tree.insert(
-                "",
-                tk.END,
-                values=(
-                    cond.get("field", ""),
-                    cond.get("op", ""),
-                    self.normalize_filter_condition_value_source(cond),
-                    cond.get("value", ""),
-                )
-            )
+        for row_values in workflow_filter_conditions_to_rows(config.get("conditions", [])):
+            cond_tree.insert("", tk.END, values=row_values)
 
         def sync_conditions_from_tree():
-            result = []
-            for iid in cond_tree.get_children():
-                values = list(cond_tree.item(iid, "values"))
-                while len(values) < 4:
-                    values.append("")
-                f, o, source, v = values[:4]
-                result.append({
-                    "field": f,
-                    "op": o,
-                    "value_source": self.normalize_filter_condition_value_source({"value_source": source}),
-                    "value": v,
-                })
-            config["conditions"] = result
+            rows = [cond_tree.item(iid, "values") for iid in cond_tree.get_children()]
+            config["conditions"] = workflow_filter_conditions_from_rows(rows)
             refresh_filter_risk_text()
 
         def add_cond():
             if not field_var.get().strip():
                 messagebox.showwarning("提示", "请选择条件字段。")
                 return
+            cond = workflow_filter_condition_from_row((
+                field_var.get(),
+                op_var.get(),
+                value_source_var.get(),
+                value_var.get(),
+            ))
             cond_tree.insert(
                 "",
                 tk.END,
                 values=(
-                    field_var.get(),
-                    op_var.get(),
-                    self.normalize_filter_condition_value_source({"value_source": value_source_var.get()}),
-                    value_var.get(),
+                    cond["field"],
+                    cond["op"],
+                    cond["value_source"],
+                    cond["value"],
                 )
             )
             sync_conditions_from_tree()
@@ -13018,15 +13010,12 @@ class PlanWorkflowWindow:
         join_x_scroll.grid(row=3, column=0, columnspan=6, sticky="ew", padx=4)
         join_frame.rowconfigure(2, weight=1)
         join_frame.columnconfigure(5, weight=1)
-        for rule in config.get("join_rules", []):
-            join_tree.insert("", tk.END, values=(rule.get("left", ""), rule.get("op", "等于"), rule.get("right", "")))
+        for row_values in workflow_filter_join_rules_to_rows(config.get("join_rules", [])):
+            join_tree.insert("", tk.END, values=row_values)
 
         def sync_join_rules_from_tree():
-            rules = []
-            for iid in join_tree.get_children():
-                left, op, right = join_tree.item(iid, "values")
-                rules.append({"left": left, "op": op, "right": right})
-            config["join_rules"] = rules
+            rows = [join_tree.item(iid, "values") for iid in join_tree.get_children()]
+            config["join_rules"] = workflow_filter_join_rules_from_rows(rows)
             refresh_filter_risk_text()
 
         def add_join():
@@ -13069,20 +13058,12 @@ class PlanWorkflowWindow:
 
         def refresh_actual_output_text():
             selected_fields = [out_list.get(i) for i in out_list.curselection()]
-            if selected_fields:
-                lookup_fields = selected_fields
-            elif config.get("extra_tables"):
-                lookup_fields = list(field_state["all"])
-            else:
-                lookup_fields = list(headers)
-            actual_headers = self.get_plan_filter_output_headers(lookup_fields, headers)
-            conflicts = self.get_plan_filter_output_header_conflicts(lookup_fields, headers)
-            display = actual_headers[:12]
-            suffix = f" 等 {len(actual_headers)} 个字段" if len(actual_headers) > len(display) else ""
-            text = "实际输出字段：" + ("、".join(display) + suffix if display else "无")
-            if conflicts:
-                text += "；重名自动编号：" + "、".join(conflicts[:6])
-            actual_output_var.set(text)
+            actual_output_var.set(workflow_build_filter_actual_output_text(
+                selected_fields,
+                headers,
+                field_state["all"],
+                config.get("extra_tables", []),
+            ))
 
         def sync_output_fields():
             config["output_fields"] = [out_list.get(i) for i in out_list.curselection()]
@@ -13092,27 +13073,29 @@ class PlanWorkflowWindow:
             config["extra_tables"] = [table_list.get(i) for i in table_list.curselection()]
             field_state["all"] = self.get_plan_filter_available_fields(headers, config.get("extra_tables", []), transit_context)
             field_state["current"] = [f"当前表.{h}" for h in headers]
-            all_values = field_state["all"]
-            current_values = field_state["current"]
-            first_any = all_values[0] if all_values else ""
-            first_current = current_values[0] if current_values else first_any
-            first_external = next((f for f in all_values if not str(f).startswith("当前表.")), first_any)
-            self.refresh_combo_values(field_combo, field_var, all_values, keep_custom=False, fallback=first_any)
+            state = workflow_build_filter_field_refresh_state(
+                headers,
+                field_state["all"],
+                value_source_var.get(),
+                config.get("output_fields", []),
+            )
+            field_state.update(state)
+            self.refresh_combo_values(field_combo, field_var, state["all_values"], keep_custom=False, fallback=state["first_any"])
             self.refresh_combo_values(
                 value_combo,
                 value_var,
-                all_values if value_source_var.get() == "字段值" else [],
-                keep_custom=value_source_var.get() != "字段值",
-                fallback=first_any if value_source_var.get() == "字段值" else "",
+                state["value_choices"],
+                keep_custom=state["value_source"] != "字段值",
+                fallback=state["value_fallback"],
             )
-            self.refresh_combo_values(left_combo, left_var, all_values, keep_custom=False, fallback=first_current)
-            self.refresh_combo_values(right_combo, right_var, all_values, keep_custom=False, fallback=first_external)
-            selected_output = set(config.get("output_fields", []))
-            self.refresh_listbox_values(out_list, all_values, selected_output)
+            self.refresh_combo_values(left_combo, left_var, state["all_values"], keep_custom=False, fallback=state["first_current"])
+            self.refresh_combo_values(right_combo, right_var, state["all_values"], keep_custom=False, fallback=state["first_external"])
+            selected_output = state["selected_output"]
+            self.refresh_listbox_values(out_list, state["all_values"], selected_output)
             sync_output_fields()
             refresh_condition_value_input()
             refresh_filter_risk_text()
-            self.status_var.set(f"高级筛选字段已局部刷新：{len(config.get('extra_tables', []))} 个副表，{len(all_values)} 个可用字段。")
+            self.status_var.set(f"高级筛选字段已局部刷新：{len(config.get('extra_tables', []))} 个副表，{len(state['all_values'])} 个可用字段。")
 
         out_list.bind("<<ListboxSelect>>", lambda e: sync_output_fields())
         btns = ttk.Frame(output_frame)
@@ -13146,26 +13129,28 @@ class PlanWorkflowWindow:
         refresh_filter_risk_text()
 
     def select_all_output_fields(self, listbox, config):
+        fields = workflow_select_all_filter_output_fields(listbox.get(0, tk.END))
         listbox.selection_set(0, tk.END)
-        config["output_fields"] = list(listbox.get(0, tk.END))
+        config["output_fields"] = fields
 
     def invert_output_fields(self, listbox, config):
         selected = set(listbox.curselection())
+        fields = list(listbox.get(0, tk.END))
+        result = workflow_invert_filter_output_fields_by_indexes(fields, selected)
         listbox.selection_clear(0, tk.END)
-        result = []
-        for i, field in enumerate(listbox.get(0, tk.END)):
+        for i, field in enumerate(fields):
             if i not in selected:
                 listbox.selection_set(i)
-                result.append(field)
         config["output_fields"] = result
 
     def select_current_table_output_fields(self, listbox, config):
         listbox.selection_clear(0, tk.END)
-        selected = []
-        for i, field in enumerate(listbox.get(0, tk.END)):
-            if str(field).startswith("当前表."):
+        fields = list(listbox.get(0, tk.END))
+        selected = workflow_select_current_table_filter_output_fields(fields)
+        selected_set = set(selected)
+        for i, field in enumerate(fields):
+            if field in selected_set:
                 listbox.selection_set(i)
-                selected.append(field)
         config["output_fields"] = selected
 
     def build_copy_column_config(self, config, headers):
