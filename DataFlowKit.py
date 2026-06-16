@@ -13219,101 +13219,91 @@ class PlanWorkflowWindow:
             "button_frame": btns,
         }
 
-    def build_filter_config(self, config, headers, transit_context=None):
-        """
-        计划节点内的高级筛选配置。
-        主输入固定为“上一步结果”，在字段列表中显示为“当前表.字段”。
-        可额外勾选 SQLite 数据库中的表，并通过匹配规则把当前表和副表关联起来。
-        """
-        workflow_ensure_filter_config_defaults(config)
-        self.normalize_plan_filter_config_field_references(
-            config,
+    def refresh_filter_risk_text(self, headers, config, risk_var, risk_label):
+        warnings = self.get_plan_filter_config_warnings(
             headers,
             config.get("extra_tables", []),
+            config.get("conditions", []),
+            config.get("join_rules", []),
+            config.get("join_logic", "AND"),
         )
+        display = workflow_build_filter_risk_display_state(warnings)
+        risk_var.set(display["text"])
+        risk_label.configure(foreground=display["foreground"])
 
-        frame = ttk.LabelFrame(self.config_frame, text="高级筛选节点（支持：上一步结果 + 多表匹配）", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-
-        risk_section = self.build_filter_header_risk_section(frame, start_row=0)
-        risk_var = risk_section["risk_var"]
-        risk_label = risk_section["risk_label"]
-
-        def refresh_filter_risk_text():
-            warnings = self.get_plan_filter_config_warnings(
-                headers,
-                config.get("extra_tables", []),
-                config.get("conditions", []),
-                config.get("join_rules", []),
-                config.get("join_logic", "AND"),
-            )
-            display = workflow_build_filter_risk_display_state(warnings)
-            risk_var.set(display["text"])
-            risk_label.configure(foreground=display["foreground"])
-
-        selected_tables = list(config.get("extra_tables", []))
-        transit_context = transit_context or {"transit_tables": {}}
-        all_fields = self.get_plan_filter_available_fields(headers, selected_tables, transit_context)
-        field_state = workflow_build_filter_field_refresh_state(
-            headers,
-            all_fields,
-            selected_output_fields=config.get("output_fields", []),
+    def refresh_filter_condition_value_input(self, field_state, value_source_var, value_var, value_combo):
+        state = workflow_build_filter_condition_input_state(
+            field_state["all_values"],
+            value_source=value_source_var.get(),
+            current_value=value_var.get(),
         )
-        current_fields = field_state["current_values"]
+        if value_source_var.get() != state["value_source"]:
+            value_source_var.set(state["value_source"])
+            return
+        value_combo.configure(values=state["value_choices"])
+        if value_var.get() != state["value_default"]:
+            value_var.set(state["value_default"])
 
-        def sync_extra_tables(rebuild=False):
-            config["extra_tables"] = [table_list.get(i) for i in table_list.curselection()]
-            if rebuild:
-                refresh_filter_field_sources()
+    def filter_tree_rows(self, tree):
+        return [tree.item(iid, "values") for iid in tree.get_children()]
 
-        source_section = self.build_filter_source_table_section(
-            frame,
-            config,
-            headers,
-            selected_tables,
-            transit_context,
-            sync_extra_tables,
-            start_row=risk_section["next_row"],
-        )
-        table_list = source_section["table_list"]
+    def replace_filter_tree_rows(self, tree, rows):
+        tree.delete(*tree.get_children())
+        for row_values in rows:
+            tree.insert("", tk.END, values=row_values)
 
-        condition_section = self.build_filter_condition_section(frame, config, all_fields, start_row=3)
+    def edit_filter_condition_cell(self, event, cond_tree, cond_edit_mode, sync_conditions_from_tree):
+        if not cond_edit_mode.get():
+            return
+        region = cond_tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return
+        row_id = cond_tree.identify_row(event.y)
+        col_id = cond_tree.identify_column(event.x)
+        if not row_id or not col_id:
+            return
+        bbox = cond_tree.bbox(row_id, col_id)
+        if not bbox:
+            return
+        x, y, width, height = bbox
+        edit_state = workflow_build_treeview_cell_edit_state(cond_tree.item(row_id, "values"), col_id, 4)
+        if edit_state is None:
+            return
+        col_index = edit_state["column_index"]
+        values = edit_state["values"]
+        entry = ttk.Entry(cond_tree)
+        entry.place(x=x, y=y, width=width, height=height)
+        entry.insert(0, edit_state["text"])
+        entry.select_range(0, tk.END)
+        entry.focus()
+        closed = {"done": False}
+
+        def close_editor(save=True):
+            if closed["done"]:
+                return
+            closed["done"] = True
+            if save:
+                new_values = workflow_apply_treeview_cell_edit(values, col_index, entry.get(), 4)
+                if new_values is not None:
+                    cond_tree.item(row_id, values=new_values)
+                    sync_conditions_from_tree()
+            entry.destroy()
+
+        entry.bind("<Return>", lambda e: close_editor(True))
+        entry.bind("<Escape>", lambda e: close_editor(False))
+        entry.bind("<FocusOut>", lambda e: close_editor(True))
+
+    def build_filter_condition_action_buttons(self, condition_section, config, refresh_filter_risk_text):
         condition_frame = condition_section["frame"]
+        cond_tree = condition_section["cond_tree"]
+        cond_edit_mode = condition_section["cond_edit_mode"]
         field_var = condition_section["field_var"]
-        field_combo = condition_section["field_combo"]
         op_var = condition_section["op_var"]
         value_source_var = condition_section["value_source_var"]
         value_var = condition_section["value_var"]
-        value_combo = condition_section["value_combo"]
-        cond_edit_mode = condition_section["cond_edit_mode"]
-        cond_tree = condition_section["cond_tree"]
-
-        def refresh_condition_value_input(*_):
-            state = workflow_build_filter_condition_input_state(
-                field_state["all_values"],
-                value_source=value_source_var.get(),
-                current_value=value_var.get(),
-            )
-            if value_source_var.get() != state["value_source"]:
-                value_source_var.set(state["value_source"])
-                return
-            value_combo.configure(values=state["value_choices"])
-            if value_var.get() != state["value_default"]:
-                value_var.set(state["value_default"])
-
-        value_source_var.trace_add("write", refresh_condition_value_input)
-        refresh_condition_value_input()
-
-        def tree_rows(tree):
-            return [tree.item(iid, "values") for iid in tree.get_children()]
-
-        def replace_tree_rows(tree, rows):
-            tree.delete(*tree.get_children())
-            for row_values in rows:
-                tree.insert("", tk.END, values=row_values)
 
         def sync_conditions_from_tree():
-            config["conditions"] = workflow_filter_conditions_from_rows(tree_rows(cond_tree))
+            config["conditions"] = workflow_filter_conditions_from_rows(self.filter_tree_rows(cond_tree))
             refresh_filter_risk_text()
 
         def add_cond():
@@ -13321,143 +13311,89 @@ class PlanWorkflowWindow:
                 messagebox.showwarning("提示", "请选择条件字段。")
                 return
             rows = workflow_append_filter_condition_row(
-                tree_rows(cond_tree),
+                self.filter_tree_rows(cond_tree),
                 field_var.get(),
                 op_var.get(),
                 value_source_var.get(),
                 value_var.get(),
             )
-            replace_tree_rows(cond_tree, rows)
+            self.replace_filter_tree_rows(cond_tree, rows)
             sync_conditions_from_tree()
 
         def del_cond():
             selected = [cond_tree.index(iid) for iid in cond_tree.selection()]
-            rows = workflow_delete_filter_rows_by_indexes(tree_rows(cond_tree), selected)
-            replace_tree_rows(cond_tree, rows)
+            rows = workflow_delete_filter_rows_by_indexes(self.filter_tree_rows(cond_tree), selected)
+            self.replace_filter_tree_rows(cond_tree, rows)
             sync_conditions_from_tree()
 
-        def edit_cond_cell(event):
-            if not cond_edit_mode.get():
-                return
-            region = cond_tree.identify("region", event.x, event.y)
-            if region != "cell":
-                return
-            row_id = cond_tree.identify_row(event.y)
-            col_id = cond_tree.identify_column(event.x)
-            if not row_id or not col_id:
-                return
-            bbox = cond_tree.bbox(row_id, col_id)
-            if not bbox:
-                return
-            x, y, width, height = bbox
-            edit_state = workflow_build_treeview_cell_edit_state(cond_tree.item(row_id, "values"), col_id, 4)
-            if edit_state is None:
-                return
-            col_index = edit_state["column_index"]
-            values = edit_state["values"]
-            entry = ttk.Entry(cond_tree)
-            entry.place(x=x, y=y, width=width, height=height)
-            entry.insert(0, edit_state["text"])
-            entry.select_range(0, tk.END)
-            entry.focus()
-            closed = {"done": False}
-
-            def close_editor(save=True):
-                if closed["done"]:
-                    return
-                closed["done"] = True
-                if save:
-                    new_values = workflow_apply_treeview_cell_edit(values, col_index, entry.get(), 4)
-                    if new_values is not None:
-                        cond_tree.item(row_id, values=new_values)
-                        sync_conditions_from_tree()
-                entry.destroy()
-
-            entry.bind("<Return>", lambda e: close_editor(True))
-            entry.bind("<Escape>", lambda e: close_editor(False))
-            entry.bind("<FocusOut>", lambda e: close_editor(True))
-
-        cond_tree.bind("<Double-1>", edit_cond_cell)
-
+        cond_tree.bind(
+            "<Double-1>",
+            lambda event: self.edit_filter_condition_cell(event, cond_tree, cond_edit_mode, sync_conditions_from_tree),
+        )
         ttk.Button(condition_frame, text="添加条件", command=add_cond).grid(row=condition_section["button_row"], column=1, padx=4, pady=4)
         ttk.Button(condition_frame, text="删除条件", command=del_cond).grid(row=condition_section["button_row"], column=2, padx=4, pady=4)
+        return {
+            "sync_conditions_from_tree": sync_conditions_from_tree,
+        }
 
-        join_section = self.build_filter_join_section(frame, config, all_fields, current_fields, start_row=4)
+    def build_filter_join_action_buttons(self, join_section, config, refresh_filter_risk_text):
         join_frame = join_section["frame"]
-        join_logic_var = join_section["join_logic_var"]
         left_var = join_section["left_var"]
-        left_combo = join_section["left_combo"]
         join_op_var = join_section["join_op_var"]
         right_var = join_section["right_var"]
-        right_combo = join_section["right_combo"]
         join_tree = join_section["join_tree"]
-        join_logic_var.trace_add("write", lambda *_: refresh_filter_risk_text())
 
         def sync_join_rules_from_tree():
-            config["join_rules"] = workflow_filter_join_rules_from_rows(tree_rows(join_tree))
+            config["join_rules"] = workflow_filter_join_rules_from_rows(self.filter_tree_rows(join_tree))
             refresh_filter_risk_text()
 
         def add_join():
             if not left_var.get().strip() or not right_var.get().strip():
                 messagebox.showwarning("提示", "请选择左右匹配字段。")
                 return
-            rows = workflow_append_filter_join_rule_row(tree_rows(join_tree), left_var.get(), join_op_var.get(), right_var.get())
-            replace_tree_rows(join_tree, rows)
+            rows = workflow_append_filter_join_rule_row(
+                self.filter_tree_rows(join_tree),
+                left_var.get(),
+                join_op_var.get(),
+                right_var.get(),
+            )
+            self.replace_filter_tree_rows(join_tree, rows)
             sync_join_rules_from_tree()
 
         def del_join():
             selected = [join_tree.index(iid) for iid in join_tree.selection()]
-            rows = workflow_delete_filter_rows_by_indexes(tree_rows(join_tree), selected)
-            replace_tree_rows(join_tree, rows)
+            rows = workflow_delete_filter_rows_by_indexes(self.filter_tree_rows(join_tree), selected)
+            self.replace_filter_tree_rows(join_tree, rows)
             sync_join_rules_from_tree()
 
         ttk.Button(join_frame, text="添加匹配规则", command=add_join).grid(row=join_section["button_row"], column=1, padx=4, pady=4)
         ttk.Button(join_frame, text="删除匹配规则", command=del_join).grid(row=join_section["button_row"], column=2, padx=4, pady=4)
+        return {
+            "sync_join_rules_from_tree": sync_join_rules_from_tree,
+        }
 
-        output_section = self.build_filter_output_section(frame, config, all_fields, start_row=5)
+    def refresh_filter_actual_output_text(self, out_list, actual_output_var, headers, field_state, config):
+        selected_fields = [out_list.get(i) for i in out_list.curselection()]
+        actual_output_var.set(workflow_build_filter_actual_output_text(
+            selected_fields,
+            headers,
+            field_state["all_values"],
+            config.get("extra_tables", []),
+        ))
+
+    def sync_filter_output_fields(self, out_list, actual_output_var, headers, field_state, config):
+        config["output_fields"] = [out_list.get(i) for i in out_list.curselection()]
+        self.refresh_filter_actual_output_text(out_list, actual_output_var, headers, field_state, config)
+
+    def build_filter_output_action_buttons(self, output_section, config, headers, field_state):
         out_list = output_section["out_list"]
         actual_output_var = output_section["actual_output_var"]
 
         def refresh_actual_output_text():
-            selected_fields = [out_list.get(i) for i in out_list.curselection()]
-            actual_output_var.set(workflow_build_filter_actual_output_text(
-                selected_fields,
-                headers,
-                field_state["all_values"],
-                config.get("extra_tables", []),
-            ))
+            self.refresh_filter_actual_output_text(out_list, actual_output_var, headers, field_state, config)
 
         def sync_output_fields():
-            config["output_fields"] = [out_list.get(i) for i in out_list.curselection()]
-            refresh_actual_output_text()
-
-        def refresh_filter_field_sources():
-            config["extra_tables"] = [table_list.get(i) for i in table_list.curselection()]
-            available_fields = self.get_plan_filter_available_fields(headers, config.get("extra_tables", []), transit_context)
-            state = workflow_build_filter_field_refresh_state(
-                headers,
-                available_fields,
-                value_source_var.get(),
-                config.get("output_fields", []),
-            )
-            field_state.clear()
-            field_state.update(state)
-            self.refresh_combo_values(field_combo, field_var, state["all_values"], keep_custom=False, fallback=state["first_any"])
-            self.refresh_combo_values(
-                value_combo,
-                value_var,
-                state["value_choices"],
-                keep_custom=state["value_source"] != "字段值",
-                fallback=state["value_fallback"],
-            )
-            self.refresh_combo_values(left_combo, left_var, state["all_values"], keep_custom=False, fallback=state["first_current"])
-            self.refresh_combo_values(right_combo, right_var, state["all_values"], keep_custom=False, fallback=state["first_external"])
-            selected_output = state["selected_output"]
-            self.refresh_listbox_values(out_list, state["all_values"], selected_output)
-            sync_output_fields()
-            refresh_condition_value_input()
-            refresh_filter_risk_text()
-            self.status_var.set(workflow_build_filter_field_refresh_status(len(config.get("extra_tables", [])), len(state["all_values"])))
+            self.sync_filter_output_fields(out_list, actual_output_var, headers, field_state, config)
 
         out_list.bind("<<ListboxSelect>>", lambda e: sync_output_fields())
         btns = output_section["button_frame"]
@@ -13486,6 +13422,162 @@ class PlanWorkflowWindow:
 
         ttk.Button(btns, textvariable=dedupe_text, command=toggle_filter_dedupe).pack(side=tk.LEFT, padx=(12, 2))
         ttk.Label(btns, text="按最终输出整行去重，保留第一条。", foreground="gray").pack(side=tk.LEFT, padx=4)
+        return {
+            "refresh_actual_output_text": refresh_actual_output_text,
+            "sync_output_fields": sync_output_fields,
+        }
+
+    def refresh_filter_field_sources(
+        self,
+        headers,
+        config,
+        transit_context,
+        field_state,
+        source_section,
+        condition_section,
+        join_section,
+        output_section,
+        sync_output_fields,
+        refresh_condition_value_input,
+        refresh_filter_risk_text,
+    ):
+        table_list = source_section["table_list"]
+        value_source_var = condition_section["value_source_var"]
+        config["extra_tables"] = [table_list.get(i) for i in table_list.curselection()]
+        available_fields = self.get_plan_filter_available_fields(headers, config.get("extra_tables", []), transit_context)
+        state = workflow_build_filter_field_refresh_state(
+            headers,
+            available_fields,
+            value_source_var.get(),
+            config.get("output_fields", []),
+        )
+        field_state.clear()
+        field_state.update(state)
+        self.refresh_combo_values(
+            condition_section["field_combo"],
+            condition_section["field_var"],
+            state["all_values"],
+            keep_custom=False,
+            fallback=state["first_any"],
+        )
+        self.refresh_combo_values(
+            condition_section["value_combo"],
+            condition_section["value_var"],
+            state["value_choices"],
+            keep_custom=state["value_source"] != "字段值",
+            fallback=state["value_fallback"],
+        )
+        self.refresh_combo_values(
+            join_section["left_combo"],
+            join_section["left_var"],
+            state["all_values"],
+            keep_custom=False,
+            fallback=state["first_current"],
+        )
+        self.refresh_combo_values(
+            join_section["right_combo"],
+            join_section["right_var"],
+            state["all_values"],
+            keep_custom=False,
+            fallback=state["first_external"],
+        )
+        self.refresh_listbox_values(
+            output_section["out_list"],
+            state["all_values"],
+            state["selected_output"],
+        )
+        sync_output_fields()
+        refresh_condition_value_input()
+        refresh_filter_risk_text()
+        self.status_var.set(workflow_build_filter_field_refresh_status(len(config.get("extra_tables", [])), len(state["all_values"])))
+
+    def build_filter_config(self, config, headers, transit_context=None):
+        """
+        计划节点内的高级筛选配置。
+        主输入固定为“上一步结果”，在字段列表中显示为“当前表.字段”。
+        可额外勾选 SQLite 数据库中的表，并通过匹配规则把当前表和副表关联起来。
+        """
+        workflow_ensure_filter_config_defaults(config)
+        self.normalize_plan_filter_config_field_references(
+            config,
+            headers,
+            config.get("extra_tables", []),
+        )
+
+        frame = ttk.LabelFrame(self.config_frame, text="高级筛选节点（支持：上一步结果 + 多表匹配）", padding=8)
+        frame.pack(fill=tk.BOTH, expand=True, pady=8)
+
+        risk_section = self.build_filter_header_risk_section(frame, start_row=0)
+        risk_var = risk_section["risk_var"]
+        risk_label = risk_section["risk_label"]
+
+        def refresh_filter_risk_text():
+            self.refresh_filter_risk_text(headers, config, risk_var, risk_label)
+
+        selected_tables = list(config.get("extra_tables", []))
+        transit_context = transit_context or {"transit_tables": {}}
+        all_fields = self.get_plan_filter_available_fields(headers, selected_tables, transit_context)
+        field_state = workflow_build_filter_field_refresh_state(
+            headers,
+            all_fields,
+            selected_output_fields=config.get("output_fields", []),
+        )
+        current_fields = field_state["current_values"]
+
+        def sync_extra_tables(rebuild=False):
+            config["extra_tables"] = [table_list.get(i) for i in table_list.curselection()]
+            if rebuild:
+                refresh_filter_field_sources()
+
+        source_section = self.build_filter_source_table_section(
+            frame,
+            config,
+            headers,
+            selected_tables,
+            transit_context,
+            sync_extra_tables,
+            start_row=risk_section["next_row"],
+        )
+        table_list = source_section["table_list"]
+
+        condition_section = self.build_filter_condition_section(frame, config, all_fields, start_row=3)
+        value_source_var = condition_section["value_source_var"]
+        value_var = condition_section["value_var"]
+        value_combo = condition_section["value_combo"]
+
+        def refresh_condition_value_input(*_):
+            self.refresh_filter_condition_value_input(field_state, value_source_var, value_var, value_combo)
+
+        value_source_var.trace_add("write", refresh_condition_value_input)
+        refresh_condition_value_input()
+
+        self.build_filter_condition_action_buttons(condition_section, config, refresh_filter_risk_text)
+
+        join_section = self.build_filter_join_section(frame, config, all_fields, current_fields, start_row=4)
+        join_logic_var = join_section["join_logic_var"]
+        join_logic_var.trace_add("write", lambda *_: refresh_filter_risk_text())
+        self.build_filter_join_action_buttons(join_section, config, refresh_filter_risk_text)
+
+        output_section = self.build_filter_output_section(frame, config, all_fields, start_row=5)
+        output_actions = self.build_filter_output_action_buttons(output_section, config, headers, field_state)
+        refresh_actual_output_text = output_actions["refresh_actual_output_text"]
+        sync_output_fields = output_actions["sync_output_fields"]
+
+        def refresh_filter_field_sources():
+            self.refresh_filter_field_sources(
+                headers,
+                config,
+                transit_context,
+                field_state,
+                source_section,
+                condition_section,
+                join_section,
+                output_section,
+                sync_output_fields,
+                refresh_condition_value_input,
+                refresh_filter_risk_text,
+            )
+
         refresh_actual_output_text()
         refresh_filter_risk_text()
 
