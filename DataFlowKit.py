@@ -297,6 +297,9 @@ from workflow.dedupe_config_ui import (
 from workflow.row_data_mapping_config_ui import (
     build_row_data_mapping_config as workflow_build_row_data_mapping_config_ui,
 )
+from workflow.save_transit_config_ui import (
+    build_save_transit_config as workflow_build_save_transit_config_ui,
+)
 from workflow.writeback_config_ui import (
     build_writeback_config as workflow_build_writeback_config_ui,
 )
@@ -11474,71 +11477,7 @@ class PlanWorkflowWindow:
         return workflow_build_row_data_mapping_config_ui(self, config, headers)
 
     def build_save_transit_config(self, config, headers):
-        """构建“保存中转数据”节点配置。"""
-        frame = ttk.LabelFrame(self.config_frame, text="保存中转数据节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        ttk.Label(
-            frame,
-            text="把当前工作流执行到这里的数据保存一份。默认保存为内存副表，后续高级筛选节点可把它作为副表引用；也可以在正式执行时保存到 SQLite 或导出 xlsx。",
-            foreground="gray",
-            wraplength=1050
-        ).grid(row=0, column=0, columnspan=6, sticky=tk.W, padx=4, pady=(0, 6))
-
-        name_var = self.add_labeled_entry(frame, "中转名称：", config.get("transit_name", "中转数据"), 1, 0, 28)
-        self.sync_var_to_config(name_var, config, "transit_name")
-
-        save_memory_var = tk.BooleanVar(value=bool(config.get("save_memory", True)))
-        append_memory_var = tk.BooleanVar(value=bool(config.get("append_memory", False)))
-        save_sqlite_var = tk.BooleanVar(value=bool(config.get("save_sqlite", False)))
-        save_xlsx_var = tk.BooleanVar(value=bool(config.get("save_xlsx", False)))
-        stop_var = tk.BooleanVar(value=bool(config.get("stop_after_save", False)))
-
-        ttk.Checkbutton(frame, text="保存为内存副表（供后续高级筛选引用）", variable=save_memory_var).grid(row=2, column=0, columnspan=3, sticky=tk.W, padx=4, pady=4)
-        ttk.Checkbutton(frame, text="同名内存副表已有数据时追加写入（循环汇总用）", variable=append_memory_var).grid(row=2, column=3, columnspan=3, sticky=tk.W, padx=4, pady=4)
-        ttk.Checkbutton(frame, text="正式执行时保存到 SQLite 表", variable=save_sqlite_var).grid(row=3, column=0, columnspan=3, sticky=tk.W, padx=4, pady=4)
-        ttk.Checkbutton(frame, text="正式执行时导出为 xlsx", variable=save_xlsx_var).grid(row=3, column=3, columnspan=3, sticky=tk.W, padx=4, pady=4)
-        ttk.Checkbutton(frame, text="保存后停止工作流", variable=stop_var).grid(row=4, column=0, columnspan=3, sticky=tk.W, padx=4, pady=4)
-
-        self.sync_bool_to_config(save_memory_var, config, "save_memory")
-        self.sync_bool_to_config(append_memory_var, config, "append_memory")
-        self.sync_bool_to_config(save_sqlite_var, config, "save_sqlite")
-        self.sync_bool_to_config(save_xlsx_var, config, "save_xlsx")
-        self.sync_bool_to_config(stop_var, config, "stop_after_save")
-
-        sqlite_frame = ttk.LabelFrame(frame, text="SQLite 保存设置", padding=6)
-        sqlite_frame.grid(row=5, column=0, columnspan=6, sticky="ew", padx=4, pady=6)
-        table_var = self.add_labeled_entry(sqlite_frame, "SQLite表名：", config.get("sqlite_table", config.get("transit_name", "中转数据")), 0, 0, 28)
-        mode_var = self.add_labeled_combo(sqlite_frame, "同名处理：", config.get("sqlite_mode", "自动加时间戳"), ["覆盖同名表", "自动加时间戳", "追加写入", "报错停止"], 0, 2, 16)
-        self.sync_var_to_config(table_var, config, "sqlite_table")
-        self.sync_var_to_config(mode_var, config, "sqlite_mode")
-
-        xlsx_frame = ttk.LabelFrame(frame, text="xlsx 导出设置", padding=6)
-        xlsx_frame.grid(row=6, column=0, columnspan=6, sticky="ew", padx=4, pady=6)
-        path_var = tk.StringVar(value=config.get("xlsx_path", os.path.join(getattr(self.app, "app_dir", get_app_dir()), "export", "中转数据.xlsx")))
-        ttk.Label(xlsx_frame, text="xlsx路径：").grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
-        ttk.Entry(xlsx_frame, textvariable=path_var, width=72).grid(row=0, column=1, columnspan=3, sticky=tk.W, padx=4, pady=4)
-        def choose_xlsx_path():
-            initial_dir = os.path.dirname(path_var.get()) if path_var.get() else os.path.join(getattr(self.app, "app_dir", get_app_dir()), "export")
-            os.makedirs(initial_dir, exist_ok=True)
-            path = filedialog.asksaveasfilename(
-                title="选择中转数据 xlsx 导出路径",
-                initialdir=initial_dir,
-                initialfile=os.path.basename(path_var.get()) or "中转数据.xlsx",
-                defaultextension=".xlsx",
-                filetypes=[("Excel 工作簿", "*.xlsx"), ("所有文件", "*.*")]
-            )
-            if path:
-                path_var.set(path)
-                config["xlsx_path"] = path
-        ttk.Button(xlsx_frame, text="选择", command=choose_xlsx_path).grid(row=0, column=4, sticky=tk.W, padx=4, pady=4)
-        self.sync_var_to_config(path_var, config, "xlsx_path")
-
-        ttk.Label(
-            frame,
-            text="说明：预览计划时只会保存内存副表，不会写 SQLite/xlsx；点击【执行计划】时才会执行外部保存。该节点默认不改变当前数据，继续向后传递。",
-            foreground="gray",
-            wraplength=1050
-        ).grid(row=7, column=0, columnspan=6, sticky=tk.W, padx=4, pady=(8, 4))
+        return workflow_build_save_transit_config_ui(self, config, headers)
 
 
 
