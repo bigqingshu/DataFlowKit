@@ -7739,12 +7739,13 @@ class PlanWorkflowWindow:
         input_frame.grid(row=row, column=0, columnspan=8, sticky="ew", padx=4, pady=6)
         input_frame.columnconfigure(1, weight=1)
 
+        callbacks = {}
         source_controls = self.build_group_input_source_controls(input_frame, config, transit_context=transit_context)
         source_type_var = source_controls["source_type_var"]
         sqlite_var = source_controls["sqlite_var"]
         transit_var = source_controls["transit_var"]
 
-        fields_controls = self.build_group_input_fields_controls(input_frame, config, lambda: refresh_mapping_tree())
+        fields_controls = self.build_group_input_fields_controls(input_frame, config, lambda: callbacks["refresh_mapping_tree"]())
         input_fields_var = fields_controls["input_fields_var"]
 
         tree_controls = self.build_group_mapping_tree_control(input_frame)
@@ -7767,92 +7768,31 @@ class PlanWorkflowWindow:
                 sqlite_table=sqlite_var.get().strip() or config.get("input_sqlite_table", ""),
             )
 
-        def refresh_source_field_combo():
-            return self.refresh_group_source_field_combo(
-                source_field_combo,
-                source_field_var,
-                get_source_headers_for_mapping(),
-            )
-
-        def refresh_selected_input_combo(sync_detail=True):
-            return self.refresh_group_selected_input_combo(
-                config,
-                selected_input_combo,
-                selected_input_var,
-                sync_detail=sync_mapping_edit_from_selected if sync_detail else None,
-            )
-
-        def sync_mapping_edit_from_selected(event=None):
-            self.sync_group_mapping_edit_from_selected(
-                config,
-                mapping_tree,
-                selected_input_var,
-                source_field_var,
-                default_value_var,
-                refresh_source_field_combo,
-            )
-
-        def refresh_mapping_tree():
-            self.refresh_group_mapping_tree(
-                config,
-                mapping_tree,
-                lambda: refresh_selected_input_combo(sync_detail=True),
-            )
-
-        def on_mapping_select(event=None):
-            sel = mapping_tree.selection()
-            if not sel:
-                return
-            vals = mapping_tree.item(sel[0], "values")
-            if not vals:
-                return
-            detail = workflow_group_mapping_selection_detail(vals)
-            selected_input_var.set(detail["key"])
-            refresh_source_field_combo()
-            source_field_var.set(detail["source_field"])
-            default_value_var.set(detail["default_value"])
-        mapping_tree.bind("<<TreeviewSelect>>", on_mapping_select)
-        selected_input_combo.bind("<<ComboboxSelected>>", sync_mapping_edit_from_selected)
-
-        def apply_mapping_one():
-            self.apply_group_mapping_from_controls(
-                config,
-                selected_input_var,
-                source_field_var,
-                default_value_var,
-                refresh_mapping_tree,
-            )
-
-        def auto_mapping_by_name():
-            self.auto_group_mapping_by_name_from_source(config, get_source_headers_for_mapping, refresh_mapping_tree)
-
-        def use_current_headers_as_inputs():
-            self.use_group_source_headers_as_inputs(
-                config,
-                get_source_headers_for_mapping,
-                input_fields_var.set,
-                refresh_mapping_tree,
-            )
-
-        def infer_inputs_from_inner_nodes():
-            self.infer_and_apply_group_input_fields_for_config(
-                config,
-                transit_context,
-                get_source_headers_for_mapping,
-                input_fields_var.set,
-                refresh_mapping_tree,
-            )
+        callbacks.update(self.create_group_input_mapping_callbacks(
+            config,
+            transit_context,
+            get_source_headers_for_mapping,
+            mapping_tree,
+            selected_input_combo,
+            selected_input_var,
+            source_field_combo,
+            source_field_var,
+            default_value_var,
+            input_fields_var,
+        ))
+        mapping_tree.bind("<<TreeviewSelect>>", callbacks["on_mapping_select"])
+        selected_input_combo.bind("<<ComboboxSelected>>", callbacks["sync_mapping_edit_from_selected"])
 
         self.build_group_mapping_action_buttons(
             edit_controls["map_edit"],
-            apply_mapping_one,
-            auto_mapping_by_name,
-            use_current_headers_as_inputs,
-            infer_inputs_from_inner_nodes,
+            callbacks["apply_mapping_one"],
+            callbacks["auto_mapping_by_name"],
+            callbacks["use_current_headers_as_inputs"],
+            callbacks["infer_inputs_from_inner_nodes"],
         )
         for v in (source_type_var, sqlite_var, transit_var):
-            v.trace_add("write", lambda *_: refresh_source_field_combo())
-        refresh_mapping_tree()
+            v.trace_add("write", lambda *_: callbacks["refresh_source_field_combo"]())
+        callbacks["refresh_mapping_tree"]()
         return input_frame
 
     def build_group_output_section(self, frame, config, row=3):
@@ -7954,6 +7894,105 @@ class PlanWorkflowWindow:
         set_input_fields_text(",".join(vals))
         refresh_mapping()
         return vals
+
+    def create_group_input_mapping_callbacks(
+        self,
+        config,
+        transit_context,
+        get_source_headers,
+        mapping_tree,
+        selected_input_combo,
+        selected_input_var,
+        source_field_combo,
+        source_field_var,
+        default_value_var,
+        input_fields_var,
+    ):
+        def refresh_source_field_combo():
+            return self.refresh_group_source_field_combo(
+                source_field_combo,
+                source_field_var,
+                get_source_headers(),
+            )
+
+        def sync_mapping_edit_from_selected(event=None):
+            self.sync_group_mapping_edit_from_selected(
+                config,
+                mapping_tree,
+                selected_input_var,
+                source_field_var,
+                default_value_var,
+                refresh_source_field_combo,
+            )
+
+        def refresh_selected_input_combo(sync_detail=True):
+            return self.refresh_group_selected_input_combo(
+                config,
+                selected_input_combo,
+                selected_input_var,
+                sync_detail=sync_mapping_edit_from_selected if sync_detail else None,
+            )
+
+        def refresh_mapping_tree():
+            self.refresh_group_mapping_tree(
+                config,
+                mapping_tree,
+                lambda: refresh_selected_input_combo(sync_detail=True),
+            )
+
+        def on_mapping_select(event=None):
+            sel = mapping_tree.selection()
+            if not sel:
+                return
+            vals = mapping_tree.item(sel[0], "values")
+            if not vals:
+                return
+            detail = workflow_group_mapping_selection_detail(vals)
+            selected_input_var.set(detail["key"])
+            refresh_source_field_combo()
+            source_field_var.set(detail["source_field"])
+            default_value_var.set(detail["default_value"])
+
+        def apply_mapping_one():
+            self.apply_group_mapping_from_controls(
+                config,
+                selected_input_var,
+                source_field_var,
+                default_value_var,
+                refresh_mapping_tree,
+            )
+
+        def auto_mapping_by_name():
+            self.auto_group_mapping_by_name_from_source(config, get_source_headers, refresh_mapping_tree)
+
+        def use_current_headers_as_inputs():
+            self.use_group_source_headers_as_inputs(
+                config,
+                get_source_headers,
+                input_fields_var.set,
+                refresh_mapping_tree,
+            )
+
+        def infer_inputs_from_inner_nodes():
+            self.infer_and_apply_group_input_fields_for_config(
+                config,
+                transit_context,
+                get_source_headers,
+                input_fields_var.set,
+                refresh_mapping_tree,
+            )
+
+        return {
+            "refresh_source_field_combo": refresh_source_field_combo,
+            "refresh_selected_input_combo": refresh_selected_input_combo,
+            "sync_mapping_edit_from_selected": sync_mapping_edit_from_selected,
+            "refresh_mapping_tree": refresh_mapping_tree,
+            "on_mapping_select": on_mapping_select,
+            "apply_mapping_one": apply_mapping_one,
+            "auto_mapping_by_name": auto_mapping_by_name,
+            "use_current_headers_as_inputs": use_current_headers_as_inputs,
+            "infer_inputs_from_inner_nodes": infer_inputs_from_inner_nodes,
+        }
 
     def infer_and_apply_group_input_fields_for_config(
         self,

@@ -93,6 +93,9 @@ class FakeTree:
     def see(self, iid):
         self.seen = iid
 
+    def selection(self):
+        return list(self.selected)
+
 
 class FakeMessageBox:
     def __init__(self, answers=None):
@@ -617,6 +620,66 @@ class WorkflowGroupNodesTests(unittest.TestCase):
             self.assertEqual(config["input_mapping"], {"A": "A", "B": "B"})
             self.assertEqual(texts, ["A,B"])
             self.assertEqual(refreshed, [True])
+        finally:
+            DataFlowKit.messagebox = original_messagebox
+
+    def test_dataflowkit_group_input_mapping_callbacks(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+        window.format_group_input_infer_details = lambda inferred, details: "DETAIL:" + ",".join(inferred)
+        window.infer_group_input_fields_from_nodes = lambda nodes, context=None: (["Extra"], [])
+
+        config = {
+            "input_fields": ["Name", "Code"],
+            "input_mapping": {"Name": "姓名"},
+            "input_defaults": {"Name": "无名"},
+            "nodes": [],
+        }
+        tree = FakeTree([("Name", "姓名", "无名"), ("Code", "编码", "")])
+        tree.selection_set(1)
+        selected_combo = FakeCombo()
+        selected_var = FakeVar("")
+        source_combo = FakeCombo()
+        source_var = FakeVar("")
+        default_var = FakeVar("")
+        input_fields_var = FakeVar("")
+        callbacks = window.create_group_input_mapping_callbacks(
+            config,
+            {},
+            lambda: ["姓名", "Code", "Extra"],
+            tree,
+            selected_combo,
+            selected_var,
+            source_combo,
+            source_var,
+            default_var,
+            input_fields_var,
+        )
+
+        callbacks["refresh_mapping_tree"]()
+        self.assertEqual(tree.rows, [("Name", "姓名", "无名"), ("Code", "", "")])
+        self.assertEqual(selected_combo["values"], ["Name", "Code"])
+        self.assertEqual(selected_var.get(), "Name")
+
+        tree.selection_set(1)
+        callbacks["on_mapping_select"]()
+        self.assertEqual(selected_var.get(), "Code")
+        self.assertEqual(source_var.get(), "")
+        self.assertEqual(default_var.get(), "")
+
+        callbacks["auto_mapping_by_name"]()
+        self.assertEqual(config["input_mapping"], {"Name": "姓名", "Code": "Code"})
+
+        callbacks["use_current_headers_as_inputs"]()
+        self.assertEqual(config["input_fields"], ["姓名", "Code", "Extra"])
+        self.assertEqual(input_fields_var.get(), "姓名,Code,Extra")
+
+        original_messagebox = DataFlowKit.messagebox
+        try:
+            fake_box = FakeMessageBox([False])
+            DataFlowKit.messagebox = fake_box
+            callbacks["infer_inputs_from_inner_nodes"]()
+            self.assertIn("Extra", config["input_fields"])
+            self.assertEqual(fake_box.infos[-1][0], "入口字段推导完成")
         finally:
             DataFlowKit.messagebox = original_messagebox
 
