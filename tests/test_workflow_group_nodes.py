@@ -98,10 +98,14 @@ class FakeMessageBox:
     def __init__(self, answers=None):
         self.answers = list(answers or [])
         self.infos = []
+        self.warnings = []
         self.questions = []
 
     def showinfo(self, title, message, **kwargs):
         self.infos.append((title, message, kwargs))
+
+    def showwarning(self, title, message, **kwargs):
+        self.warnings.append((title, message, kwargs))
 
     def askyesnocancel(self, title, message, **kwargs):
         self.questions.append((title, message, kwargs))
@@ -563,6 +567,58 @@ class WorkflowGroupNodesTests(unittest.TestCase):
         window.refresh_group_mapping_tree(config, tree, lambda: refreshed.append(True))
         self.assertEqual(tree.rows, [("Name", "姓名", "无名"), ("Code", "", "")])
         self.assertEqual(refreshed, [True])
+
+    def test_dataflowkit_group_mapping_button_actions(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+        original_messagebox = DataFlowKit.messagebox
+        try:
+            fake_box = FakeMessageBox()
+            DataFlowKit.messagebox = fake_box
+            config = {"input_fields": ["Name"], "input_mapping": {}, "input_defaults": {}}
+            refreshed = []
+            ok = window.apply_group_mapping_from_controls(
+                config,
+                FakeVar("Name"),
+                FakeVar("姓名"),
+                FakeVar("无名"),
+                lambda: refreshed.append(True),
+            )
+            self.assertTrue(ok)
+            self.assertEqual(config["input_mapping"], {"Name": "姓名"})
+            self.assertEqual(config["input_defaults"], {"Name": "无名"})
+            self.assertEqual(refreshed, [True])
+
+            ok = window.apply_group_mapping_from_controls(
+                config,
+                FakeVar("Missing"),
+                FakeVar("A"),
+                FakeVar(""),
+                lambda: self.fail("should not refresh"),
+            )
+            self.assertFalse(ok)
+            self.assertEqual(fake_box.infos, [])
+
+            config = {"input_fields": ["Name", "Code"], "input_mapping": {}, "input_defaults": {}}
+            refreshed = []
+            self.assertTrue(window.auto_group_mapping_by_name_from_source(config, lambda: ["name", "Code"], lambda: refreshed.append(True)))
+            self.assertEqual(config["input_mapping"], {"Name": "name", "Code": "Code"})
+            self.assertEqual(refreshed, [True])
+
+            texts = []
+            refreshed = []
+            vals = window.use_group_source_headers_as_inputs(
+                config,
+                lambda: ["A", "B"],
+                texts.append,
+                lambda: refreshed.append(True),
+            )
+            self.assertEqual(vals, ["A", "B"])
+            self.assertEqual(config["input_fields"], ["A", "B"])
+            self.assertEqual(config["input_mapping"], {"A": "A", "B": "B"})
+            self.assertEqual(texts, ["A,B"])
+            self.assertEqual(refreshed, [True])
+        finally:
+            DataFlowKit.messagebox = original_messagebox
 
     def test_dataflowkit_infer_and_apply_group_input_fields_flow(self):
         window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)

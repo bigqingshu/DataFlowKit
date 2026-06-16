@@ -7643,11 +7643,7 @@ class PlanWorkflowWindow:
         config["nodes"] = nodes
         return select_idx
 
-    def build_group_input_mapping_section(self, frame, config, headers, transit_context=None, row=2):
-        input_frame = ttk.LabelFrame(frame, text="入口字段映射", padding=6)
-        input_frame.grid(row=row, column=0, columnspan=8, sticky="ew", padx=4, pady=6)
-        input_frame.columnconfigure(1, weight=1)
-
+    def build_group_input_source_controls(self, input_frame, config, transit_context=None):
         source_values = ["当前工作表", "中转副表", "SQLite表"]
         source_type_var = self.add_labeled_combo(input_frame, "入口数据源：", config.get("input_source_type", "当前工作表"), source_values, 0, 0, 16)
         self.sync_var_to_config(source_type_var, config, "input_source_type")
@@ -7659,19 +7655,29 @@ class PlanWorkflowWindow:
         transit_tables = sorted((transit_context or {}).get("transit_tables", {}).keys())
         transit_var = self.add_labeled_combo(input_frame, "中转副表：", config.get("input_transit_table", transit_tables[0] if transit_tables else ""), transit_tables, 0, 4, 26, readonly=False)
         self.sync_var_to_config(transit_var, config, "input_transit_table")
+        return {
+            "source_type_var": source_type_var,
+            "sqlite_var": sqlite_var,
+            "transit_var": transit_var,
+            "sqlite_tables": sqlite_tables,
+            "transit_tables": transit_tables,
+        }
 
+    def build_group_input_fields_controls(self, input_frame, config, refresh_mapping):
         fields_text = workflow_group_input_fields_text(config)
         input_fields_var = self.add_labeled_entry(input_frame, "组入口字段：", fields_text, 1, 0, 70)
         ttk.Label(input_frame, text="留空=兼容旧版，直接把入口数据源整表传入组内；填写后才按映射生成标准入口表。", foreground="gray").grid(row=1, column=2, columnspan=5, sticky=tk.W, padx=4, pady=4)
 
         def update_input_fields(*_):
             workflow_update_group_input_fields_config(config, input_fields_var.get())
-            refresh_mapping_tree()
+            refresh_mapping()
         input_fields_var.trace_add("write", update_input_fields)
 
         missing_var = self.add_labeled_combo(input_frame, "缺失字段：", config.get("missing_input_policy", "缺失填空"), ["缺失填空", "缺失报错"], 2, 0, 14)
         self.sync_var_to_config(missing_var, config, "missing_input_policy")
+        return {"input_fields_var": input_fields_var, "missing_var": missing_var}
 
+    def build_group_mapping_tree_control(self, input_frame):
         mapping_wrap = ttk.Frame(input_frame)
         mapping_wrap.grid(row=3, column=0, columnspan=8, sticky="ew", padx=4, pady=(4, 2))
         mapping_wrap.columnconfigure(0, weight=1)
@@ -7683,7 +7689,9 @@ class PlanWorkflowWindow:
         mapping_tree.configure(yscrollcommand=mapping_y.set)
         mapping_tree.grid(row=0, column=0, sticky="ew")
         mapping_y.grid(row=0, column=1, sticky="ns")
+        return {"mapping_wrap": mapping_wrap, "mapping_tree": mapping_tree, "mapping_y": mapping_y}
 
+    def build_group_mapping_edit_controls(self, input_frame):
         map_edit = ttk.Frame(input_frame)
         map_edit.grid(row=4, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(2, 4))
         selected_input_var = tk.StringVar(value="")
@@ -7696,7 +7704,58 @@ class PlanWorkflowWindow:
         source_field_combo = ttk.Combobox(map_edit, textvariable=source_field_var, values=[], width=30, state="readonly")
         source_field_combo.pack(side=tk.LEFT, padx=(0, 6))
         ttk.Label(map_edit, text="缺失默认值：").pack(side=tk.LEFT, padx=(0, 2))
-        ttk.Entry(map_edit, textvariable=default_value_var, width=20).pack(side=tk.LEFT, padx=(0, 6))
+        default_value_entry = ttk.Entry(map_edit, textvariable=default_value_var, width=20)
+        default_value_entry.pack(side=tk.LEFT, padx=(0, 6))
+        return {
+            "map_edit": map_edit,
+            "selected_input_var": selected_input_var,
+            "source_field_var": source_field_var,
+            "default_value_var": default_value_var,
+            "selected_input_combo": selected_input_combo,
+            "source_field_combo": source_field_combo,
+            "default_value_entry": default_value_entry,
+        }
+
+    def build_group_mapping_action_buttons(
+        self,
+        map_edit,
+        apply_mapping,
+        auto_mapping,
+        use_source_headers,
+        infer_inputs,
+    ):
+        buttons = {
+            "apply_mapping": ttk.Button(map_edit, text="应用映射", command=apply_mapping),
+            "auto_mapping": ttk.Button(map_edit, text="同名自动映射", command=auto_mapping),
+            "use_source_headers": ttk.Button(map_edit, text="用来源字段作为入口", command=use_source_headers),
+            "infer_inputs": ttk.Button(map_edit, text="从组内节点推导入口字段", command=infer_inputs),
+        }
+        for button in buttons.values():
+            button.pack(side=tk.LEFT, padx=2)
+        return buttons
+
+    def build_group_input_mapping_section(self, frame, config, headers, transit_context=None, row=2):
+        input_frame = ttk.LabelFrame(frame, text="入口字段映射", padding=6)
+        input_frame.grid(row=row, column=0, columnspan=8, sticky="ew", padx=4, pady=6)
+        input_frame.columnconfigure(1, weight=1)
+
+        source_controls = self.build_group_input_source_controls(input_frame, config, transit_context=transit_context)
+        source_type_var = source_controls["source_type_var"]
+        sqlite_var = source_controls["sqlite_var"]
+        transit_var = source_controls["transit_var"]
+
+        fields_controls = self.build_group_input_fields_controls(input_frame, config, lambda: refresh_mapping_tree())
+        input_fields_var = fields_controls["input_fields_var"]
+
+        tree_controls = self.build_group_mapping_tree_control(input_frame)
+        mapping_tree = tree_controls["mapping_tree"]
+
+        edit_controls = self.build_group_mapping_edit_controls(input_frame)
+        selected_input_var = edit_controls["selected_input_var"]
+        source_field_var = edit_controls["source_field_var"]
+        default_value_var = edit_controls["default_value_var"]
+        selected_input_combo = edit_controls["selected_input_combo"]
+        source_field_combo = edit_controls["source_field_combo"]
 
         def get_source_headers_for_mapping():
             source_type = source_type_var.get() or config.get("input_source_type", "当前工作表")
@@ -7756,26 +7815,24 @@ class PlanWorkflowWindow:
         selected_input_combo.bind("<<ComboboxSelected>>", sync_mapping_edit_from_selected)
 
         def apply_mapping_one():
-            result = workflow_apply_group_mapping(
+            self.apply_group_mapping_from_controls(
                 config,
-                selected_input_var.get(),
-                source_field_var.get(),
-                default_value_var.get(),
+                selected_input_var,
+                source_field_var,
+                default_value_var,
+                refresh_mapping_tree,
             )
-            if not result["ok"]:
-                messagebox.showwarning("提示", result["message"])
-                return
-            refresh_mapping_tree()
 
         def auto_mapping_by_name():
-            workflow_auto_group_mapping_by_name(config, get_source_headers_for_mapping())
-            refresh_mapping_tree()
+            self.auto_group_mapping_by_name_from_source(config, get_source_headers_for_mapping, refresh_mapping_tree)
 
         def use_current_headers_as_inputs():
-            vals = get_source_headers_for_mapping()
-            workflow_use_source_headers_as_group_inputs(config, vals)
-            input_fields_var.set(",".join(vals))
-            refresh_mapping_tree()
+            self.use_group_source_headers_as_inputs(
+                config,
+                get_source_headers_for_mapping,
+                input_fields_var.set,
+                refresh_mapping_tree,
+            )
 
         def infer_inputs_from_inner_nodes():
             self.infer_and_apply_group_input_fields_for_config(
@@ -7786,10 +7843,13 @@ class PlanWorkflowWindow:
                 refresh_mapping_tree,
             )
 
-        ttk.Button(map_edit, text="应用映射", command=apply_mapping_one).pack(side=tk.LEFT, padx=2)
-        ttk.Button(map_edit, text="同名自动映射", command=auto_mapping_by_name).pack(side=tk.LEFT, padx=2)
-        ttk.Button(map_edit, text="用来源字段作为入口", command=use_current_headers_as_inputs).pack(side=tk.LEFT, padx=2)
-        ttk.Button(map_edit, text="从组内节点推导入口字段", command=infer_inputs_from_inner_nodes).pack(side=tk.LEFT, padx=2)
+        self.build_group_mapping_action_buttons(
+            edit_controls["map_edit"],
+            apply_mapping_one,
+            auto_mapping_by_name,
+            use_current_headers_as_inputs,
+            infer_inputs_from_inner_nodes,
+        )
         for v in (source_type_var, sqlite_var, transit_var):
             v.trace_add("write", lambda *_: refresh_source_field_combo())
         refresh_mapping_tree()
@@ -7869,6 +7929,31 @@ class PlanWorkflowWindow:
         for row_values in workflow_group_mapping_rows(config):
             mapping_tree.insert("", tk.END, values=row_values)
         refresh_selected_inputs()
+
+    def apply_group_mapping_from_controls(self, config, selected_input_var, source_field_var, default_value_var, refresh_mapping):
+        result = workflow_apply_group_mapping(
+            config,
+            selected_input_var.get(),
+            source_field_var.get(),
+            default_value_var.get(),
+        )
+        if not result["ok"]:
+            messagebox.showwarning("提示", result["message"])
+            return False
+        refresh_mapping()
+        return True
+
+    def auto_group_mapping_by_name_from_source(self, config, get_source_headers, refresh_mapping):
+        workflow_auto_group_mapping_by_name(config, get_source_headers())
+        refresh_mapping()
+        return True
+
+    def use_group_source_headers_as_inputs(self, config, get_source_headers, set_input_fields_text, refresh_mapping):
+        vals = get_source_headers()
+        workflow_use_source_headers_as_group_inputs(config, vals)
+        set_input_fields_text(",".join(vals))
+        refresh_mapping()
+        return vals
 
     def infer_and_apply_group_input_fields_for_config(
         self,
