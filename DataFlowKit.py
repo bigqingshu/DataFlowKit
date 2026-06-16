@@ -174,17 +174,34 @@ from workflow.nodes.file_nodes import (
     parse_extensions_filter as workflow_parse_extensions_filter,
 )
 from workflow.nodes.group_nodes import (
+    apply_group_mapping as workflow_apply_group_mapping,
+    apply_inferred_group_inputs as workflow_apply_inferred_group_inputs,
+    auto_group_mapping_by_name as workflow_auto_group_mapping_by_name,
     build_empty_group_stat as workflow_build_empty_group_stat,
     build_group_final_output as workflow_build_group_final_output,
     build_group_input_table as workflow_build_group_input_table,
     build_group_node_log as workflow_build_group_node_log,
     build_group_status_text as workflow_build_group_status_text,
+    copy_group_inner_node as workflow_copy_group_inner_node,
+    delete_group_inner_node as workflow_delete_group_inner_node,
+    ensure_group_config_defaults as workflow_ensure_group_config_defaults,
     ensure_group_parent_context as workflow_ensure_group_parent_context,
+    group_input_fields_text as workflow_group_input_fields_text,
+    group_mapping_detail as workflow_group_mapping_detail,
+    group_mapping_rows as workflow_group_mapping_rows,
+    group_node_label as workflow_group_node_label,
+    group_selected_input_state as workflow_group_selected_input_state,
+    group_source_field_combo_state as workflow_group_source_field_combo_state,
+    group_source_headers_for_mapping as workflow_group_source_headers_for_mapping,
     make_group_child_context as workflow_make_group_child_context,
     merge_group_child_audit_logs as workflow_merge_group_child_audit_logs,
+    move_group_inner_node as workflow_move_group_inner_node,
     normalize_group_sqlite_mode as workflow_normalize_group_sqlite_mode,
     normalize_group_transit_conflict_mode as workflow_normalize_group_transit_conflict_mode,
     parse_group_input_fields as workflow_parse_group_input_fields,
+    toggle_group_inner_node_enabled as workflow_toggle_group_inner_node_enabled,
+    update_group_input_fields_config as workflow_update_group_input_fields_config,
+    use_source_headers_as_group_inputs as workflow_use_source_headers_as_group_inputs,
     unique_keep_order as workflow_unique_keep_order,
 )
 from workflow.nodes.loop_nodes import (
@@ -7553,6 +7570,24 @@ class PlanWorkflowWindow:
                 var.set(desired)
             set_param(key, var.get())
 
+    def get_group_config_source_headers(self, source_type, headers, transit_context=None, transit_name="", sqlite_table=""):
+        sqlite_columns = []
+        if source_type == "SQLite表" and sqlite_table:
+            try:
+                sqlite_columns = self.get_workflow_sqlite_columns(
+                    sqlite_table,
+                    context=transit_context if isinstance(transit_context, dict) else None,
+                )
+            except Exception:
+                sqlite_columns = []
+        return workflow_group_source_headers_for_mapping(
+            source_type,
+            headers,
+            (transit_context or {}).get("transit_tables", {}) if isinstance(transit_context, dict) else {},
+            transit_name,
+            sqlite_columns,
+        )
+
     def build_plugin_node_config(self, config, headers, transit_context=None, current_rows=None):
         frame = ttk.LabelFrame(self.config_frame, text="外部插件节点", padding=8)
         frame.pack(fill=tk.BOTH, expand=True, pady=8)
@@ -9032,24 +9067,7 @@ class PlanWorkflowWindow:
             wraplength=1120,
         ).grid(row=0, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
 
-        # 兼容旧模板：缺失的新字段在打开配置界面时补默认值。
-        config.setdefault("input_source_type", "当前工作表")
-        config.setdefault("input_sqlite_table", "")
-        config.setdefault("input_transit_table", "")
-        config.setdefault("input_fields", [])
-        config.setdefault("input_mapping", {})
-        config.setdefault("input_defaults", {})
-        config.setdefault("missing_input_policy", "缺失填空")
-        config.setdefault("main_output_mode", "输出为当前工作表")
-        config.setdefault("save_to_transit", False)
-        config.setdefault("output_transit_name", config.get("group_name", "节点组结果"))
-        config.setdefault("output_transit_conflict_mode", "覆盖整表")
-        config.setdefault("save_to_sqlite", False)
-        config.setdefault("output_sqlite_table", config.get("group_name", "节点组结果"))
-        config.setdefault("output_sqlite_mode", "自动加时间戳新表")
-        config.setdefault("sqlite_save_in_preview", False)
-        config.setdefault("transit_scope", "组内中转私有")
-        config.setdefault("nodes", [])
+        workflow_ensure_group_config_defaults(config)
 
         name_var = self.add_labeled_entry(frame, "组名称：", config.get("group_name", "节点组"), 1, 0, 26)
         self.sync_var_to_config(name_var, config, "group_name")
@@ -9075,20 +9093,12 @@ class PlanWorkflowWindow:
         transit_var = self.add_labeled_combo(input_frame, "中转副表：", config.get("input_transit_table", transit_tables[0] if transit_tables else ""), transit_tables, 0, 4, 26, readonly=False)
         self.sync_var_to_config(transit_var, config, "input_transit_table")
 
-        fields_text = ",".join(self.parse_group_input_fields(config))
+        fields_text = workflow_group_input_fields_text(config)
         input_fields_var = self.add_labeled_entry(input_frame, "组入口字段：", fields_text, 1, 0, 70)
         ttk.Label(input_frame, text="留空=兼容旧版，直接把入口数据源整表传入组内；填写后才按映射生成标准入口表。", foreground="gray").grid(row=1, column=2, columnspan=5, sticky=tk.W, padx=4, pady=4)
 
         def update_input_fields(*_):
-            text = input_fields_var.get()
-            fields = [x.strip() for x in re.split(r"[,，;；\n]+", text) if x.strip()]
-            config["input_fields"] = self.unique_keep_order(fields)
-            config.setdefault("input_mapping", {})
-            config.setdefault("input_defaults", {})
-            # 删除已不存在入口字段的映射，避免旧垃圾配置干扰。
-            valid = set(config["input_fields"])
-            config["input_mapping"] = {k: v for k, v in config.get("input_mapping", {}).items() if k in valid}
-            config["input_defaults"] = {k: v for k, v in config.get("input_defaults", {}).items() if k in valid}
+            workflow_update_group_input_fields_config(config, input_fields_var.get())
             refresh_mapping_tree()
         input_fields_var.trace_add("write", update_input_fields)
 
@@ -9123,50 +9133,35 @@ class PlanWorkflowWindow:
 
         def get_source_headers_for_mapping():
             source_type = source_type_var.get() or config.get("input_source_type", "当前工作表")
-            if source_type == "当前工作表":
-                return list(headers)
-            if source_type == "中转副表":
-                name = transit_var.get().strip() or config.get("input_transit_table", "")
-                item = (transit_context or {}).get("transit_tables", {}).get(name, {})
-                return list(item.get("headers", []))
-            if source_type == "SQLite表":
-                name = sqlite_var.get().strip() or config.get("input_sqlite_table", "")
-                if not name:
-                    return []
-                try:
-                    return self.get_workflow_sqlite_columns(
-                        name,
-                        context=transit_context if isinstance(transit_context, dict) else None,
-                    )
-                except Exception:
-                    return []
-            return list(headers)
+            return self.get_group_config_source_headers(
+                source_type,
+                headers,
+                transit_context=transit_context,
+                transit_name=transit_var.get().strip() or config.get("input_transit_table", ""),
+                sqlite_table=sqlite_var.get().strip() or config.get("input_sqlite_table", ""),
+            )
 
         def refresh_source_field_combo():
-            vals = get_source_headers_for_mapping()
-            combo_vals = [""] + vals
-            source_field_combo["values"] = combo_vals
-            if source_field_var.get() not in combo_vals:
-                source_field_var.set("")
-            return vals
+            state = workflow_group_source_field_combo_state(source_field_var.get(), get_source_headers_for_mapping())
+            source_field_combo["values"] = state["values"]
+            source_field_var.set(state["value"])
+            return list(state["values"][1:])
 
         def refresh_selected_input_combo(sync_detail=True):
-            fields = self.parse_group_input_fields(config)
+            state = workflow_group_selected_input_state(config, selected_input_var.get().strip())
+            fields = state["values"]
             selected_input_combo["values"] = fields
-            current = selected_input_var.get().strip()
-            if current not in fields:
-                selected_input_var.set(fields[0] if fields else "")
+            selected_input_var.set(state["value"])
             if sync_detail:
                 sync_mapping_edit_from_selected()
             return fields
 
         def sync_mapping_edit_from_selected(event=None):
             key = selected_input_var.get().strip()
-            mapping = config.setdefault("input_mapping", {})
-            defaults = config.setdefault("input_defaults", {})
+            detail = workflow_group_mapping_detail(config, key)
             refresh_source_field_combo()
-            source_field_var.set(mapping.get(key, "") if key else "")
-            default_value_var.set(defaults.get(key, "") if key else "")
+            source_field_var.set(detail["source_field"])
+            default_value_var.set(detail["default_value"])
             # 同步选中映射表中的对应行，便于表格总览和下拉编辑保持一致。
             for iid in mapping_tree.get_children():
                 vals = mapping_tree.item(iid, "values")
@@ -9178,11 +9173,8 @@ class PlanWorkflowWindow:
 
         def refresh_mapping_tree():
             mapping_tree.delete(*mapping_tree.get_children())
-            fields = self.parse_group_input_fields(config)
-            mapping = config.setdefault("input_mapping", {})
-            defaults = config.setdefault("input_defaults", {})
-            for f in fields:
-                mapping_tree.insert("", tk.END, values=(f, mapping.get(f, ""), defaults.get(f, "")))
+            for row_values in workflow_group_mapping_rows(config):
+                mapping_tree.insert("", tk.END, values=row_values)
             refresh_selected_input_combo(sync_detail=True)
 
         def on_mapping_select(event=None):
@@ -9200,34 +9192,24 @@ class PlanWorkflowWindow:
         selected_input_combo.bind("<<ComboboxSelected>>", sync_mapping_edit_from_selected)
 
         def apply_mapping_one():
-            key = selected_input_var.get().strip()
-            if not key:
-                messagebox.showwarning("提示", "请先在组入口字段下拉框中选择一个入口字段。")
+            result = workflow_apply_group_mapping(
+                config,
+                selected_input_var.get(),
+                source_field_var.get(),
+                default_value_var.get(),
+            )
+            if not result["ok"]:
+                messagebox.showwarning("提示", result["message"])
                 return
-            if key not in self.parse_group_input_fields(config):
-                messagebox.showwarning("提示", f"入口字段不存在：{key}\n请先在上方“组入口字段”中添加。")
-                return
-            config.setdefault("input_mapping", {})[key] = source_field_var.get().strip()
-            config.setdefault("input_defaults", {})[key] = default_value_var.get()
             refresh_mapping_tree()
 
         def auto_mapping_by_name():
-            source_headers = get_source_headers_for_mapping()
-            mapping = config.setdefault("input_mapping", {})
-            for f in self.parse_group_input_fields(config):
-                if f in source_headers:
-                    mapping[f] = f
-                elif not mapping.get(f):
-                    # 简单忽略大小写尝试一次。
-                    lower_map = {str(h).lower(): h for h in source_headers}
-                    mapping[f] = lower_map.get(str(f).lower(), "")
+            workflow_auto_group_mapping_by_name(config, get_source_headers_for_mapping())
             refresh_mapping_tree()
 
         def use_current_headers_as_inputs():
             vals = get_source_headers_for_mapping()
-            config["input_fields"] = list(vals)
-            config["input_mapping"] = {h: h for h in vals}
-            config.setdefault("input_defaults", {})
+            workflow_use_source_headers_as_group_inputs(config, vals)
             input_fields_var.set(",".join(vals))
             refresh_mapping_tree()
 
@@ -9242,6 +9224,7 @@ class PlanWorkflowWindow:
                 return
 
             current = self.parse_group_input_fields(config)
+            merge_inferred = False
             if current:
                 answer = messagebox.askyesnocancel(
                     "入口字段推导",
@@ -9255,26 +9238,10 @@ class PlanWorkflowWindow:
                 if answer is None:
                     messagebox.showinfo("入口字段推导明细", detail_text)
                     return
-                new_fields = inferred if answer else self.unique_keep_order(current + inferred)
-            else:
-                new_fields = inferred
+                merge_inferred = not answer
 
-            old_mapping = dict(config.get("input_mapping", {}) or {})
-            old_defaults = dict(config.get("input_defaults", {}) or {})
             source_headers = get_source_headers_for_mapping()
-            lower_source = {str(h).lower(): h for h in source_headers}
-
-            config["input_fields"] = list(new_fields)
-            new_mapping = {}
-            for f in new_fields:
-                if old_mapping.get(f):
-                    new_mapping[f] = old_mapping.get(f)
-                elif f in source_headers:
-                    new_mapping[f] = f
-                else:
-                    new_mapping[f] = lower_source.get(str(f).lower(), "")
-            config["input_mapping"] = new_mapping
-            config["input_defaults"] = {f: old_defaults.get(f, "") for f in new_fields}
+            new_fields = workflow_apply_inferred_group_inputs(config, inferred, source_headers, merge=merge_inferred)
             input_fields_var.set(",".join(new_fields))
             refresh_mapping_tree()
             messagebox.showinfo("入口字段推导完成", detail_text)
@@ -9342,14 +9309,10 @@ class PlanWorkflowWindow:
         group_list.grid(row=0, column=0, sticky="nsew")
         yscroll.grid(row=0, column=1, sticky="ns")
 
-        def node_label(i, n):
-            mark = "✓" if n.get("enabled", True) else "×"
-            return f"{i+1:02d}. [{mark}] {n.get('type','')} - {n.get('name','')}"
-
         def refresh_group_list(select_idx=None):
             group_list.delete(0, tk.END)
             for i, n in enumerate(config.setdefault("nodes", [])):
-                group_list.insert(tk.END, node_label(i, n))
+                group_list.insert(tk.END, workflow_group_node_label(i, n))
             if select_idx is not None and 0 <= select_idx < len(config.get("nodes", [])):
                 group_list.selection_set(select_idx)
                 group_list.activate(select_idx)
@@ -9387,39 +9350,27 @@ class PlanWorkflowWindow:
 
         def delete_inner_node():
             i = get_group_selected_index()
-            if i is None:
-                return
-            del config.setdefault("nodes", [])[i]
-            refresh_group_list(min(i, len(config.get("nodes", [])) - 1))
+            nodes, select_idx = workflow_delete_group_inner_node(config.setdefault("nodes", []), i)
+            config["nodes"] = nodes
+            refresh_group_list(select_idx)
 
         def move_inner(delta):
             i = get_group_selected_index()
-            nodes = config.setdefault("nodes", [])
-            if i is None:
-                return
-            j = i + delta
-            if j < 0 or j >= len(nodes):
-                return
-            nodes[i], nodes[j] = nodes[j], nodes[i]
-            refresh_group_list(j)
+            nodes, select_idx = workflow_move_group_inner_node(config.setdefault("nodes", []), i, delta)
+            config["nodes"] = nodes
+            refresh_group_list(select_idx)
 
         def copy_inner_node():
             i = get_group_selected_index()
-            nodes = config.setdefault("nodes", [])
-            if i is None:
-                return
-            new_n = copy.deepcopy(nodes[i])
-            new_n["name"] = f"{new_n.get('name', new_n.get('type'))}_复制"
-            nodes.insert(i + 1, new_n)
-            refresh_group_list(i + 1)
+            nodes, select_idx = workflow_copy_group_inner_node(config.setdefault("nodes", []), i)
+            config["nodes"] = nodes
+            refresh_group_list(select_idx)
 
         def toggle_inner_node():
             i = get_group_selected_index()
-            nodes = config.setdefault("nodes", [])
-            if i is None:
-                return
-            nodes[i]["enabled"] = not nodes[i].get("enabled", True)
-            refresh_group_list(i)
+            nodes, select_idx = workflow_toggle_group_inner_node_enabled(config.setdefault("nodes", []), i)
+            config["nodes"] = nodes
+            refresh_group_list(select_idx)
 
         def edit_inner_json():
             i = get_group_selected_index()

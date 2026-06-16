@@ -42,6 +42,191 @@ def parse_group_input_fields(config):
     return unique_keep_order(fields)
 
 
+GROUP_CONFIG_DEFAULTS = {
+    "input_source_type": "当前工作表",
+    "input_sqlite_table": "",
+    "input_transit_table": "",
+    "input_fields": list,
+    "input_mapping": dict,
+    "input_defaults": dict,
+    "missing_input_policy": "缺失填空",
+    "main_output_mode": "输出为当前工作表",
+    "save_to_transit": False,
+    "output_transit_conflict_mode": "覆盖整表",
+    "save_to_sqlite": False,
+    "output_sqlite_mode": "自动加时间戳新表",
+    "sqlite_save_in_preview": False,
+    "transit_scope": "组内中转私有",
+    "nodes": list,
+}
+
+
+def ensure_group_config_defaults(config):
+    for key, default in GROUP_CONFIG_DEFAULTS.items():
+        if key not in config:
+            config[key] = default() if callable(default) else default
+    fallback_name = config.get("group_name", "节点组结果")
+    config.setdefault("output_transit_name", fallback_name)
+    config.setdefault("output_sqlite_table", fallback_name)
+    return config
+
+
+def group_input_fields_text(config):
+    return ",".join(parse_group_input_fields(config))
+
+
+def update_group_input_fields_config(config, text):
+    fields = unique_keep_order([x.strip() for x in re.split(r"[,，;；\n]+", str(text or "")) if x.strip()])
+    config["input_fields"] = fields
+    config.setdefault("input_mapping", {})
+    config.setdefault("input_defaults", {})
+    valid = set(fields)
+    config["input_mapping"] = {k: v for k, v in config.get("input_mapping", {}).items() if k in valid}
+    config["input_defaults"] = {k: v for k, v in config.get("input_defaults", {}).items() if k in valid}
+    return fields
+
+
+def group_source_headers_for_mapping(source_type, current_headers, transit_tables=None, transit_name="", sqlite_columns=None):
+    source_type = source_type or "当前工作表"
+    if source_type == "当前工作表":
+        return list(current_headers or [])
+    if source_type == "中转副表":
+        item = (transit_tables or {}).get(transit_name, {})
+        return list((item or {}).get("headers", []) or [])
+    if source_type == "SQLite表":
+        return list(sqlite_columns or [])
+    return list(current_headers or [])
+
+
+def group_source_field_combo_state(current_value, source_headers):
+    values = [""] + list(source_headers or [])
+    value = current_value if current_value in values else ""
+    return {"values": values, "value": value}
+
+
+def group_selected_input_state(config, current_value):
+    fields = parse_group_input_fields(config)
+    value = current_value if current_value in fields else (fields[0] if fields else "")
+    return {"values": fields, "value": value}
+
+
+def group_mapping_rows(config):
+    fields = parse_group_input_fields(config)
+    mapping = config.setdefault("input_mapping", {})
+    defaults = config.setdefault("input_defaults", {})
+    return [(field, mapping.get(field, ""), defaults.get(field, "")) for field in fields]
+
+
+def group_mapping_detail(config, key):
+    mapping = config.setdefault("input_mapping", {})
+    defaults = config.setdefault("input_defaults", {})
+    key = str(key or "").strip()
+    return {
+        "source_field": mapping.get(key, "") if key else "",
+        "default_value": defaults.get(key, "") if key else "",
+    }
+
+
+def apply_group_mapping(config, key, source_field, default_value):
+    key = str(key or "").strip()
+    if not key:
+        return {"ok": False, "message": "请先在组入口字段下拉框中选择一个入口字段。"}
+    if key not in parse_group_input_fields(config):
+        return {"ok": False, "message": f"入口字段不存在：{key}\n请先在上方“组入口字段”中添加。"}
+    config.setdefault("input_mapping", {})[key] = str(source_field or "").strip()
+    config.setdefault("input_defaults", {})[key] = default_value
+    return {"ok": True, "message": ""}
+
+
+def auto_group_mapping_by_name(config, source_headers):
+    source_headers = list(source_headers or [])
+    lower_map = {str(header).lower(): header for header in source_headers}
+    mapping = config.setdefault("input_mapping", {})
+    for field in parse_group_input_fields(config):
+        if field in source_headers:
+            mapping[field] = field
+        elif not mapping.get(field):
+            mapping[field] = lower_map.get(str(field).lower(), "")
+    return mapping
+
+
+def use_source_headers_as_group_inputs(config, source_headers):
+    headers = list(source_headers or [])
+    config["input_fields"] = headers
+    config["input_mapping"] = {header: header for header in headers}
+    config.setdefault("input_defaults", {})
+    return headers
+
+
+def apply_inferred_group_inputs(config, inferred, source_headers, merge=False):
+    inferred = list(inferred or [])
+    current = parse_group_input_fields(config)
+    new_fields = unique_keep_order(current + inferred) if merge else inferred
+    old_mapping = dict(config.get("input_mapping", {}) or {})
+    old_defaults = dict(config.get("input_defaults", {}) or {})
+    source_headers = list(source_headers or [])
+    lower_source = {str(header).lower(): header for header in source_headers}
+    config["input_fields"] = list(new_fields)
+    new_mapping = {}
+    for field in new_fields:
+        if old_mapping.get(field):
+            new_mapping[field] = old_mapping.get(field)
+        elif field in source_headers:
+            new_mapping[field] = field
+        else:
+            new_mapping[field] = lower_source.get(str(field).lower(), "")
+    config["input_mapping"] = new_mapping
+    config["input_defaults"] = {field: old_defaults.get(field, "") for field in new_fields}
+    return new_fields
+
+
+def group_node_label(index, node):
+    mark = "✓" if node.get("enabled", True) else "×"
+    return f"{index + 1:02d}. [{mark}] {node.get('type','')} - {node.get('name','')}"
+
+
+def group_node_labels(nodes):
+    return [group_node_label(index, node) for index, node in enumerate(nodes or [])]
+
+
+def delete_group_inner_node(nodes, index):
+    result = list(nodes or [])
+    if index is None or index < 0 or index >= len(result):
+        return result, None
+    del result[index]
+    next_index = min(index, len(result) - 1) if result else None
+    return result, next_index
+
+
+def move_group_inner_node(nodes, index, delta):
+    result = list(nodes or [])
+    if index is None:
+        return result, None
+    target = index + delta
+    if index < 0 or index >= len(result) or target < 0 or target >= len(result):
+        return result, index
+    result[index], result[target] = result[target], result[index]
+    return result, target
+
+
+def copy_group_inner_node(nodes, index):
+    result = [copy.deepcopy(node) for node in (nodes or [])]
+    if index is None or index < 0 or index >= len(result):
+        return result, None
+    new_node = copy.deepcopy(result[index])
+    new_node["name"] = f"{new_node.get('name', new_node.get('type'))}_复制"
+    result.insert(index + 1, new_node)
+    return result, index + 1
+
+
+def toggle_group_inner_node_enabled(nodes, index):
+    result = [copy.deepcopy(node) for node in (nodes or [])]
+    if index is None or index < 0 or index >= len(result):
+        return result, None
+    result[index]["enabled"] = not result[index].get("enabled", True)
+    return result, index
+
+
 def normalize_group_transit_conflict_mode(mode):
     text = str(mode or "覆盖整表")
     if "追加" in text:
