@@ -215,18 +215,29 @@ from workflow.nodes.plugin_nodes import (
     should_save_plugin_output_as_transit as workflow_should_save_plugin_output_as_transit,
 )
 from workflow.filter_config_helpers import (
+    append_filter_condition_row as workflow_append_filter_condition_row,
+    append_filter_join_rule_row as workflow_append_filter_join_rule_row,
+    delete_filter_rows_by_indexes as workflow_delete_filter_rows_by_indexes,
+    build_filter_condition_input_state as workflow_build_filter_condition_input_state,
     build_filter_actual_output_text as workflow_build_filter_actual_output_text,
     build_filter_field_refresh_state as workflow_build_filter_field_refresh_state,
+    build_filter_field_refresh_status as workflow_build_filter_field_refresh_status,
+    build_filter_join_input_state as workflow_build_filter_join_input_state,
+    build_filter_risk_display_state as workflow_build_filter_risk_display_state,
     build_filter_selectable_tables as workflow_build_filter_selectable_tables,
+    build_treeview_cell_edit_state as workflow_build_treeview_cell_edit_state,
     ensure_filter_config_defaults as workflow_ensure_filter_config_defaults,
+    apply_treeview_cell_edit as workflow_apply_treeview_cell_edit,
     filter_condition_from_row as workflow_filter_condition_from_row,
     filter_conditions_from_rows as workflow_filter_conditions_from_rows,
     filter_conditions_to_rows as workflow_filter_conditions_to_rows,
+    filter_dedupe_button_text as workflow_filter_dedupe_button_text,
     filter_join_rules_from_rows as workflow_filter_join_rules_from_rows,
     filter_join_rules_to_rows as workflow_filter_join_rules_to_rows,
     invert_filter_output_fields_by_indexes as workflow_invert_filter_output_fields_by_indexes,
     select_all_filter_output_fields as workflow_select_all_filter_output_fields,
     select_current_table_filter_output_fields as workflow_select_current_table_filter_output_fields,
+    toggle_filter_dedupe_config as workflow_toggle_filter_dedupe_config,
 )
 from workflow.nodes.selected_columns_nodes import (
     apply_selected_columns_to_memory_table as workflow_apply_selected_columns_to_memory_table,
@@ -12776,18 +12787,19 @@ class PlanWorkflowWindow:
                 config.get("join_rules", []),
                 config.get("join_logic", "AND"),
             )
-            if warnings:
-                risk_var.set("风险提示：" + "；".join(warnings))
-                risk_label.configure(foreground="#9a5a00")
-            else:
-                risk_var.set("状态：当前多表筛选未发现明显全组合风险。")
-                risk_label.configure(foreground="gray")
+            display = workflow_build_filter_risk_display_state(warnings)
+            risk_var.set(display["text"])
+            risk_label.configure(foreground=display["foreground"])
 
         selected_tables = list(config.get("extra_tables", []))
         transit_context = transit_context or {"transit_tables": {}}
         all_fields = self.get_plan_filter_available_fields(headers, selected_tables, transit_context)
-        current_fields = [f"当前表.{h}" for h in headers]
-        field_state = {"all": list(all_fields), "current": list(current_fields)}
+        field_state = workflow_build_filter_field_refresh_state(
+            headers,
+            all_fields,
+            selected_output_fields=config.get("output_fields", []),
+        )
+        current_fields = field_state["current_values"]
 
         # 1. 副表选择区
         source_frame = ttk.LabelFrame(frame, text="1. 副表选择（主输入固定为：上一步结果 / 当前表）", padding=6)
@@ -12828,10 +12840,11 @@ class PlanWorkflowWindow:
         condition_frame.grid(row=3, column=0, columnspan=8, sticky="nsew", pady=6)
         logic_var = self.add_labeled_combo(condition_frame, "条件关系：", config.get("logic", "AND"), self.LOGIC_TYPES, 0, 0, 8)
         self.sync_var_to_config(logic_var, config, "logic")
-        field_var = tk.StringVar(value=all_fields[0] if all_fields else "")
+        condition_input_state = workflow_build_filter_condition_input_state(all_fields)
+        field_var = tk.StringVar(value=condition_input_state["field_default"])
         op_var = tk.StringVar(value="包含")
-        value_source_var = tk.StringVar(value="固定值")
-        value_var = tk.StringVar()
+        value_source_var = tk.StringVar(value=condition_input_state["value_source"])
+        value_var = tk.StringVar(value=condition_input_state["value_default"])
         ttk.Label(condition_frame, text="字段：").grid(row=1, column=0, padx=4, pady=4)
         field_combo = ttk.Combobox(condition_frame, textvariable=field_var, values=all_fields, width=28, state="normal")
         field_combo.grid(row=1, column=1, padx=4, pady=4)
@@ -12845,17 +12858,17 @@ class PlanWorkflowWindow:
         value_combo.grid(row=1, column=7, padx=4, pady=4)
 
         def refresh_condition_value_input(*_):
-            current_source = value_source_var.get()
-            source = self.normalize_filter_condition_value_source({"value_source": current_source})
-            if current_source != source:
-                value_source_var.set(source)
+            state = workflow_build_filter_condition_input_state(
+                field_state["all_values"],
+                value_source=value_source_var.get(),
+                current_value=value_var.get(),
+            )
+            if value_source_var.get() != state["value_source"]:
+                value_source_var.set(state["value_source"])
                 return
-            if source == "字段值":
-                value_combo.configure(values=field_state["all"])
-                if not value_var.get().strip() and field_state["all"]:
-                    value_var.set(field_state["all"][0])
-            else:
-                value_combo.configure(values=[])
+            value_combo.configure(values=state["value_choices"])
+            if value_var.get() != state["value_default"]:
+                value_var.set(state["value_default"])
 
         value_source_var.trace_add("write", refresh_condition_value_input)
         refresh_condition_value_input()
@@ -12887,36 +12900,36 @@ class PlanWorkflowWindow:
         for row_values in workflow_filter_conditions_to_rows(config.get("conditions", [])):
             cond_tree.insert("", tk.END, values=row_values)
 
+        def tree_rows(tree):
+            return [tree.item(iid, "values") for iid in tree.get_children()]
+
+        def replace_tree_rows(tree, rows):
+            tree.delete(*tree.get_children())
+            for row_values in rows:
+                tree.insert("", tk.END, values=row_values)
+
         def sync_conditions_from_tree():
-            rows = [cond_tree.item(iid, "values") for iid in cond_tree.get_children()]
-            config["conditions"] = workflow_filter_conditions_from_rows(rows)
+            config["conditions"] = workflow_filter_conditions_from_rows(tree_rows(cond_tree))
             refresh_filter_risk_text()
 
         def add_cond():
             if not field_var.get().strip():
                 messagebox.showwarning("提示", "请选择条件字段。")
                 return
-            cond = workflow_filter_condition_from_row((
+            rows = workflow_append_filter_condition_row(
+                tree_rows(cond_tree),
                 field_var.get(),
                 op_var.get(),
                 value_source_var.get(),
                 value_var.get(),
-            ))
-            cond_tree.insert(
-                "",
-                tk.END,
-                values=(
-                    cond["field"],
-                    cond["op"],
-                    cond["value_source"],
-                    cond["value"],
-                )
             )
+            replace_tree_rows(cond_tree, rows)
             sync_conditions_from_tree()
 
         def del_cond():
-            for iid in cond_tree.selection():
-                cond_tree.delete(iid)
+            selected = [cond_tree.index(iid) for iid in cond_tree.selection()]
+            rows = workflow_delete_filter_rows_by_indexes(tree_rows(cond_tree), selected)
+            replace_tree_rows(cond_tree, rows)
             sync_conditions_from_tree()
 
         def edit_cond_cell(event):
@@ -12929,20 +12942,18 @@ class PlanWorkflowWindow:
             col_id = cond_tree.identify_column(event.x)
             if not row_id or not col_id:
                 return
-            try:
-                col_index = int(col_id.replace("#", "")) - 1
-            except Exception:
-                return
             bbox = cond_tree.bbox(row_id, col_id)
             if not bbox:
                 return
             x, y, width, height = bbox
-            values = list(cond_tree.item(row_id, "values"))
-            while len(values) < 4:
-                values.append("")
+            edit_state = workflow_build_treeview_cell_edit_state(cond_tree.item(row_id, "values"), col_id, 4)
+            if edit_state is None:
+                return
+            col_index = edit_state["column_index"]
+            values = edit_state["values"]
             entry = ttk.Entry(cond_tree)
             entry.place(x=x, y=y, width=width, height=height)
-            entry.insert(0, values[col_index])
+            entry.insert(0, edit_state["text"])
             entry.select_range(0, tk.END)
             entry.focus()
             closed = {"done": False}
@@ -12952,9 +12963,10 @@ class PlanWorkflowWindow:
                     return
                 closed["done"] = True
                 if save:
-                    values[col_index] = entry.get()
-                    cond_tree.item(row_id, values=values)
-                    sync_conditions_from_tree()
+                    new_values = workflow_apply_treeview_cell_edit(values, col_index, entry.get(), 4)
+                    if new_values is not None:
+                        cond_tree.item(row_id, values=new_values)
+                        sync_conditions_from_tree()
                 entry.destroy()
 
             entry.bind("<Return>", lambda e: close_editor(True))
@@ -12969,16 +12981,10 @@ class PlanWorkflowWindow:
         # 3. 多表匹配规则区
         join_frame = ttk.LabelFrame(frame, text="3. 多表匹配规则（没有副表时可不填；有副表时建议至少添加一条匹配规则）", padding=6)
         join_frame.grid(row=4, column=0, columnspan=8, sticky="nsew", pady=6)
-        left_var = tk.StringVar(value=current_fields[0] if current_fields else (all_fields[0] if all_fields else ""))
+        join_input_state = workflow_build_filter_join_input_state(current_fields, all_fields)
+        left_var = tk.StringVar(value=join_input_state["left_default"])
         join_op_var = tk.StringVar(value="等于")
-        right_default = ""
-        for f in all_fields:
-            if not f.startswith("当前表."):
-                right_default = f
-                break
-        if not right_default and all_fields:
-            right_default = all_fields[0]
-        right_var = tk.StringVar(value=right_default)
+        right_var = tk.StringVar(value=join_input_state["right_default"])
         join_ops = ["等于", "不等于", "左包含右", "右包含左", "双向包含"]
 
         # 匹配关系放在“左字段”上方，同一组录入控件从左到右排列
@@ -13014,20 +13020,21 @@ class PlanWorkflowWindow:
             join_tree.insert("", tk.END, values=row_values)
 
         def sync_join_rules_from_tree():
-            rows = [join_tree.item(iid, "values") for iid in join_tree.get_children()]
-            config["join_rules"] = workflow_filter_join_rules_from_rows(rows)
+            config["join_rules"] = workflow_filter_join_rules_from_rows(tree_rows(join_tree))
             refresh_filter_risk_text()
 
         def add_join():
             if not left_var.get().strip() or not right_var.get().strip():
                 messagebox.showwarning("提示", "请选择左右匹配字段。")
                 return
-            join_tree.insert("", tk.END, values=(left_var.get(), join_op_var.get(), right_var.get()))
+            rows = workflow_append_filter_join_rule_row(tree_rows(join_tree), left_var.get(), join_op_var.get(), right_var.get())
+            replace_tree_rows(join_tree, rows)
             sync_join_rules_from_tree()
 
         def del_join():
-            for iid in join_tree.selection():
-                join_tree.delete(iid)
+            selected = [join_tree.index(iid) for iid in join_tree.selection()]
+            rows = workflow_delete_filter_rows_by_indexes(tree_rows(join_tree), selected)
+            replace_tree_rows(join_tree, rows)
             sync_join_rules_from_tree()
 
         ttk.Button(join_frame, text="添加匹配规则", command=add_join).grid(row=4, column=1, padx=4, pady=4)
@@ -13061,7 +13068,7 @@ class PlanWorkflowWindow:
             actual_output_var.set(workflow_build_filter_actual_output_text(
                 selected_fields,
                 headers,
-                field_state["all"],
+                field_state["all_values"],
                 config.get("extra_tables", []),
             ))
 
@@ -13071,14 +13078,14 @@ class PlanWorkflowWindow:
 
         def refresh_filter_field_sources():
             config["extra_tables"] = [table_list.get(i) for i in table_list.curselection()]
-            field_state["all"] = self.get_plan_filter_available_fields(headers, config.get("extra_tables", []), transit_context)
-            field_state["current"] = [f"当前表.{h}" for h in headers]
+            available_fields = self.get_plan_filter_available_fields(headers, config.get("extra_tables", []), transit_context)
             state = workflow_build_filter_field_refresh_state(
                 headers,
-                field_state["all"],
+                available_fields,
                 value_source_var.get(),
                 config.get("output_fields", []),
             )
+            field_state.clear()
             field_state.update(state)
             self.refresh_combo_values(field_combo, field_var, state["all_values"], keep_custom=False, fallback=state["first_any"])
             self.refresh_combo_values(
@@ -13095,7 +13102,7 @@ class PlanWorkflowWindow:
             sync_output_fields()
             refresh_condition_value_input()
             refresh_filter_risk_text()
-            self.status_var.set(f"高级筛选字段已局部刷新：{len(config.get('extra_tables', []))} 个副表，{len(state['all_values'])} 个可用字段。")
+            self.status_var.set(workflow_build_filter_field_refresh_status(len(config.get("extra_tables", [])), len(state["all_values"])))
 
         out_list.bind("<<ListboxSelect>>", lambda e: sync_output_fields())
         btns = ttk.Frame(output_frame)
@@ -13117,11 +13124,11 @@ class PlanWorkflowWindow:
         ).pack(side=tk.LEFT, padx=2)
         ttk.Button(btns, text="清空输出选择", command=lambda: (out_list.selection_clear(0, tk.END), sync_output_fields())).pack(side=tk.LEFT, padx=2)
 
-        dedupe_text = tk.StringVar(value="去除重复内容:开" if bool(config.get("remove_duplicates", False)) else "去除重复内容:关")
+        dedupe_text = tk.StringVar(value=workflow_filter_dedupe_button_text(config.get("remove_duplicates", False)))
 
         def toggle_filter_dedupe():
-            config["remove_duplicates"] = not bool(config.get("remove_duplicates", False))
-            dedupe_text.set("去除重复内容:开" if config["remove_duplicates"] else "去除重复内容:关")
+            enabled = workflow_toggle_filter_dedupe_config(config)
+            dedupe_text.set(workflow_filter_dedupe_button_text(enabled))
 
         ttk.Button(btns, textvariable=dedupe_text, command=toggle_filter_dedupe).pack(side=tk.LEFT, padx=(12, 2))
         ttk.Label(btns, text="按最终输出整行去重，保留第一条。", foreground="gray").pack(side=tk.LEFT, padx=4)

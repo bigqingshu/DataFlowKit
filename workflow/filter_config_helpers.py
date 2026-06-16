@@ -66,6 +66,60 @@ def filter_conditions_from_rows(rows):
     return [filter_condition_from_row(row) for row in (rows or [])]
 
 
+def append_filter_condition_row(rows, field, op, value_source, value):
+    result = [tuple(row) for row in (rows or [])]
+    condition = filter_condition_from_row((field, op, value_source, value))
+    result.append((
+        condition["field"],
+        condition["op"],
+        condition["value_source"],
+        condition["value"],
+    ))
+    return result
+
+
+def delete_filter_rows_by_indexes(rows, selected_indexes):
+    selected = set(selected_indexes or [])
+    return [tuple(row) for index, row in enumerate(rows or []) if index not in selected]
+
+
+def parse_treeview_column_index(column_id, column_count):
+    try:
+        index = int(str(column_id or "").replace("#", "", 1)) - 1
+    except Exception:
+        return None
+    if index < 0 or index >= int(column_count):
+        return None
+    return index
+
+
+def normalize_treeview_row_values(values, column_count):
+    normalized = list(values or [])
+    while len(normalized) < int(column_count):
+        normalized.append("")
+    return normalized
+
+
+def build_treeview_cell_edit_state(values, column_id, column_count):
+    index = parse_treeview_column_index(column_id, column_count)
+    if index is None:
+        return None
+    normalized = normalize_treeview_row_values(values, column_count)
+    return {
+        "column_index": index,
+        "values": normalized,
+        "text": normalized[index],
+    }
+
+
+def apply_treeview_cell_edit(values, column_index, new_value, column_count):
+    if column_index is None or column_index < 0 or column_index >= int(column_count):
+        return None
+    normalized = normalize_treeview_row_values(values, column_count)
+    normalized[column_index] = new_value
+    return normalized
+
+
 def filter_join_rule_to_row(rule):
     rule = rule or {}
     return (
@@ -89,6 +143,13 @@ def filter_join_rule_from_row(row):
 
 def filter_join_rules_from_rows(rows):
     return [filter_join_rule_from_row(row) for row in (rows or [])]
+
+
+def append_filter_join_rule_row(rows, left, op, right):
+    result = [tuple(row) for row in (rows or [])]
+    rule = filter_join_rule_from_row((left, op, right))
+    result.append((rule["left"], rule["op"], rule["right"]))
+    return result
 
 
 def choose_filter_actual_output_lookup_fields(selected_fields, headers, all_fields, extra_tables):
@@ -118,6 +179,54 @@ def build_filter_field_refresh_state(headers, all_fields, value_source="固定�
         "selected_output": set(selected_output_fields or []),
         "value_source": normalized_value_source,
     }
+
+
+def build_filter_condition_input_state(all_fields, value_source="固定值", current_value=""):
+    fields = list(all_fields or [])
+    source = normalize_filter_condition_value_source({"value_source": value_source})
+    return {
+        "field_default": fields[0] if fields else "",
+        "value_source": source,
+        "value_choices": fields if source == "字段值" else [],
+        "value_default": fields[0] if source == "字段值" and not str(current_value or "").strip() and fields else current_value,
+    }
+
+
+def build_filter_join_input_state(current_fields, all_fields):
+    current_values = list(current_fields or [])
+    all_values = list(all_fields or [])
+    first_any = all_values[0] if all_values else ""
+    right_default = next((field for field in all_values if not str(field).startswith("当前表.")), first_any)
+    return {
+        "left_default": current_values[0] if current_values else first_any,
+        "right_default": right_default,
+    }
+
+
+def filter_dedupe_button_text(enabled):
+    return "去除重复内容:开" if bool(enabled) else "去除重复内容:关"
+
+
+def toggle_filter_dedupe_config(config):
+    config["remove_duplicates"] = not bool(config.get("remove_duplicates", False))
+    return config["remove_duplicates"]
+
+
+def build_filter_risk_display_state(warnings):
+    warnings = list(warnings or [])
+    if warnings:
+        return {
+            "text": "风险提示：" + "；".join(str(item) for item in warnings),
+            "foreground": "#9a5a00",
+        }
+    return {
+        "text": "状态：当前多表筛选未发现明显全组合风险。",
+        "foreground": "gray",
+    }
+
+
+def build_filter_field_refresh_status(extra_table_count, field_count):
+    return f"高级筛选字段已局部刷新：{int(extra_table_count)} 个副表，{int(field_count)} 个可用字段。"
 
 
 def build_filter_actual_output_text(selected_fields, headers, all_fields, extra_tables, display_limit=12, conflict_limit=6):
