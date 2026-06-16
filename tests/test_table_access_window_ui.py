@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import unittest
 
+from DataFlowKit import PlanWorkflowWindow
 from workflow.table_access_window_ui import (
     add_table_access_entry,
     apply_auto_field_mapping_by_name,
@@ -21,7 +22,14 @@ from workflow.table_access_window_ui import (
     reset_field_form,
     save_table_access_entry,
     selected_field_key,
+    table_access_field_mapping_mode_choices,
+    table_access_field_tree_columns,
+    table_access_node_tree_columns,
     table_access_preset_config,
+    table_access_preset_choices,
+    table_access_role_choices,
+    table_access_source_type_choices,
+    table_access_table_tree_columns,
     upsert_field_mapping_entry,
 )
 
@@ -44,11 +52,22 @@ class DummyTree:
     def insert(self, parent, index, iid=None, values=()):
         self.rows[str(iid)] = tuple(values)
 
+    def selection(self):
+        return [self.selected] if self.selected is not None else []
+
     def selection_set(self, iid):
         self.selected = str(iid)
 
     def focus(self, iid):
         self.focused = str(iid)
+
+
+class DummyWidget:
+    def __init__(self):
+        self.configured = {}
+
+    def configure(self, **kwargs):
+        self.configured.update(kwargs)
 
 
 class DummyVar:
@@ -63,6 +82,15 @@ class DummyVar:
 
 
 class TableAccessWindowUiTests(unittest.TestCase):
+    def test_window_column_and_choice_specs(self):
+        self.assertEqual(table_access_node_tree_columns()[0], ("index", "#", 44))
+        self.assertEqual(table_access_table_tree_columns()[0], ("role", "表角色", 80))
+        self.assertEqual(table_access_field_tree_columns()[0], ("source_index", "源序", 48))
+        self.assertIn("target", table_access_role_choices())
+        self.assertIn("SQLite表", table_access_source_type_choices())
+        self.assertIn("追加或更新", table_access_preset_choices())
+        self.assertEqual(table_access_field_mapping_mode_choices(), ["按字段名", "按列顺序", "手动"])
+
     def test_mode_display_and_value(self):
         self.assertEqual(field_mapping_mode_display({"field_mapping_mode": "by_order"}), "按列顺序")
         self.assertEqual(field_mapping_mode_display({"field_mapping_mode": "manual"}), "手动")
@@ -338,6 +366,124 @@ class TableAccessWindowUiTests(unittest.TestCase):
         self.assertTrue(all(danger_config["permissions"].values()))
         self.assertEqual(danger_config["write_mode"], "replace_table")
         self.assertIsNone(table_access_preset_config("不存在", keys))
+
+    def test_window_selection_instance_methods_refresh_forms(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+        first_entry = {
+            "role": "target",
+            "source_type": "SQLite表",
+            "table": "orders",
+            "write_mode": "append",
+            "permissions": {"read_table": True},
+            "field_mapping": {
+                "amount": {
+                    "source_field": "Amount",
+                    "target_field": "AmountOut",
+                    "permissions": {"read_field": True},
+                }
+            },
+        }
+        second_entry = {
+            "role": "output",
+            "source_type": "SQLite表",
+            "table": "archive",
+            "write_mode": "replace_table",
+            "permissions": {"write_table": True},
+            "field_mapping": {
+                "archived": {
+                    "source_field": "ArchiveAmount",
+                    "target_field": "ArchiveAmountOut",
+                    "permissions": {"read_field": True, "write_field": True},
+                }
+            },
+        }
+        window.nodes = [
+            {"type": "读取", "name": "源", "enabled": True, "table_access": {"tables": []}},
+            {"type": "写入", "name": "保存", "enabled": True, "table_access": {"tables": [first_entry, second_entry]}},
+        ]
+        window.get_node_table_access = lambda node: node.get("table_access", {"tables": []})
+        window.table_access_node_status = lambda node: "启用"
+        window.table_access_entry_table_label = lambda entry: entry.get("table", "")
+        window.table_access_operation_summary = lambda entry: "操作"
+        window.table_permission_summary = lambda entry: "权限"
+        window.write_mode_display_text = lambda mode: {"append": "追加行", "replace_table": "覆盖表"}.get(mode, mode)
+        window.table_access_entry_status = lambda entry: "已授权"
+        window.normalize_table_access_write_mode = lambda mode: str(mode or "")
+        window.table_access_table_choices = lambda node=None: ["orders", "archive"] if node else []
+        window.get_table_access_field_choices = lambda node_index, entry: ["Amount", "AmountOut", "ArchiveAmount", "ArchiveAmountOut"]
+        window.field_bool_text = lambda value: "是" if value else "否"
+        window.field_permission_status = lambda item: "字段已授权"
+
+        table_section = {
+            "role_var": DummyVar(),
+            "source_type_var": DummyVar(),
+            "table_var": DummyVar(),
+            "write_mode_var": DummyVar(),
+            "field_mapping_mode_var": DummyVar(),
+            "is_current_var": DummyVar(),
+            "log_only_var": DummyVar(),
+            "permission_vars": {"read_table": DummyVar(), "write_table": DummyVar()},
+            "preset_var": DummyVar(),
+            "table_combo": DummyWidget(),
+        }
+        field_section = {
+            "source_field_var": DummyVar(),
+            "target_field_var": DummyVar(),
+            "source_index_var": DummyVar(),
+            "target_index_var": DummyVar(),
+            "field_permission_vars": {
+                "read_field": DummyVar(),
+                "write_field": DummyVar(),
+                "create_field": DummyVar(),
+                "protect_field": DummyVar(),
+            },
+            "source_field_combo": DummyWidget(),
+            "target_field_combo": DummyWidget(),
+        }
+        node_tree = DummyTree()
+        table_tree = DummyTree()
+        field_tree = DummyTree()
+        status_var = DummyVar()
+        state = {"node_index": 0, "table_index": None, "field_keys": [], "refreshing_node_tree": False}
+
+        node_tree.selection_set("1")
+        window.on_table_access_window_node_selected(
+            state,
+            table_section,
+            field_section,
+            node_tree,
+            table_tree,
+            field_tree,
+            status_var,
+        )
+        self.assertEqual(state["node_index"], 1)
+        self.assertEqual(state["table_index"], 0)
+        self.assertEqual(table_section["table_var"].get(), "orders")
+        self.assertEqual(table_section["write_mode_var"].get(), "append")
+        self.assertEqual(table_section["table_combo"].configured["values"], ["orders", "archive"])
+        self.assertEqual(field_section["source_field_combo"].configured["values"], ["Amount", "AmountOut", "ArchiveAmount", "ArchiveAmountOut"])
+        self.assertEqual(state["field_keys"], ["amount"])
+        self.assertIn("2.写入 / 保存", status_var.get())
+
+        table_tree.selection_set("1")
+        window.on_table_access_window_table_selected(
+            state,
+            table_section,
+            field_section,
+            table_tree,
+            field_tree,
+        )
+        self.assertEqual(state["table_index"], 1)
+        self.assertEqual(table_section["table_var"].get(), "archive")
+        self.assertEqual(table_section["write_mode_var"].get(), "replace_table")
+        self.assertEqual(state["field_keys"], ["archived"])
+
+        field_tree.selection_set("0")
+        window.on_table_access_window_field_selected(state, field_section, field_tree)
+        self.assertEqual(field_section["source_field_var"].get(), "ArchiveAmount")
+        self.assertEqual(field_section["target_field_var"].get(), "ArchiveAmountOut")
+        self.assertTrue(field_section["field_permission_vars"]["read_field"].get())
+        self.assertTrue(field_section["field_permission_vars"]["write_field"].get())
 
 
 if __name__ == "__main__":

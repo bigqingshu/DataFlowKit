@@ -4,6 +4,57 @@
 from workflow.table_access_precheck import table_access_field_items
 
 
+def table_access_node_tree_columns():
+    return [
+        ("index", "#", 44),
+        ("type", "节点类型", 130),
+        ("name", "节点名称", 145),
+        ("status", "状态", 80),
+    ]
+
+
+def table_access_table_tree_columns():
+    return [
+        ("role", "表角色", 80),
+        ("table", "实际表", 150),
+        ("operation", "操作", 160),
+        ("current", "当前表", 58),
+        ("permissions", "权限摘要", 145),
+        ("mode", "写入模式", 120),
+        ("status", "状态", 75),
+    ]
+
+
+def table_access_field_tree_columns():
+    return [
+        ("source_index", "源序", 48),
+        ("source", "来源字段", 110),
+        ("target_index", "目序", 48),
+        ("target", "目标字段", 110),
+        ("read", "读", 42),
+        ("write", "写", 42),
+        ("create", "建", 42),
+        ("protect", "保护", 52),
+        ("status", "状态", 70),
+    ]
+
+
+def table_access_role_choices():
+    return ["current", "source", "target", "lookup", "transit", "output", "log"]
+
+
+def table_access_source_type_choices():
+    return ["当前工作流表", "SQLite表", "中转副表"]
+
+
+def table_access_preset_choices():
+    return ["自定义", "禁止访问", "只读", "默认读写只记录", "追加写入", "更新写入", "追加或更新", "覆盖/清空", "新建表", "危险全开"]
+
+
+def table_access_field_mapping_mode_choices():
+    return ["按字段名", "按列顺序", "手动"]
+
+
 def field_mapping_mode_display(entry):
     mode = str((entry or {}).get("field_mapping_mode", "by_name") or "by_name").strip()
     return {
