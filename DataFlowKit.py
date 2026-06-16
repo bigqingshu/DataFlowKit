@@ -287,6 +287,9 @@ from workflow.plugin_schema_config_ui import (
 from workflow.rename_columns_config_ui import (
     build_rename_columns_config as workflow_build_rename_columns_config_ui,
 )
+from workflow.match_value_output_config_ui import (
+    build_match_value_output_field_name_config as workflow_build_match_value_output_field_name_config_ui,
+)
 from workflow.writeback_config_ui import (
     build_writeback_config as workflow_build_writeback_config_ui,
 )
@@ -11311,159 +11314,7 @@ class PlanWorkflowWindow:
         self.refresh_merge_separator_ui(sep_frame, config)
 
     def build_match_value_output_field_name_config(self, config, headers, transit_context=None):
-        """配置：用当前表字段值匹配指定表或中转副表的多个字段，输出匹配到的字段名。"""
-        frame = ttk.LabelFrame(self.config_frame, text="匹配值输出列名节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        ttk.Label(
-            frame,
-            text="用当前表指定字段的值，去 SQLite 表或中转副表的多个字段列中匹配；匹配到哪个字段，就把该字段名输出到当前表的新列。",
-            foreground="gray",
-            wraplength=1050
-        ).grid(row=0, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
-
-        tables = []
-        try:
-            tables = self.app.get_table_names()
-        except Exception:
-            tables = []
-        transit_context = transit_context or {"transit_tables": {}}
-        transit_names = list((transit_context.get("transit_tables") or {}).keys())
-        if not headers:
-            headers = []
-
-        source_default = config.get("source_field") if config.get("source_field") in headers else (headers[0] if headers else "")
-        source_var = self.add_labeled_combo(frame, "当前表匹配字段：", source_default, headers, 1, 0, 24, readonly=False)
-        source_type_values = ["SQLite表", "中转副表"]
-        source_type_default = config.get("lookup_source_type", "SQLite表")
-        if source_type_default not in source_type_values:
-            source_type_default = "SQLite表"
-        source_type_var = self.add_labeled_combo(frame, "匹配来源：", source_type_default, source_type_values, 1, 2, 16)
-        initial_values = transit_names if source_type_default == "中转副表" else tables
-        table_label = "中转副表：" if source_type_default == "中转副表" else "SQLite匹配表："
-        table_default = config.get("lookup_table") if config.get("lookup_table") in initial_values else (initial_values[0] if initial_values else config.get("lookup_table", ""))
-        ttk.Label(frame, text=table_label).grid(row=1, column=4, sticky=tk.W, padx=4, pady=4)
-        table_var = tk.StringVar(value=table_default)
-        table_combo = ttk.Combobox(frame, textvariable=table_var, values=initial_values, width=28, state="normal")
-        table_combo.grid(row=1, column=5, sticky=tk.W, padx=4, pady=4)
-        match_modes = ["完全相等", "当前值包含匹配值", "匹配值包含当前值", "忽略大小写完全相等", "忽略大小写当前值包含匹配值", "忽略大小写匹配值包含当前值", "正则匹配"]
-        mode_var = self.add_labeled_combo(frame, "匹配方式：", config.get("match_mode", "完全相等"), match_modes, 2, 0, 26)
-        self.sync_var_to_config(source_var, config, "source_field")
-        self.sync_var_to_config(source_type_var, config, "lookup_source_type")
-        self.sync_var_to_config(table_var, config, "lookup_table")
-        self.sync_var_to_config(mode_var, config, "match_mode")
-
-        out_frame = ttk.LabelFrame(frame, text="输出设置", padding=6)
-        out_frame.grid(row=3, column=0, columnspan=8, sticky="ew", padx=4, pady=6)
-        output_field_var = self.add_labeled_entry(out_frame, "输出字段名：", config.get("output_field", "匹配字段名"), 0, 0, 18)
-        no_match_var = self.add_labeled_entry(out_frame, "未匹配写入：", config.get("no_match_value", "未匹配"), 0, 2, 18)
-        sep_var = self.add_labeled_entry(out_frame, "多匹配分隔符：", config.get("multi_match_separator", ";"), 0, 4, 10)
-        multi_var = self.add_labeled_combo(out_frame, "多匹配处理：", config.get("multi_match_policy", "合并所有字段名"), ["合并所有字段名", "取第一个匹配字段名", "标记为多匹配"], 1, 0, 18)
-        self.sync_var_to_config(output_field_var, config, "output_field")
-        self.sync_var_to_config(no_match_var, config, "no_match_value")
-        self.sync_var_to_config(sep_var, config, "multi_match_separator")
-        self.sync_var_to_config(multi_var, config, "multi_match_policy")
-
-        match_value_bool = tk.BooleanVar(value=bool(config.get("output_match_value", True)))
-        match_row_bool = tk.BooleanVar(value=bool(config.get("output_match_row", True)))
-        status_bool = tk.BooleanVar(value=bool(config.get("output_status", True)))
-        skip_empty_bool = tk.BooleanVar(value=bool(config.get("skip_empty_lookup_value", True)))
-        ttk.Checkbutton(out_frame, text="输出匹配值", variable=match_value_bool).grid(row=2, column=0, sticky=tk.W, padx=4, pady=4)
-        match_value_field_var = self.add_labeled_entry(out_frame, "匹配值字段：", config.get("match_value_field", "匹配值"), 2, 1, 16)
-        ttk.Checkbutton(out_frame, text="输出匹配行号", variable=match_row_bool).grid(row=2, column=3, sticky=tk.W, padx=4, pady=4)
-        match_row_field_var = self.add_labeled_entry(out_frame, "行号字段：", config.get("match_row_field", "匹配行号"), 2, 4, 16)
-        ttk.Checkbutton(out_frame, text="输出匹配状态", variable=status_bool).grid(row=3, column=0, sticky=tk.W, padx=4, pady=4)
-        status_field_var = self.add_labeled_entry(out_frame, "状态字段：", config.get("status_field", "匹配状态"), 3, 1, 16)
-        ttk.Checkbutton(out_frame, text="跳过匹配表空值", variable=skip_empty_bool).grid(row=3, column=3, sticky=tk.W, padx=4, pady=4)
-        for var, key in [
-            (match_value_bool, "output_match_value"),
-            (match_row_bool, "output_match_row"),
-            (status_bool, "output_status"),
-            (skip_empty_bool, "skip_empty_lookup_value"),
-        ]:
-            self.sync_bool_to_config(var, config, key)
-        for var, key in [
-            (match_value_field_var, "match_value_field"),
-            (match_row_field_var, "match_row_field"),
-            (status_field_var, "status_field"),
-        ]:
-            self.sync_var_to_config(var, config, key)
-
-        fields_frame = ttk.LabelFrame(frame, text="参与匹配的目标表字段", padding=6)
-        fields_frame.grid(row=4, column=0, columnspan=8, sticky="nsew", padx=4, pady=6)
-        fields_wrap = ttk.Frame(fields_frame)
-        fields_wrap.pack(fill=tk.BOTH, expand=True)
-        lb = tk.Listbox(fields_wrap, selectmode=tk.MULTIPLE, height=10, exportselection=False)
-        yscroll = ttk.Scrollbar(fields_wrap, orient=tk.VERTICAL, command=lb.yview)
-        lb.configure(yscrollcommand=yscroll.set)
-        lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        yscroll.pack(side=tk.RIGHT, fill=tk.Y)
-
-        def get_current_lookup_values():
-            return transit_names if source_type_var.get() == "中转副表" else tables
-
-        def load_lookup_columns():
-            lookup_table = table_var.get().strip()
-            lookup_source_type = source_type_var.get().strip() or "SQLite表"
-            cols = []
-            if lookup_table:
-                try:
-                    if lookup_source_type == "中转副表":
-                        item = (transit_context.get("transit_tables") or {}).get(lookup_table, {})
-                        cols = list(item.get("headers", []))
-                    else:
-                        cols = self.app.get_table_columns(lookup_table)
-                except Exception:
-                    cols = []
-            lb.delete(0, tk.END)
-            selected = set(config.get("lookup_fields", []))
-            for i, col in enumerate(cols):
-                lb.insert(tk.END, col)
-                if col in selected:
-                    lb.selection_set(i)
-            if not selected and cols:
-                for i in range(min(3, len(cols))):
-                    lb.selection_set(i)
-                sync_lookup_fields()
-
-        def sync_lookup_fields(*_):
-            cols = [lb.get(i) for i in lb.curselection()]
-            config["lookup_fields"] = cols
-
-        lb.bind("<<ListboxSelect>>", sync_lookup_fields)
-
-        btn_frame = ttk.Frame(fields_frame)
-        btn_frame.pack(fill=tk.X, pady=4)
-        def select_all_fields():
-            lb.selection_set(0, tk.END)
-            sync_lookup_fields()
-        def clear_fields():
-            lb.selection_clear(0, tk.END)
-            sync_lookup_fields()
-        def refresh_fields():
-            config["lookup_source_type"] = source_type_var.get().strip() or "SQLite表"
-            config["lookup_table"] = table_var.get().strip()
-            load_lookup_columns()
-        ttk.Button(btn_frame, text="刷新字段", command=refresh_fields).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btn_frame, text="全选", command=select_all_fields).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btn_frame, text="全不选", command=clear_fields).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btn_frame, text="反选", command=lambda: [lb.selection_clear(i) if lb.selection_includes(i) else lb.selection_set(i) for i in range(lb.size())] or sync_lookup_fields()).pack(side=tk.LEFT, padx=4)
-        ttk.Label(fields_frame, text="说明：会逐行扫描这些字段的单元格；匹配成功后输出该单元格所在的字段名。", foreground="gray").pack(anchor=tk.W, padx=4, pady=(2, 0))
-
-        def on_source_type_change(*_):
-            config["lookup_source_type"] = source_type_var.get().strip() or "SQLite表"
-            values = get_current_lookup_values()
-            table_combo.configure(values=values)
-            if table_var.get().strip() not in values:
-                table_var.set(values[0] if values else "")
-            config["lookup_table"] = table_var.get().strip()
-            load_lookup_columns()
-
-        def on_table_change(*_):
-            config["lookup_table"] = table_var.get().strip()
-            load_lookup_columns()
-        source_type_var.trace_add("write", on_source_type_change)
-        table_var.trace_add("write", on_table_change)
-        load_lookup_columns()
+        return workflow_build_match_value_output_field_name_config_ui(self, config, headers, transit_context)
 
     def build_numeric_column_config(self, config, headers):
         frame = ttk.LabelFrame(self.config_frame, text="列数字运算节点", padding=8)
