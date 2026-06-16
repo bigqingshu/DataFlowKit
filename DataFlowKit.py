@@ -13019,57 +13019,25 @@ class PlanWorkflowWindow:
         direction_var.trace_add("write", schedule_writeback_refresh)
         external_table_var.trace_add("write", schedule_writeback_refresh)
 
-    def build_filter_config(self, config, headers, transit_context=None):
-        """
-        计划节点内的高级筛选配置。
-        主输入固定为“上一步结果”，在字段列表中显示为“当前表.字段”。
-        可额外勾选 SQLite 数据库中的表，并通过匹配规则把当前表和副表关联起来。
-        """
-        workflow_ensure_filter_config_defaults(config)
-        self.normalize_plan_filter_config_field_references(
-            config,
-            headers,
-            config.get("extra_tables", []),
-        )
-
-        frame = ttk.LabelFrame(self.config_frame, text="高级筛选节点（支持：上一步结果 + 多表匹配）", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-
+    def build_filter_header_risk_section(self, frame, start_row=0):
         note = (
             "说明：上一步结果会作为【当前表】参与匹配。"
             "需要多表匹配时，在左侧勾选副表，再添加匹配规则，例如 当前表.编码 等于 物料表.编码。"
         )
-        ttk.Label(frame, text=note, foreground="gray", wraplength=1050).grid(row=0, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
+        ttk.Label(frame, text=note, foreground="gray", wraplength=1050).grid(row=start_row, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
 
         risk_var = tk.StringVar()
         risk_label = ttk.Label(frame, textvariable=risk_var, wraplength=1050)
-        risk_label.grid(row=1, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
+        risk_label.grid(row=start_row + 1, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
+        return {
+            "risk_var": risk_var,
+            "risk_label": risk_label,
+            "next_row": start_row + 2,
+        }
 
-        def refresh_filter_risk_text():
-            warnings = self.get_plan_filter_config_warnings(
-                headers,
-                config.get("extra_tables", []),
-                config.get("conditions", []),
-                config.get("join_rules", []),
-                config.get("join_logic", "AND"),
-            )
-            display = workflow_build_filter_risk_display_state(warnings)
-            risk_var.set(display["text"])
-            risk_label.configure(foreground=display["foreground"])
-
-        selected_tables = list(config.get("extra_tables", []))
-        transit_context = transit_context or {"transit_tables": {}}
-        all_fields = self.get_plan_filter_available_fields(headers, selected_tables, transit_context)
-        field_state = workflow_build_filter_field_refresh_state(
-            headers,
-            all_fields,
-            selected_output_fields=config.get("output_fields", []),
-        )
-        current_fields = field_state["current_values"]
-
-        # 1. 副表选择区
+    def build_filter_source_table_section(self, frame, config, headers, selected_tables, transit_context, sync_extra_tables, start_row=2):
         source_frame = ttk.LabelFrame(frame, text="1. 副表选择（主输入固定为：上一步结果 / 当前表）", padding=6)
-        source_frame.grid(row=2, column=0, columnspan=8, sticky="nsew", pady=6)
+        source_frame.grid(row=start_row, column=0, columnspan=8, sticky="nsew", pady=6)
         ttk.Label(source_frame, text=f"当前表字段数：{len(headers)}").grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
         ttk.Label(source_frame, text="可选数据库表：").grid(row=1, column=0, sticky=tk.NW, padx=4, pady=4)
         table_list = tk.Listbox(source_frame, selectmode=tk.MULTIPLE, height=5, exportselection=False, width=36)
@@ -13077,6 +13045,7 @@ class PlanWorkflowWindow:
         table_scroll = ttk.Scrollbar(source_frame, orient=tk.VERTICAL, command=table_list.yview)
         table_scroll.grid(row=1, column=2, sticky="ns")
         table_list.configure(yscrollcommand=table_scroll.set)
+
         try:
             db_tables = self.app.get_table_names()
         except Exception:
@@ -13093,17 +13062,19 @@ class PlanWorkflowWindow:
         self.sync_var_to_config(limit_var, config, "result_limit")
         self.sync_var_to_config(max_var, config, "max_intermediate")
 
-        def sync_extra_tables(rebuild=False):
-            config["extra_tables"] = [table_list.get(i) for i in table_list.curselection()]
-            if rebuild:
-                refresh_filter_field_sources()
-
         ttk.Button(source_frame, text="保存表选择 / 刷新字段", command=lambda: sync_extra_tables(True)).grid(row=1, column=3, sticky=tk.W, padx=4, pady=4)
         ttk.Button(source_frame, text="清空副表", command=lambda: (table_list.selection_clear(0, tk.END), sync_extra_tables(True))).grid(row=1, column=4, sticky=tk.W, padx=4, pady=4)
+        return {
+            "frame": source_frame,
+            "table_list": table_list,
+            "selectable_tables": selectable_tables,
+            "limit_var": limit_var,
+            "max_var": max_var,
+        }
 
-        # 2. 筛选条件区
+    def build_filter_condition_section(self, frame, config, all_fields, start_row=3):
         condition_frame = ttk.LabelFrame(frame, text="2. 筛选条件（可筛选字段，并支持固定值或字段值匹配）", padding=6)
-        condition_frame.grid(row=3, column=0, columnspan=8, sticky="nsew", pady=6)
+        condition_frame.grid(row=start_row, column=0, columnspan=8, sticky="nsew", pady=6)
         logic_var = self.add_labeled_combo(condition_frame, "条件关系：", config.get("logic", "AND"), self.LOGIC_TYPES, 0, 0, 8)
         self.sync_var_to_config(logic_var, config, "logic")
         condition_input_state = workflow_build_filter_condition_input_state(all_fields)
@@ -13111,6 +13082,7 @@ class PlanWorkflowWindow:
         op_var = tk.StringVar(value="包含")
         value_source_var = tk.StringVar(value=condition_input_state["value_source"])
         value_var = tk.StringVar(value=condition_input_state["value_default"])
+
         ttk.Label(condition_frame, text="字段：").grid(row=1, column=0, padx=4, pady=4)
         field_combo = ttk.Combobox(condition_frame, textvariable=field_var, values=all_fields, width=28, state="normal")
         field_combo.grid(row=1, column=1, padx=4, pady=4)
@@ -13122,22 +13094,6 @@ class PlanWorkflowWindow:
         ttk.Label(condition_frame, text="匹配值：").grid(row=1, column=6, padx=4, pady=4)
         value_combo = ttk.Combobox(condition_frame, textvariable=value_var, values=[], width=28, state="normal")
         value_combo.grid(row=1, column=7, padx=4, pady=4)
-
-        def refresh_condition_value_input(*_):
-            state = workflow_build_filter_condition_input_state(
-                field_state["all_values"],
-                value_source=value_source_var.get(),
-                current_value=value_var.get(),
-            )
-            if value_source_var.get() != state["value_source"]:
-                value_source_var.set(state["value_source"])
-                return
-            value_combo.configure(values=state["value_choices"])
-            if value_var.get() != state["value_default"]:
-                value_var.set(state["value_default"])
-
-        value_source_var.trace_add("write", refresh_condition_value_input)
-        refresh_condition_value_input()
 
         cond_toolbar = ttk.Frame(condition_frame)
         cond_toolbar.grid(row=2, column=0, columnspan=7, sticky="w", padx=4, pady=(2, 0))
@@ -13165,6 +13121,188 @@ class PlanWorkflowWindow:
         condition_frame.columnconfigure(7, weight=1)
         for row_values in workflow_filter_conditions_to_rows(config.get("conditions", [])):
             cond_tree.insert("", tk.END, values=row_values)
+
+        return {
+            "frame": condition_frame,
+            "logic_var": logic_var,
+            "field_var": field_var,
+            "field_combo": field_combo,
+            "op_var": op_var,
+            "value_source_var": value_source_var,
+            "value_source_combo": value_source_combo,
+            "value_var": value_var,
+            "value_combo": value_combo,
+            "cond_edit_mode": cond_edit_mode,
+            "cond_tree": cond_tree,
+            "button_row": 5,
+        }
+
+    def build_filter_join_section(self, frame, config, all_fields, current_fields, start_row=4):
+        join_frame = ttk.LabelFrame(frame, text="3. 多表匹配规则（没有副表时可不填；有副表时建议至少添加一条匹配规则）", padding=6)
+        join_frame.grid(row=start_row, column=0, columnspan=8, sticky="nsew", pady=6)
+        join_input_state = workflow_build_filter_join_input_state(current_fields, all_fields)
+        left_var = tk.StringVar(value=join_input_state["left_default"])
+        join_op_var = tk.StringVar(value="等于")
+        right_var = tk.StringVar(value=join_input_state["right_default"])
+        join_ops = ["等于", "不等于", "左包含右", "右包含左", "双向包含"]
+
+        ttk.Label(join_frame, text="匹配关系：").grid(row=0, column=0, padx=4, pady=(4, 0), sticky=tk.W)
+        ttk.Label(join_frame, text="左字段：").grid(row=0, column=1, padx=4, pady=(4, 0), sticky=tk.W)
+        ttk.Label(join_frame, text="匹配：").grid(row=0, column=2, padx=4, pady=(4, 0), sticky=tk.W)
+        ttk.Label(join_frame, text="右字段：").grid(row=0, column=3, padx=4, pady=(4, 0), sticky=tk.W)
+
+        join_logic_var = tk.StringVar(value=config.get("join_logic", "AND"))
+        ttk.Combobox(join_frame, textvariable=join_logic_var, values=self.LOGIC_TYPES, width=8, state="readonly").grid(row=1, column=0, padx=4, pady=4, sticky=tk.W)
+        self.sync_var_to_config(join_logic_var, config, "join_logic")
+        left_combo = ttk.Combobox(join_frame, textvariable=left_var, values=all_fields, width=28, state="normal")
+        left_combo.grid(row=1, column=1, padx=4, pady=4)
+        ttk.Combobox(join_frame, textvariable=join_op_var, values=join_ops, width=12, state="readonly").grid(row=1, column=2, padx=4, pady=4)
+        right_combo = ttk.Combobox(join_frame, textvariable=right_var, values=all_fields, width=28, state="normal")
+        right_combo.grid(row=1, column=3, padx=4, pady=4)
+        ttk.Label(join_frame, text="AND=全部规则满足；OR=任意规则满足。", foreground="gray").grid(row=1, column=5, sticky=tk.W, padx=4, pady=4)
+
+        join_tree = ttk.Treeview(join_frame, columns=("左字段", "匹配", "右字段"), show="headings", height=6)
+        for c, w in [("左字段", 260), ("匹配", 120), ("右字段", 260)]:
+            join_tree.heading(c, text=c)
+            join_tree.column(c, width=w, anchor=tk.W)
+        join_y_scroll = ttk.Scrollbar(join_frame, orient=tk.VERTICAL, command=join_tree.yview)
+        join_x_scroll = ttk.Scrollbar(join_frame, orient=tk.HORIZONTAL, command=join_tree.xview)
+        join_tree.configure(yscrollcommand=join_y_scroll.set, xscrollcommand=join_x_scroll.set)
+        join_tree.grid(row=2, column=0, columnspan=6, sticky="nsew", padx=4, pady=4)
+        join_y_scroll.grid(row=2, column=6, sticky="ns", pady=4)
+        join_x_scroll.grid(row=3, column=0, columnspan=6, sticky="ew", padx=4)
+        join_frame.rowconfigure(2, weight=1)
+        join_frame.columnconfigure(5, weight=1)
+        for row_values in workflow_filter_join_rules_to_rows(config.get("join_rules", [])):
+            join_tree.insert("", tk.END, values=row_values)
+
+        return {
+            "frame": join_frame,
+            "join_logic_var": join_logic_var,
+            "left_var": left_var,
+            "left_combo": left_combo,
+            "join_op_var": join_op_var,
+            "right_var": right_var,
+            "right_combo": right_combo,
+            "join_tree": join_tree,
+            "button_row": 4,
+        }
+
+    def build_filter_output_section(self, frame, config, all_fields, start_row=5):
+        output_frame = ttk.LabelFrame(frame, text="4. 输出字段（不选择则输出全部可用字段）", padding=6)
+        output_frame.grid(row=start_row, column=0, columnspan=8, sticky="nsew", pady=6)
+        out_wrap = ttk.Frame(output_frame)
+        out_wrap.pack(fill=tk.BOTH, expand=True)
+        out_list = tk.Listbox(out_wrap, selectmode=tk.MULTIPLE, height=9, exportselection=False)
+        out_scroll = ttk.Scrollbar(out_wrap, orient=tk.VERTICAL, command=out_list.yview)
+        out_list.configure(yscrollcommand=out_scroll.set)
+        out_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        out_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        selected = set(config.get("output_fields", []))
+        for i, h in enumerate(all_fields):
+            out_list.insert(tk.END, h)
+            if h in selected:
+                out_list.selection_set(i)
+        actual_output_var = tk.StringVar(value="")
+        ttk.Label(
+            output_frame,
+            textvariable=actual_output_var,
+            foreground="gray",
+            wraplength=1000,
+        ).pack(fill=tk.X, pady=(4, 0))
+        btns = ttk.Frame(output_frame)
+        btns.pack(fill=tk.X, pady=4)
+        return {
+            "frame": output_frame,
+            "out_list": out_list,
+            "actual_output_var": actual_output_var,
+            "button_frame": btns,
+        }
+
+    def build_filter_config(self, config, headers, transit_context=None):
+        """
+        计划节点内的高级筛选配置。
+        主输入固定为“上一步结果”，在字段列表中显示为“当前表.字段”。
+        可额外勾选 SQLite 数据库中的表，并通过匹配规则把当前表和副表关联起来。
+        """
+        workflow_ensure_filter_config_defaults(config)
+        self.normalize_plan_filter_config_field_references(
+            config,
+            headers,
+            config.get("extra_tables", []),
+        )
+
+        frame = ttk.LabelFrame(self.config_frame, text="高级筛选节点（支持：上一步结果 + 多表匹配）", padding=8)
+        frame.pack(fill=tk.BOTH, expand=True, pady=8)
+
+        risk_section = self.build_filter_header_risk_section(frame, start_row=0)
+        risk_var = risk_section["risk_var"]
+        risk_label = risk_section["risk_label"]
+
+        def refresh_filter_risk_text():
+            warnings = self.get_plan_filter_config_warnings(
+                headers,
+                config.get("extra_tables", []),
+                config.get("conditions", []),
+                config.get("join_rules", []),
+                config.get("join_logic", "AND"),
+            )
+            display = workflow_build_filter_risk_display_state(warnings)
+            risk_var.set(display["text"])
+            risk_label.configure(foreground=display["foreground"])
+
+        selected_tables = list(config.get("extra_tables", []))
+        transit_context = transit_context or {"transit_tables": {}}
+        all_fields = self.get_plan_filter_available_fields(headers, selected_tables, transit_context)
+        field_state = workflow_build_filter_field_refresh_state(
+            headers,
+            all_fields,
+            selected_output_fields=config.get("output_fields", []),
+        )
+        current_fields = field_state["current_values"]
+
+        def sync_extra_tables(rebuild=False):
+            config["extra_tables"] = [table_list.get(i) for i in table_list.curselection()]
+            if rebuild:
+                refresh_filter_field_sources()
+
+        source_section = self.build_filter_source_table_section(
+            frame,
+            config,
+            headers,
+            selected_tables,
+            transit_context,
+            sync_extra_tables,
+            start_row=risk_section["next_row"],
+        )
+        table_list = source_section["table_list"]
+
+        condition_section = self.build_filter_condition_section(frame, config, all_fields, start_row=3)
+        condition_frame = condition_section["frame"]
+        field_var = condition_section["field_var"]
+        field_combo = condition_section["field_combo"]
+        op_var = condition_section["op_var"]
+        value_source_var = condition_section["value_source_var"]
+        value_var = condition_section["value_var"]
+        value_combo = condition_section["value_combo"]
+        cond_edit_mode = condition_section["cond_edit_mode"]
+        cond_tree = condition_section["cond_tree"]
+
+        def refresh_condition_value_input(*_):
+            state = workflow_build_filter_condition_input_state(
+                field_state["all_values"],
+                value_source=value_source_var.get(),
+                current_value=value_var.get(),
+            )
+            if value_source_var.get() != state["value_source"]:
+                value_source_var.set(state["value_source"])
+                return
+            value_combo.configure(values=state["value_choices"])
+            if value_var.get() != state["value_default"]:
+                value_var.set(state["value_default"])
+
+        value_source_var.trace_add("write", refresh_condition_value_input)
+        refresh_condition_value_input()
 
         def tree_rows(tree):
             return [tree.item(iid, "values") for iid in tree.get_children()]
@@ -13241,49 +13379,19 @@ class PlanWorkflowWindow:
 
         cond_tree.bind("<Double-1>", edit_cond_cell)
 
-        ttk.Button(condition_frame, text="添加条件", command=add_cond).grid(row=5, column=1, padx=4, pady=4)
-        ttk.Button(condition_frame, text="删除条件", command=del_cond).grid(row=5, column=2, padx=4, pady=4)
+        ttk.Button(condition_frame, text="添加条件", command=add_cond).grid(row=condition_section["button_row"], column=1, padx=4, pady=4)
+        ttk.Button(condition_frame, text="删除条件", command=del_cond).grid(row=condition_section["button_row"], column=2, padx=4, pady=4)
 
-        # 3. 多表匹配规则区
-        join_frame = ttk.LabelFrame(frame, text="3. 多表匹配规则（没有副表时可不填；有副表时建议至少添加一条匹配规则）", padding=6)
-        join_frame.grid(row=4, column=0, columnspan=8, sticky="nsew", pady=6)
-        join_input_state = workflow_build_filter_join_input_state(current_fields, all_fields)
-        left_var = tk.StringVar(value=join_input_state["left_default"])
-        join_op_var = tk.StringVar(value="等于")
-        right_var = tk.StringVar(value=join_input_state["right_default"])
-        join_ops = ["等于", "不等于", "左包含右", "右包含左", "双向包含"]
-
-        # 匹配关系放在“左字段”上方，同一组录入控件从左到右排列
-        ttk.Label(join_frame, text="匹配关系：").grid(row=0, column=0, padx=4, pady=(4, 0), sticky=tk.W)
-        ttk.Label(join_frame, text="左字段：").grid(row=0, column=1, padx=4, pady=(4, 0), sticky=tk.W)
-        ttk.Label(join_frame, text="匹配：").grid(row=0, column=2, padx=4, pady=(4, 0), sticky=tk.W)
-        ttk.Label(join_frame, text="右字段：").grid(row=0, column=3, padx=4, pady=(4, 0), sticky=tk.W)
-
-        join_logic_var = tk.StringVar(value=config.get("join_logic", "AND"))
-        ttk.Combobox(join_frame, textvariable=join_logic_var, values=self.LOGIC_TYPES, width=8, state="readonly").grid(row=1, column=0, padx=4, pady=4, sticky=tk.W)
-        self.sync_var_to_config(join_logic_var, config, "join_logic")
+        join_section = self.build_filter_join_section(frame, config, all_fields, current_fields, start_row=4)
+        join_frame = join_section["frame"]
+        join_logic_var = join_section["join_logic_var"]
+        left_var = join_section["left_var"]
+        left_combo = join_section["left_combo"]
+        join_op_var = join_section["join_op_var"]
+        right_var = join_section["right_var"]
+        right_combo = join_section["right_combo"]
+        join_tree = join_section["join_tree"]
         join_logic_var.trace_add("write", lambda *_: refresh_filter_risk_text())
-        left_combo = ttk.Combobox(join_frame, textvariable=left_var, values=all_fields, width=28, state="normal")
-        left_combo.grid(row=1, column=1, padx=4, pady=4)
-        ttk.Combobox(join_frame, textvariable=join_op_var, values=join_ops, width=12, state="readonly").grid(row=1, column=2, padx=4, pady=4)
-        right_combo = ttk.Combobox(join_frame, textvariable=right_var, values=all_fields, width=28, state="normal")
-        right_combo.grid(row=1, column=3, padx=4, pady=4)
-        ttk.Label(join_frame, text="AND=全部规则满足；OR=任意规则满足。", foreground="gray").grid(row=1, column=5, sticky=tk.W, padx=4, pady=4)
-
-        join_tree = ttk.Treeview(join_frame, columns=("左字段", "匹配", "右字段"), show="headings", height=6)
-        for c, w in [("左字段", 260), ("匹配", 120), ("右字段", 260)]:
-            join_tree.heading(c, text=c)
-            join_tree.column(c, width=w, anchor=tk.W)
-        join_y_scroll = ttk.Scrollbar(join_frame, orient=tk.VERTICAL, command=join_tree.yview)
-        join_x_scroll = ttk.Scrollbar(join_frame, orient=tk.HORIZONTAL, command=join_tree.xview)
-        join_tree.configure(yscrollcommand=join_y_scroll.set, xscrollcommand=join_x_scroll.set)
-        join_tree.grid(row=2, column=0, columnspan=6, sticky="nsew", padx=4, pady=4)
-        join_y_scroll.grid(row=2, column=6, sticky="ns", pady=4)
-        join_x_scroll.grid(row=3, column=0, columnspan=6, sticky="ew", padx=4)
-        join_frame.rowconfigure(2, weight=1)
-        join_frame.columnconfigure(5, weight=1)
-        for row_values in workflow_filter_join_rules_to_rows(config.get("join_rules", [])):
-            join_tree.insert("", tk.END, values=row_values)
 
         def sync_join_rules_from_tree():
             config["join_rules"] = workflow_filter_join_rules_from_rows(tree_rows(join_tree))
@@ -13303,31 +13411,12 @@ class PlanWorkflowWindow:
             replace_tree_rows(join_tree, rows)
             sync_join_rules_from_tree()
 
-        ttk.Button(join_frame, text="添加匹配规则", command=add_join).grid(row=4, column=1, padx=4, pady=4)
-        ttk.Button(join_frame, text="删除匹配规则", command=del_join).grid(row=4, column=2, padx=4, pady=4)
+        ttk.Button(join_frame, text="添加匹配规则", command=add_join).grid(row=join_section["button_row"], column=1, padx=4, pady=4)
+        ttk.Button(join_frame, text="删除匹配规则", command=del_join).grid(row=join_section["button_row"], column=2, padx=4, pady=4)
 
-        # 4. 输出字段区
-        output_frame = ttk.LabelFrame(frame, text="4. 输出字段（不选择则输出全部可用字段）", padding=6)
-        output_frame.grid(row=5, column=0, columnspan=8, sticky="nsew", pady=6)
-        out_wrap = ttk.Frame(output_frame)
-        out_wrap.pack(fill=tk.BOTH, expand=True)
-        out_list = tk.Listbox(out_wrap, selectmode=tk.MULTIPLE, height=9, exportselection=False)
-        out_scroll = ttk.Scrollbar(out_wrap, orient=tk.VERTICAL, command=out_list.yview)
-        out_list.configure(yscrollcommand=out_scroll.set)
-        out_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        out_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        selected = set(config.get("output_fields", []))
-        for i, h in enumerate(all_fields):
-            out_list.insert(tk.END, h)
-            if h in selected:
-                out_list.selection_set(i)
-        actual_output_var = tk.StringVar(value="")
-        ttk.Label(
-            output_frame,
-            textvariable=actual_output_var,
-            foreground="gray",
-            wraplength=1000,
-        ).pack(fill=tk.X, pady=(4, 0))
+        output_section = self.build_filter_output_section(frame, config, all_fields, start_row=5)
+        out_list = output_section["out_list"]
+        actual_output_var = output_section["actual_output_var"]
 
         def refresh_actual_output_text():
             selected_fields = [out_list.get(i) for i in out_list.curselection()]
@@ -13371,8 +13460,7 @@ class PlanWorkflowWindow:
             self.status_var.set(workflow_build_filter_field_refresh_status(len(config.get("extra_tables", [])), len(state["all_values"])))
 
         out_list.bind("<<ListboxSelect>>", lambda e: sync_output_fields())
-        btns = ttk.Frame(output_frame)
-        btns.pack(fill=tk.X, pady=4)
+        btns = output_section["button_frame"]
         ttk.Button(
             btns,
             text="选择全部输出字段",
