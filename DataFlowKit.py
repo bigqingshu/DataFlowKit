@@ -282,6 +282,7 @@ from workflow.plugin_config_helpers import (
     plugin_config_transit_reuse_note as workflow_plugin_config_transit_reuse_note,
 )
 from workflow.plugin_schema_config_ui import (
+    build_plugin_output_and_log_section as workflow_build_plugin_output_and_log_section_ui,
     build_plugin_schema_parameter_controls as workflow_build_plugin_schema_parameter_controls_ui,
 )
 from workflow.rename_columns_config_ui import (
@@ -8921,76 +8922,19 @@ class PlanWorkflowWindow:
         refresh_plugin_dynamic_controls,
         row,
     ):
-        plugin_id = config.get("plugin_id", "")
-        info = item.get("info", {})
-        ttk.Separator(frame, orient=tk.HORIZONTAL).grid(row=row, column=0, columnspan=4, sticky="ew", pady=8)
-        row += 1
-
-        ttk.Label(frame, text="插件输出处理：", font=("TkDefaultFont", 10, "bold")).grid(row=row, column=0, columnspan=4, sticky=tk.W, padx=4, pady=(4, 2))
-        row += 1
-        output_choices = ["使用插件返回结果", "保存为中转副表并保持当前表", "保存为中转副表并使用插件返回结果", "追加字段到当前表"]
-        output_var = self.add_labeled_combo(frame, "输出方式：", config.get("output_mode", "使用插件返回结果"), output_choices, row, 0, 28)
-        output_var.trace_add("write", lambda *_, v=output_var: config.__setitem__("output_mode", v.get()))
-        row += 1
-
-        save_transit_var = tk.BooleanVar(value=bool(config.get("save_output_as_transit", False)))
-        ttk.Checkbutton(frame, text="插件输出保存为中转副表", variable=save_transit_var).grid(row=row, column=0, columnspan=2, sticky=tk.W, padx=4, pady=4)
-        save_transit_var.trace_add("write", lambda *_, v=save_transit_var: config.__setitem__("save_output_as_transit", bool(v.get())))
-        ttk.Label(frame, text="中转名称：").grid(row=row, column=2, sticky=tk.W, padx=4, pady=4)
-        transit_var = tk.StringVar(value=config.get("transit_name", info.get("name", plugin_id)))
-        ttk.Entry(frame, textvariable=transit_var, width=24).grid(row=row, column=3, sticky=tk.W, padx=4, pady=4)
-        transit_var.trace_add("write", lambda *_, v=transit_var: config.__setitem__("transit_name", v.get()))
-        row += 1
-
-        conflict_var = self.add_labeled_combo(frame, "中转同名处理：", config.get("transit_conflict_mode", "覆盖"), ["覆盖", "追加", "自动加时间戳"], row, 0, 18)
-        conflict_var.trace_add("write", lambda *_, v=conflict_var: config.__setitem__("transit_conflict_mode", v.get()))
-        fail_var = self.add_labeled_combo(frame, "插件失败时：", config.get("plugin_failure_policy", "停止工作流"), ["停止工作流", "保留原表继续", "输出错误表继续"], row, 2, 18)
-        fail_var.trace_add("write", lambda *_, v=fail_var: config.__setitem__("plugin_failure_policy", v.get()))
-        row += 1
-
-        ttk.Label(frame, text="插件日志：", font=("TkDefaultFont", 10, "bold")).grid(row=row, column=0, columnspan=4, sticky=tk.W, padx=4, pady=(8, 2))
-        row += 1
-        log_file_var = tk.BooleanVar(value=bool(config.get("save_plugin_log_file", True)))
-        ttk.Checkbutton(frame, text="保存详细日志到 logs/plugins", variable=log_file_var).grid(row=row, column=0, columnspan=2, sticky=tk.W, padx=4, pady=4)
-        log_file_var.trace_add("write", lambda *_, v=log_file_var: config.__setitem__("save_plugin_log_file", bool(v.get())))
-        log_sqlite_var = tk.BooleanVar(value=bool(config.get("save_plugin_log_sqlite", False)))
-        ttk.Checkbutton(frame, text="写入 SQLite 日志表 _plugin_log", variable=log_sqlite_var).grid(row=row, column=2, columnspan=2, sticky=tk.W, padx=4, pady=4)
-        log_sqlite_var.trace_add("write", lambda *_, v=log_sqlite_var: config.__setitem__("save_plugin_log_sqlite", bool(v.get())))
-        row += 1
-        log_transit_var = tk.BooleanVar(value=bool(config.get("save_plugin_log_transit", False)))
-        ttk.Checkbutton(frame, text="日志保存为中转副表", variable=log_transit_var).grid(row=row, column=0, columnspan=2, sticky=tk.W, padx=4, pady=4)
-        log_transit_var.trace_add("write", lambda *_, v=log_transit_var: config.__setitem__("save_plugin_log_transit", bool(v.get())))
-        ttk.Label(frame, text="日志中转名：").grid(row=row, column=2, sticky=tk.W, padx=4, pady=4)
-        log_transit_name_var = tk.StringVar(value=config.get("plugin_log_transit_name", f"{info.get('name', plugin_id)}_日志"))
-        ttk.Entry(frame, textvariable=log_transit_name_var, width=24).grid(row=row, column=3, sticky=tk.W, padx=4, pady=4)
-        log_transit_name_var.trace_add("write", lambda *_, v=log_transit_name_var: config.__setitem__("plugin_log_transit_name", v.get()))
-        row += 1
-        log_preview_var = tk.BooleanVar(value=bool(config.get("plugin_log_in_preview", False)))
-        ttk.Checkbutton(frame, text="预览模式也写入插件日志文件/SQLite", variable=log_preview_var).grid(row=row, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
-        log_preview_var.trace_add("write", lambda *_, v=log_preview_var: config.__setitem__("plugin_log_in_preview", bool(v.get())))
-        row += 1
-
-        if callable(getattr(item.get("module"), "open_config_window", None)):
-            def open_custom_config():
-                try:
-                    self.run_plugin_custom_config_window(
-                        item,
-                        config,
-                        params,
-                        headers,
-                        current_rows=current_rows,
-                        transit_context=transit_context,
-                        dynamic_param_controls=dynamic_param_controls,
-                        refresh_dynamic_controls=refresh_plugin_dynamic_controls,
-                    )
-                except Exception as e:
-                    messagebox.showerror("插件设置窗口错误", str(e))
-
-            ttk.Button(frame, text="打开插件自带设置窗口", command=open_custom_config).grid(row=row, column=0, sticky=tk.W, padx=4, pady=8)
-            row += 1
-
-        ttk.Label(frame, text="插件节点会接收当前工作流表格，并返回新的表格；预览模式下 context['is_preview']=True。", foreground="gray", wraplength=1050).grid(row=row, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
-        return row + 1
+        return workflow_build_plugin_output_and_log_section_ui(
+            self,
+            frame,
+            config,
+            item,
+            params,
+            headers,
+            current_rows,
+            transit_context,
+            dynamic_param_controls,
+            refresh_plugin_dynamic_controls,
+            row,
+        )
 
     def build_plugin_node_config(self, config, headers, transit_context=None, current_rows=None):
         frame = ttk.LabelFrame(self.config_frame, text="外部插件节点", padding=8)
