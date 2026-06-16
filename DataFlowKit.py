@@ -263,6 +263,19 @@ from workflow.table_access_precheck import (
     table_access_precheck_sort_key as workflow_table_access_precheck_sort_key,
     table_access_precheck_summary_text as workflow_table_access_precheck_summary_text,
 )
+from workflow.table_access_window_ui import (
+    clear_field_mapping as workflow_clear_field_mapping,
+    delete_field_mapping_entry as workflow_delete_field_mapping_entry,
+    field_mapping_item as workflow_field_mapping_item,
+    field_mapping_mode_display as workflow_field_mapping_mode_display,
+    field_mapping_mode_value as workflow_field_mapping_mode_value,
+    load_field_form as workflow_load_field_form,
+    render_field_mapping_tree as workflow_render_field_mapping_tree,
+    render_table_access_tree as workflow_render_table_access_tree,
+    reset_field_form as workflow_reset_field_form,
+    selected_field_key as workflow_selected_field_key,
+    upsert_field_mapping_entry as workflow_upsert_field_mapping_entry,
+)
 
 
 def get_app_dir():
@@ -6998,14 +7011,7 @@ class PlanWorkflowWindow:
             source_type_var.set(entry.get("source_type", "SQLite表"))
             table_var.set(entry.get("table", ""))
             write_mode_var.set(self.normalize_table_access_write_mode(entry.get("write_mode", "")))
-            mode_display = {
-                "by_order": "按列顺序",
-                "order": "按列顺序",
-                "按列顺序": "按列顺序",
-                "manual": "手动",
-                "手动": "手动",
-            }.get(str(entry.get("field_mapping_mode", "by_name") or "by_name").strip(), "按字段名")
-            field_mapping_mode_var.set(mode_display)
+            field_mapping_mode_var.set(workflow_field_mapping_mode_display(entry))
             is_current_var.set(bool(entry.get("is_current_table")))
             log_only_var.set(bool(entry.get("log_only")))
             perms = entry.get("permissions") or {}
@@ -7021,62 +7027,43 @@ class PlanWorkflowWindow:
             target_field_combo.configure(values=choices)
 
         def refresh_field_tree():
-            field_tree.delete(*field_tree.get_children())
-            state["field_keys"] = []
             entry = current_table_entry()
-            if not entry:
-                refresh_field_choices()
-                return
-            for row_idx, (key, item) in enumerate(self.table_access_field_items(entry)):
-                state["field_keys"].append(key)
-                perms = item.get("permissions") or {}
-                field_tree.insert(
-                    "",
-                    tk.END,
-                    iid=str(row_idx),
-                    values=(
-                        item.get("source_index", ""),
-                        item.get("source_field", ""),
-                        item.get("target_index", ""),
-                        item.get("target_field", ""),
-                        self.field_bool_text(perms.get("read_field")),
-                        self.field_bool_text(perms.get("write_field")),
-                        self.field_bool_text(perms.get("create_field")),
-                        self.field_bool_text(perms.get("protect_field")),
-                        self.field_permission_status(item),
-                    ),
-                )
+            state["field_keys"] = workflow_render_field_mapping_tree(
+                field_tree,
+                entry,
+                self.field_bool_text,
+                self.field_permission_status,
+            )
             refresh_field_choices()
 
         def refresh_table_tree(select_index=None):
-            table_tree.delete(*table_tree.get_children())
             access = current_access()
             tables = access.get("tables", [])
-            for idx, entry in enumerate(tables):
-                table_tree.insert(
-                    "",
-                    tk.END,
-                    iid=str(idx),
-                    values=(
-                        entry.get("role", ""),
-                        self.table_access_entry_table_label(entry),
-                        self.table_access_operation_summary(entry),
-                        "是" if entry.get("is_current_table") else "否",
-                        self.table_permission_summary(entry),
-                        self.write_mode_display_text(entry.get("write_mode", "")),
-                        self.table_access_entry_status(entry),
-                    ),
-                )
             if tables:
                 if select_index is None:
                     select_index = state.get("table_index")
-                if select_index is None or select_index < 0 or select_index >= len(tables):
-                    select_index = 0
+                select_index = workflow_render_table_access_tree(
+                    table_tree,
+                    tables,
+                    self.table_access_entry_table_label,
+                    self.table_access_operation_summary,
+                    self.table_permission_summary,
+                    self.write_mode_display_text,
+                    self.table_access_entry_status,
+                    select_index=select_index,
+                )
                 state["table_index"] = select_index
-                table_tree.selection_set(str(select_index))
-                table_tree.focus(str(select_index))
                 load_table_form(tables[select_index])
             else:
+                workflow_render_table_access_tree(
+                    table_tree,
+                    tables,
+                    self.table_access_entry_table_label,
+                    self.table_access_operation_summary,
+                    self.table_permission_summary,
+                    self.write_mode_display_text,
+                    self.table_access_entry_status,
+                )
                 state["table_index"] = None
                 load_table_form({})
             refresh_field_tree()
@@ -7116,17 +7103,17 @@ class PlanWorkflowWindow:
             if not entry or row_idx >= len(state["field_keys"]):
                 return
             key = state["field_keys"][row_idx]
-            mapping = entry.get("field_mapping") or {}
-            item = mapping.get(key) if isinstance(mapping, dict) else None
-            if not isinstance(item, dict):
+            item = workflow_field_mapping_item(entry, key)
+            if item is None:
                 return
-            source_field_var.set(item.get("source_field", ""))
-            target_field_var.set(item.get("target_field", ""))
-            source_index_var.set(item.get("source_index", ""))
-            target_index_var.set(item.get("target_index", ""))
-            perms = item.get("permissions") or {}
-            for pkey, var in field_permission_vars.items():
-                var.set(bool(perms.get(pkey)))
+            workflow_load_field_form(
+                item,
+                source_field_var,
+                target_field_var,
+                source_index_var,
+                target_index_var,
+                field_permission_vars,
+            )
 
         def save_table_entry():
             node = current_node()
@@ -7147,10 +7134,7 @@ class PlanWorkflowWindow:
             entry["is_current_table"] = bool(is_current_var.get() or entry["table"] == "__CURRENT_TABLE__")
             entry["log_only"] = bool(log_only_var.get())
             entry["write_mode"] = self.normalize_table_access_write_mode(write_mode_var.get())
-            entry["field_mapping_mode"] = {
-                "按列顺序": "by_order",
-                "手动": "manual",
-            }.get(field_mapping_mode_var.get(), "by_name")
+            entry["field_mapping_mode"] = workflow_field_mapping_mode_value(field_mapping_mode_var.get())
             entry["permissions"] = {key: bool(var.get()) for key, var in permission_vars.items()}
             if entry["is_current_table"] and not entry["table"]:
                 entry["table"] = "__CURRENT_TABLE__"
@@ -7201,40 +7185,31 @@ class PlanWorkflowWindow:
             if entry is None or node is None:
                 return
             self.mark_node_table_access_manual(node)
-            mapping = entry.get("field_mapping")
-            if not isinstance(mapping, dict):
-                mapping = {}
-                entry["field_mapping"] = mapping
             sel = field_tree.selection()
-            key = None
-            if sel:
-                row_idx = int(sel[0])
-                if 0 <= row_idx < len(state["field_keys"]):
-                    key = state["field_keys"][row_idx]
-            if not key:
-                key = self.make_table_access_field_key(mapping, source_field_var.get(), target_field_var.get())
-            source_index = source_index_var.get().strip()
-            target_index = target_index_var.get().strip()
-            mapping[key] = {
-                "source_field": source_field_var.get().strip(),
-                "target_field": target_field_var.get().strip(),
-                "source_index": source_index,
-                "target_index": target_index,
-                "match_mode": "by_order" if field_mapping_mode_var.get() == "按列顺序" else "by_name",
-                "permissions": {pkey: bool(var.get()) for pkey, var in field_permission_vars.items()},
-            }
+            key = workflow_selected_field_key(sel, state["field_keys"])
+            workflow_upsert_field_mapping_entry(
+                entry,
+                key,
+                source_field_var.get(),
+                target_field_var.get(),
+                source_index_var.get(),
+                target_index_var.get(),
+                "by_order" if field_mapping_mode_var.get() == "按列顺序" else "by_name",
+                {pkey: bool(var.get()) for pkey, var in field_permission_vars.items()},
+                self.make_table_access_field_key,
+            )
             refresh_field_tree()
             status_var.set("字段映射已保存。")
 
         def add_field_entry():
-            source_field_var.set("")
-            target_field_var.set("")
-            source_index_var.set("")
-            target_index_var.set("")
-            field_permission_vars["read_field"].set(True)
-            field_permission_vars["write_field"].set(bool(permission_vars["write_table"].get()))
-            field_permission_vars["create_field"].set(False)
-            field_permission_vars["protect_field"].set(False)
+            workflow_reset_field_form(
+                source_field_var,
+                target_field_var,
+                source_index_var,
+                target_index_var,
+                field_permission_vars,
+                write_enabled=permission_vars["write_table"].get(),
+            )
             field_tree.selection_remove(field_tree.selection())
 
         def delete_field_entry():
@@ -7243,11 +7218,9 @@ class PlanWorkflowWindow:
             sel = field_tree.selection()
             if entry is None or node is None or not sel:
                 return
-            mapping = entry.get("field_mapping")
-            row_idx = int(sel[0])
-            if isinstance(mapping, dict) and 0 <= row_idx < len(state["field_keys"]):
+            key = workflow_selected_field_key(sel, state["field_keys"])
+            if key and workflow_delete_field_mapping_entry(entry, key):
                 self.mark_node_table_access_manual(node)
-                mapping.pop(state["field_keys"][row_idx], None)
                 refresh_field_tree()
                 status_var.set("字段映射已删除。")
 
@@ -7278,7 +7251,7 @@ class PlanWorkflowWindow:
             if entry is None or node is None:
                 return
             self.mark_node_table_access_manual(node)
-            entry["field_mapping"] = {}
+            workflow_clear_field_mapping(entry)
             refresh_field_tree()
             status_var.set("字段映射已清空。")
 
