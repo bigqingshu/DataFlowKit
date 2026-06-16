@@ -265,6 +265,8 @@ from workflow.table_access_precheck import (
 )
 from workflow.table_access_window_ui import (
     add_table_access_entry as workflow_add_table_access_entry,
+    apply_auto_field_mapping_by_name as workflow_apply_auto_field_mapping_by_name,
+    apply_auto_field_mapping_by_order as workflow_apply_auto_field_mapping_by_order,
     build_table_access_impact_preview as workflow_build_table_access_impact_preview,
     build_table_access_permission_check as workflow_build_table_access_permission_check,
     clear_field_mapping as workflow_clear_field_mapping,
@@ -274,12 +276,14 @@ from workflow.table_access_window_ui import (
     field_mapping_mode_display as workflow_field_mapping_mode_display,
     field_mapping_mode_value as workflow_field_mapping_mode_value,
     load_field_form as workflow_load_field_form,
+    make_table_access_field_key as workflow_make_table_access_field_key,
     rebuild_table_access as workflow_rebuild_table_access,
     render_field_mapping_tree as workflow_render_field_mapping_tree,
     render_table_access_tree as workflow_render_table_access_tree,
     reset_field_form as workflow_reset_field_form,
     save_table_access_entry as workflow_save_table_access_entry,
     selected_field_key as workflow_selected_field_key,
+    table_access_preset_config as workflow_table_access_preset_config,
     upsert_field_mapping_entry as workflow_upsert_field_mapping_entry,
 )
 
@@ -5516,14 +5520,7 @@ class PlanWorkflowWindow:
         return workflow_find_table_access_field_rule(entry, target=target, source=source, field_index=field_index)
 
     def make_table_access_field_key(self, mapping, source_field, target_field):
-        base = str(target_field or source_field or "字段").strip() or "字段"
-        base = re.sub(r"\s+", "_", base)
-        key = base
-        counter = 2
-        while isinstance(mapping, dict) and key in mapping:
-            key = f"{base}_{counter}"
-            counter += 1
-        return key
+        return workflow_make_table_access_field_key(mapping, source_field, target_field)
 
     def field_permission_status(self, item):
         item = item or {}
@@ -5579,30 +5576,13 @@ class PlanWorkflowWindow:
                 target_fields = self.app.get_table_columns(table)
             except Exception:
                 target_fields = []
-        if not target_fields:
-            target_fields = list(source_fields)
-
-        source_by_norm = {self.app.sanitize_sql_name(f, ""): f for f in source_fields}
-        mapping = {}
-        for target in target_fields:
-            norm = self.app.sanitize_sql_name(target, "")
-            source = target if target in source_fields else source_by_norm.get(norm, "")
-            if not source:
-                continue
-            key = self.make_table_access_field_key(mapping, source, target)
-            mapping[key] = {
-                "source_field": source,
-                "target_field": target,
-                "permissions": {
-                    "read_field": True,
-                    "write_field": bool((entry.get("permissions") or {}).get("write_table")),
-                    "create_field": bool((entry.get("permissions") or {}).get("alter_schema")),
-                    "protect_field": False,
-                },
-            }
-        entry["field_mapping"] = mapping
-        entry["field_mapping_mode"] = "by_name"
-        return len(mapping)
+        return workflow_apply_auto_field_mapping_by_name(
+            entry,
+            source_fields,
+            target_fields,
+            lambda value: self.app.sanitize_sql_name(value, ""),
+            make_key=self.make_table_access_field_key,
+        )
 
     def auto_match_table_access_fields_by_order(self, node_index, entry):
         entry = entry or {}
@@ -5618,51 +5598,19 @@ class PlanWorkflowWindow:
                 target_fields = self.app.get_table_columns(table)
             except Exception:
                 target_fields = []
-        if not target_fields:
-            target_fields = list(source_fields)
-
-        count = max(len(source_fields), len(target_fields))
-        mapping = {}
-        for idx in range(count):
-            source = source_fields[idx] if idx < len(source_fields) else ""
-            target = target_fields[idx] if idx < len(target_fields) else source
-            key = f"col_{idx + 1}"
-            mapping[key] = {
-                "source_field": source,
-                "target_field": target,
-                "source_index": idx + 1,
-                "target_index": idx + 1,
-                "match_mode": "by_order",
-                "permissions": {
-                    "read_field": True,
-                    "write_field": bool((entry.get("permissions") or {}).get("write_table")),
-                    "create_field": bool((entry.get("permissions") or {}).get("alter_schema")),
-                    "protect_field": False,
-                },
-            }
-        entry["field_mapping"] = mapping
-        entry["field_mapping_mode"] = "by_order"
-        return len(mapping)
+        return workflow_apply_auto_field_mapping_by_order(entry, source_fields, target_fields)
 
     def apply_table_access_preset_to_vars(self, preset, permission_vars, log_only_var=None):
-        presets = {
-            "禁止访问": {},
-            "只读": {"read_table": True},
-            "默认读写只记录": {"read_table": True, "write_table": True, "update_rows": True},
-            "追加写入": {"read_table": True, "write_table": True, "create_table": True, "append_rows": True, "alter_schema": True},
-            "更新写入": {"read_table": True, "write_table": True, "update_rows": True},
-            "追加或更新": {"read_table": True, "write_table": True, "create_table": True, "append_rows": True, "update_rows": True, "alter_schema": True},
-            "覆盖/清空": {"read_table": True, "write_table": True, "create_table": True, "clear_table": True, "replace_table": True},
-            "新建表": {"read_table": True, "write_table": True, "create_table": True},
-            "危险全开": {key: True for key, _ in self.table_access_permission_items()},
-        }
-        selected = presets.get(preset)
-        if selected is None:
+        config = workflow_table_access_preset_config(
+            preset,
+            [key for key, _ in self.table_access_permission_items()],
+        )
+        if config is None:
             return
         for key, var in permission_vars.items():
-            var.set(bool(selected.get(key)))
+            var.set(bool(config["permissions"].get(key)))
         if log_only_var is not None:
-            log_only_var.set(preset == "默认读写只记录")
+            log_only_var.set(bool(config["log_only"]))
 
     def table_access_entry_match_score(self, actual, expected):
         return workflow_table_access_entry_match_score(actual, expected)
@@ -7291,16 +7239,12 @@ class PlanWorkflowWindow:
         def apply_table_preset(event=None):
             preset = preset_var.get()
             self.apply_table_access_preset_to_vars(preset, permission_vars, log_only_var)
-            mode_by_preset = {
-                "追加写入": "append",
-                "更新写入": "update_by_key",
-                "追加或更新": "upsert_by_key",
-                "覆盖/清空": "clear_keep_schema",
-                "新建表": "create_new",
-                "危险全开": "replace_table",
-            }
-            if preset in mode_by_preset:
-                write_mode_var.set(mode_by_preset[preset])
+            preset_config = workflow_table_access_preset_config(
+                preset,
+                [key for key, _ in self.table_access_permission_items()],
+            )
+            if preset_config and preset_config.get("write_mode"):
+                write_mode_var.set(preset_config["write_mode"])
 
         preset_combo.bind("<<ComboboxSelected>>", apply_table_preset)
         node_tree.bind("<<TreeviewSelect>>", on_node_selected)

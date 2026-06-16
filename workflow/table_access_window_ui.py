@@ -22,6 +22,17 @@ def field_mapping_mode_value(display):
     }.get(str(display or "").strip(), "by_name")
 
 
+def make_table_access_field_key(mapping, source_field, target_field):
+    base = str(target_field or source_field or "字段").strip() or "字段"
+    base = "_".join(base.split())
+    key = base
+    counter = 2
+    while isinstance(mapping, dict) and key in mapping:
+        key = f"{base}_{counter}"
+        counter += 1
+    return key
+
+
 def render_table_access_tree(
     table_tree,
     entries,
@@ -167,6 +178,106 @@ def delete_field_mapping_entry(entry, key):
 
 def clear_field_mapping(entry):
     entry["field_mapping"] = {}
+
+
+def _field_mapping_permissions(entry):
+    permissions = (entry or {}).get("permissions") or {}
+    return {
+        "read_field": True,
+        "write_field": bool(permissions.get("write_table")),
+        "create_field": bool(permissions.get("alter_schema")),
+        "protect_field": False,
+    }
+
+
+def build_auto_field_mapping_by_name(source_fields, target_fields, entry, sanitize_name, make_key=None):
+    source_fields = [field for field in (source_fields or []) if str(field or "").strip()]
+    target_fields = [field for field in (target_fields or []) if str(field or "").strip()]
+    if not target_fields:
+        target_fields = list(source_fields)
+    sanitize_name = sanitize_name if callable(sanitize_name) else (lambda value: str(value or "").strip())
+    make_key = make_key if callable(make_key) else make_table_access_field_key
+
+    source_by_norm = {sanitize_name(field): field for field in source_fields}
+    mapping = {}
+    for target in target_fields:
+        norm = sanitize_name(target)
+        source = target if target in source_fields else source_by_norm.get(norm, "")
+        if not source:
+            continue
+        key = make_key(mapping, source, target)
+        mapping[key] = {
+            "source_field": source,
+            "target_field": target,
+            "permissions": _field_mapping_permissions(entry),
+        }
+    return mapping
+
+
+def apply_auto_field_mapping_by_name(entry, source_fields, target_fields, sanitize_name, make_key=None):
+    mapping = build_auto_field_mapping_by_name(source_fields, target_fields, entry, sanitize_name, make_key=make_key)
+    entry["field_mapping"] = mapping
+    entry["field_mapping_mode"] = "by_name"
+    return len(mapping)
+
+
+def build_auto_field_mapping_by_order(source_fields, target_fields, entry):
+    source_fields = list(source_fields or [])
+    target_fields = list(target_fields or [])
+    if not target_fields:
+        target_fields = list(source_fields)
+    count = max(len(source_fields), len(target_fields))
+    mapping = {}
+    for idx in range(count):
+        source = source_fields[idx] if idx < len(source_fields) else ""
+        target = target_fields[idx] if idx < len(target_fields) else source
+        mapping[f"col_{idx + 1}"] = {
+            "source_field": source,
+            "target_field": target,
+            "source_index": idx + 1,
+            "target_index": idx + 1,
+            "match_mode": "by_order",
+            "permissions": _field_mapping_permissions(entry),
+        }
+    return mapping
+
+
+def apply_auto_field_mapping_by_order(entry, source_fields, target_fields):
+    mapping = build_auto_field_mapping_by_order(source_fields, target_fields, entry)
+    entry["field_mapping"] = mapping
+    entry["field_mapping_mode"] = "by_order"
+    return len(mapping)
+
+
+def table_access_preset_config(preset, permission_keys):
+    permission_keys = list(permission_keys or [])
+    presets = {
+        "禁止访问": {},
+        "只读": {"read_table": True},
+        "默认读写只记录": {"read_table": True, "write_table": True, "update_rows": True},
+        "追加写入": {"read_table": True, "write_table": True, "create_table": True, "append_rows": True, "alter_schema": True},
+        "更新写入": {"read_table": True, "write_table": True, "update_rows": True},
+        "追加或更新": {"read_table": True, "write_table": True, "create_table": True, "append_rows": True, "update_rows": True, "alter_schema": True},
+        "覆盖/清空": {"read_table": True, "write_table": True, "create_table": True, "clear_table": True, "replace_table": True},
+        "新建表": {"read_table": True, "write_table": True, "create_table": True},
+        "危险全开": {key: True for key in permission_keys},
+    }
+    selected = presets.get(preset)
+    if selected is None:
+        return None
+    mode_by_preset = {
+        "追加写入": "append",
+        "更新写入": "update_by_key",
+        "追加或更新": "upsert_by_key",
+        "覆盖/清空": "clear_keep_schema",
+        "新建表": "create_new",
+        "危险全开": "replace_table",
+    }
+    return {
+        "permissions": {key: bool(selected.get(key)) for key in permission_keys},
+        "log_only": preset == "默认读写只记录",
+        "write_mode": mode_by_preset.get(preset),
+    }
 
 
 def ensure_table_entries(access):

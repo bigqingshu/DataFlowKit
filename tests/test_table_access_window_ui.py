@@ -3,6 +3,8 @@ import unittest
 
 from workflow.table_access_window_ui import (
     add_table_access_entry,
+    apply_auto_field_mapping_by_name,
+    apply_auto_field_mapping_by_order,
     build_table_access_impact_preview,
     build_table_access_permission_check,
     clear_field_mapping,
@@ -12,12 +14,14 @@ from workflow.table_access_window_ui import (
     field_mapping_mode_display,
     field_mapping_mode_value,
     load_field_form,
+    make_table_access_field_key,
     rebuild_table_access,
     render_field_mapping_tree,
     render_table_access_tree,
     reset_field_form,
     save_table_access_entry,
     selected_field_key,
+    table_access_preset_config,
     upsert_field_mapping_entry,
 )
 
@@ -277,6 +281,63 @@ class TableAccessWindowUiTests(unittest.TestCase):
         self.assertIn("实际表：danger", preview)
         self.assertIn("字段映射：1 个", preview)
         self.assertIsNone(build_table_access_impact_preview(0, None, {}, [], None, None, None, None, None))
+
+    def test_auto_field_mapping_helpers(self):
+        entry = {"permissions": {"write_table": True, "alter_schema": True}}
+        count = apply_auto_field_mapping_by_name(
+            entry,
+            ["订单 编号", "金额"],
+            ["订单_编号", "缺失"],
+            lambda value: str(value or "").replace(" ", "_"),
+        )
+        self.assertEqual(count, 1)
+        self.assertEqual(entry["field_mapping_mode"], "by_name")
+        item = entry["field_mapping"]["订单_编号"]
+        self.assertEqual(item["source_field"], "订单 编号")
+        self.assertEqual(item["target_field"], "订单_编号")
+        self.assertTrue(item["permissions"]["write_field"])
+        self.assertTrue(item["permissions"]["create_field"])
+
+        count = apply_auto_field_mapping_by_order(
+            entry,
+            ["A", "B"],
+            ["X"],
+        )
+        self.assertEqual(count, 2)
+        self.assertEqual(entry["field_mapping_mode"], "by_order")
+        self.assertEqual(entry["field_mapping"]["col_1"]["source_field"], "A")
+        self.assertEqual(entry["field_mapping"]["col_1"]["target_field"], "X")
+        self.assertEqual(entry["field_mapping"]["col_2"]["source_field"], "B")
+        self.assertEqual(entry["field_mapping"]["col_2"]["target_field"], "B")
+
+        self.assertEqual(make_table_access_field_key({"字段": {}}, "字段", ""), "字段_2")
+
+    def test_table_access_preset_config(self):
+        keys = [
+            "read_table",
+            "write_table",
+            "create_table",
+            "append_rows",
+            "update_rows",
+            "clear_table",
+            "replace_table",
+            "alter_schema",
+        ]
+        append_config = table_access_preset_config("追加写入", keys)
+        self.assertEqual(append_config["write_mode"], "append")
+        self.assertTrue(append_config["permissions"]["append_rows"])
+        self.assertTrue(append_config["permissions"]["alter_schema"])
+        self.assertFalse(append_config["log_only"])
+
+        log_config = table_access_preset_config("默认读写只记录", keys)
+        self.assertTrue(log_config["log_only"])
+        self.assertTrue(log_config["permissions"]["update_rows"])
+        self.assertIsNone(log_config["write_mode"])
+
+        danger_config = table_access_preset_config("危险全开", keys)
+        self.assertTrue(all(danger_config["permissions"].values()))
+        self.assertEqual(danger_config["write_mode"], "replace_table")
+        self.assertIsNone(table_access_preset_config("不存在", keys))
 
 
 if __name__ == "__main__":
