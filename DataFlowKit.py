@@ -281,6 +281,12 @@ from workflow.plugin_config_helpers import (
     normalize_plugin_run_mode as workflow_normalize_plugin_run_mode,
     plugin_config_transit_reuse_note as workflow_plugin_config_transit_reuse_note,
 )
+from workflow.plugin_schema_config_ui import (
+    build_plugin_schema_parameter_controls as workflow_build_plugin_schema_parameter_controls_ui,
+)
+from workflow.rename_columns_config_ui import (
+    build_rename_columns_config as workflow_build_rename_columns_config_ui,
+)
 from workflow.writeback_config_ui import (
     build_writeback_config as workflow_build_writeback_config_ui,
 )
@@ -8887,141 +8893,17 @@ class PlanWorkflowWindow:
         dynamic_param_controls,
         dynamic_context,
     ):
-        if not schema:
-            ttk.Label(frame, text="该插件没有声明参数。", foreground="gray").grid(row=row, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
-            return row + 1
-
-        set_param = dynamic_context["set_param"]
-        get_input_table_alias_choices = dynamic_context["get_input_table_alias_choices"]
-        get_field_choices_for_table_param = dynamic_context["get_field_choices_for_table_param"]
-        get_dynamic_parameter_choices = dynamic_context["get_dynamic_parameter_choices"]
-        refresh_plugin_dynamic_controls = dynamic_context["refresh_plugin_dynamic_controls"]
-        is_refreshing_dynamic_controls = dynamic_context["is_refreshing_dynamic_controls"]
-
-        for spec in schema:
-            if not isinstance(spec, dict):
-                continue
-            key = spec.get("name")
-            if not key:
-                continue
-            label = spec.get("label", key)
-            typ = spec.get("type", "text")
-            default = spec.get("default", [] if typ == "multi_field_select" else "")
-            value = params.get(key, default)
-            ttk.Label(frame, text=f"{label}：").grid(row=row, column=0, sticky=tk.W, padx=4, pady=4)
-
-            if typ in ("text", "string", "regex", "textarea"):
-                var = tk.StringVar(value="" if value is None else str(value))
-                ttk.Entry(frame, textvariable=var, width=42).grid(row=row, column=1, columnspan=2, sticky=tk.W, padx=4, pady=4)
-                var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
-            elif typ == "number":
-                var = tk.StringVar(value="" if value is None else str(value))
-                ttk.Entry(frame, textvariable=var, width=18).grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
-                var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
-            elif typ == "bool":
-                var = tk.BooleanVar(value=bool(value))
-                ttk.Checkbutton(frame, variable=var).grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
-                var.trace_add("write", lambda *_, k=key, v=var: set_param(k, bool(v.get())))
-            elif typ == "select":
-                choices = spec.get("choices", spec.get("options", []))
-                var = tk.StringVar(value=workflow_build_plugin_select_initial_value(value, choices))
-                ttk.Combobox(frame, textvariable=var, values=choices, width=28, state="readonly").grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
-                var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
-            elif typ == "dynamic_select":
-                choices = workflow_build_plugin_dynamic_select_choices(spec, value, get_dynamic_parameter_choices(spec, key))
-                var = tk.StringVar(value=workflow_build_plugin_select_initial_value(value, choices))
-                state = "normal" if spec.get("allow_custom", True) else "readonly"
-                combo = ttk.Combobox(frame, textvariable=var, values=choices, width=28, state=state)
-                combo.grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
-                dynamic_param_controls.append({"type": typ, "spec": spec, "key": key, "var": var, "combo": combo})
-                var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
-            elif typ == "input_table_select":
-                choices = get_input_table_alias_choices()
-                choices = workflow_build_plugin_dynamic_select_choices(spec, value, choices)
-                var = tk.StringVar(value=workflow_build_plugin_select_initial_value(value, choices, fallback="当前表"))
-                combo = ttk.Combobox(frame, textvariable=var, values=choices, width=28, state="readonly")
-                combo.grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
-                dynamic_param_controls.append({"type": typ, "spec": spec, "key": key, "var": var, "combo": combo})
-
-                def update_table_param(*_, k=key, v=var):
-                    set_param(k, v.get())
-                    if not is_refreshing_dynamic_controls():
-                        refresh_plugin_dynamic_controls()
-
-                var.trace_add("write", update_table_param)
-            elif typ == "input_table_field_select":
-                choices = get_field_choices_for_table_param(spec)
-                default_value = spec.get("default", "")
-                choices = workflow_build_plugin_dynamic_select_choices(spec, value, choices)
-                var = tk.StringVar(value=workflow_build_plugin_field_select_initial_value(value, choices, default_value))
-                state = "normal" if spec.get("allow_custom", True) else "readonly"
-                combo = ttk.Combobox(frame, textvariable=var, values=choices, width=28, state=state)
-                combo.grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
-                dynamic_param_controls.append({"type": typ, "spec": spec, "key": key, "var": var, "combo": combo})
-                var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
-            elif typ == "field_select":
-                choices = list(headers)
-                var = tk.StringVar(value=workflow_build_plugin_select_initial_value(value, choices))
-                ttk.Combobox(frame, textvariable=var, values=choices, width=28, state="readonly").grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
-                var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
-            elif typ == "multi_field_select":
-                lb_frame = ttk.Frame(frame)
-                lb_frame.grid(row=row, column=1, columnspan=3, sticky=tk.W, padx=4, pady=4)
-                lb = tk.Listbox(lb_frame, selectmode=tk.MULTIPLE, height=min(7, max(3, len(headers))), width=38, exportselection=False)
-                scr = ttk.Scrollbar(lb_frame, orient=tk.VERTICAL, command=lb.yview)
-                lb.configure(yscrollcommand=scr.set)
-                for h in headers:
-                    lb.insert(tk.END, h)
-                selected = value if isinstance(value, list) else []
-                for i, h in enumerate(headers):
-                    if h in selected:
-                        lb.selection_set(i)
-                lb.pack(side=tk.LEFT, fill=tk.BOTH)
-                scr.pack(side=tk.LEFT, fill=tk.Y)
-
-                def update_multi(event=None, k=key, lbox=lb):
-                    set_param(k, [lbox.get(i) for i in lbox.curselection()])
-
-                lb.bind("<<ListboxSelect>>", update_multi)
-            elif typ == "file_path":
-                var = tk.StringVar(value="" if value is None else str(value))
-                ttk.Entry(frame, textvariable=var, width=50).grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
-
-                def choose_file(v=var, k=key):
-                    p = filedialog.askopenfilename(title="选择文件")
-                    if p:
-                        v.set(p)
-                        set_param(k, p)
-
-                ttk.Button(frame, text="选择", command=choose_file).grid(row=row, column=2, sticky=tk.W, padx=4, pady=4)
-                var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
-            elif typ == "folder_path":
-                var = tk.StringVar(value="" if value is None else str(value))
-                ttk.Entry(frame, textvariable=var, width=50).grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
-
-                def choose_folder(v=var, k=key):
-                    p = filedialog.askdirectory(title="选择文件夹")
-                    if p:
-                        v.set(p)
-                        set_param(k, p)
-
-                ttk.Button(frame, text="选择", command=choose_folder).grid(row=row, column=2, sticky=tk.W, padx=4, pady=4)
-                var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
-            elif typ == "table_select":
-                choices = self.get_sqlite_table_names()
-                var = tk.StringVar(value=workflow_build_plugin_select_initial_value(value, choices))
-                ttk.Combobox(frame, textvariable=var, values=choices, width=28, state="readonly").grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
-                var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
-            else:
-                var = tk.StringVar(value="" if value is None else str(value))
-                ttk.Entry(frame, textvariable=var, width=42).grid(row=row, column=1, columnspan=2, sticky=tk.W, padx=4, pady=4)
-                var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
-
-            help_text = spec.get("help") or spec.get("description")
-            if help_text:
-                ttk.Label(frame, text=help_text, foreground="gray", wraplength=600).grid(row=row, column=3, sticky=tk.W, padx=4, pady=4)
-            row += 1
-        return row
+        return workflow_build_plugin_schema_parameter_controls_ui(
+            self,
+            frame,
+            schema,
+            config,
+            params,
+            headers,
+            row,
+            dynamic_param_controls,
+            dynamic_context,
+        )
 
     def build_plugin_output_and_log_section(
         self,
@@ -11658,173 +11540,7 @@ class PlanWorkflowWindow:
         ).grid(row=7, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(6, 0))
 
     def build_rename_columns_config(self, config, headers):
-        frame = ttk.LabelFrame(self.config_frame, text="批量更改列名节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        ttk.Label(
-            frame,
-            text="只修改当前工作流表的字段名，不修改数据内容。适合在工作流开头统一字段名，或在输出前整理字段名。",
-            foreground="gray",
-            wraplength=1050
-        ).grid(row=0, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
-
-        mode_values = ["手动映射改名", "批量添加前缀", "批量添加后缀", "批量替换字段名字符"]
-        mode_var = self.add_labeled_combo(frame, "改名模式：", config.get("mode", "手动映射改名"), mode_values, 1, 0, 18)
-        duplicate_var = self.add_labeled_combo(frame, "重复字段处理：", config.get("duplicate_policy", "自动追加编号"), ["自动追加编号", "报错并停止"], 1, 2, 18)
-        missing_var = self.add_labeled_combo(frame, "字段不存在时：", config.get("missing_policy", "跳过并记录警告"), ["跳过并记录警告", "报错并停止"], 1, 4, 18)
-        trim_var = tk.BooleanVar(value=bool(config.get("trim_names", True)))
-        ttk.Checkbutton(frame, text="去除新字段名首尾空格", variable=trim_var).grid(row=1, column=6, sticky=tk.W, padx=4, pady=4)
-        self.sync_var_to_config(mode_var, config, "mode")
-        self.sync_var_to_config(duplicate_var, config, "duplicate_policy")
-        self.sync_var_to_config(missing_var, config, "missing_policy")
-        self.sync_bool_to_config(trim_var, config, "trim_names")
-
-        manual_frame = ttk.LabelFrame(frame, text="手动映射改名", padding=6)
-        manual_frame.grid(row=2, column=0, columnspan=8, sticky="nsew", padx=4, pady=6)
-        old_field_var = tk.StringVar(value=headers[0] if headers else "")
-        new_field_var = tk.StringVar(value="")
-        ttk.Label(manual_frame, text="原字段名：").grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
-        ttk.Combobox(manual_frame, textvariable=old_field_var, values=headers, width=28, state="normal").grid(row=0, column=1, sticky=tk.W, padx=4, pady=4)
-        ttk.Label(manual_frame, text="新字段名：").grid(row=0, column=2, sticky=tk.W, padx=4, pady=4)
-        ttk.Entry(manual_frame, textvariable=new_field_var, width=30).grid(row=0, column=3, sticky=tk.W, padx=4, pady=4)
-
-        map_wrap = ttk.Frame(manual_frame)
-        map_wrap.grid(row=1, column=0, columnspan=6, sticky="nsew", padx=4, pady=4)
-        mapping_tree = ttk.Treeview(map_wrap, columns=("old", "new"), show="headings", height=8)
-        mapping_tree.heading("old", text="原字段名")
-        mapping_tree.heading("new", text="新字段名")
-        mapping_tree.column("old", width=260, anchor=tk.W)
-        mapping_tree.column("new", width=260, anchor=tk.W)
-        map_y = ttk.Scrollbar(map_wrap, orient=tk.VERTICAL, command=mapping_tree.yview)
-        mapping_tree.configure(yscrollcommand=map_y.set)
-        mapping_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        map_y.pack(side=tk.RIGHT, fill=tk.Y)
-        manual_frame.rowconfigure(1, weight=1)
-        manual_frame.columnconfigure(5, weight=1)
-
-        def refresh_mapping_tree():
-            mapping_tree.delete(*mapping_tree.get_children())
-            for item in config.get("mappings", []):
-                mapping_tree.insert("", tk.END, values=(item.get("old", ""), item.get("new", "")))
-
-        def save_tree_to_config():
-            items = []
-            for iid in mapping_tree.get_children():
-                old, new = mapping_tree.item(iid, "values")[:2]
-                if str(old).strip():
-                    items.append({"old": str(old), "new": str(new)})
-            config["mappings"] = items
-
-        def add_mapping():
-            old = old_field_var.get().strip()
-            new = new_field_var.get().strip()
-            if not old:
-                messagebox.showwarning("提示", "请先填写原字段名。")
-                return
-            mapping_tree.insert("", tk.END, values=(old, new))
-            save_tree_to_config()
-
-        def delete_mapping():
-            for iid in mapping_tree.selection():
-                mapping_tree.delete(iid)
-            save_tree_to_config()
-
-        def clear_mapping():
-            mapping_tree.delete(*mapping_tree.get_children())
-            save_tree_to_config()
-
-        def load_all_headers():
-            mapping_tree.delete(*mapping_tree.get_children())
-            for h in headers:
-                mapping_tree.insert("", tk.END, values=(h, h))
-            save_tree_to_config()
-
-        def load_selected_header():
-            old = old_field_var.get().strip()
-            if old:
-                new_field_var.set(old)
-
-        btns = ttk.Frame(manual_frame)
-        btns.grid(row=0, column=4, rowspan=2, sticky="ns", padx=4, pady=4)
-        for text_, cmd in [
-            ("添加映射", add_mapping),
-            ("删除选中", delete_mapping),
-            ("清空映射", clear_mapping),
-            ("载入全部字段", load_all_headers),
-            ("新名=原名", load_selected_header),
-            ("保存映射", save_tree_to_config),
-        ]:
-            ttk.Button(btns, text=text_, command=cmd).pack(fill=tk.X, pady=2)
-
-        def edit_mapping_cell(event):
-            region = mapping_tree.identify("region", event.x, event.y)
-            if region != "cell":
-                return
-            row_id = mapping_tree.identify_row(event.y)
-            col_id = mapping_tree.identify_column(event.x)
-            if not row_id or not col_id:
-                return
-            col_index = int(col_id.replace("#", "")) - 1
-            bbox = mapping_tree.bbox(row_id, col_id)
-            if not bbox:
-                return
-            x, y, w, h = bbox
-            values = list(mapping_tree.item(row_id, "values"))
-            entry = ttk.Entry(mapping_tree)
-            entry.place(x=x, y=y, width=w, height=h)
-            entry.insert(0, values[col_index] if col_index < len(values) else "")
-            entry.select_range(0, tk.END)
-            entry.focus()
-            def close(save=True):
-                if save:
-                    while len(values) < 2:
-                        values.append("")
-                    values[col_index] = entry.get()
-                    mapping_tree.item(row_id, values=values)
-                    save_tree_to_config()
-                entry.destroy()
-            entry.bind("<Return>", lambda e: close(True))
-            entry.bind("<Escape>", lambda e: close(False))
-            entry.bind("<FocusOut>", lambda e: close(True))
-        mapping_tree.bind("<Double-1>", edit_mapping_cell)
-        refresh_mapping_tree()
-
-        rule_frame = ttk.LabelFrame(frame, text="批量规则", padding=6)
-        rule_frame.grid(row=3, column=0, columnspan=8, sticky="ew", padx=4, pady=6)
-        prefix_var = self.add_labeled_entry(rule_frame, "前缀：", config.get("prefix", ""), 0, 0, 18)
-        suffix_var = self.add_labeled_entry(rule_frame, "后缀：", config.get("suffix", ""), 0, 2, 18)
-        match_var = self.add_labeled_entry(rule_frame, "匹配值：", config.get("replace_match", ""), 1, 0, 18)
-        repl_var = self.add_labeled_entry(rule_frame, "替换值：", config.get("replace_value", ""), 1, 2, 18)
-        scope_var = self.add_labeled_combo(rule_frame, "作用范围：", config.get("scope", "全部字段"), ["全部字段", "选中字段"], 2, 0, 16)
-        for var, key in [(prefix_var, "prefix"), (suffix_var, "suffix"), (match_var, "replace_match"), (repl_var, "replace_value"), (scope_var, "scope")]:
-            self.sync_var_to_config(var, config, key)
-
-        field_frame = ttk.LabelFrame(frame, text="选中字段范围（作用范围为“选中字段”时使用）", padding=6)
-        field_frame.grid(row=4, column=0, columnspan=8, sticky="nsew", padx=4, pady=6)
-        lb = tk.Listbox(field_frame, selectmode=tk.MULTIPLE, height=8, exportselection=False)
-        yscroll = ttk.Scrollbar(field_frame, orient=tk.VERTICAL, command=lb.yview)
-        lb.configure(yscrollcommand=yscroll.set)
-        lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        yscroll.pack(side=tk.RIGHT, fill=tk.Y)
-        selected = set(config.get("scope_fields", []))
-        for i, h in enumerate(headers):
-            lb.insert(tk.END, h)
-            if h in selected:
-                lb.selection_set(i)
-        def sync_scope_fields(*_):
-            config["scope_fields"] = [lb.get(i) for i in lb.curselection()]
-        lb.bind("<<ListboxSelect>>", sync_scope_fields)
-        scope_btns = ttk.Frame(field_frame)
-        scope_btns.pack(side=tk.LEFT, fill=tk.Y, padx=6)
-        ttk.Button(scope_btns, text="保存勾选", command=sync_scope_fields).pack(fill=tk.X, pady=2)
-        ttk.Button(scope_btns, text="全选", command=lambda: (lb.selection_set(0, tk.END), sync_scope_fields())).pack(fill=tk.X, pady=2)
-        ttk.Button(scope_btns, text="全不选", command=lambda: (lb.selection_clear(0, tk.END), sync_scope_fields())).pack(fill=tk.X, pady=2)
-
-        ttk.Label(
-            frame,
-            text="说明：手动映射模式只修改映射中列出的字段；批量模式可对全部字段或选中字段添加前缀/后缀/替换字符。执行前请先预览计划，确认字段名无误。",
-            foreground="gray",
-            wraplength=1050
-        ).grid(row=5, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(6, 2))
+        return workflow_build_rename_columns_config_ui(self, config, headers)
 
     def ensure_separator_count(self, config):
         fields = config.get("fields", [])
