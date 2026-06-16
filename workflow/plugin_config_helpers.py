@@ -123,6 +123,19 @@ def get_plugin_field_choices_for_table_param(spec, params, table_headers):
     return list((table_headers or {}).get(alias, []) or [])
 
 
+def get_plugin_static_parameter_choices(spec):
+    spec = spec or {}
+    return list(spec.get("choices", spec.get("options", [])) or [])
+
+
+def normalize_plugin_dynamic_parameter_choices(fallback_choices, dynamic_result):
+    if isinstance(dynamic_result, dict):
+        dynamic_result = dynamic_result.get("choices", dynamic_result.get("options", []))
+    if isinstance(dynamic_result, (list, tuple)):
+        return [str(value) for value in dynamic_result]
+    return list(fallback_choices or [])
+
+
 def with_current_value_in_choices(value, choices):
     result = [str(v) for v in (choices or [])]
     if value not in (None, ""):
@@ -176,3 +189,11 @@ def build_plugin_dynamic_select_choices(spec, value, dynamic_choices):
     choices = [str(v) for v in (dynamic_choices or [])]
     return with_current_value_in_choices(value, choices)
 
+
+def apply_plugin_custom_config_result(config, params, result):
+    if not isinstance(result, dict):
+        return False
+    params.clear()
+    params.update(result)
+    config["params"] = params
+    return True

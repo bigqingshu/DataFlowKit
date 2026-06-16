@@ -2,6 +2,7 @@
 import unittest
 
 from workflow.plugin_config_helpers import (
+    apply_plugin_custom_config_result,
     build_plugin_dynamic_control_state,
     build_plugin_dynamic_select_choices,
     build_plugin_field_select_initial_value,
@@ -13,7 +14,9 @@ from workflow.plugin_config_helpers import (
     format_plugin_input_spec,
     get_plugin_field_choices_for_table_param,
     get_plugin_input_table_alias_choices,
+    get_plugin_static_parameter_choices,
     normalize_plugin_run_mode,
+    normalize_plugin_dynamic_parameter_choices,
     plugin_config_transit_reuse_note,
     plugin_input_spec_to_rows,
     resolve_plugin_field_table_alias,
@@ -107,6 +110,11 @@ class PluginConfigHelpersTests(unittest.TestCase):
     def test_initial_value_and_choice_helpers(self):
         self.assertEqual(with_current_value_in_choices("x", ["a", "b"]), ["x", "a", "b"])
         self.assertEqual(with_current_value_in_choices("a", ["a", "b"]), ["a", "b"])
+        self.assertEqual(get_plugin_static_parameter_choices({"options": ["a"]}), ["a"])
+        self.assertEqual(get_plugin_static_parameter_choices({"choices": ["c"]}), ["c"])
+        self.assertEqual(normalize_plugin_dynamic_parameter_choices(["fallback"], {"choices": [1, "2"]}), ["1", "2"])
+        self.assertEqual(normalize_plugin_dynamic_parameter_choices(["fallback"], {"options": ["x"]}), ["x"])
+        self.assertEqual(normalize_plugin_dynamic_parameter_choices(["fallback"], "bad"), ["fallback"])
         self.assertEqual(build_plugin_select_initial_value("", ["a"], fallback="f"), "a")
         self.assertEqual(build_plugin_select_initial_value("", [], fallback="f"), "f")
         self.assertEqual(build_plugin_field_select_initial_value("", ["a"], default_value="b"), "a")
@@ -139,6 +147,16 @@ class PluginConfigHelpersTests(unittest.TestCase):
             build_plugin_dynamic_control_state("dynamic_select", {"default": "D"}, "", []),
             {"choices": [], "value": "D"},
         )
+
+    def test_apply_plugin_custom_config_result(self):
+        config = {"params": {"old": "value"}}
+        params = config["params"]
+
+        self.assertTrue(apply_plugin_custom_config_result(config, params, {"new": "value"}))
+
+        self.assertEqual(params, {"new": "value"})
+        self.assertIs(config["params"], params)
+        self.assertFalse(apply_plugin_custom_config_result(config, params, None))
 
 
 if __name__ == "__main__":

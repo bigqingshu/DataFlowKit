@@ -155,6 +155,147 @@ class WorkflowPluginNodesTests(unittest.TestCase):
         self.assertEqual(normalized["rows"], [["ok"]])
         self.assertFalse(plugin_context["execute_actions"])
 
+    def test_dataflowkit_plugin_config_dynamic_choices_uses_provider_context(self):
+        calls = []
+
+        def provider(key, params, context):
+            calls.append((key, params, context))
+            return {"choices": [context["input_table_headers"]["当前表"][0], params["p"]]}
+
+        module = types.SimpleNamespace(get_dynamic_parameter_options=provider)
+        window = self.make_plugin_window(module)
+        window.build_plugin_input_table_headers = lambda config, headers, context=None: {
+            "当前表": list(headers),
+            "primary": list(headers),
+        }
+        item = window.plugin_registry["test_plugin"]
+
+        choices = window.get_plugin_dynamic_parameter_choices_for_config(
+            item,
+            {"plugin_id": "test_plugin", "input_tables": [{"alias": "extra"}]},
+            {"p": 7},
+            {"options": ["fallback"]},
+            "field",
+            ["A"],
+            current_rows=[["a"]],
+            transit_context={},
+        )
+
+        self.assertEqual(choices, ["A", "7"])
+        self.assertEqual(calls[0][0], "field")
+        self.assertEqual(calls[0][1], {"p": 7})
+        self.assertIn("input_tables", calls[0][2])
+        self.assertEqual(calls[0][2]["plugin_input_table_specs"], [{"alias": "extra"}])
+
+    def test_dataflowkit_plugin_config_dynamic_choices_falls_back_on_error(self):
+        module = types.SimpleNamespace(get_dynamic_parameter_options=lambda *args: (_ for _ in ()).throw(RuntimeError("bad")))
+        window = self.make_plugin_window(module)
+        window.build_plugin_input_table_headers = lambda config, headers, context=None: {"当前表": list(headers)}
+        item = window.plugin_registry["test_plugin"]
+
+        choices = window.get_plugin_dynamic_parameter_choices_for_config(
+            item,
+            {"plugin_id": "test_plugin"},
+            {},
+            {"choices": ["fallback"]},
+            "field",
+            ["A"],
+        )
+
+        self.assertEqual(choices, ["fallback"])
+
+    def test_dataflowkit_run_plugin_custom_config_window_updates_params_and_controls(self):
+        module = types.SimpleNamespace()
+        window = self.make_plugin_window(module)
+        window.window = object()
+        window.status_messages = []
+        window.status_var = types.SimpleNamespace(set=lambda text: window.status_messages.append(text))
+        window.plugin_config_context_with_live_transit = lambda context=None, include_rows=False: {
+            "transit_tables": {},
+            "_reused_preview_transit_tables": ["tmp"],
+        }
+        window.build_plugin_input_tables = lambda config, headers, rows, context=None: {"当前表": {"headers": list(headers), "rows": rows}}
+        refresh_calls = []
+
+        class Var:
+            def __init__(self):
+                self.value = None
+
+            def set(self, value):
+                self.value = value
+
+        field_var = Var()
+
+        def open_config(parent, params, context):
+            self.assertIs(parent, window.window)
+            self.assertEqual(params, {"old": "value"})
+            self.assertIn("plugin_config_data_note", context)
+            self.assertIn("input_tables", context)
+            return {"field": "B", "other": "C"}
+
+        module.open_config_window = open_config
+        item = {"module": module}
+        config = {"params": {"old": "value"}, "input_tables": []}
+        params = config["params"]
+
+        changed = window.run_plugin_custom_config_window(
+            item,
+            config,
+            params,
+            ["A"],
+            current_rows=[["a"]],
+            transit_context={},
+            dynamic_param_controls=[{"key": "field", "var": field_var}],
+            refresh_dynamic_controls=lambda: refresh_calls.append(True),
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(params, {"field": "B", "other": "C"})
+        self.assertEqual(field_var.value, "B")
+        self.assertEqual(refresh_calls, [True])
+        self.assertIn("tmp", window.status_messages[0])
+
+    def test_dataflowkit_refresh_plugin_dynamic_config_controls_updates_combo_and_param(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+        params = {}
+
+        class Var:
+            def __init__(self, value):
+                self.value = value
+
+            def get(self):
+                return self.value
+
+            def set(self, value):
+                self.value = value
+
+        class Combo:
+            def __init__(self):
+                self.values = None
+
+            def configure(self, **kwargs):
+                self.values = kwargs.get("values")
+
+        var = Var("missing")
+        combo = Combo()
+        controls = [{
+            "type": "input_table_select",
+            "spec": {},
+            "key": "table",
+            "var": var,
+            "combo": combo,
+        }]
+
+        window.refresh_plugin_dynamic_config_controls(
+            controls,
+            lambda key, value: params.__setitem__(key, value),
+            lambda control: ["当前表", "明细"],
+        )
+
+        self.assertEqual(combo.values, ["当前表", "明细"])
+        self.assertEqual(var.get(), "当前表")
+        self.assertEqual(params, {"table": "当前表"})
+
     def test_dataflowkit_apply_plugin_node_can_append_output_fields(self):
         module = types.SimpleNamespace(
             run=lambda input_data, params, context: {
