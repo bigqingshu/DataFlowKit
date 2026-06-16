@@ -294,6 +294,9 @@ from workflow.match_value_output_config_ui import (
 from workflow.dedupe_config_ui import (
     build_dedupe_config as workflow_build_dedupe_config_ui,
 )
+from workflow.row_data_mapping_config_ui import (
+    build_row_data_mapping_config as workflow_build_row_data_mapping_config_ui,
+)
 from workflow.writeback_config_ui import (
     build_writeback_config as workflow_build_writeback_config_ui,
 )
@@ -11468,128 +11471,7 @@ class PlanWorkflowWindow:
 
 
     def build_row_data_mapping_config(self, config, headers):
-        """构建“行数据映射填充 / 按行取值展开”节点配置。"""
-        frame = ttk.LabelFrame(self.config_frame, text="行数据映射填充节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        ttk.Label(
-            frame,
-            text="按行向下处理：处理第 N 行时，就取第 N 行指定字段的值，并展开成多行输出。适合“一行对应一个文件，多列是多个修改项”的数据结构。",
-            foreground="gray",
-            wraplength=1050
-        ).grid(row=0, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
-
-        headers = list(headers)
-        mode_var = self.add_labeled_combo(frame, "处理模式：", config.get("mode", "按行取值展开"), ["按行取值展开"], 1, 0, 18)
-        start_row_var = self.add_labeled_entry(frame, "起始行号：", config.get("start_row", "1"), 1, 2, 10)
-        end_mode_var = self.add_labeled_combo(
-            frame,
-            "结束条件：",
-            config.get("end_mode", "填充到数据边界"),
-            ["填充到数据边界", "固定行数", "填充到指定行", "遇到空行停止"],
-            2, 0, 18
-        )
-        count_var = self.add_labeled_entry(frame, "固定行数：", config.get("count", "1"), 2, 2, 10)
-        end_row_var = self.add_labeled_entry(frame, "结束行号：", config.get("end_row", "1"), 2, 4, 10)
-
-        ttk.Label(frame, text="取值字段：").grid(row=3, column=0, sticky=tk.NW, padx=4, pady=4)
-        value_wrap = ttk.Frame(frame)
-        value_wrap.grid(row=3, column=1, columnspan=2, sticky="nsew", padx=4, pady=4)
-        value_list = tk.Listbox(value_wrap, selectmode=tk.MULTIPLE, height=8, exportselection=False)
-        value_scroll = ttk.Scrollbar(value_wrap, orient=tk.VERTICAL, command=value_list.yview)
-        value_list.configure(yscrollcommand=value_scroll.set)
-        value_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        value_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        selected_values = set(config.get("value_fields", []))
-        for i, h in enumerate(headers):
-            value_list.insert(tk.END, h)
-            if h in selected_values:
-                value_list.selection_set(i)
-
-        ttk.Label(frame, text="保留字段：").grid(row=3, column=3, sticky=tk.NW, padx=4, pady=4)
-        keep_wrap = ttk.Frame(frame)
-        keep_wrap.grid(row=3, column=4, columnspan=2, sticky="nsew", padx=4, pady=4)
-        keep_list = tk.Listbox(keep_wrap, selectmode=tk.MULTIPLE, height=8, exportselection=False)
-        keep_scroll = ttk.Scrollbar(keep_wrap, orient=tk.VERTICAL, command=keep_list.yview)
-        keep_list.configure(yscrollcommand=keep_scroll.set)
-        keep_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        keep_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        selected_keep = set(config.get("keep_fields", []))
-        for i, h in enumerate(headers):
-            keep_list.insert(tk.END, h)
-            if h in selected_keep:
-                keep_list.selection_set(i)
-
-        def sync_value_fields(event=None):
-            config["value_fields"] = [value_list.get(i) for i in value_list.curselection()]
-
-        def sync_keep_fields(event=None):
-            config["keep_fields"] = [keep_list.get(i) for i in keep_list.curselection()]
-
-        value_list.bind("<<ListboxSelect>>", sync_value_fields)
-        keep_list.bind("<<ListboxSelect>>", sync_keep_fields)
-
-        btn_row = ttk.Frame(frame)
-        btn_row.grid(row=4, column=1, columnspan=5, sticky=tk.W, padx=4, pady=2)
-        def select_all_values():
-            value_list.selection_set(0, tk.END)
-            sync_value_fields()
-        def clear_values():
-            value_list.selection_clear(0, tk.END)
-            sync_value_fields()
-        def select_all_keep():
-            keep_list.selection_set(0, tk.END)
-            sync_keep_fields()
-        def clear_keep():
-            keep_list.selection_clear(0, tk.END)
-            sync_keep_fields()
-        ttk.Button(btn_row, text="取值字段全选", command=select_all_values).pack(side=tk.LEFT, padx=2)
-        ttk.Button(btn_row, text="清空取值字段", command=clear_values).pack(side=tk.LEFT, padx=2)
-        ttk.Button(btn_row, text="保留字段全选", command=select_all_keep).pack(side=tk.LEFT, padx=12)
-        ttk.Button(btn_row, text="清空保留字段", command=clear_keep).pack(side=tk.LEFT, padx=2)
-
-        output_frame = ttk.LabelFrame(frame, text="输出字段设置", padding=6)
-        output_frame.grid(row=5, column=0, columnspan=8, sticky="ew", padx=4, pady=8)
-        value_name_var = self.add_labeled_entry(output_frame, "目标值字段名：", config.get("output_value_field", "输出内容"), 0, 0, 18)
-        source_name_var = self.add_labeled_entry(output_frame, "来源字段名列：", config.get("source_field_name", "来源字段"), 0, 2, 18)
-        row_name_var = self.add_labeled_entry(output_frame, "原始行号列：", config.get("original_row_field", "原始行号"), 1, 0, 18)
-        status_name_var = self.add_labeled_entry(output_frame, "状态列：", config.get("status_field", "状态"), 1, 2, 18)
-
-        output_source_var = tk.BooleanVar(value=bool(config.get("output_source_field", True)))
-        output_row_var = tk.BooleanVar(value=bool(config.get("output_original_row", True)))
-        output_status_var = tk.BooleanVar(value=bool(config.get("output_status", True)))
-        ttk.Checkbutton(output_frame, text="输出来源字段名", variable=output_source_var).grid(row=2, column=0, sticky=tk.W, padx=4, pady=4)
-        ttk.Checkbutton(output_frame, text="输出原始行号", variable=output_row_var).grid(row=2, column=1, sticky=tk.W, padx=4, pady=4)
-        ttk.Checkbutton(output_frame, text="输出状态", variable=output_status_var).grid(row=2, column=2, sticky=tk.W, padx=4, pady=4)
-
-        empty_frame = ttk.LabelFrame(frame, text="空值处理", padding=6)
-        empty_frame.grid(row=6, column=0, columnspan=8, sticky="ew", padx=4, pady=4)
-        empty_mode_var = self.add_labeled_combo(empty_frame, "空值处理：", config.get("empty_mode", "跳过空值"), ["跳过空值", "保留空值", "填写固定值"], 0, 0, 16)
-        empty_fixed_var = self.add_labeled_entry(empty_frame, "固定值：", config.get("empty_fixed", "未填写"), 0, 2, 18)
-        trim_var = tk.BooleanVar(value=bool(config.get("trim_value", True)))
-        ttk.Checkbutton(empty_frame, text="取值前去除首尾空格", variable=trim_var).grid(row=1, column=0, columnspan=2, sticky=tk.W, padx=4, pady=4)
-
-        ttk.Label(
-            frame,
-            text="输出逻辑：外层按行处理，内层按取值字段处理。例如第1行输出本行的编码/客码/PCB，第2行再输出第2行对应字段。",
-            foreground="gray",
-            wraplength=1050
-        ).grid(row=7, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(8, 4))
-
-        self.sync_var_to_config(mode_var, config, "mode")
-        self.sync_var_to_config(start_row_var, config, "start_row")
-        self.sync_var_to_config(end_mode_var, config, "end_mode")
-        self.sync_var_to_config(count_var, config, "count")
-        self.sync_var_to_config(end_row_var, config, "end_row")
-        self.sync_var_to_config(value_name_var, config, "output_value_field")
-        self.sync_var_to_config(source_name_var, config, "source_field_name")
-        self.sync_var_to_config(row_name_var, config, "original_row_field")
-        self.sync_var_to_config(status_name_var, config, "status_field")
-        self.sync_bool_to_config(output_source_var, config, "output_source_field")
-        self.sync_bool_to_config(output_row_var, config, "output_original_row")
-        self.sync_bool_to_config(output_status_var, config, "output_status")
-        self.sync_var_to_config(empty_mode_var, config, "empty_mode")
-        self.sync_var_to_config(empty_fixed_var, config, "empty_fixed")
-        self.sync_bool_to_config(trim_var, config, "trim_value")
+        return workflow_build_row_data_mapping_config_ui(self, config, headers)
 
     def build_save_transit_config(self, config, headers):
         """构建“保存中转数据”节点配置。"""
