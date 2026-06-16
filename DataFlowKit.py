@@ -7641,6 +7641,216 @@ class PlanWorkflowWindow:
         config["nodes"] = nodes
         return select_idx
 
+    def build_group_input_mapping_section(self, frame, config, headers, transit_context=None, row=2):
+        input_frame = ttk.LabelFrame(frame, text="入口字段映射", padding=6)
+        input_frame.grid(row=row, column=0, columnspan=8, sticky="ew", padx=4, pady=6)
+        input_frame.columnconfigure(1, weight=1)
+
+        source_values = ["当前工作表", "中转副表", "SQLite表"]
+        source_type_var = self.add_labeled_combo(input_frame, "入口数据源：", config.get("input_source_type", "当前工作表"), source_values, 0, 0, 16)
+        self.sync_var_to_config(source_type_var, config, "input_source_type")
+
+        sqlite_tables = self.get_sqlite_table_names()
+        sqlite_var = self.add_labeled_combo(input_frame, "SQLite表：", config.get("input_sqlite_table", sqlite_tables[0] if sqlite_tables else ""), sqlite_tables, 0, 2, 26, readonly=False)
+        self.sync_var_to_config(sqlite_var, config, "input_sqlite_table")
+
+        transit_tables = sorted((transit_context or {}).get("transit_tables", {}).keys())
+        transit_var = self.add_labeled_combo(input_frame, "中转副表：", config.get("input_transit_table", transit_tables[0] if transit_tables else ""), transit_tables, 0, 4, 26, readonly=False)
+        self.sync_var_to_config(transit_var, config, "input_transit_table")
+
+        fields_text = workflow_group_input_fields_text(config)
+        input_fields_var = self.add_labeled_entry(input_frame, "组入口字段：", fields_text, 1, 0, 70)
+        ttk.Label(input_frame, text="留空=兼容旧版，直接把入口数据源整表传入组内；填写后才按映射生成标准入口表。", foreground="gray").grid(row=1, column=2, columnspan=5, sticky=tk.W, padx=4, pady=4)
+
+        def update_input_fields(*_):
+            workflow_update_group_input_fields_config(config, input_fields_var.get())
+            refresh_mapping_tree()
+        input_fields_var.trace_add("write", update_input_fields)
+
+        missing_var = self.add_labeled_combo(input_frame, "缺失字段：", config.get("missing_input_policy", "缺失填空"), ["缺失填空", "缺失报错"], 2, 0, 14)
+        self.sync_var_to_config(missing_var, config, "missing_input_policy")
+
+        mapping_wrap = ttk.Frame(input_frame)
+        mapping_wrap.grid(row=3, column=0, columnspan=8, sticky="ew", padx=4, pady=(4, 2))
+        mapping_wrap.columnconfigure(0, weight=1)
+        mapping_tree = ttk.Treeview(mapping_wrap, columns=("入口字段", "外部字段", "默认值"), show="headings", height=5)
+        for col, width in [("入口字段", 180), ("外部字段", 260), ("默认值", 180)]:
+            mapping_tree.heading(col, text=col)
+            mapping_tree.column(col, width=width, anchor=tk.W, stretch=False)
+        mapping_y = ttk.Scrollbar(mapping_wrap, orient=tk.VERTICAL, command=mapping_tree.yview)
+        mapping_tree.configure(yscrollcommand=mapping_y.set)
+        mapping_tree.grid(row=0, column=0, sticky="ew")
+        mapping_y.grid(row=0, column=1, sticky="ns")
+
+        map_edit = ttk.Frame(input_frame)
+        map_edit.grid(row=4, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(2, 4))
+        selected_input_var = tk.StringVar(value="")
+        source_field_var = tk.StringVar(value="")
+        default_value_var = tk.StringVar(value="")
+        ttk.Label(map_edit, text="组入口字段：").pack(side=tk.LEFT, padx=(0, 2))
+        selected_input_combo = ttk.Combobox(map_edit, textvariable=selected_input_var, values=[], width=20, state="readonly")
+        selected_input_combo.pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Label(map_edit, text="映射外部字段：").pack(side=tk.LEFT, padx=(0, 2))
+        source_field_combo = ttk.Combobox(map_edit, textvariable=source_field_var, values=[], width=30, state="readonly")
+        source_field_combo.pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Label(map_edit, text="缺失默认值：").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Entry(map_edit, textvariable=default_value_var, width=20).pack(side=tk.LEFT, padx=(0, 6))
+
+        def get_source_headers_for_mapping():
+            source_type = source_type_var.get() or config.get("input_source_type", "当前工作表")
+            return self.get_group_config_source_headers(
+                source_type,
+                headers,
+                transit_context=transit_context,
+                transit_name=transit_var.get().strip() or config.get("input_transit_table", ""),
+                sqlite_table=sqlite_var.get().strip() or config.get("input_sqlite_table", ""),
+            )
+
+        def refresh_source_field_combo():
+            state = workflow_group_source_field_combo_state(source_field_var.get(), get_source_headers_for_mapping())
+            source_field_combo["values"] = state["values"]
+            source_field_var.set(state["value"])
+            return list(state["values"][1:])
+
+        def refresh_selected_input_combo(sync_detail=True):
+            state = workflow_group_selected_input_state(config, selected_input_var.get().strip())
+            fields = state["values"]
+            selected_input_combo["values"] = fields
+            selected_input_var.set(state["value"])
+            if sync_detail:
+                sync_mapping_edit_from_selected()
+            return fields
+
+        def sync_mapping_edit_from_selected(event=None):
+            key = selected_input_var.get().strip()
+            detail = workflow_group_mapping_detail(config, key)
+            refresh_source_field_combo()
+            source_field_var.set(detail["source_field"])
+            default_value_var.set(detail["default_value"])
+            # 同步选中映射表中的对应行，便于表格总览和下拉编辑保持一致。
+            for iid in mapping_tree.get_children():
+                vals = mapping_tree.item(iid, "values")
+                if vals and str(vals[0]) == key:
+                    mapping_tree.selection_set(iid)
+                    mapping_tree.focus(iid)
+                    mapping_tree.see(iid)
+                    break
+
+        def refresh_mapping_tree():
+            mapping_tree.delete(*mapping_tree.get_children())
+            for row_values in workflow_group_mapping_rows(config):
+                mapping_tree.insert("", tk.END, values=row_values)
+            refresh_selected_input_combo(sync_detail=True)
+
+        def on_mapping_select(event=None):
+            sel = mapping_tree.selection()
+            if not sel:
+                return
+            vals = mapping_tree.item(sel[0], "values")
+            if not vals:
+                return
+            selected_input_var.set(vals[0])
+            refresh_source_field_combo()
+            source_field_var.set(vals[1] if len(vals) > 1 else "")
+            default_value_var.set(vals[2] if len(vals) > 2 else "")
+        mapping_tree.bind("<<TreeviewSelect>>", on_mapping_select)
+        selected_input_combo.bind("<<ComboboxSelected>>", sync_mapping_edit_from_selected)
+
+        def apply_mapping_one():
+            result = workflow_apply_group_mapping(
+                config,
+                selected_input_var.get(),
+                source_field_var.get(),
+                default_value_var.get(),
+            )
+            if not result["ok"]:
+                messagebox.showwarning("提示", result["message"])
+                return
+            refresh_mapping_tree()
+
+        def auto_mapping_by_name():
+            workflow_auto_group_mapping_by_name(config, get_source_headers_for_mapping())
+            refresh_mapping_tree()
+
+        def use_current_headers_as_inputs():
+            vals = get_source_headers_for_mapping()
+            workflow_use_source_headers_as_group_inputs(config, vals)
+            input_fields_var.set(",".join(vals))
+            refresh_mapping_tree()
+
+        def infer_inputs_from_inner_nodes():
+            inferred, details = self.infer_group_input_fields_from_nodes(
+                config.get("nodes", []),
+                context=transit_context,
+            )
+            detail_text = self.format_group_input_infer_details(inferred, details)
+            if not inferred:
+                messagebox.showinfo("入口字段推导", "没有从组内节点推导到需要外部传入的入口字段。\n\n" + detail_text)
+                return
+
+            current = self.parse_group_input_fields(config)
+            merge_inferred = False
+            if current:
+                answer = messagebox.askyesnocancel(
+                    "入口字段推导",
+                    "已从组内节点推导出入口字段：\n"
+                    + ", ".join(inferred)
+                    + "\n\n是否覆盖现有组入口字段？\n\n"
+                    + "是：覆盖现有入口字段\n"
+                    + "否：合并到现有入口字段\n"
+                    + "取消：只查看结果，不应用"
+                )
+                if answer is None:
+                    messagebox.showinfo("入口字段推导明细", detail_text)
+                    return
+                merge_inferred = not answer
+
+            source_headers = get_source_headers_for_mapping()
+            new_fields = workflow_apply_inferred_group_inputs(config, inferred, source_headers, merge=merge_inferred)
+            input_fields_var.set(",".join(new_fields))
+            refresh_mapping_tree()
+            messagebox.showinfo("入口字段推导完成", detail_text)
+
+        ttk.Button(map_edit, text="应用映射", command=apply_mapping_one).pack(side=tk.LEFT, padx=2)
+        ttk.Button(map_edit, text="同名自动映射", command=auto_mapping_by_name).pack(side=tk.LEFT, padx=2)
+        ttk.Button(map_edit, text="用来源字段作为入口", command=use_current_headers_as_inputs).pack(side=tk.LEFT, padx=2)
+        ttk.Button(map_edit, text="从组内节点推导入口字段", command=infer_inputs_from_inner_nodes).pack(side=tk.LEFT, padx=2)
+        for v in (source_type_var, sqlite_var, transit_var):
+            v.trace_add("write", lambda *_: refresh_source_field_combo())
+        refresh_mapping_tree()
+        return input_frame
+
+    def build_group_output_section(self, frame, config, row=3):
+        output_frame = ttk.LabelFrame(frame, text="输出设置", padding=6)
+        output_frame.grid(row=row, column=0, columnspan=8, sticky="ew", padx=4, pady=6)
+        output_state = workflow_build_group_output_config_state(config)
+
+        main_out_var = self.add_labeled_combo(output_frame, "主输出：", output_state["main_output_mode"], output_state["main_output_choices"], 0, 0, 18)
+        self.sync_var_to_config(main_out_var, config, "main_output_mode")
+        scope_var = self.add_labeled_combo(output_frame, "组内中转：", output_state["transit_scope"], output_state["transit_scope_choices"], 0, 2, 18)
+        self.sync_var_to_config(scope_var, config, "transit_scope")
+
+        save_transit_var = tk.BooleanVar(value=output_state["save_to_transit"])
+        ttk.Checkbutton(output_frame, text="同时保存到中转副表", variable=save_transit_var).grid(row=1, column=0, sticky=tk.W, padx=4, pady=4)
+        self.sync_bool_to_config(save_transit_var, config, "save_to_transit")
+        transit_name_var = self.add_labeled_entry(output_frame, "中转表名：", output_state["output_transit_name"], 1, 1, 24)
+        self.sync_var_to_config(transit_name_var, config, "output_transit_name")
+        transit_conflict_var = self.add_labeled_combo(output_frame, "同名处理：", output_state["output_transit_conflict_mode"], output_state["output_transit_conflict_choices"], 1, 3, 18)
+        self.sync_var_to_config(transit_conflict_var, config, "output_transit_conflict_mode")
+
+        save_sqlite_var = tk.BooleanVar(value=output_state["save_to_sqlite"])
+        ttk.Checkbutton(output_frame, text="执行计划时保存到 SQLite", variable=save_sqlite_var).grid(row=2, column=0, sticky=tk.W, padx=4, pady=4)
+        self.sync_bool_to_config(save_sqlite_var, config, "save_to_sqlite")
+        sqlite_name_var = self.add_labeled_entry(output_frame, "SQLite表名：", output_state["output_sqlite_table"], 2, 1, 24)
+        self.sync_var_to_config(sqlite_name_var, config, "output_sqlite_table")
+        sqlite_mode_var = self.add_labeled_combo(output_frame, "写入模式：", output_state["output_sqlite_mode"], output_state["output_sqlite_mode_choices"], 2, 3, 20)
+        self.sync_var_to_config(sqlite_mode_var, config, "output_sqlite_mode")
+        sqlite_preview_var = tk.BooleanVar(value=output_state["sqlite_save_in_preview"])
+        ttk.Checkbutton(output_frame, text="预览也允许写 SQLite（慎用）", variable=sqlite_preview_var).grid(row=3, column=0, columnspan=3, sticky=tk.W, padx=4, pady=4)
+        self.sync_bool_to_config(sqlite_preview_var, config, "sqlite_save_in_preview")
+        ttk.Label(output_frame, text=output_state["hint_text"], foreground="gray").grid(row=3, column=3, columnspan=3, sticky=tk.W, padx=4, pady=4)
+        return output_frame
+
     def build_group_inner_nodes_section(self, frame, config, row):
         inner_frame = ttk.LabelFrame(frame, text="组内节点", padding=6)
         inner_frame.grid(row=row, column=0, columnspan=8, sticky="nsew", padx=4, pady=6)
@@ -9222,214 +9432,12 @@ class PlanWorkflowWindow:
         # -------------------------
         # 1. 入口数据源与字段映射
         # -------------------------
-        input_frame = ttk.LabelFrame(frame, text="入口字段映射", padding=6)
-        input_frame.grid(row=2, column=0, columnspan=8, sticky="ew", padx=4, pady=6)
-        input_frame.columnconfigure(1, weight=1)
-
-        source_values = ["当前工作表", "中转副表", "SQLite表"]
-        source_type_var = self.add_labeled_combo(input_frame, "入口数据源：", config.get("input_source_type", "当前工作表"), source_values, 0, 0, 16)
-        self.sync_var_to_config(source_type_var, config, "input_source_type")
-
-        sqlite_tables = self.get_sqlite_table_names()
-        sqlite_var = self.add_labeled_combo(input_frame, "SQLite表：", config.get("input_sqlite_table", sqlite_tables[0] if sqlite_tables else ""), sqlite_tables, 0, 2, 26, readonly=False)
-        self.sync_var_to_config(sqlite_var, config, "input_sqlite_table")
-
-        transit_tables = sorted((transit_context or {}).get("transit_tables", {}).keys())
-        transit_var = self.add_labeled_combo(input_frame, "中转副表：", config.get("input_transit_table", transit_tables[0] if transit_tables else ""), transit_tables, 0, 4, 26, readonly=False)
-        self.sync_var_to_config(transit_var, config, "input_transit_table")
-
-        fields_text = workflow_group_input_fields_text(config)
-        input_fields_var = self.add_labeled_entry(input_frame, "组入口字段：", fields_text, 1, 0, 70)
-        ttk.Label(input_frame, text="留空=兼容旧版，直接把入口数据源整表传入组内；填写后才按映射生成标准入口表。", foreground="gray").grid(row=1, column=2, columnspan=5, sticky=tk.W, padx=4, pady=4)
-
-        def update_input_fields(*_):
-            workflow_update_group_input_fields_config(config, input_fields_var.get())
-            refresh_mapping_tree()
-        input_fields_var.trace_add("write", update_input_fields)
-
-        missing_var = self.add_labeled_combo(input_frame, "缺失字段：", config.get("missing_input_policy", "缺失填空"), ["缺失填空", "缺失报错"], 2, 0, 14)
-        self.sync_var_to_config(missing_var, config, "missing_input_policy")
-
-        mapping_wrap = ttk.Frame(input_frame)
-        mapping_wrap.grid(row=3, column=0, columnspan=8, sticky="ew", padx=4, pady=(4, 2))
-        mapping_wrap.columnconfigure(0, weight=1)
-        mapping_tree = ttk.Treeview(mapping_wrap, columns=("入口字段", "外部字段", "默认值"), show="headings", height=5)
-        for col, width in [("入口字段", 180), ("外部字段", 260), ("默认值", 180)]:
-            mapping_tree.heading(col, text=col)
-            mapping_tree.column(col, width=width, anchor=tk.W, stretch=False)
-        mapping_y = ttk.Scrollbar(mapping_wrap, orient=tk.VERTICAL, command=mapping_tree.yview)
-        mapping_tree.configure(yscrollcommand=mapping_y.set)
-        mapping_tree.grid(row=0, column=0, sticky="ew")
-        mapping_y.grid(row=0, column=1, sticky="ns")
-
-        map_edit = ttk.Frame(input_frame)
-        map_edit.grid(row=4, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(2, 4))
-        selected_input_var = tk.StringVar(value="")
-        source_field_var = tk.StringVar(value="")
-        default_value_var = tk.StringVar(value="")
-        ttk.Label(map_edit, text="组入口字段：").pack(side=tk.LEFT, padx=(0, 2))
-        selected_input_combo = ttk.Combobox(map_edit, textvariable=selected_input_var, values=[], width=20, state="readonly")
-        selected_input_combo.pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Label(map_edit, text="映射外部字段：").pack(side=tk.LEFT, padx=(0, 2))
-        source_field_combo = ttk.Combobox(map_edit, textvariable=source_field_var, values=[], width=30, state="readonly")
-        source_field_combo.pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Label(map_edit, text="缺失默认值：").pack(side=tk.LEFT, padx=(0, 2))
-        ttk.Entry(map_edit, textvariable=default_value_var, width=20).pack(side=tk.LEFT, padx=(0, 6))
-
-        def get_source_headers_for_mapping():
-            source_type = source_type_var.get() or config.get("input_source_type", "当前工作表")
-            return self.get_group_config_source_headers(
-                source_type,
-                headers,
-                transit_context=transit_context,
-                transit_name=transit_var.get().strip() or config.get("input_transit_table", ""),
-                sqlite_table=sqlite_var.get().strip() or config.get("input_sqlite_table", ""),
-            )
-
-        def refresh_source_field_combo():
-            state = workflow_group_source_field_combo_state(source_field_var.get(), get_source_headers_for_mapping())
-            source_field_combo["values"] = state["values"]
-            source_field_var.set(state["value"])
-            return list(state["values"][1:])
-
-        def refresh_selected_input_combo(sync_detail=True):
-            state = workflow_group_selected_input_state(config, selected_input_var.get().strip())
-            fields = state["values"]
-            selected_input_combo["values"] = fields
-            selected_input_var.set(state["value"])
-            if sync_detail:
-                sync_mapping_edit_from_selected()
-            return fields
-
-        def sync_mapping_edit_from_selected(event=None):
-            key = selected_input_var.get().strip()
-            detail = workflow_group_mapping_detail(config, key)
-            refresh_source_field_combo()
-            source_field_var.set(detail["source_field"])
-            default_value_var.set(detail["default_value"])
-            # 同步选中映射表中的对应行，便于表格总览和下拉编辑保持一致。
-            for iid in mapping_tree.get_children():
-                vals = mapping_tree.item(iid, "values")
-                if vals and str(vals[0]) == key:
-                    mapping_tree.selection_set(iid)
-                    mapping_tree.focus(iid)
-                    mapping_tree.see(iid)
-                    break
-
-        def refresh_mapping_tree():
-            mapping_tree.delete(*mapping_tree.get_children())
-            for row_values in workflow_group_mapping_rows(config):
-                mapping_tree.insert("", tk.END, values=row_values)
-            refresh_selected_input_combo(sync_detail=True)
-
-        def on_mapping_select(event=None):
-            sel = mapping_tree.selection()
-            if not sel:
-                return
-            vals = mapping_tree.item(sel[0], "values")
-            if not vals:
-                return
-            selected_input_var.set(vals[0])
-            refresh_source_field_combo()
-            source_field_var.set(vals[1] if len(vals) > 1 else "")
-            default_value_var.set(vals[2] if len(vals) > 2 else "")
-        mapping_tree.bind("<<TreeviewSelect>>", on_mapping_select)
-        selected_input_combo.bind("<<ComboboxSelected>>", sync_mapping_edit_from_selected)
-
-        def apply_mapping_one():
-            result = workflow_apply_group_mapping(
-                config,
-                selected_input_var.get(),
-                source_field_var.get(),
-                default_value_var.get(),
-            )
-            if not result["ok"]:
-                messagebox.showwarning("提示", result["message"])
-                return
-            refresh_mapping_tree()
-
-        def auto_mapping_by_name():
-            workflow_auto_group_mapping_by_name(config, get_source_headers_for_mapping())
-            refresh_mapping_tree()
-
-        def use_current_headers_as_inputs():
-            vals = get_source_headers_for_mapping()
-            workflow_use_source_headers_as_group_inputs(config, vals)
-            input_fields_var.set(",".join(vals))
-            refresh_mapping_tree()
-
-        def infer_inputs_from_inner_nodes():
-            inferred, details = self.infer_group_input_fields_from_nodes(
-                config.get("nodes", []),
-                context=transit_context,
-            )
-            detail_text = self.format_group_input_infer_details(inferred, details)
-            if not inferred:
-                messagebox.showinfo("入口字段推导", "没有从组内节点推导到需要外部传入的入口字段。\n\n" + detail_text)
-                return
-
-            current = self.parse_group_input_fields(config)
-            merge_inferred = False
-            if current:
-                answer = messagebox.askyesnocancel(
-                    "入口字段推导",
-                    "已从组内节点推导出入口字段：\n"
-                    + ", ".join(inferred)
-                    + "\n\n是否覆盖现有组入口字段？\n\n"
-                    + "是：覆盖现有入口字段\n"
-                    + "否：合并到现有入口字段\n"
-                    + "取消：只查看结果，不应用"
-                )
-                if answer is None:
-                    messagebox.showinfo("入口字段推导明细", detail_text)
-                    return
-                merge_inferred = not answer
-
-            source_headers = get_source_headers_for_mapping()
-            new_fields = workflow_apply_inferred_group_inputs(config, inferred, source_headers, merge=merge_inferred)
-            input_fields_var.set(",".join(new_fields))
-            refresh_mapping_tree()
-            messagebox.showinfo("入口字段推导完成", detail_text)
-
-        ttk.Button(map_edit, text="应用映射", command=apply_mapping_one).pack(side=tk.LEFT, padx=2)
-        ttk.Button(map_edit, text="同名自动映射", command=auto_mapping_by_name).pack(side=tk.LEFT, padx=2)
-        ttk.Button(map_edit, text="用来源字段作为入口", command=use_current_headers_as_inputs).pack(side=tk.LEFT, padx=2)
-        ttk.Button(map_edit, text="从组内节点推导入口字段", command=infer_inputs_from_inner_nodes).pack(side=tk.LEFT, padx=2)
-        for v in (source_type_var, sqlite_var, transit_var):
-            v.trace_add("write", lambda *_: refresh_source_field_combo())
-        refresh_mapping_tree()
+        self.build_group_input_mapping_section(frame, config, headers, transit_context=transit_context, row=2)
 
         # -------------------------
         # 2. 输出设置
         # -------------------------
-        output_frame = ttk.LabelFrame(frame, text="输出设置", padding=6)
-        output_frame.grid(row=3, column=0, columnspan=8, sticky="ew", padx=4, pady=6)
-        output_state = workflow_build_group_output_config_state(config)
-
-        main_out_var = self.add_labeled_combo(output_frame, "主输出：", output_state["main_output_mode"], output_state["main_output_choices"], 0, 0, 18)
-        self.sync_var_to_config(main_out_var, config, "main_output_mode")
-        scope_var = self.add_labeled_combo(output_frame, "组内中转：", output_state["transit_scope"], output_state["transit_scope_choices"], 0, 2, 18)
-        self.sync_var_to_config(scope_var, config, "transit_scope")
-
-        save_transit_var = tk.BooleanVar(value=output_state["save_to_transit"])
-        ttk.Checkbutton(output_frame, text="同时保存到中转副表", variable=save_transit_var).grid(row=1, column=0, sticky=tk.W, padx=4, pady=4)
-        self.sync_bool_to_config(save_transit_var, config, "save_to_transit")
-        transit_name_var = self.add_labeled_entry(output_frame, "中转表名：", output_state["output_transit_name"], 1, 1, 24)
-        self.sync_var_to_config(transit_name_var, config, "output_transit_name")
-        transit_conflict_var = self.add_labeled_combo(output_frame, "同名处理：", output_state["output_transit_conflict_mode"], output_state["output_transit_conflict_choices"], 1, 3, 18)
-        self.sync_var_to_config(transit_conflict_var, config, "output_transit_conflict_mode")
-
-        save_sqlite_var = tk.BooleanVar(value=output_state["save_to_sqlite"])
-        ttk.Checkbutton(output_frame, text="执行计划时保存到 SQLite", variable=save_sqlite_var).grid(row=2, column=0, sticky=tk.W, padx=4, pady=4)
-        self.sync_bool_to_config(save_sqlite_var, config, "save_to_sqlite")
-        sqlite_name_var = self.add_labeled_entry(output_frame, "SQLite表名：", output_state["output_sqlite_table"], 2, 1, 24)
-        self.sync_var_to_config(sqlite_name_var, config, "output_sqlite_table")
-        sqlite_mode_var = self.add_labeled_combo(output_frame, "写入模式：", output_state["output_sqlite_mode"], output_state["output_sqlite_mode_choices"], 2, 3, 20)
-        self.sync_var_to_config(sqlite_mode_var, config, "output_sqlite_mode")
-        sqlite_preview_var = tk.BooleanVar(value=output_state["sqlite_save_in_preview"])
-        ttk.Checkbutton(output_frame, text="预览也允许写 SQLite（慎用）", variable=sqlite_preview_var).grid(row=3, column=0, columnspan=3, sticky=tk.W, padx=4, pady=4)
-        self.sync_bool_to_config(sqlite_preview_var, config, "sqlite_save_in_preview")
-        ttk.Label(output_frame, text=output_state["hint_text"], foreground="gray").grid(row=3, column=3, columnspan=3, sticky=tk.W, padx=4, pady=4)
+        self.build_group_output_section(frame, config, row=3)
 
         # -------------------------
         # 3. 组内节点
