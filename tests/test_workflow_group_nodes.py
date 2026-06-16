@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import unittest
 
+import DataFlowKit
 from DataFlowKit import PlanWorkflowWindow
 from workflow.nodes.group_nodes import (
     add_group_inner_node,
@@ -21,8 +22,10 @@ from workflow.nodes.group_nodes import (
     ensure_group_config_defaults,
     group_inner_node_type_values,
     group_input_fields_text,
+    group_infer_input_apply_decision,
     group_mapping_detail,
     group_mapping_rows,
+    group_mapping_selection_detail,
     group_node_label,
     group_node_labels,
     group_selected_input_state,
@@ -41,6 +44,68 @@ from workflow.nodes.group_nodes import (
     update_group_input_fields_config,
     use_source_headers_as_group_inputs,
 )
+
+
+class FakeVar:
+    def __init__(self, value=""):
+        self.value = value
+
+    def get(self):
+        return self.value
+
+    def set(self, value):
+        self.value = value
+
+
+class FakeCombo(dict):
+    pass
+
+
+class FakeTree:
+    def __init__(self, rows=None):
+        self.rows = list(rows or [])
+        self.selected = []
+        self.focused = None
+        self.seen = None
+
+    def get_children(self):
+        return list(range(len(self.rows)))
+
+    def item(self, iid, option=None, **kwargs):
+        if option == "values":
+            return self.rows[iid]
+        return {"values": self.rows[iid]}
+
+    def delete(self, *items):
+        for item in sorted(items, reverse=True):
+            del self.rows[item]
+
+    def insert(self, parent, index, values=None):
+        self.rows.append(tuple(values or ()))
+        return len(self.rows) - 1
+
+    def selection_set(self, iid):
+        self.selected = [iid]
+
+    def focus(self, iid):
+        self.focused = iid
+
+    def see(self, iid):
+        self.seen = iid
+
+
+class FakeMessageBox:
+    def __init__(self, answers=None):
+        self.answers = list(answers or [])
+        self.infos = []
+        self.questions = []
+
+    def showinfo(self, title, message, **kwargs):
+        self.infos.append((title, message, kwargs))
+
+    def askyesnocancel(self, title, message, **kwargs):
+        self.questions.append((title, message, kwargs))
+        return self.answers.pop(0) if self.answers else None
 
 
 class WorkflowGroupNodesTests(unittest.TestCase):
@@ -112,6 +177,42 @@ class WorkflowGroupNodesTests(unittest.TestCase):
         self.assertEqual(new_fields, ["A", "B", "C"])
         self.assertEqual(config["input_mapping"], {"A": "OldA", "B": "b", "C": "C"})
         self.assertEqual(config["input_defaults"], {"A": "a", "B": "", "C": ""})
+
+    def test_group_mapping_selection_and_infer_decision_helpers(self):
+        self.assertEqual(
+            group_mapping_selection_detail(("Name", "姓名", "无名")),
+            {"key": "Name", "source_field": "姓名", "default_value": "无名"},
+        )
+        self.assertEqual(
+            group_mapping_selection_detail(("Name",)),
+            {"key": "Name", "source_field": "", "default_value": ""},
+        )
+
+        self.assertEqual(
+            group_infer_input_apply_decision({}, []),
+            {
+                "action": "show_empty",
+                "merge": False,
+                "fields_text": "",
+                "message_prefix": "没有从组内节点推导到需要外部传入的入口字段。",
+            },
+        )
+        self.assertEqual(
+            group_infer_input_apply_decision({"input_fields": []}, ["A", "B"]),
+            {"action": "apply", "merge": False, "fields_text": "A,B", "message_prefix": ""},
+        )
+        self.assertEqual(
+            group_infer_input_apply_decision({"input_fields": ["Old"]}, ["A"], answer=None)["action"],
+            "show_detail",
+        )
+        self.assertEqual(
+            group_infer_input_apply_decision({"input_fields": ["Old"]}, ["A"], answer=True),
+            {"action": "apply", "merge": False, "fields_text": "A", "message_prefix": ""},
+        )
+        self.assertEqual(
+            group_infer_input_apply_decision({"input_fields": ["Old"]}, ["A"], answer=False),
+            {"action": "apply", "merge": True, "fields_text": "Old,A", "message_prefix": ""},
+        )
 
     def test_group_inner_node_list_actions(self):
         nodes = [
@@ -413,6 +514,126 @@ class WorkflowGroupNodesTests(unittest.TestCase):
         index = window.apply_group_inner_node_list_action_to_config(config, 0, "copy")
         self.assertEqual(index, 1)
         self.assertEqual([node["name"] for node in config["nodes"]], ["one", "one_复制", "two"])
+
+    def test_dataflowkit_group_mapping_ui_helpers_update_fake_controls(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+
+        combo = FakeCombo()
+        source_var = FakeVar("missing")
+        self.assertEqual(window.refresh_group_source_field_combo(combo, source_var, ["A", "B"]), ["A", "B"])
+        self.assertEqual(combo["values"], ["", "A", "B"])
+        self.assertEqual(source_var.get(), "")
+
+        config = {
+            "input_fields": ["Name", "Code"],
+            "input_mapping": {"Name": "姓名"},
+            "input_defaults": {"Name": "无名"},
+        }
+        selected_combo = FakeCombo()
+        selected_var = FakeVar("")
+        synced = []
+        self.assertEqual(
+            window.refresh_group_selected_input_combo(config, selected_combo, selected_var, sync_detail=lambda: synced.append(True)),
+            ["Name", "Code"],
+        )
+        self.assertEqual(selected_combo["values"], ["Name", "Code"])
+        self.assertEqual(selected_var.get(), "Name")
+        self.assertEqual(synced, [True])
+
+        tree = FakeTree([("Name", "姓名", "无名"), ("Code", "编码", "")])
+        selected_var = FakeVar("Name")
+        source_var = FakeVar("")
+        default_var = FakeVar("")
+        refresh_calls = []
+        window.sync_group_mapping_edit_from_selected(
+            config,
+            tree,
+            selected_var,
+            source_var,
+            default_var,
+            lambda: refresh_calls.append(True),
+        )
+        self.assertEqual(source_var.get(), "姓名")
+        self.assertEqual(default_var.get(), "无名")
+        self.assertEqual(tree.focused, 0)
+        self.assertEqual(refresh_calls, [True])
+
+        tree = FakeTree([("old", "", "")])
+        refreshed = []
+        window.refresh_group_mapping_tree(config, tree, lambda: refreshed.append(True))
+        self.assertEqual(tree.rows, [("Name", "姓名", "无名"), ("Code", "", "")])
+        self.assertEqual(refreshed, [True])
+
+    def test_dataflowkit_infer_and_apply_group_input_fields_flow(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+        window.format_group_input_infer_details = lambda inferred, details: "DETAIL:" + ",".join(inferred)
+        original_messagebox = DataFlowKit.messagebox
+        try:
+            fake_box = FakeMessageBox()
+            DataFlowKit.messagebox = fake_box
+            window.infer_group_input_fields_from_nodes = lambda nodes, context=None: ([], [])
+            config = {"nodes": []}
+            applied = window.infer_and_apply_group_input_fields_for_config(
+                config,
+                {},
+                lambda: ["A"],
+                lambda text: self.fail(f"should not set text: {text}"),
+                lambda: self.fail("should not refresh"),
+            )
+            self.assertFalse(applied)
+            self.assertEqual(fake_box.infos[0][0], "入口字段推导")
+            self.assertIn("没有从组内节点推导", fake_box.infos[0][1])
+
+            fake_box = FakeMessageBox([None])
+            DataFlowKit.messagebox = fake_box
+            window.infer_group_input_fields_from_nodes = lambda nodes, context=None: (["A"], [])
+            config = {"input_fields": ["Old"], "nodes": []}
+            applied = window.infer_and_apply_group_input_fields_for_config(
+                config,
+                {},
+                lambda: ["A", "Old"],
+                lambda text: self.fail(f"should not set text: {text}"),
+                lambda: self.fail("should not refresh"),
+            )
+            self.assertFalse(applied)
+            self.assertEqual(len(fake_box.questions), 1)
+            self.assertEqual(fake_box.infos[-1][0], "入口字段推导明细")
+
+            fake_box = FakeMessageBox([False])
+            DataFlowKit.messagebox = fake_box
+            config = {"input_fields": ["Old"], "input_mapping": {"Old": "Old"}, "nodes": []}
+            texts = []
+            refreshed = []
+            applied = window.infer_and_apply_group_input_fields_for_config(
+                config,
+                {},
+                lambda: ["A", "Old"],
+                texts.append,
+                lambda: refreshed.append(True),
+            )
+            self.assertTrue(applied)
+            self.assertEqual(texts, ["Old,A"])
+            self.assertEqual(refreshed, [True])
+            self.assertEqual(config["input_mapping"], {"Old": "Old", "A": "A"})
+            self.assertEqual(fake_box.infos[-1][0], "入口字段推导完成")
+
+            fake_box = FakeMessageBox()
+            DataFlowKit.messagebox = fake_box
+            config = {"input_fields": [], "nodes": []}
+            texts = []
+            refreshed = []
+            applied = window.infer_and_apply_group_input_fields_for_config(
+                config,
+                {},
+                lambda: ["A"],
+                texts.append,
+                lambda: refreshed.append(True),
+            )
+            self.assertTrue(applied)
+            self.assertEqual(texts, ["A"])
+            self.assertEqual(refreshed, [True])
+        finally:
+            DataFlowKit.messagebox = original_messagebox
 
 
 if __name__ == "__main__":

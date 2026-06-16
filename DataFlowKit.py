@@ -190,8 +190,10 @@ from workflow.nodes.group_nodes import (
     ensure_group_parent_context as workflow_ensure_group_parent_context,
     group_input_fields_text as workflow_group_input_fields_text,
     group_inner_node_type_values as workflow_group_inner_node_type_values,
+    group_infer_input_apply_decision as workflow_group_infer_input_apply_decision,
     group_mapping_detail as workflow_group_mapping_detail,
     group_mapping_rows as workflow_group_mapping_rows,
+    group_mapping_selection_detail as workflow_group_mapping_selection_detail,
     group_node_label as workflow_group_node_label,
     make_group_inner_node as workflow_make_group_inner_node,
     group_selected_input_state as workflow_group_selected_input_state,
@@ -7707,40 +7709,36 @@ class PlanWorkflowWindow:
             )
 
         def refresh_source_field_combo():
-            state = workflow_group_source_field_combo_state(source_field_var.get(), get_source_headers_for_mapping())
-            source_field_combo["values"] = state["values"]
-            source_field_var.set(state["value"])
-            return list(state["values"][1:])
+            return self.refresh_group_source_field_combo(
+                source_field_combo,
+                source_field_var,
+                get_source_headers_for_mapping(),
+            )
 
         def refresh_selected_input_combo(sync_detail=True):
-            state = workflow_group_selected_input_state(config, selected_input_var.get().strip())
-            fields = state["values"]
-            selected_input_combo["values"] = fields
-            selected_input_var.set(state["value"])
-            if sync_detail:
-                sync_mapping_edit_from_selected()
-            return fields
+            return self.refresh_group_selected_input_combo(
+                config,
+                selected_input_combo,
+                selected_input_var,
+                sync_detail=sync_mapping_edit_from_selected if sync_detail else None,
+            )
 
         def sync_mapping_edit_from_selected(event=None):
-            key = selected_input_var.get().strip()
-            detail = workflow_group_mapping_detail(config, key)
-            refresh_source_field_combo()
-            source_field_var.set(detail["source_field"])
-            default_value_var.set(detail["default_value"])
-            # 同步选中映射表中的对应行，便于表格总览和下拉编辑保持一致。
-            for iid in mapping_tree.get_children():
-                vals = mapping_tree.item(iid, "values")
-                if vals and str(vals[0]) == key:
-                    mapping_tree.selection_set(iid)
-                    mapping_tree.focus(iid)
-                    mapping_tree.see(iid)
-                    break
+            self.sync_group_mapping_edit_from_selected(
+                config,
+                mapping_tree,
+                selected_input_var,
+                source_field_var,
+                default_value_var,
+                refresh_source_field_combo,
+            )
 
         def refresh_mapping_tree():
-            mapping_tree.delete(*mapping_tree.get_children())
-            for row_values in workflow_group_mapping_rows(config):
-                mapping_tree.insert("", tk.END, values=row_values)
-            refresh_selected_input_combo(sync_detail=True)
+            self.refresh_group_mapping_tree(
+                config,
+                mapping_tree,
+                lambda: refresh_selected_input_combo(sync_detail=True),
+            )
 
         def on_mapping_select(event=None):
             sel = mapping_tree.selection()
@@ -7749,10 +7747,11 @@ class PlanWorkflowWindow:
             vals = mapping_tree.item(sel[0], "values")
             if not vals:
                 return
-            selected_input_var.set(vals[0])
+            detail = workflow_group_mapping_selection_detail(vals)
+            selected_input_var.set(detail["key"])
             refresh_source_field_combo()
-            source_field_var.set(vals[1] if len(vals) > 1 else "")
-            default_value_var.set(vals[2] if len(vals) > 2 else "")
+            source_field_var.set(detail["source_field"])
+            default_value_var.set(detail["default_value"])
         mapping_tree.bind("<<TreeviewSelect>>", on_mapping_select)
         selected_input_combo.bind("<<ComboboxSelected>>", sync_mapping_edit_from_selected)
 
@@ -7779,37 +7778,13 @@ class PlanWorkflowWindow:
             refresh_mapping_tree()
 
         def infer_inputs_from_inner_nodes():
-            inferred, details = self.infer_group_input_fields_from_nodes(
-                config.get("nodes", []),
-                context=transit_context,
+            self.infer_and_apply_group_input_fields_for_config(
+                config,
+                transit_context,
+                get_source_headers_for_mapping,
+                input_fields_var.set,
+                refresh_mapping_tree,
             )
-            detail_text = self.format_group_input_infer_details(inferred, details)
-            if not inferred:
-                messagebox.showinfo("入口字段推导", "没有从组内节点推导到需要外部传入的入口字段。\n\n" + detail_text)
-                return
-
-            current = self.parse_group_input_fields(config)
-            merge_inferred = False
-            if current:
-                answer = messagebox.askyesnocancel(
-                    "入口字段推导",
-                    "已从组内节点推导出入口字段：\n"
-                    + ", ".join(inferred)
-                    + "\n\n是否覆盖现有组入口字段？\n\n"
-                    + "是：覆盖现有入口字段\n"
-                    + "否：合并到现有入口字段\n"
-                    + "取消：只查看结果，不应用"
-                )
-                if answer is None:
-                    messagebox.showinfo("入口字段推导明细", detail_text)
-                    return
-                merge_inferred = not answer
-
-            source_headers = get_source_headers_for_mapping()
-            new_fields = workflow_apply_inferred_group_inputs(config, inferred, source_headers, merge=merge_inferred)
-            input_fields_var.set(",".join(new_fields))
-            refresh_mapping_tree()
-            messagebox.showinfo("入口字段推导完成", detail_text)
 
         ttk.Button(map_edit, text="应用映射", command=apply_mapping_one).pack(side=tk.LEFT, padx=2)
         ttk.Button(map_edit, text="同名自动映射", command=auto_mapping_by_name).pack(side=tk.LEFT, padx=2)
@@ -7850,6 +7825,90 @@ class PlanWorkflowWindow:
         self.sync_bool_to_config(sqlite_preview_var, config, "sqlite_save_in_preview")
         ttk.Label(output_frame, text=output_state["hint_text"], foreground="gray").grid(row=3, column=3, columnspan=3, sticky=tk.W, padx=4, pady=4)
         return output_frame
+
+    def refresh_group_source_field_combo(self, source_field_combo, source_field_var, source_headers):
+        state = workflow_group_source_field_combo_state(source_field_var.get(), source_headers)
+        source_field_combo["values"] = state["values"]
+        source_field_var.set(state["value"])
+        return list(state["values"][1:])
+
+    def sync_group_mapping_edit_from_selected(
+        self,
+        config,
+        mapping_tree,
+        selected_input_var,
+        source_field_var,
+        default_value_var,
+        refresh_source_fields,
+    ):
+        key = selected_input_var.get().strip()
+        detail = workflow_group_mapping_detail(config, key)
+        refresh_source_fields()
+        source_field_var.set(detail["source_field"])
+        default_value_var.set(detail["default_value"])
+        # 同步选中映射表中的对应行，便于表格总览和下拉编辑保持一致。
+        for iid in mapping_tree.get_children():
+            vals = mapping_tree.item(iid, "values")
+            if vals and str(vals[0]) == key:
+                mapping_tree.selection_set(iid)
+                mapping_tree.focus(iid)
+                mapping_tree.see(iid)
+                break
+
+    def refresh_group_selected_input_combo(self, config, selected_input_combo, selected_input_var, sync_detail=None):
+        state = workflow_group_selected_input_state(config, selected_input_var.get().strip())
+        fields = state["values"]
+        selected_input_combo["values"] = fields
+        selected_input_var.set(state["value"])
+        if callable(sync_detail):
+            sync_detail()
+        return fields
+
+    def refresh_group_mapping_tree(self, config, mapping_tree, refresh_selected_inputs):
+        mapping_tree.delete(*mapping_tree.get_children())
+        for row_values in workflow_group_mapping_rows(config):
+            mapping_tree.insert("", tk.END, values=row_values)
+        refresh_selected_inputs()
+
+    def infer_and_apply_group_input_fields_for_config(
+        self,
+        config,
+        transit_context,
+        get_source_headers,
+        set_input_fields_text,
+        refresh_mapping,
+    ):
+        inferred, details = self.infer_group_input_fields_from_nodes(
+            config.get("nodes", []),
+            context=transit_context,
+        )
+        detail_text = self.format_group_input_infer_details(inferred, details)
+        decision = workflow_group_infer_input_apply_decision(config, inferred)
+        if decision["action"] == "show_empty":
+            messagebox.showinfo("入口字段推导", decision["message_prefix"] + "\n\n" + detail_text)
+            return False
+
+        if decision["action"] == "show_detail":
+            answer = messagebox.askyesnocancel(
+                "入口字段推导",
+                "已从组内节点推导出入口字段：\n"
+                + ", ".join(inferred)
+                + "\n\n是否覆盖现有组入口字段？\n\n"
+                + "是：覆盖现有入口字段\n"
+                + "否：合并到现有入口字段\n"
+                + "取消：只查看结果，不应用"
+            )
+            if answer is None:
+                messagebox.showinfo("入口字段推导明细", detail_text)
+                return False
+            decision = workflow_group_infer_input_apply_decision(config, inferred, answer=answer)
+
+        source_headers = get_source_headers()
+        new_fields = workflow_apply_inferred_group_inputs(config, inferred, source_headers, merge=decision["merge"])
+        set_input_fields_text(",".join(new_fields))
+        refresh_mapping()
+        messagebox.showinfo("入口字段推导完成", detail_text)
+        return True
 
     def build_group_inner_nodes_section(self, frame, config, row):
         inner_frame = ttk.LabelFrame(frame, text="组内节点", padding=6)

@@ -155,6 +155,15 @@ def group_mapping_detail(config, key):
     }
 
 
+def group_mapping_selection_detail(values):
+    values = list(values or [])
+    return {
+        "key": str(values[0]) if values else "",
+        "source_field": str(values[1]) if len(values) > 1 else "",
+        "default_value": str(values[2]) if len(values) > 2 else "",
+    }
+
+
 def apply_group_mapping(config, key, source_field, default_value):
     key = str(key or "").strip()
     if not key:
@@ -206,6 +215,40 @@ def apply_inferred_group_inputs(config, inferred, source_headers, merge=False):
     config["input_mapping"] = new_mapping
     config["input_defaults"] = {field: old_defaults.get(field, "") for field in new_fields}
     return new_fields
+
+
+def group_infer_input_apply_decision(config, inferred, answer=None):
+    inferred = list(inferred or [])
+    if not inferred:
+        return {
+            "action": "show_empty",
+            "merge": False,
+            "fields_text": "",
+            "message_prefix": "没有从组内节点推导到需要外部传入的入口字段。",
+        }
+    current = parse_group_input_fields(config)
+    if not current:
+        return {
+            "action": "apply",
+            "merge": False,
+            "fields_text": ",".join(inferred),
+            "message_prefix": "",
+        }
+    if answer is None:
+        return {
+            "action": "show_detail",
+            "merge": False,
+            "fields_text": "",
+            "message_prefix": "",
+        }
+    merge = not bool(answer)
+    fields = unique_keep_order(current + inferred) if merge else inferred
+    return {
+        "action": "apply",
+        "merge": merge,
+        "fields_text": ",".join(fields),
+        "message_prefix": "",
+    }
 
 
 def group_node_label(index, node):
