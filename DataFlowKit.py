@@ -239,6 +239,21 @@ from workflow.filter_config_helpers import (
     select_current_table_filter_output_fields as workflow_select_current_table_filter_output_fields,
     toggle_filter_dedupe_config as workflow_toggle_filter_dedupe_config,
 )
+from workflow.plugin_config_helpers import (
+    build_plugin_dynamic_control_state as workflow_build_plugin_dynamic_control_state,
+    build_plugin_dynamic_select_choices as workflow_build_plugin_dynamic_select_choices,
+    build_plugin_field_select_initial_value as workflow_build_plugin_field_select_initial_value,
+    build_plugin_input_spec as workflow_build_plugin_input_spec,
+    build_plugin_load_status_state as workflow_build_plugin_load_status_state,
+    build_plugin_select_initial_value as workflow_build_plugin_select_initial_value,
+    default_plugin_input_spec as workflow_default_plugin_input_spec,
+    ensure_plugin_input_specs as workflow_ensure_plugin_input_specs,
+    format_plugin_input_spec as workflow_format_plugin_input_spec,
+    get_plugin_field_choices_for_table_param as workflow_get_plugin_field_choices_for_table_param,
+    get_plugin_input_table_alias_choices as workflow_get_plugin_input_table_alias_choices,
+    normalize_plugin_run_mode as workflow_normalize_plugin_run_mode,
+    plugin_config_transit_reuse_note as workflow_plugin_config_transit_reuse_note,
+)
 from workflow.nodes.selected_columns_nodes import (
     apply_selected_columns_to_memory_table as workflow_apply_selected_columns_to_memory_table,
     build_selected_columns_write_payload as workflow_build_selected_columns_write_payload,
@@ -7441,13 +7456,7 @@ class PlanWorkflowWindow:
         return config_context
 
     def plugin_config_transit_reuse_note(self, transit_context=None):
-        reused = list((transit_context or {}).get("_reused_preview_transit_tables", []) or [])
-        if not reused:
-            return ""
-        names = "、".join(str(name) for name in reused[:5])
-        if len(reused) > 5:
-            names += f" 等 {len(reused)} 个"
-        return f"插件设置窗口将复用上次真实预览/执行生成的中转副表数据：{names}"
+        return workflow_plugin_config_transit_reuse_note(transit_context)
 
     def build_plugin_node_config(self, config, headers, transit_context=None, current_rows=None):
         frame = ttk.LabelFrame(self.config_frame, text="外部插件节点", padding=8)
@@ -7465,27 +7474,22 @@ class PlanWorkflowWindow:
         ttk.Label(frame, text=f"ID：{plugin_id}    版本：{info.get('version', '')}    分类：{info.get('category', '')}", foreground="gray").grid(row=1, column=0, columnspan=4, sticky=tk.W, padx=4, pady=2)
         ttk.Label(frame, text=info.get("description", ""), foreground="gray", wraplength=1050).grid(row=2, column=0, columnspan=4, sticky=tk.W, padx=4, pady=(0, 8))
 
-        load_status = item.get("load_status", "可内置运行")
-        import_error = str(item.get("import_error", "") or "").strip()
-        metadata_source = item.get("metadata_source", "")
         available_run_modes = item.get("available_run_modes") or ["主程序内置环境", "插件独立环境"]
-        status_text = f"加载状态：{load_status}"
-        if metadata_source:
-            status_text += f"    元信息来源：{metadata_source}"
-        if load_status == "仅独立环境运行":
-            status_text += "    该插件不会在扫描阶段强制导入业务依赖。"
-        ttk.Label(frame, text=status_text, foreground=("#b26a00" if load_status == "仅独立环境运行" else "gray"), wraplength=1050).grid(row=3, column=0, columnspan=4, sticky=tk.W, padx=4, pady=2)
-        if import_error:
-            ttk.Label(frame, text=f"主程序环境导入提示：{import_error}", foreground="#b26a00", wraplength=1050).grid(row=4, column=0, columnspan=4, sticky=tk.W, padx=4, pady=(0, 6))
+        status_state = workflow_build_plugin_load_status_state(
+            item.get("load_status", "可内置运行"),
+            item.get("metadata_source", ""),
+            item.get("import_error", ""),
+        )
+        ttk.Label(frame, text=status_state["text"], foreground=status_state["foreground"], wraplength=1050).grid(row=3, column=0, columnspan=4, sticky=tk.W, padx=4, pady=2)
+        if status_state["import_error_text"]:
+            ttk.Label(frame, text=status_state["import_error_text"], foreground="#b26a00", wraplength=1050).grid(row=4, column=0, columnspan=4, sticky=tk.W, padx=4, pady=(0, 6))
 
-        run_mode_var = tk.StringVar(value=config.get("run_mode", item.get("run_mode_default", "主程序内置环境")))
-        if run_mode_var.get() in ("external_python", "独立环境", "插件独立环境"):
-            run_mode_var.set("插件独立环境")
-        else:
-            run_mode_var.set("主程序内置环境")
-        if run_mode_var.get() not in available_run_modes:
-            run_mode_var.set(available_run_modes[0] if available_run_modes else "插件独立环境")
-            config["run_mode"] = run_mode_var.get()
+        normalized_run_mode = workflow_normalize_plugin_run_mode(
+            config.get("run_mode", item.get("run_mode_default", "主程序内置环境")),
+            available_run_modes,
+        )
+        config["run_mode"] = normalized_run_mode
+        run_mode_var = tk.StringVar(value=normalized_run_mode)
         ttk.Label(frame, text="运行环境：").grid(row=5, column=0, sticky=tk.W, padx=4, pady=4)
         run_mode_combo = ttk.Combobox(frame, textvariable=run_mode_var, values=available_run_modes, state="readonly", width=18)
         run_mode_combo.grid(row=5, column=1, sticky=tk.W, padx=4, pady=4)
@@ -7529,10 +7533,7 @@ class PlanWorkflowWindow:
         entry_var.trace_add("write", lambda *_, v=entry_var: config.__setitem__("external_entry", v.get()))
 
         row = 9
-        input_specs = config.setdefault("input_tables", [])
-        if not isinstance(input_specs, list):
-            input_specs = []
-            config["input_tables"] = input_specs
+        input_specs = workflow_ensure_plugin_input_specs(config)
         transit_context = self.plugin_config_context_with_live_transit(transit_context, include_rows=False)
         reuse_note = self.plugin_config_transit_reuse_note(transit_context)
         if reuse_note:
@@ -7555,23 +7556,10 @@ class PlanWorkflowWindow:
         input_lb = tk.Listbox(input_frame, height=4, width=88, exportselection=False)
         input_lb.grid(row=1, column=0, columnspan=4, sticky="ew", padx=4, pady=4)
 
-        def format_input_spec(spec):
-            spec = spec or {}
-            alias = str(spec.get("alias") or "").strip() or "输入表"
-            source_type = str(spec.get("source_type") or "当前工作流表").strip() or "当前工作流表"
-            if source_type == "SQLite表":
-                detail = spec.get("sqlite_table") or spec.get("table") or ""
-            elif source_type == "中转副表":
-                detail = spec.get("transit_table") or spec.get("table") or ""
-            else:
-                detail = "当前工作流表"
-            enabled = "" if spec.get("enabled", True) else " [停用]"
-            return f"{alias} <- {source_type}:{detail}{enabled}"
-
         def refresh_input_lb():
             input_lb.delete(0, tk.END)
             for spec in config.get("input_tables", []) or []:
-                input_lb.insert(tk.END, format_input_spec(spec))
+                input_lb.insert(tk.END, workflow_format_plugin_input_spec(spec))
 
         dynamic_param_controls = []
         refreshing_dynamic_controls = False
@@ -7579,13 +7567,7 @@ class PlanWorkflowWindow:
         def edit_input_spec(index=None):
             specs = config.setdefault("input_tables", [])
             editing = index is not None and 0 <= index < len(specs)
-            source_spec = copy.deepcopy(specs[index]) if editing else {
-                "alias": f"输入表{len(specs) + 1}",
-                "source_type": "SQLite表",
-                "sqlite_table": sqlite_tables[0] if sqlite_tables else "",
-                "transit_table": transit_names[0] if transit_names else "",
-                "enabled": True,
-            }
+            source_spec = copy.deepcopy(specs[index]) if editing else workflow_default_plugin_input_spec(len(specs), sqlite_tables, transit_names)
             win = tk.Toplevel(self.window)
             try:
                 win.withdraw()
@@ -7625,15 +7607,14 @@ class PlanWorkflowWindow:
             btns.grid(row=5, column=0, columnspan=3, sticky=tk.E, padx=4, pady=4)
 
             def on_ok():
-                alias = alias_var.get().strip() or f"输入表{len(specs) + 1}"
-                source_type = source_type_var.get().strip() or "SQLite表"
-                new_spec = {
-                    "alias": alias,
-                    "source_type": source_type,
-                    "sqlite_table": sqlite_var.get().strip(),
-                    "transit_table": transit_var.get().strip(),
-                    "enabled": bool(enabled_var.get()),
-                }
+                new_spec = workflow_build_plugin_input_spec(
+                    alias_var.get(),
+                    source_type_var.get(),
+                    sqlite_var.get(),
+                    transit_var.get(),
+                    enabled_var.get(),
+                    fallback_index=len(specs),
+                )
                 if editing:
                     specs[index] = new_spec
                 else:
@@ -7691,33 +7672,17 @@ class PlanWorkflowWindow:
             return self.build_plugin_input_table_headers(config, headers, transit_context or {})
 
         def get_input_table_alias_choices():
-            table_headers = get_input_table_header_map()
-            choices = []
-            for key in ("当前表",):
-                if key in table_headers and key not in choices:
-                    choices.append(key)
-            for spec in config.get("input_tables", []) or []:
-                if not isinstance(spec, dict) or spec.get("enabled", True) is False:
-                    continue
-                alias = str(spec.get("alias") or "").strip()
-                if alias and alias in table_headers and alias not in choices:
-                    choices.append(alias)
-            for key in table_headers:
-                if key not in choices:
-                    choices.append(key)
-            return choices
+            return workflow_get_plugin_input_table_alias_choices(
+                get_input_table_header_map(),
+                config.get("input_tables", []) or [],
+            )
 
         def get_field_choices_for_table_param(spec):
-            table_param = (
-                spec.get("table_param")
-                or spec.get("source_table_param")
-                or spec.get("depends_on")
-                or spec.get("table_alias_param")
+            return workflow_get_plugin_field_choices_for_table_param(
+                spec,
+                params,
+                get_input_table_header_map(),
             )
-            alias = str(params.get(table_param, "") or spec.get("table_alias", "") or spec.get("default_table_alias", "")).strip()
-            if not alias:
-                alias = "当前表"
-            return list(get_input_table_header_map().get(alias, []) or [])
 
         def get_dynamic_parameter_choices(spec, key):
             choices = list(spec.get("choices", spec.get("options", [])) or [])
@@ -7764,35 +7729,18 @@ class PlanWorkflowWindow:
                     typ = control.get("type", "")
                     if combo is None or var is None:
                         continue
-                    choices = [str(v) for v in dynamic_choices_for_control(control)]
                     current = str(var.get() or "")
-                    display_choices = list(choices)
-                    allow_custom = bool(spec.get("allow_custom", True))
-                    default_value = str(spec.get("default", "") or "")
-                    desired = current
-                    if typ == "input_table_select":
-                        if current not in choices:
-                            desired = choices[0] if choices else "当前表"
-                    elif typ == "input_table_field_select":
-                        if not current:
-                            desired = default_value if default_value in choices else (choices[0] if choices else default_value)
-                        elif current not in choices:
-                            if allow_custom:
-                                display_choices = [current] + [c for c in choices if c != current]
-                            else:
-                                desired = choices[0] if choices else default_value
-                    elif typ == "dynamic_select":
-                        if not current:
-                            desired = default_value if default_value in choices else (choices[0] if choices else default_value)
-                        elif current not in choices:
-                            if allow_custom:
-                                display_choices = [current] + [c for c in choices if c != current]
-                            else:
-                                desired = choices[0] if choices else default_value
+                    state = workflow_build_plugin_dynamic_control_state(
+                        typ,
+                        spec,
+                        current,
+                        dynamic_choices_for_control(control),
+                    )
                     try:
-                        combo.configure(values=display_choices)
+                        combo.configure(values=state["choices"])
                     except Exception:
                         pass
+                    desired = state["value"]
                     if desired != current:
                         var.set(desired)
                     set_param(key, var.get())
@@ -7825,14 +7773,12 @@ class PlanWorkflowWindow:
                 var.trace_add("write", lambda *_, k=key, v=var: set_param(k, bool(v.get())))
             elif typ == "select":
                 choices = spec.get("choices", spec.get("options", []))
-                var = tk.StringVar(value=str(value) if value not in (None, "") else (choices[0] if choices else ""))
+                var = tk.StringVar(value=workflow_build_plugin_select_initial_value(value, choices))
                 ttk.Combobox(frame, textvariable=var, values=choices, width=28, state="readonly").grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
                 var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
             elif typ == "dynamic_select":
-                choices = get_dynamic_parameter_choices(spec, key)
-                if value not in (None, "") and str(value) not in choices:
-                    choices = [str(value)] + choices
-                var = tk.StringVar(value=str(value) if value not in (None, "") else (choices[0] if choices else ""))
+                choices = workflow_build_plugin_dynamic_select_choices(spec, value, get_dynamic_parameter_choices(spec, key))
+                var = tk.StringVar(value=workflow_build_plugin_select_initial_value(value, choices))
                 state = "normal" if spec.get("allow_custom", True) else "readonly"
                 combo = ttk.Combobox(frame, textvariable=var, values=choices, width=28, state=state)
                 combo.grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
@@ -7840,9 +7786,8 @@ class PlanWorkflowWindow:
                 var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
             elif typ == "input_table_select":
                 choices = get_input_table_alias_choices()
-                if value not in (None, "") and str(value) not in choices:
-                    choices = [str(value)] + choices
-                var = tk.StringVar(value=str(value) if value not in (None, "") else (choices[0] if choices else "当前表"))
+                choices = workflow_build_plugin_dynamic_select_choices(spec, value, choices)
+                var = tk.StringVar(value=workflow_build_plugin_select_initial_value(value, choices, fallback="当前表"))
                 combo = ttk.Combobox(frame, textvariable=var, values=choices, width=28, state="readonly")
                 combo.grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
                 dynamic_param_controls.append({"type": typ, "spec": spec, "key": key, "var": var, "combo": combo})
@@ -7853,10 +7798,9 @@ class PlanWorkflowWindow:
                 var.trace_add("write", update_table_param)
             elif typ == "input_table_field_select":
                 choices = get_field_choices_for_table_param(spec)
-                if value not in (None, "") and str(value) not in choices:
-                    choices = [str(value)] + choices
                 default_value = spec.get("default", "")
-                var = tk.StringVar(value=str(value) if value not in (None, "") else (default_value if default_value in choices else (choices[0] if choices else default_value)))
+                choices = workflow_build_plugin_dynamic_select_choices(spec, value, choices)
+                var = tk.StringVar(value=workflow_build_plugin_field_select_initial_value(value, choices, default_value))
                 state = "normal" if spec.get("allow_custom", True) else "readonly"
                 combo = ttk.Combobox(frame, textvariable=var, values=choices, width=28, state=state)
                 combo.grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
@@ -7864,7 +7808,7 @@ class PlanWorkflowWindow:
                 var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
             elif typ == "field_select":
                 choices = list(headers)
-                var = tk.StringVar(value=str(value) if value else (choices[0] if choices else ""))
+                var = tk.StringVar(value=workflow_build_plugin_select_initial_value(value, choices))
                 ttk.Combobox(frame, textvariable=var, values=choices, width=28, state="readonly").grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
                 var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
             elif typ == "multi_field_select":
@@ -7904,7 +7848,7 @@ class PlanWorkflowWindow:
                 var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
             elif typ == "table_select":
                 choices = self.get_sqlite_table_names()
-                var = tk.StringVar(value=str(value) if value else (choices[0] if choices else ""))
+                var = tk.StringVar(value=workflow_build_plugin_select_initial_value(value, choices))
                 ttk.Combobox(frame, textvariable=var, values=choices, width=28, state="readonly").grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
                 var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
             else:
