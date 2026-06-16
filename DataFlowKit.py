@@ -176,11 +176,13 @@ from workflow.nodes.file_nodes import (
 from workflow.nodes.group_nodes import (
     apply_group_mapping as workflow_apply_group_mapping,
     apply_inferred_group_inputs as workflow_apply_inferred_group_inputs,
+    apply_group_template_config as workflow_apply_group_template_config,
     auto_group_mapping_by_name as workflow_auto_group_mapping_by_name,
     build_empty_group_stat as workflow_build_empty_group_stat,
     build_group_final_output as workflow_build_group_final_output,
     build_group_input_table as workflow_build_group_input_table,
     build_group_node_log as workflow_build_group_node_log,
+    build_group_output_config_state as workflow_build_group_output_config_state,
     build_group_status_text as workflow_build_group_status_text,
     copy_group_inner_node as workflow_copy_group_inner_node,
     delete_group_inner_node as workflow_delete_group_inner_node,
@@ -198,6 +200,7 @@ from workflow.nodes.group_nodes import (
     move_group_inner_node as workflow_move_group_inner_node,
     normalize_group_sqlite_mode as workflow_normalize_group_sqlite_mode,
     normalize_group_transit_conflict_mode as workflow_normalize_group_transit_conflict_mode,
+    parse_group_inner_node_json as workflow_parse_group_inner_node_json,
     parse_group_input_fields as workflow_parse_group_input_fields,
     toggle_group_inner_node_enabled as workflow_toggle_group_inner_node_enabled,
     update_group_input_fields_config as workflow_update_group_input_fields_config,
@@ -7588,6 +7591,21 @@ class PlanWorkflowWindow:
             sqlite_columns,
         )
 
+    def save_group_inner_node_json_text(self, config, index, text):
+        nodes = config.setdefault("nodes", [])
+        if index is None or index < 0 or index >= len(nodes):
+            raise ValueError("请先选择一个组内节点。")
+        nodes[index] = workflow_parse_group_inner_node_json(text)
+        return index
+
+    def load_group_template_into_config(self, config):
+        data = self.load_group_template_dialog()
+        if data is None:
+            return False
+        workflow_apply_group_template_config(config, self.group_config_from_template_data(data))
+        self.rebuild_current_config()
+        return True
+
     def build_plugin_node_config(self, config, headers, transit_context=None, current_rows=None):
         frame = ttk.LabelFrame(self.config_frame, text="外部插件节点", padding=8)
         frame.pack(fill=tk.BOTH, expand=True, pady=8)
@@ -9259,31 +9277,32 @@ class PlanWorkflowWindow:
         # -------------------------
         output_frame = ttk.LabelFrame(frame, text="输出设置", padding=6)
         output_frame.grid(row=3, column=0, columnspan=8, sticky="ew", padx=4, pady=6)
+        output_state = workflow_build_group_output_config_state(config)
 
-        main_out_var = self.add_labeled_combo(output_frame, "主输出：", config.get("main_output_mode", "输出为当前工作表"), ["输出为当前工作表", "透传原当前表"], 0, 0, 18)
+        main_out_var = self.add_labeled_combo(output_frame, "主输出：", output_state["main_output_mode"], output_state["main_output_choices"], 0, 0, 18)
         self.sync_var_to_config(main_out_var, config, "main_output_mode")
-        scope_var = self.add_labeled_combo(output_frame, "组内中转：", config.get("transit_scope", "组内中转私有"), ["组内中转私有", "允许输出到外部"], 0, 2, 18)
+        scope_var = self.add_labeled_combo(output_frame, "组内中转：", output_state["transit_scope"], output_state["transit_scope_choices"], 0, 2, 18)
         self.sync_var_to_config(scope_var, config, "transit_scope")
 
-        save_transit_var = tk.BooleanVar(value=bool(config.get("save_to_transit", False)))
+        save_transit_var = tk.BooleanVar(value=output_state["save_to_transit"])
         ttk.Checkbutton(output_frame, text="同时保存到中转副表", variable=save_transit_var).grid(row=1, column=0, sticky=tk.W, padx=4, pady=4)
         self.sync_bool_to_config(save_transit_var, config, "save_to_transit")
-        transit_name_var = self.add_labeled_entry(output_frame, "中转表名：", config.get("output_transit_name") or config.get("group_name", "节点组结果"), 1, 1, 24)
+        transit_name_var = self.add_labeled_entry(output_frame, "中转表名：", output_state["output_transit_name"], 1, 1, 24)
         self.sync_var_to_config(transit_name_var, config, "output_transit_name")
-        transit_conflict_var = self.add_labeled_combo(output_frame, "同名处理：", config.get("output_transit_conflict_mode", "覆盖整表"), ["覆盖整表", "追加行", "自动加时间戳新建"], 1, 3, 18)
+        transit_conflict_var = self.add_labeled_combo(output_frame, "同名处理：", output_state["output_transit_conflict_mode"], output_state["output_transit_conflict_choices"], 1, 3, 18)
         self.sync_var_to_config(transit_conflict_var, config, "output_transit_conflict_mode")
 
-        save_sqlite_var = tk.BooleanVar(value=bool(config.get("save_to_sqlite", False)))
+        save_sqlite_var = tk.BooleanVar(value=output_state["save_to_sqlite"])
         ttk.Checkbutton(output_frame, text="执行计划时保存到 SQLite", variable=save_sqlite_var).grid(row=2, column=0, sticky=tk.W, padx=4, pady=4)
         self.sync_bool_to_config(save_sqlite_var, config, "save_to_sqlite")
-        sqlite_name_var = self.add_labeled_entry(output_frame, "SQLite表名：", config.get("output_sqlite_table") or config.get("group_name", "节点组结果"), 2, 1, 24)
+        sqlite_name_var = self.add_labeled_entry(output_frame, "SQLite表名：", output_state["output_sqlite_table"], 2, 1, 24)
         self.sync_var_to_config(sqlite_name_var, config, "output_sqlite_table")
-        sqlite_mode_var = self.add_labeled_combo(output_frame, "写入模式：", config.get("output_sqlite_mode", "自动加时间戳新表"), ["覆盖表", "追加到已有表", "自动加时间戳新表", "不覆盖，存在则报错"], 2, 3, 20)
+        sqlite_mode_var = self.add_labeled_combo(output_frame, "写入模式：", output_state["output_sqlite_mode"], output_state["output_sqlite_mode_choices"], 2, 3, 20)
         self.sync_var_to_config(sqlite_mode_var, config, "output_sqlite_mode")
-        sqlite_preview_var = tk.BooleanVar(value=bool(config.get("sqlite_save_in_preview", False)))
+        sqlite_preview_var = tk.BooleanVar(value=output_state["sqlite_save_in_preview"])
         ttk.Checkbutton(output_frame, text="预览也允许写 SQLite（慎用）", variable=sqlite_preview_var).grid(row=3, column=0, columnspan=3, sticky=tk.W, padx=4, pady=4)
         self.sync_bool_to_config(sqlite_preview_var, config, "sqlite_save_in_preview")
-        ttk.Label(output_frame, text="建议：中转副表可用于后续节点预览；SQLite 默认只在【执行计划】时保存，避免刷新配置界面误写库。", foreground="gray").grid(row=3, column=3, columnspan=3, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(output_frame, text=output_state["hint_text"], foreground="gray").grid(row=3, column=3, columnspan=3, sticky=tk.W, padx=4, pady=4)
 
         # -------------------------
         # 3. 组内节点
@@ -9388,12 +9407,7 @@ class PlanWorkflowWindow:
             btns.pack(fill=tk.X, padx=8, pady=(0, 8))
             def save_json():
                 try:
-                    data = json.loads(txt.get("1.0", tk.END))
-                    if not isinstance(data, dict) or "type" not in data:
-                        raise ValueError("节点 JSON 必须是包含 type 的对象。")
-                    if data.get("type") in ("循环执行起点", "循环判断回跳"):
-                        raise ValueError("第一版节点组不支持组内循环节点。")
-                    nodes[i] = data
+                    self.save_group_inner_node_json_text(config, i, txt.get("1.0", tk.END))
                     refresh_group_list(i)
                     win.destroy()
                 except Exception as e:
@@ -9405,12 +9419,7 @@ class PlanWorkflowWindow:
             self.save_group_template_from_config(config)
 
         def load_group_template():
-            data = self.load_group_template_dialog()
-            if data is None:
-                return
-            config.clear()
-            config.update(self.group_config_from_template_data(data))
-            self.rebuild_current_config()
+            self.load_group_template_into_config(config)
 
         def open_groups_dir():
             self.open_group_dir()

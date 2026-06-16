@@ -5,11 +5,13 @@ from DataFlowKit import PlanWorkflowWindow
 from workflow.nodes.group_nodes import (
     apply_group_mapping,
     apply_inferred_group_inputs,
+    apply_group_template_config,
     auto_group_mapping_by_name,
     build_empty_group_stat,
     build_group_final_output,
     build_group_input_table,
     build_group_node_log,
+    build_group_output_config_state,
     build_group_status_text,
     copy_group_inner_node,
     delete_group_inner_node,
@@ -28,6 +30,7 @@ from workflow.nodes.group_nodes import (
     move_group_inner_node,
     normalize_group_sqlite_mode,
     normalize_group_transit_conflict_mode,
+    parse_group_inner_node_json,
     parse_group_input_fields,
     toggle_group_inner_node_enabled,
     unique_keep_order,
@@ -66,6 +69,22 @@ class WorkflowGroupNodesTests(unittest.TestCase):
         )
         self.assertEqual(group_source_headers_for_mapping("SQLite表", ["cur"], sqlite_columns=["S1"]), ["S1"])
         self.assertEqual(group_source_field_combo_state("missing", ["S1"]), {"values": ["", "S1"], "value": ""})
+
+    def test_group_output_config_state(self):
+        state = build_group_output_config_state({
+            "group_name": "G",
+            "save_to_transit": True,
+            "save_to_sqlite": False,
+        })
+
+        self.assertEqual(state["main_output_mode"], "输出为当前工作表")
+        self.assertEqual(state["main_output_choices"], ["输出为当前工作表", "透传原当前表"])
+        self.assertEqual(state["transit_scope_choices"], ["组内中转私有", "允许输出到外部"])
+        self.assertTrue(state["save_to_transit"])
+        self.assertEqual(state["output_transit_name"], "G")
+        self.assertFalse(state["save_to_sqlite"])
+        self.assertEqual(state["output_sqlite_table"], "G")
+        self.assertIn("SQLite 默认只在【执行计划】时保存", state["hint_text"])
 
     def test_group_mapping_actions(self):
         config = {"input_fields": ["Name", "Code"], "input_mapping": {}, "input_defaults": {}}
@@ -116,6 +135,21 @@ class WorkflowGroupNodesTests(unittest.TestCase):
         deleted, index = delete_group_inner_node(nodes, 0)
         self.assertEqual([node["type"] for node in deleted], ["B"])
         self.assertEqual(index, 0)
+
+    def test_group_inner_node_json_and_template_helpers(self):
+        self.assertEqual(parse_group_inner_node_json('{"type":"新建列","config":{}}')["type"], "新建列")
+        with self.assertRaisesRegex(ValueError, "必须是包含 type"):
+            parse_group_inner_node_json('{"config":{}}')
+        with self.assertRaisesRegex(ValueError, "不支持组内循环节点"):
+            parse_group_inner_node_json('{"type":"循环执行起点"}')
+        with self.assertRaises(ValueError):
+            parse_group_inner_node_json("{bad")
+
+        config = {"old": 1}
+        apply_group_template_config(config, {"group_name": "G", "nodes": []})
+        self.assertEqual(config, {"group_name": "G", "nodes": []})
+        with self.assertRaisesRegex(ValueError, "必须是对象"):
+            apply_group_template_config(config, None)
 
     def test_build_group_input_table_maps_fields_and_defaults(self):
         headers, rows, stat = build_group_input_table(
@@ -270,6 +304,33 @@ class WorkflowGroupNodesTests(unittest.TestCase):
             window.get_group_config_source_headers("SQLite表", ["A"], context, sqlite_table="sql"),
             ["S1", "S2"],
         )
+
+    def test_dataflowkit_group_json_and_template_methods(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+        config = {"nodes": [{"type": "旧节点", "name": "old"}]}
+
+        index = window.save_group_inner_node_json_text(config, 0, '{"type":"新建列","name":"new","config":{}}')
+
+        self.assertEqual(index, 0)
+        self.assertEqual(config["nodes"][0]["type"], "新建列")
+        with self.assertRaisesRegex(ValueError, "请先选择"):
+            window.save_group_inner_node_json_text(config, None, "{}")
+        with self.assertRaisesRegex(ValueError, "不支持组内循环节点"):
+            window.save_group_inner_node_json_text(config, 0, '{"type":"循环判断回跳"}')
+
+        calls = []
+        window.load_group_template_dialog = lambda: {"template": True}
+        window.group_config_from_template_data = lambda data: {"group_name": "G", "nodes": []}
+        window.rebuild_current_config = lambda: calls.append("rebuild")
+        target = {"old": 1}
+
+        self.assertTrue(window.load_group_template_into_config(target))
+        self.assertEqual(target, {"group_name": "G", "nodes": []})
+        self.assertEqual(calls, ["rebuild"])
+
+        window.load_group_template_dialog = lambda: None
+        self.assertFalse(window.load_group_template_into_config(target))
+        self.assertEqual(calls, ["rebuild"])
 
 
 if __name__ == "__main__":

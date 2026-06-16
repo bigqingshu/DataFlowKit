@@ -2,6 +2,7 @@
 """Pure helpers for group/subworkflow nodes."""
 
 import copy
+import json
 import re
 
 from core.data_utils import normalize_rows, safe_cell
@@ -60,6 +61,13 @@ GROUP_CONFIG_DEFAULTS = {
     "nodes": list,
 }
 
+GROUP_MAIN_OUTPUT_CHOICES = ["输出为当前工作表", "透传原当前表"]
+GROUP_TRANSIT_SCOPE_CHOICES = ["组内中转私有", "允许输出到外部"]
+GROUP_TRANSIT_CONFLICT_CHOICES = ["覆盖整表", "追加行", "自动加时间戳新建"]
+GROUP_SQLITE_MODE_CHOICES = ["覆盖表", "追加到已有表", "自动加时间戳新表", "不覆盖，存在则报错"]
+GROUP_OUTPUT_HINT_TEXT = "建议：中转副表可用于后续节点预览；SQLite 默认只在【执行计划】时保存，避免刷新配置界面误写库。"
+GROUP_FORBIDDEN_INNER_NODE_TYPES = ("循环执行起点", "循环判断回跳")
+
 
 def ensure_group_config_defaults(config):
     for key, default in GROUP_CONFIG_DEFAULTS.items():
@@ -69,6 +77,26 @@ def ensure_group_config_defaults(config):
     config.setdefault("output_transit_name", fallback_name)
     config.setdefault("output_sqlite_table", fallback_name)
     return config
+
+
+def build_group_output_config_state(config):
+    group_name = config.get("group_name", "节点组结果")
+    return {
+        "main_output_mode": config.get("main_output_mode", "输出为当前工作表"),
+        "main_output_choices": list(GROUP_MAIN_OUTPUT_CHOICES),
+        "transit_scope": config.get("transit_scope", "组内中转私有"),
+        "transit_scope_choices": list(GROUP_TRANSIT_SCOPE_CHOICES),
+        "save_to_transit": bool(config.get("save_to_transit", False)),
+        "output_transit_name": config.get("output_transit_name") or group_name,
+        "output_transit_conflict_mode": config.get("output_transit_conflict_mode", "覆盖整表"),
+        "output_transit_conflict_choices": list(GROUP_TRANSIT_CONFLICT_CHOICES),
+        "save_to_sqlite": bool(config.get("save_to_sqlite", False)),
+        "output_sqlite_table": config.get("output_sqlite_table") or group_name,
+        "output_sqlite_mode": config.get("output_sqlite_mode", "自动加时间戳新表"),
+        "output_sqlite_mode_choices": list(GROUP_SQLITE_MODE_CHOICES),
+        "sqlite_save_in_preview": bool(config.get("sqlite_save_in_preview", False)),
+        "hint_text": GROUP_OUTPUT_HINT_TEXT,
+    }
 
 
 def group_input_fields_text(config):
@@ -225,6 +253,27 @@ def toggle_group_inner_node_enabled(nodes, index):
         return result, None
     result[index]["enabled"] = not result[index].get("enabled", True)
     return result, index
+
+
+def parse_group_inner_node_json(text, forbidden_types=None):
+    forbidden = tuple(forbidden_types or GROUP_FORBIDDEN_INNER_NODE_TYPES)
+    try:
+        data = json.loads(text)
+    except Exception as exc:
+        raise ValueError(str(exc)) from exc
+    if not isinstance(data, dict) or "type" not in data:
+        raise ValueError("节点 JSON 必须是包含 type 的对象。")
+    if data.get("type") in forbidden:
+        raise ValueError("第一版节点组不支持组内循环节点。")
+    return data
+
+
+def apply_group_template_config(config, template_config):
+    if not isinstance(template_config, dict):
+        raise ValueError("组模板配置必须是对象。")
+    config.clear()
+    config.update(template_config)
+    return config
 
 
 def normalize_group_transit_conflict_mode(mode):
