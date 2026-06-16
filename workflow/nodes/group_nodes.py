@@ -217,6 +217,57 @@ def group_node_labels(nodes):
     return [group_node_label(index, node) for index, node in enumerate(nodes or [])]
 
 
+def group_inner_node_type_values(node_type_values, forbidden_types=None):
+    forbidden = set(forbidden_types or GROUP_FORBIDDEN_INNER_NODE_TYPES)
+    return [value for value in list(node_type_values or []) if value not in forbidden]
+
+
+def make_group_inner_node(
+    node_type,
+    plugin_display_map=None,
+    plugin_registry=None,
+    plugin_config_factory=None,
+    default_name_factory=None,
+    default_config_factory=None,
+    forbidden_types=None,
+):
+    forbidden = tuple(forbidden_types or GROUP_FORBIDDEN_INNER_NODE_TYPES)
+    if node_type in forbidden:
+        raise ValueError("第一版节点组不支持组内循环执行起点 / 循环判断回跳。")
+
+    plugin_display_map = plugin_display_map or {}
+    plugin_registry = plugin_registry or {}
+    if node_type in plugin_display_map:
+        plugin_id = plugin_display_map[node_type]
+        plugin_info = plugin_registry.get(plugin_id, {}).get("info", {})
+        config = plugin_config_factory(plugin_id) if callable(plugin_config_factory) else {}
+        return {
+            "enabled": True,
+            "type": "插件节点",
+            "name": plugin_info.get("name", plugin_id),
+            "config": copy.deepcopy(config),
+        }
+
+    name = default_name_factory(node_type) if callable(default_name_factory) else node_type
+    config = default_config_factory(node_type) if callable(default_config_factory) else {}
+    return {
+        "enabled": True,
+        "type": node_type,
+        "name": name,
+        "config": copy.deepcopy(config),
+    }
+
+
+def add_group_inner_node(config, node_type, **kwargs):
+    node = make_group_inner_node(node_type, **kwargs)
+    nodes = config.setdefault("nodes", [])
+    if not isinstance(nodes, list):
+        nodes = []
+        config["nodes"] = nodes
+    nodes.append(node)
+    return node, len(nodes) - 1
+
+
 def delete_group_inner_node(nodes, index):
     result = list(nodes or [])
     if index is None or index < 0 or index >= len(result):
@@ -253,6 +304,18 @@ def toggle_group_inner_node_enabled(nodes, index):
         return result, None
     result[index]["enabled"] = not result[index].get("enabled", True)
     return result, index
+
+
+def apply_group_inner_node_list_action(nodes, index, action, delta=0):
+    if action == "delete":
+        return delete_group_inner_node(nodes, index)
+    if action == "move":
+        return move_group_inner_node(nodes, index, delta)
+    if action == "copy":
+        return copy_group_inner_node(nodes, index)
+    if action == "toggle":
+        return toggle_group_inner_node_enabled(nodes, index)
+    raise ValueError(f"未知组内节点操作：{action}")
 
 
 def parse_group_inner_node_json(text, forbidden_types=None):

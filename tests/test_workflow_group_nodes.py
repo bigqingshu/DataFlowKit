@@ -3,6 +3,8 @@ import unittest
 
 from DataFlowKit import PlanWorkflowWindow
 from workflow.nodes.group_nodes import (
+    add_group_inner_node,
+    apply_group_inner_node_list_action,
     apply_group_mapping,
     apply_inferred_group_inputs,
     apply_group_template_config,
@@ -17,6 +19,7 @@ from workflow.nodes.group_nodes import (
     delete_group_inner_node,
     ensure_group_parent_context,
     ensure_group_config_defaults,
+    group_inner_node_type_values,
     group_input_fields_text,
     group_mapping_detail,
     group_mapping_rows,
@@ -25,6 +28,7 @@ from workflow.nodes.group_nodes import (
     group_selected_input_state,
     group_source_field_combo_state,
     group_source_headers_for_mapping,
+    make_group_inner_node,
     make_group_child_context,
     merge_group_child_audit_logs,
     move_group_inner_node,
@@ -135,6 +139,54 @@ class WorkflowGroupNodesTests(unittest.TestCase):
         deleted, index = delete_group_inner_node(nodes, 0)
         self.assertEqual([node["type"] for node in deleted], ["B"])
         self.assertEqual(index, 0)
+
+        action_nodes, index = apply_group_inner_node_list_action(nodes, 1, "toggle")
+        self.assertTrue(action_nodes[1]["enabled"])
+        self.assertEqual(index, 1)
+        action_nodes, index = apply_group_inner_node_list_action(nodes, 0, "move", delta=1)
+        self.assertEqual([node["type"] for node in action_nodes], ["B", "A"])
+        self.assertEqual(index, 1)
+        with self.assertRaisesRegex(ValueError, "未知组内节点操作"):
+            apply_group_inner_node_list_action(nodes, 0, "bad")
+
+    def test_group_inner_node_creation_helpers(self):
+        self.assertEqual(
+            group_inner_node_type_values(["批量替换", "循环执行起点", "循环判断回跳", "插件A"]),
+            ["批量替换", "插件A"],
+        )
+
+        node = make_group_inner_node(
+            "批量替换",
+            default_name_factory=lambda node_type: f"{node_type}节点",
+            default_config_factory=lambda node_type: {"kind": node_type, "items": []},
+        )
+        self.assertEqual(node["type"], "批量替换")
+        self.assertEqual(node["name"], "批量替换节点")
+        self.assertEqual(node["config"], {"kind": "批量替换", "items": []})
+
+        plugin_node = make_group_inner_node(
+            "插件显示名",
+            plugin_display_map={"插件显示名": "plugin.demo"},
+            plugin_registry={"plugin.demo": {"info": {"name": "演示插件"}}},
+            plugin_config_factory=lambda plugin_id: {"plugin_id": plugin_id, "params": {"a": []}},
+        )
+        self.assertEqual(plugin_node["type"], "插件节点")
+        self.assertEqual(plugin_node["name"], "演示插件")
+        self.assertEqual(plugin_node["config"]["plugin_id"], "plugin.demo")
+
+        with self.assertRaisesRegex(ValueError, "不支持组内循环执行起点"):
+            make_group_inner_node("循环执行起点")
+
+        config = {"nodes": [node]}
+        added, index = add_group_inner_node(
+            config,
+            "字段生成",
+            default_name_factory=lambda node_type: f"{node_type}节点",
+            default_config_factory=lambda node_type: {"source": node_type},
+        )
+        self.assertEqual(index, 1)
+        self.assertEqual(added["name"], "字段生成节点")
+        self.assertEqual([item["type"] for item in config["nodes"]], ["批量替换", "字段生成"])
 
     def test_group_inner_node_json_and_template_helpers(self):
         self.assertEqual(parse_group_inner_node_json('{"type":"新建列","config":{}}')["type"], "新建列")
@@ -331,6 +383,36 @@ class WorkflowGroupNodesTests(unittest.TestCase):
         window.load_group_template_dialog = lambda: None
         self.assertFalse(window.load_group_template_into_config(target))
         self.assertEqual(calls, ["rebuild"])
+
+    def test_dataflowkit_group_inner_node_creation_methods(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+        window.get_node_type_values = lambda: ["批量替换", "循环执行起点", "插件显示名"]
+        window.plugin_display_map = {"插件显示名": "plugin.demo"}
+        window.plugin_registry = {"plugin.demo": {"info": {"name": "演示插件"}}}
+        window.default_config_for_plugin = lambda plugin_id: {"plugin_id": plugin_id, "params": {}}
+        window.default_name_for_node = lambda node_type: f"{node_type}节点"
+        window.default_config_for_type = lambda node_type: {"kind": node_type}
+
+        self.assertEqual(window.get_group_inner_node_type_values(), ["批量替换", "插件显示名"])
+
+        normal_node = window.make_group_inner_node("批量替换")
+        self.assertEqual(normal_node["name"], "批量替换节点")
+        self.assertEqual(normal_node["config"], {"kind": "批量替换"})
+
+        config = {"nodes": []}
+        index = window.add_group_inner_node_to_config(config, "插件显示名")
+        self.assertEqual(index, 0)
+        self.assertEqual(config["nodes"][0]["type"], "插件节点")
+        self.assertEqual(config["nodes"][0]["name"], "演示插件")
+        self.assertEqual(config["nodes"][0]["config"]["plugin_id"], "plugin.demo")
+
+        config = {"nodes": [
+            {"type": "A", "name": "one", "enabled": True},
+            {"type": "B", "name": "two", "enabled": False},
+        ]}
+        index = window.apply_group_inner_node_list_action_to_config(config, 0, "copy")
+        self.assertEqual(index, 1)
+        self.assertEqual([node["name"] for node in config["nodes"]], ["one", "one_复制", "two"])
 
 
 if __name__ == "__main__":

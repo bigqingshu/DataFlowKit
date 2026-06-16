@@ -174,6 +174,8 @@ from workflow.nodes.file_nodes import (
     parse_extensions_filter as workflow_parse_extensions_filter,
 )
 from workflow.nodes.group_nodes import (
+    add_group_inner_node as workflow_add_group_inner_node,
+    apply_group_inner_node_list_action as workflow_apply_group_inner_node_list_action,
     apply_group_mapping as workflow_apply_group_mapping,
     apply_inferred_group_inputs as workflow_apply_inferred_group_inputs,
     apply_group_template_config as workflow_apply_group_template_config,
@@ -184,25 +186,23 @@ from workflow.nodes.group_nodes import (
     build_group_node_log as workflow_build_group_node_log,
     build_group_output_config_state as workflow_build_group_output_config_state,
     build_group_status_text as workflow_build_group_status_text,
-    copy_group_inner_node as workflow_copy_group_inner_node,
-    delete_group_inner_node as workflow_delete_group_inner_node,
     ensure_group_config_defaults as workflow_ensure_group_config_defaults,
     ensure_group_parent_context as workflow_ensure_group_parent_context,
     group_input_fields_text as workflow_group_input_fields_text,
+    group_inner_node_type_values as workflow_group_inner_node_type_values,
     group_mapping_detail as workflow_group_mapping_detail,
     group_mapping_rows as workflow_group_mapping_rows,
     group_node_label as workflow_group_node_label,
+    make_group_inner_node as workflow_make_group_inner_node,
     group_selected_input_state as workflow_group_selected_input_state,
     group_source_field_combo_state as workflow_group_source_field_combo_state,
     group_source_headers_for_mapping as workflow_group_source_headers_for_mapping,
     make_group_child_context as workflow_make_group_child_context,
     merge_group_child_audit_logs as workflow_merge_group_child_audit_logs,
-    move_group_inner_node as workflow_move_group_inner_node,
     normalize_group_sqlite_mode as workflow_normalize_group_sqlite_mode,
     normalize_group_transit_conflict_mode as workflow_normalize_group_transit_conflict_mode,
     parse_group_inner_node_json as workflow_parse_group_inner_node_json,
     parse_group_input_fields as workflow_parse_group_input_fields,
-    toggle_group_inner_node_enabled as workflow_toggle_group_inner_node_enabled,
     update_group_input_fields_config as workflow_update_group_input_fields_config,
     use_source_headers_as_group_inputs as workflow_use_source_headers_as_group_inputs,
     unique_keep_order as workflow_unique_keep_order,
@@ -7606,6 +7606,133 @@ class PlanWorkflowWindow:
         self.rebuild_current_config()
         return True
 
+    def get_group_inner_node_type_values(self):
+        return workflow_group_inner_node_type_values(self.get_node_type_values())
+
+    def make_group_inner_node(self, node_type):
+        return workflow_make_group_inner_node(
+            node_type,
+            plugin_display_map=getattr(self, "plugin_display_map", {}),
+            plugin_registry=getattr(self, "plugin_registry", {}),
+            plugin_config_factory=self.default_config_for_plugin,
+            default_name_factory=self.default_name_for_node,
+            default_config_factory=self.default_config_for_type,
+        )
+
+    def add_group_inner_node_to_config(self, config, node_type):
+        _, index = workflow_add_group_inner_node(
+            config,
+            node_type,
+            plugin_display_map=getattr(self, "plugin_display_map", {}),
+            plugin_registry=getattr(self, "plugin_registry", {}),
+            plugin_config_factory=self.default_config_for_plugin,
+            default_name_factory=self.default_name_for_node,
+            default_config_factory=self.default_config_for_type,
+        )
+        return index
+
+    def apply_group_inner_node_list_action_to_config(self, config, index, action, delta=0):
+        nodes, select_idx = workflow_apply_group_inner_node_list_action(
+            config.setdefault("nodes", []),
+            index,
+            action,
+            delta=delta,
+        )
+        config["nodes"] = nodes
+        return select_idx
+
+    def build_group_inner_nodes_section(self, frame, config, row):
+        inner_frame = ttk.LabelFrame(frame, text="组内节点", padding=6)
+        inner_frame.grid(row=row, column=0, columnspan=8, sticky="nsew", padx=4, pady=6)
+        inner_frame.columnconfigure(0, weight=1)
+        inner_frame.rowconfigure(1, weight=1)
+
+        add_row = ttk.Frame(inner_frame)
+        add_row.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        inner_type_var = tk.StringVar(value="批量替换")
+        inner_values = self.get_group_inner_node_type_values()
+        ttk.Combobox(add_row, textvariable=inner_type_var, values=inner_values, width=26, state="readonly").pack(side=tk.LEFT, padx=(0, 4))
+
+        list_wrap = ttk.Frame(inner_frame)
+        list_wrap.grid(row=1, column=0, sticky="nsew")
+        list_wrap.columnconfigure(0, weight=1)
+        list_wrap.rowconfigure(0, weight=1)
+        group_list = tk.Listbox(list_wrap, height=9, exportselection=False)
+        yscroll = ttk.Scrollbar(list_wrap, orient=tk.VERTICAL, command=group_list.yview)
+        group_list.configure(yscrollcommand=yscroll.set)
+        group_list.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+
+        def refresh_group_list(select_idx=None):
+            group_list.delete(0, tk.END)
+            for i, n in enumerate(config.setdefault("nodes", [])):
+                group_list.insert(tk.END, workflow_group_node_label(i, n))
+            if select_idx is not None and 0 <= select_idx < len(config.get("nodes", [])):
+                group_list.selection_set(select_idx)
+                group_list.activate(select_idx)
+
+        def get_group_selected_index():
+            sel = group_list.curselection()
+            return int(sel[0]) if sel else None
+
+        def add_inner_node():
+            try:
+                select_idx = self.add_group_inner_node_to_config(config, inner_type_var.get())
+                refresh_group_list(select_idx)
+            except Exception as e:
+                messagebox.showerror("添加失败", str(e))
+
+        def apply_inner_action(action, delta=0):
+            i = get_group_selected_index()
+            select_idx = self.apply_group_inner_node_list_action_to_config(config, i, action, delta=delta)
+            refresh_group_list(select_idx)
+
+        def edit_inner_json():
+            i = get_group_selected_index()
+            nodes = config.setdefault("nodes", [])
+            if i is None:
+                messagebox.showwarning("提示", "请先选择一个组内节点。")
+                return
+            win = tk.Toplevel(self.window)
+            win.title("编辑组内节点 JSON")
+            win.geometry("760x560")
+            txt = tk.Text(win, wrap="none")
+            txt.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+            txt.insert("1.0", json.dumps(nodes[i], ensure_ascii=False, indent=2))
+            btns = ttk.Frame(win)
+            btns.pack(fill=tk.X, padx=8, pady=(0, 8))
+
+            def save_json():
+                try:
+                    self.save_group_inner_node_json_text(config, i, txt.get("1.0", tk.END))
+                    refresh_group_list(i)
+                    win.destroy()
+                except Exception as e:
+                    messagebox.showerror("JSON错误", str(e))
+
+            ttk.Button(btns, text="保存", command=save_json).pack(side=tk.LEFT, padx=4)
+            ttk.Button(btns, text="取消", command=win.destroy).pack(side=tk.LEFT, padx=4)
+
+        ttk.Button(add_row, text="添加内部节点", command=add_inner_node).pack(side=tk.LEFT, padx=2)
+        ttk.Button(add_row, text="保存组模板", command=lambda: self.save_group_template_from_config(config)).pack(side=tk.LEFT, padx=2)
+        ttk.Button(add_row, text="载入组模板", command=lambda: self.load_group_template_into_config(config)).pack(side=tk.LEFT, padx=2)
+        ttk.Button(add_row, text="打开groups目录", command=self.open_group_dir).pack(side=tk.LEFT, padx=2)
+
+        btn_row = ttk.Frame(inner_frame)
+        btn_row.grid(row=2, column=0, sticky=tk.W, pady=(4, 0))
+        for text_, cmd in [
+            ("删除", lambda: apply_inner_action("delete")),
+            ("上移", lambda: apply_inner_action("move", delta=-1)),
+            ("下移", lambda: apply_inner_action("move", delta=1)),
+            ("复制", lambda: apply_inner_action("copy")),
+            ("启用/禁用", lambda: apply_inner_action("toggle")),
+            ("编辑JSON", edit_inner_json),
+        ]:
+            ttk.Button(btn_row, text=text_, command=cmd).pack(side=tk.LEFT, padx=2)
+
+        refresh_group_list()
+        return inner_frame
+
     def build_plugin_node_config(self, config, headers, transit_context=None, current_rows=None):
         frame = ttk.LabelFrame(self.config_frame, text="外部插件节点", padding=8)
         frame.pack(fill=tk.BOTH, expand=True, pady=8)
@@ -9307,142 +9434,9 @@ class PlanWorkflowWindow:
         # -------------------------
         # 3. 组内节点
         # -------------------------
-        inner_frame = ttk.LabelFrame(frame, text="组内节点", padding=6)
-        inner_frame.grid(row=4, column=0, columnspan=8, sticky="nsew", padx=4, pady=6)
-        inner_frame.columnconfigure(0, weight=1)
-        inner_frame.rowconfigure(1, weight=1)
-
-        add_row = ttk.Frame(inner_frame)
-        add_row.grid(row=0, column=0, sticky="ew", pady=(0, 4))
-        inner_type_var = tk.StringVar(value="批量替换")
-        inner_values = [v for v in self.get_node_type_values() if v not in ("循环执行起点", "循环判断回跳")]
-        ttk.Combobox(add_row, textvariable=inner_type_var, values=inner_values, width=26, state="readonly").pack(side=tk.LEFT, padx=(0, 4))
-
-        list_wrap = ttk.Frame(inner_frame)
-        list_wrap.grid(row=1, column=0, sticky="nsew")
-        list_wrap.columnconfigure(0, weight=1)
-        list_wrap.rowconfigure(0, weight=1)
-        group_list = tk.Listbox(list_wrap, height=9, exportselection=False)
-        yscroll = ttk.Scrollbar(list_wrap, orient=tk.VERTICAL, command=group_list.yview)
-        group_list.configure(yscrollcommand=yscroll.set)
-        group_list.grid(row=0, column=0, sticky="nsew")
-        yscroll.grid(row=0, column=1, sticky="ns")
-
-        def refresh_group_list(select_idx=None):
-            group_list.delete(0, tk.END)
-            for i, n in enumerate(config.setdefault("nodes", [])):
-                group_list.insert(tk.END, workflow_group_node_label(i, n))
-            if select_idx is not None and 0 <= select_idx < len(config.get("nodes", [])):
-                group_list.selection_set(select_idx)
-                group_list.activate(select_idx)
-
-        def get_group_selected_index():
-            sel = group_list.curselection()
-            return int(sel[0]) if sel else None
-
-        def make_inner_node(node_type):
-            if node_type in getattr(self, "plugin_display_map", {}):
-                plugin_id = self.plugin_display_map[node_type]
-                plugin_info = self.plugin_registry.get(plugin_id, {}).get("info", {})
-                return {
-                    "enabled": True,
-                    "type": "插件节点",
-                    "name": plugin_info.get("name", plugin_id),
-                    "config": self.default_config_for_plugin(plugin_id),
-                }
-            if node_type in ("循环执行起点", "循环判断回跳"):
-                raise ValueError("第一版节点组不支持组内循环执行起点 / 循环判断回跳。")
-            return {
-                "enabled": True,
-                "type": node_type,
-                "name": self.default_name_for_node(node_type),
-                "config": self.default_config_for_type(node_type),
-            }
-
-        def add_inner_node():
-            try:
-                n = make_inner_node(inner_type_var.get())
-                config.setdefault("nodes", []).append(n)
-                refresh_group_list(len(config["nodes"]) - 1)
-            except Exception as e:
-                messagebox.showerror("添加失败", str(e))
-
-        def delete_inner_node():
-            i = get_group_selected_index()
-            nodes, select_idx = workflow_delete_group_inner_node(config.setdefault("nodes", []), i)
-            config["nodes"] = nodes
-            refresh_group_list(select_idx)
-
-        def move_inner(delta):
-            i = get_group_selected_index()
-            nodes, select_idx = workflow_move_group_inner_node(config.setdefault("nodes", []), i, delta)
-            config["nodes"] = nodes
-            refresh_group_list(select_idx)
-
-        def copy_inner_node():
-            i = get_group_selected_index()
-            nodes, select_idx = workflow_copy_group_inner_node(config.setdefault("nodes", []), i)
-            config["nodes"] = nodes
-            refresh_group_list(select_idx)
-
-        def toggle_inner_node():
-            i = get_group_selected_index()
-            nodes, select_idx = workflow_toggle_group_inner_node_enabled(config.setdefault("nodes", []), i)
-            config["nodes"] = nodes
-            refresh_group_list(select_idx)
-
-        def edit_inner_json():
-            i = get_group_selected_index()
-            nodes = config.setdefault("nodes", [])
-            if i is None:
-                messagebox.showwarning("提示", "请先选择一个组内节点。")
-                return
-            win = tk.Toplevel(self.window)
-            win.title("编辑组内节点 JSON")
-            win.geometry("760x560")
-            txt = tk.Text(win, wrap="none")
-            txt.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
-            txt.insert("1.0", json.dumps(nodes[i], ensure_ascii=False, indent=2))
-            btns = ttk.Frame(win)
-            btns.pack(fill=tk.X, padx=8, pady=(0, 8))
-            def save_json():
-                try:
-                    self.save_group_inner_node_json_text(config, i, txt.get("1.0", tk.END))
-                    refresh_group_list(i)
-                    win.destroy()
-                except Exception as e:
-                    messagebox.showerror("JSON错误", str(e))
-            ttk.Button(btns, text="保存", command=save_json).pack(side=tk.LEFT, padx=4)
-            ttk.Button(btns, text="取消", command=win.destroy).pack(side=tk.LEFT, padx=4)
-
-        def save_group_template():
-            self.save_group_template_from_config(config)
-
-        def load_group_template():
-            self.load_group_template_into_config(config)
-
-        def open_groups_dir():
-            self.open_group_dir()
-
-        ttk.Button(add_row, text="添加内部节点", command=add_inner_node).pack(side=tk.LEFT, padx=2)
-        ttk.Button(add_row, text="保存组模板", command=save_group_template).pack(side=tk.LEFT, padx=2)
-        ttk.Button(add_row, text="载入组模板", command=load_group_template).pack(side=tk.LEFT, padx=2)
-        ttk.Button(add_row, text="打开groups目录", command=open_groups_dir).pack(side=tk.LEFT, padx=2)
-
-        btn_row = ttk.Frame(inner_frame)
-        btn_row.grid(row=2, column=0, sticky=tk.W, pady=(4, 0))
-        for text_, cmd in [
-            ("删除", delete_inner_node),
-            ("上移", lambda: move_inner(-1)),
-            ("下移", lambda: move_inner(1)),
-            ("复制", copy_inner_node),
-            ("启用/禁用", toggle_inner_node),
-            ("编辑JSON", edit_inner_json),
-        ]:
-            ttk.Button(btn_row, text=text_, command=cmd).pack(side=tk.LEFT, padx=2)
+        self.build_group_inner_nodes_section(frame, config, row=4)
 
         ttk.Label(frame, text="提示：推荐组内节点只使用上方定义的标准入口字段；若入口字段留空，则兼容旧版，组内直接处理入口数据源整表。", foreground="gray", wraplength=1120).grid(row=5, column=0, columnspan=8, sticky=tk.W, padx=4, pady=6)
-        refresh_group_list()
 
     def merge_selected_nodes_to_group(self):
         sels = sorted(int(i) for i in self.node_listbox.curselection())
