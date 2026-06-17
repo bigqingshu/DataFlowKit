@@ -10711,17 +10711,21 @@ class PlanWorkflowWindow:
                 pc += 1
                 continue
 
-            node_type = node.get("type")
-            config = node.get("config", {})
-            workflow_run_plan_step.set_current_node_info(context, node, node_type, idx)
-            workflow_run_plan_step.emit_node_start(progress_callback, idx, len(node_list), steps, node_type)
+            node_type, config = workflow_run_plan_step.prepare_node_execution(
+                context,
+                node,
+                idx,
+                len(node_list),
+                steps,
+                progress_callback,
+            )
             try:
-                before_shape = (len(rows), len(headers))
                 jump_to = None
-                current_table_manager = workflow_run_plan_step.get_current_table_manager(
+                before_shape, current_table_manager = workflow_run_plan_step.begin_node_execution(
                     self,
                     context,
                     headers,
+                    rows,
                     node_type,
                 )
 
@@ -10738,38 +10742,37 @@ class PlanWorkflowWindow:
                     end=end,
                 )
 
-                self.log_current_table_transform(
+                pc, should_stop = workflow_run_plan_step.finish_node_execution(
+                    self,
+                    logs,
                     current_table_manager,
                     before_shape,
+                    idx,
+                    node_type,
+                    config,
                     headers,
                     rows,
-                    node_type=node_type,
+                    stat,
+                    jump_to,
+                    end,
+                    len(node_list),
+                    steps,
+                    progress_callback,
+                    suppress_jump_at_stop=suppress_jump_at_stop,
                 )
-                logs.append(workflow_run_plan_step.build_node_run_log(idx, node_type, before_shape, headers, rows, stat))
-                workflow_run_plan_step.emit_node_done(progress_callback, idx, len(node_list), steps, node_type, headers, rows)
-
-                if node_type == "保存中转数据" and config.get("stop_after_save"):
-                    logs.append(f"节点 {idx+1}.保存中转数据 已设置保存后停止，流程在此停止。")
+                if should_stop:
                     break
 
-                if jump_to is not None and suppress_jump_at_stop and idx >= end:
-                    # 单步循环调试：执行到指定循环判断节点后，不真正回跳，
-                    # 但循环状态、结果表、中转副表已经保留在 context 中。
-                    jump_to = None
-
-                if jump_to is not None:
-                    if jump_to < 0 or jump_to > len(node_list):
-                        raise RuntimeError(f"循环跳转目标越界：{jump_to}")
-                    pc = jump_to
-                else:
-                    pc += 1
-
             except Exception as e:
-                workflow_run_plan_step.emit_node_error(progress_callback, idx, len(node_list), node_type, e)
-                if raise_error:
-                    raise RuntimeError(f"第 {idx+1} 个节点【{node_type}】执行失败：{e}")
-                logs.append(f"失败 {idx+1}.{node_type}：{e}")
-                pc += 1
+                pc = workflow_run_plan_step.handle_node_execution_error(
+                    progress_callback,
+                    logs,
+                    idx,
+                    len(node_list),
+                    node_type,
+                    e,
+                    raise_error=raise_error,
+                )
 
         # 不在后台线程直接写 self.current_transit_tables；由 workflow_done 回到主线程后统一更新。
         if return_context:
