@@ -3,6 +3,7 @@ import os
 import tempfile
 import types
 import unittest
+from unittest import mock
 
 from workflow.node_dispatch import apply_workflow_node
 
@@ -86,6 +87,73 @@ class NodeDispatchTests(unittest.TestCase):
 
         self.assertEqual(result[2], "plugin")
         self.assertEqual(calls, [({"plugin_id": "p1"}, context, True)])
+
+    def test_dispatch_output_nodes_use_runtime_helpers(self):
+        class Window:
+            def apply_save_transit_node(self, *_args, **_kwargs):
+                raise AssertionError("should dispatch to output runtime helper")
+
+            def apply_selected_columns_write_node(self, *_args, **_kwargs):
+                raise AssertionError("should dispatch to output runtime helper")
+
+            def apply_writeback_node(self, *_args, **_kwargs):
+                raise AssertionError("should dispatch to output runtime helper")
+
+        helper_results = {
+            "save": (["A"], [["save"]], "save runtime"),
+            "selected": (["A"], [["selected"]], "selected runtime"),
+            "writeback": (["A"], [["writeback"]], "writeback runtime"),
+        }
+        with mock.patch(
+            "workflow.node_dispatch.apply_save_transit_node_for_window",
+            return_value=helper_results["save"],
+        ) as save_helper, mock.patch(
+            "workflow.node_dispatch.apply_selected_columns_write_node_for_window",
+            return_value=helper_results["selected"],
+        ) as selected_helper, mock.patch(
+            "workflow.node_dispatch.apply_writeback_node_for_window",
+            return_value=helper_results["writeback"],
+        ) as writeback_helper:
+            context = {"transit_tables": {}}
+            self.assertEqual(
+                apply_workflow_node(
+                    Window(),
+                    ["A"],
+                    [["x"]],
+                    {"type": "保存中转数据", "config": {"transit_name": "T"}},
+                    execute_actions=True,
+                    context=context,
+                ),
+                helper_results["save"],
+            )
+            self.assertEqual(
+                apply_workflow_node(
+                    Window(),
+                    ["A"],
+                    [["x"]],
+                    {"type": "选定列写入指定表", "config": {"target_type": "当前工作表"}},
+                    execute_actions=True,
+                    context=context,
+                ),
+                helper_results["selected"],
+            )
+            self.assertEqual(
+                apply_workflow_node(
+                    Window(),
+                    ["A"],
+                    [["x"]],
+                    {"type": "字段映射写入表", "config": {"target_table": "T"}},
+                    execute_actions=True,
+                    context=context,
+                ),
+                helper_results["writeback"],
+            )
+
+        self.assertEqual(save_helper.call_args.args[:4], (mock.ANY, ["A"], [["x"]], {"transit_name": "T"}))
+        self.assertTrue(save_helper.call_args.kwargs["execute_actions"])
+        self.assertIs(save_helper.call_args.kwargs["context"], context)
+        self.assertEqual(selected_helper.call_args.args[:4], (mock.ANY, ["A"], [["x"]], {"target_type": "当前工作表"}))
+        self.assertEqual(writeback_helper.call_args.args[:4], (mock.ANY, ["A"], [["x"]], {"target_table": "T"}))
 
     def test_dispatch_loop_node_drops_control_payload(self):
         class Window:

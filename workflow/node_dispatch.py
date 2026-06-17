@@ -26,6 +26,11 @@ from workflow.file_node_runtime import (
     apply_batch_rename_node_for_window,
     apply_file_list_node_for_window,
 )
+from workflow.output_node_runtime import (
+    apply_save_transit_node_for_window,
+    apply_selected_columns_write_node_for_window,
+    apply_writeback_node_for_window,
+)
 
 
 def make_window_data_node_context(window, context):
@@ -99,11 +104,32 @@ def apply_workflow_node(window, headers, rows, node, execute_actions=False, cont
     if node_type == "行数据映射填充":
         return apply_row_data_mapping_node(headers, rows, config)
     if node_type == "保存中转数据":
-        return window.apply_save_transit_node(headers, rows, config, context=context, execute_actions=execute_actions)
+        return apply_save_transit_node_for_window(
+            window,
+            headers,
+            rows,
+            config,
+            context=context,
+            execute_actions=execute_actions,
+        )
     if node_type == "选定列写入指定表":
-        return window.apply_selected_columns_write_node(headers, rows, config, context=context, execute_actions=execute_actions)
+        return apply_selected_columns_write_node_for_window(
+            window,
+            headers,
+            rows,
+            config,
+            context=context,
+            execute_actions=execute_actions,
+        )
     if node_type == "字段映射写入表":
-        return window.apply_writeback_node(headers, rows, config, execute_actions=execute_actions, context=context)
+        return apply_writeback_node_for_window(
+            window,
+            headers,
+            rows,
+            config,
+            execute_actions=execute_actions,
+            context=context,
+        )
     if node_type == "高级筛选":
         return window.apply_filter_node(headers, rows, config, context=context)
     if node_type == "删除列":

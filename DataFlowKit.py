@@ -312,6 +312,7 @@ from workflow import group_runtime as workflow_group_runtime
 from workflow import group_template_ui as workflow_group_template_ui
 from workflow import jump_runtime as workflow_jump_runtime
 from workflow import node_dispatch as workflow_node_dispatch
+from workflow import output_node_runtime as workflow_output_node_runtime
 from workflow import run_plan_context as workflow_run_plan_context
 from workflow import run_plan_loop as workflow_run_plan_loop
 from workflow import run_plan_step as workflow_run_plan_step
@@ -329,34 +330,18 @@ from workflow.selected_columns_write_config_ui import (
 )
 from workflow.nodes.selected_columns_nodes import (
     apply_selected_columns_to_memory_table as workflow_apply_selected_columns_to_memory_table,
-    build_selected_columns_write_payload as workflow_build_selected_columns_write_payload,
-    build_selected_columns_write_preview_rows as workflow_build_selected_columns_write_preview_rows,
-    get_selected_columns_write_skip_stat as workflow_get_selected_columns_write_skip_stat,
     get_selected_columns_write_selected_fields as workflow_get_selected_columns_write_selected_fields,
     make_selected_columns_target_fields as workflow_make_selected_columns_target_fields,
     normalize_selected_columns_write_mode as workflow_normalize_selected_columns_write_mode,
-    resolve_selected_columns_write_target as workflow_resolve_selected_columns_write_target,
     selected_columns_should_write as workflow_selected_columns_should_write,
 )
 from workflow.nodes.transit_nodes import (
     append_headers_rows as workflow_append_headers_rows,
-    apply_save_transit_node as workflow_apply_save_transit_node,
     make_unique_transit_name as workflow_make_unique_transit_name,
 )
 from workflow.nodes.writeback_nodes import (
-    apply_external_table_to_current_node as workflow_apply_external_table_to_current_node,
-    build_writeback_execute_stat as workflow_build_writeback_execute_stat,
-    build_writeback_actions as workflow_build_writeback_actions,
     build_writeback_full_structure_rows_for_sqlite as workflow_build_writeback_full_structure_rows_for_sqlite,
-    build_writeback_full_structure_execute_stat as workflow_build_writeback_full_structure_execute_stat,
-    build_writeback_preview_rows as workflow_build_writeback_preview_rows,
-    build_writeback_preview_stat as workflow_build_writeback_preview_stat,
-    count_writeback_actions as workflow_count_writeback_actions,
     compare_writeback_values as workflow_compare_writeback_values,
-    finish_writeback_node_output as workflow_finish_writeback_node_output,
-    get_writeback_non_execute_suffix as workflow_get_writeback_non_execute_suffix,
-    get_writeback_target_fields as workflow_get_writeback_target_fields,
-    should_execute_writeback_update as workflow_should_execute_writeback_update,
 )
 from workflow.table_access_precheck import (
     evaluate_node_table_access_precheck as workflow_evaluate_node_table_access_precheck,
@@ -9926,81 +9911,22 @@ class PlanWorkflowWindow:
         return workflow_make_selected_columns_target_fields(config, selected_fields)
 
     def read_selected_columns_source_table(self, config, current_headers, current_rows, context=None):
-        """读取选定列写入节点的来源表。"""
-        source_type = config.get("source_type", "当前工作流表")
-        context = context or {"transit_tables": {}}
-        if source_type == "当前工作流表":
-            return list(current_headers), [list(r) for r in self.normalize_rows(current_rows, len(current_headers))], "当前工作流表"
-        if source_type == "SQLite表":
-            table = str(config.get("source_sqlite_table", "")).strip()
-            if not table:
-                raise ValueError("请选择 SQLite 来源表。")
-            data = self.get_table_manager(context, node_type="选定列写入指定表").read_table(table)
-            headers = list(data.get("headers", []))
-            rows = [list(row) for row in data.get("rows", [])]
-            return headers, rows, f"SQLite:{table}"
-        if source_type == "中转副表":
-            name = str(config.get("source_transit_table", "")).strip()
-            if not name:
-                raise ValueError("请选择中转来源表。")
-            manager = self.check_transit_table_permission(
-                context,
-                name,
-                ["read_table"],
-                operation="read_transit_table",
-                field_action="read",
-                node_type="选定列写入指定表",
-            )
-            item = (context.get("transit_tables", {}) or {}).get(name)
-            if not item:
-                raise ValueError(f"未找到中转来源表：{name}")
-            headers = list(item.get("headers", []) or [])
-            rows = [list(r) for r in (item.get("rows", []) or [])]
-            self.log_transit_table_event(manager, "read_transit_table", name, headers, rows, message=f"读取中转来源表 {name}：{len(rows)} 行 × {len(headers)} 列")
-            return headers, rows, f"中转:{name}"
-        raise ValueError(f"未知来源类型：{source_type}")
+        return workflow_output_node_runtime.read_selected_columns_source_table(
+            self,
+            config,
+            current_headers,
+            current_rows,
+            context,
+        )
 
     def read_selected_columns_target_table(self, config, context=None, current_headers=None, current_rows=None):
-        """读取选定列写入节点的目标表。目标不存在时返回空表。"""
-        target_type = config.get("target_type", "SQLite表")
-        context = context or {"transit_tables": {}}
-        if target_type == "当前工作表":
-            headers = list(current_headers or [])
-            rows = [list(r) for r in self.normalize_rows(current_rows or [], len(headers))]
-            return headers, rows, "当前工作表"
-        if target_type == "SQLite表":
-            table = str(config.get("target_table", "")).strip()
-            if not table:
-                raise ValueError("请输入 SQLite 目标表。")
-            try:
-                if not self.sqlite_table_exists_by_name(self.app.sanitize_sql_name(table, "选定列结果"), context=context):
-                    return [], [], f"SQLite:{table}"
-                real_table = self.app.sanitize_sql_name(table, "选定列结果")
-                data = self.get_table_manager(context, node_type="选定列写入指定表").read_table(real_table)
-                headers = list(data.get("headers", []))
-                rows = [list(row) for row in data.get("rows", [])]
-                return headers, rows, f"SQLite:{real_table}"
-            except Exception:
-                return [], [], f"SQLite:{table}"
-        if target_type == "中转副表":
-            name = str(config.get("target_transit_table", "")).strip() or "选定列结果"
-            manager = self.check_transit_table_permission(
-                context,
-                name,
-                ["read_table"],
-                operation="read_transit_table",
-                field_action="read",
-                node_type="选定列写入指定表",
-            )
-            item = (context.get("transit_tables", {}) or {}).get(name)
-            if not item:
-                self.log_transit_table_event(manager, "read_transit_table", name, [], [], message=f"读取中转目标表 {name}：目标尚不存在")
-                return [], [], f"中转:{name}"
-            headers = list(item.get("headers", []) or [])
-            rows = [list(r) for r in (item.get("rows", []) or [])]
-            self.log_transit_table_event(manager, "read_transit_table", name, headers, rows, message=f"读取中转目标表 {name}：{len(rows)} 行 × {len(headers)} 列")
-            return headers, rows, f"中转:{name}"
-        raise ValueError(f"未知目标类型：{target_type}")
+        return workflow_output_node_runtime.read_selected_columns_target_table(
+            self,
+            config,
+            context,
+            current_headers,
+            current_rows,
+        )
 
     def selected_columns_should_write(self, old_value, new_value, overwrite_rule):
         return workflow_selected_columns_should_write(old_value, new_value, overwrite_rule)
@@ -10009,16 +9935,12 @@ class PlanWorkflowWindow:
         return workflow_normalize_selected_columns_write_mode(write_mode)
 
     def build_selected_columns_write_preview(self, config, current_headers, current_rows, context=None):
-        source_headers, source_rows, source_name = self.read_selected_columns_source_table(config, current_headers, current_rows, context)
-        target_headers, target_rows, target_name = self.read_selected_columns_target_table(config, context, current_headers, current_rows)
-        return workflow_build_selected_columns_write_preview_rows(
+        return workflow_output_node_runtime.build_selected_columns_write_preview(
+            self,
             config,
-            source_headers,
-            source_rows,
-            source_name,
-            target_headers,
-            target_rows,
-            target_name,
+            current_headers,
+            current_rows,
+            context,
         )
 
     def apply_selected_columns_to_memory_table(self, target_headers, target_rows, selected_target_headers, selected_rows, config):
@@ -10031,132 +9953,57 @@ class PlanWorkflowWindow:
         )
 
     def get_selected_columns_write_payload(self, config, current_headers, current_rows, context=None):
-        source_headers, source_rows, source_name = self.read_selected_columns_source_table(config, current_headers, current_rows, context)
-        selected_fields, target_fields, selected_rows = workflow_build_selected_columns_write_payload(
+        return workflow_output_node_runtime.get_selected_columns_write_payload(
+            self,
             config,
-            source_headers,
-            source_rows,
+            current_headers,
+            current_rows,
+            context,
         )
-        return selected_fields, target_fields, selected_rows, source_name
 
     def apply_selected_columns_write_current_table(self, headers, rows, config, target_fields, selected_rows):
-        new_headers, new_rows = self.apply_selected_columns_to_memory_table(headers, rows, target_fields, selected_rows, config)
-        return new_headers, new_rows, f"已写入当前工作表：{len(new_rows)} 行 × {len(new_headers)} 列，结果继续传给后续节点"
+        return workflow_output_node_runtime.apply_selected_columns_write_current_table(
+            self,
+            headers,
+            rows,
+            config,
+            target_fields,
+            selected_rows,
+        )
 
     def apply_selected_columns_write_transit_table(self, headers, rows, config, context, target_name, target_fields, selected_rows):
-        mode = self.normalize_selected_columns_write_mode(config.get("write_mode", "局部覆盖，保留目标原行数"))
-        exists_before = target_name in context["transit_tables"]
-        manager = self.check_transit_table_write_permission(
+        return workflow_output_node_runtime.apply_selected_columns_write_transit_table(
+            self,
+            headers,
+            rows,
+            config,
             context,
             target_name,
-            exists=exists_before,
-            write_mode=mode,
-            fields=target_fields,
-            partial=mode in ("局部覆盖，保留目标原行数", "清空目标字段后覆盖，保留目标原行数"),
-            node_type="选定列写入指定表",
+            target_fields,
+            selected_rows,
         )
-        old = context["transit_tables"].get(target_name, {}) or {}
-        old_headers = list(old.get("headers", []) or [])
-        old_rows = [list(r) for r in (old.get("rows", []) or [])]
-        new_headers, new_rows = self.apply_selected_columns_to_memory_table(old_headers, old_rows, target_fields, selected_rows, config)
-        context["transit_tables"][target_name] = {
-            "headers": new_headers,
-            "rows": [list(r) for r in new_rows],
-            "source": "选定列写入指定表"
-        }
-        self.log_transit_table_event(
-            manager,
-            "write_transit_table",
-            target_name,
-            new_headers,
-            new_rows,
-            write_mode=mode,
-            message=f"写入中转副表 {target_name}：{len(new_rows)} 行 × {len(new_headers)} 列，模式 {mode}",
-        )
-        return headers, rows, f"已写入中转副表：{target_name}（{len(new_rows)} 行 × {len(new_headers)} 列），主流程数据透传"
 
     def apply_selected_columns_write_sqlite_table(self, headers, rows, config, context, target_name, target_fields, selected_rows):
-        sqlite_name = self.app.sanitize_sql_name(target_name, "选定列结果")
-        mode = self.normalize_selected_columns_write_mode(config.get("write_mode", "复制列到目标表新建字段"))
-        if mode == "覆盖重建目标表":
-            saved = self.save_result_to_sqlite(
-                target_fields,
-                selected_rows,
-                sqlite_name,
-                overwrite=True,
-                backup=bool(config.get("backup_before_write", True)),
-                context=context,
-            )
-            return headers, rows, f"已覆盖重建 SQLite 表：{saved}（{len(selected_rows)} 行 × {len(target_fields)} 列），主流程数据透传"
-        target_headers, target_rows, _target_label = self.read_selected_columns_target_table(
-            {**config, "target_type": "SQLite表", "target_table": sqlite_name},
+        return workflow_output_node_runtime.apply_selected_columns_write_sqlite_table(
+            self,
+            headers,
+            rows,
+            config,
             context,
+            target_name,
+            target_fields,
+            selected_rows,
         )
-        new_headers, new_rows = self.apply_selected_columns_to_memory_table(target_headers, target_rows, target_fields, selected_rows, config)
-        saved = self.save_result_to_sqlite(
-            new_headers,
-            new_rows,
-            sqlite_name,
-            overwrite=True,
-            backup=bool(config.get("backup_before_write", True)),
-            context=context,
-        )
-        return headers, rows, f"已复制选定列到 SQLite 表字段：{saved}（{len(new_rows)} 行 × {len(new_headers)} 列），主流程数据透传"
 
     def apply_selected_columns_write_node(self, headers, rows, config, context=None, execute_actions=False):
-        """执行“选定列写入指定表”。
-
-        默认透传当前数据；勾选 enable_write 后：
-        - 执行计划会写入目标表；
-        - 预览完整计划/预览到当前节点时，只有本节点允许预览写入，避免误触发其他副作用节点；
-        - 目标类型为“当前工作表”时，写入结果会作为后续节点输入。
-        """
-        context = context if context is not None else {"transit_tables": {}}
-        context.setdefault("transit_tables", {})
-        selected_fields, target_fields, selected_rows, source_name = self.get_selected_columns_write_payload(config, headers, rows, context)
-        target_type, target_name = workflow_resolve_selected_columns_write_target(config)
-        allow_preview_write = bool(context.get("allow_selected_columns_write_in_preview", False))
-        # 配置界面刷新/切换节点时也会临时运行前置节点。
-        # 这个场景只允许生成当前工作表字段和内存中转副表，严禁写真实 SQLite，避免误改数据库。
-        config_preview_only = bool(context.get("selected_columns_config_preview_only", False))
-        skip_stat = workflow_get_selected_columns_write_skip_stat(
+        return workflow_output_node_runtime.apply_selected_columns_write_node_for_window(
+            self,
+            headers,
+            rows,
             config,
-            source_name,
-            selected_fields,
-            selected_rows,
+            context=context,
             execute_actions=execute_actions,
-            allow_preview_write=allow_preview_write,
-            config_preview_only=config_preview_only,
         )
-        if skip_stat:
-            return headers, rows, skip_stat
-
-        if target_type == "当前工作表":
-            return self.apply_selected_columns_write_current_table(headers, rows, config, target_fields, selected_rows)
-
-        if target_type == "中转副表":
-            return self.apply_selected_columns_write_transit_table(
-                headers,
-                rows,
-                config,
-                context,
-                target_name,
-                target_fields,
-                selected_rows,
-            )
-
-        if target_type == "SQLite表":
-            return self.apply_selected_columns_write_sqlite_table(
-                headers,
-                rows,
-                config,
-                context,
-                target_name,
-                target_fields,
-                selected_rows,
-            )
-
-        raise ValueError(f"未知目标类型：{target_type}")
 
     def build_writeback_config(self, config, headers):
         return workflow_build_writeback_config_ui(self, config, headers)
@@ -11692,279 +11539,120 @@ class PlanWorkflowWindow:
         return workflow_append_headers_rows(old_headers, old_rows, new_headers, new_rows)
 
     def save_result_to_sqlite_append(self, headers, rows, table_name_raw, context=None):
-        """追加写入 SQLite 表；表不存在则创建，字段不足则自动 ADD COLUMN。"""
-        table_name = self.app.sanitize_sql_name(table_name_raw, "中转数据")
-        sql_columns = self.app.make_sql_columns(headers)
-        if not sql_columns:
-            raise ValueError("没有可写入的字段。")
-        normalized_rows = self.normalize_rows(rows, len(sql_columns))
-        info = self.get_table_manager(context, node_type="保存中转数据").write_table(table_name, sql_columns, normalized_rows, mode="append")
-        return info.get("table_name", table_name)
+        return workflow_output_node_runtime.save_result_to_sqlite_append(
+            self,
+            headers,
+            rows,
+            table_name_raw,
+            context=context,
+        )
 
     def export_headers_rows_to_xlsx_file(self, headers, rows, path):
-        """把指定 headers / rows 导出为 xlsx 文件，复用主程序现有导出逻辑。"""
-        if not path:
-            raise ValueError("xlsx 导出路径为空。")
-        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        old_headers = self.app.headers
-        old_rows = self.app.rows
-        old_raw = self.app.raw_data
-        try:
-            self.app.headers = list(headers)
-            self.app.rows = [list(row) for row in rows]
-            self.app.raw_data = ""
-            try:
-                self.app.export_xlsx_with_openpyxl(path)
-            except Exception:
-                self.app.export_xlsx_minimal(path)
-        finally:
-            self.app.headers = old_headers
-            self.app.rows = old_rows
-            self.app.raw_data = old_raw
+        return workflow_output_node_runtime.export_headers_rows_to_xlsx_file(self, headers, rows, path)
 
     def sqlite_table_exists_by_name(self, table_name, context=None):
-        db_path = self.get_workflow_db_path(context)
-        if not db_path or not os.path.exists(db_path):
-            return False
-        try:
-            return self.get_table_manager(context).table_exists(table_name)
-        except Exception:
-            return False
+        return workflow_output_node_runtime.sqlite_table_exists_by_name(self, table_name, context=context)
 
     def apply_save_transit_memory_plan(self, context, memory_plan, headers_copy, rows_copy):
-        if not memory_plan:
-            return
-        manager = self.check_transit_table_write_permission(
+        return workflow_output_node_runtime.apply_save_transit_memory_plan(
+            self,
             context,
-            memory_plan["table_name"],
-            exists=bool(memory_plan.get("exists_before")),
-            write_mode=memory_plan.get("write_mode", ""),
-            fields=memory_plan.get("headers", headers_copy),
-            node_type="保存中转数据",
-        )
-        extra = {
-            "write_mode": memory_plan.get("write_mode", ""),
-            "message": memory_plan.get("log_message", ""),
-        }
-        if memory_plan.get("operation") == "append_transit_table":
-            extra["appended_rows"] = memory_plan.get("appended_rows", 0)
-        context["transit_tables"][memory_plan["table_name"]] = {
-            "headers": list(memory_plan.get("headers", headers_copy)),
-            "rows": [list(r) for r in memory_plan.get("rows", rows_copy)],
-            "source": memory_plan.get("source", "保存中转数据:覆盖"),
-        }
-        self.log_transit_table_event(
-            manager,
-            memory_plan.get("operation", "write_transit_table"),
-            memory_plan["table_name"],
-            memory_plan.get("headers", headers_copy),
-            memory_plan.get("rows", rows_copy),
-            **extra,
+            memory_plan,
+            headers_copy,
+            rows_copy,
         )
 
     def execute_save_transit_sqlite(self, options, headers_copy, rows_copy, context=None):
-        table_raw = options.get("sqlite_table_raw", options.get("base_name", "中转数据"))
-        table_name = self.app.sanitize_sql_name(table_raw, "中转数据")
-        mode = options.get("sqlite_mode", "自动加时间戳")
-        if mode == "覆盖同名表":
-            saved_name = self.save_result_to_sqlite(headers_copy, rows_copy, table_name, overwrite=True, backup=True, context=context)
-        elif mode == "追加写入":
-            saved_name = self.save_result_to_sqlite_append(headers_copy, rows_copy, table_name, context=context)
-        elif mode == "报错停止":
-            if self.sqlite_table_exists_by_name(table_name, context=context):
-                raise ValueError(f"SQLite 表已存在，按设置停止：{table_name}")
-            saved_name = self.save_result_to_sqlite(headers_copy, rows_copy, table_name, overwrite=False, backup=False, context=context)
-        else:
-            saved_name = self.save_result_to_sqlite(headers_copy, rows_copy, table_name, overwrite=False, backup=False, context=context)
-        return f"SQLite表：{saved_name}" + ("（追加写入）" if mode == "追加写入" else "")
+        return workflow_output_node_runtime.execute_save_transit_sqlite(
+            self,
+            options,
+            headers_copy,
+            rows_copy,
+            context=context,
+        )
 
     def execute_save_transit_xlsx(self, options, headers_copy, rows_copy):
-        xlsx_path = str(options.get("xlsx_path", "")).strip()
-        if not xlsx_path:
-            export_dir = os.path.join(getattr(self.app, "app_dir", get_app_dir()), "export")
-            xlsx_path = os.path.join(export_dir, f"{options.get('base_name', '中转数据')}.xlsx")
-        self.export_headers_rows_to_xlsx_file(headers_copy, rows_copy, xlsx_path)
-        return f"xlsx：{xlsx_path}"
+        return workflow_output_node_runtime.execute_save_transit_xlsx(self, options, headers_copy, rows_copy)
 
     def apply_save_transit_node(self, headers, rows, config, context=None, execute_actions=False):
-        """保存中转数据：保存当前数据副本，默认不改变主流程数据。"""
-        context = context if context is not None else {"transit_tables": {}}
-        context.setdefault("transit_tables", {})
-        result_headers, result_rows, message = workflow_apply_save_transit_node(
+        return workflow_output_node_runtime.apply_save_transit_node_for_window(
+            self,
             headers,
             rows,
             config,
             context=context,
             execute_actions=execute_actions,
         )
-        options = context.get("save_transit_options", {}) or {}
-        headers_copy = context.get("save_transit_headers")
-        if headers_copy is None:
-            headers_copy = list(headers)
-        rows_copy = context.get("save_transit_rows")
-        if rows_copy is None:
-            rows_copy = [list(row) for row in self.normalize_rows(rows, len(headers_copy))]
-        saved_parts = message.split("；") if message else []
-
-        self.apply_save_transit_memory_plan(
-            context,
-            context.get("save_transit_memory_plan"),
-            headers_copy,
-            rows_copy,
-        )
-        if execute_actions and options.get("save_sqlite"):
-            saved_parts.append(self.execute_save_transit_sqlite(options, headers_copy, rows_copy, context=context))
-        if execute_actions and options.get("save_xlsx"):
-            saved_parts.append(self.execute_save_transit_xlsx(options, headers_copy, rows_copy))
-
-        if not saved_parts:
-            saved_parts.append("未选择保存位置，仅透传数据")
-
-        return result_headers, result_rows, "；".join(saved_parts)
 
 
     def compare_writeback_values(self, left, op, right):
         return workflow_compare_writeback_values(left, op, right)
 
     def load_target_table_rows_for_writeback(self, table_name, context=None):
-        db_path = self.get_workflow_db_path(context)
-        if not db_path or not os.path.exists(db_path):
-            raise ValueError("SQLite 数据库路径不存在，请先选择数据库。")
-        columns, records = self.get_table_manager(context, node_type="字段映射写入表").read_records(
+        return workflow_output_node_runtime.load_target_table_rows_for_writeback(
+            self,
             table_name,
-            include_rowid=True,
-            include_row_index=True,
+            context=context,
         )
-        return columns, records
 
     def backup_sqlite_table_for_writeback(self, table_name, context=None):
-        return self.get_table_manager(context, node_type="字段映射写入表").backup_table(table_name)
+        return workflow_output_node_runtime.backup_sqlite_table_for_writeback(self, table_name, context=context)
 
     def apply_writeback_updates_to_sqlite(self, table_name, actions, context=None):
-        db_path = self.get_workflow_db_path(context)
-        if not db_path or not os.path.exists(db_path):
-            raise ValueError("SQLite 数据库路径不存在，请先选择数据库。")
-        return self.get_table_manager(context, node_type="字段映射写入表").apply_cell_actions(
+        return workflow_output_node_runtime.apply_writeback_updates_to_sqlite(
+            self,
             table_name,
             actions,
-            cancel_event=(context or {}).get("cancel_event"),
+            context=context,
         )
 
     def apply_writeback_transaction_to_sqlite(self, table_name, actions, target_fields, context=None):
-        db_path = self.get_workflow_db_path(context)
-        if not db_path or not os.path.exists(db_path):
-            raise ValueError("SQLite 数据库路径不存在，请先选择数据库。")
-        return self.get_table_manager(
-            context,
-            node_type="字段映射写入表",
-        ).apply_writeback_transaction(
+        return workflow_output_node_runtime.apply_writeback_transaction_to_sqlite(
+            self,
             table_name,
             actions,
-            clear_fields=target_fields,
-            cancel_event=(context or {}).get("cancel_event"),
+            target_fields,
+            context=context,
         )
 
     def clear_writeback_target_fields_in_sqlite(self, table_name, target_fields, context=None):
-        """清空 SQLite 目标表中指定字段的全部旧值，返回清空字段数量。"""
-        fields = []
-        existing = set(self.get_workflow_sqlite_columns(table_name, context))
-        for field in target_fields or []:
-            field = str(field or "").strip()
-            if field and field in existing and field not in fields:
-                fields.append(field)
-        if not fields:
-            return 0
-        return self.get_table_manager(context, node_type="字段映射写入表").clear_fields(table_name, fields)
+        return workflow_output_node_runtime.clear_writeback_target_fields_in_sqlite(
+            self,
+            table_name,
+            target_fields,
+            context=context,
+        )
 
     def build_writeback_full_structure_rows_for_sqlite(self, headers, rows, config, target_columns):
         return workflow_build_writeback_full_structure_rows_for_sqlite(headers, rows, config, target_columns)
 
     def build_writeback_actions(self, headers, rows, config, context=None):
-        table_name = str(config.get("target_table", "")).strip()
-        if not table_name:
-            raise ValueError("请选择目标表。")
-        use_match_rules = bool(config.get("use_match_rules", True))
-        match_rules = list(config.get("match_rules", []))
-        mappings = list(config.get("field_mappings", []))
-        if use_match_rules and not match_rules:
-            raise ValueError("已启用匹配规则定位目标行，请至少添加一条匹配规则；如果想按行号顺序写入，请关闭该选项。")
-        if not mappings:
-            raise ValueError("请至少添加一条字段映射规则。")
-        target_columns, target_records = self.load_target_table_rows_for_writeback(table_name, context=context)
-        actions = workflow_build_writeback_actions(headers, rows, config, target_columns, target_records)
-        return actions, table_name
+        return workflow_output_node_runtime.build_writeback_actions(
+            self,
+            headers,
+            rows,
+            config,
+            context=context,
+        )
 
     def apply_external_table_to_current_node(self, headers, rows, config, context=None):
-        source_table = str(config.get("source_table", "")).strip()
-        if not source_table:
-            raise ValueError("请选择来源表。")
-        use_match_rules = bool(config.get("use_match_rules", True))
-        match_rules = list(config.get("match_rules", []))
-        mappings = list(config.get("field_mappings", []))
-        if use_match_rules and not match_rules:
-            raise ValueError("已启用匹配规则定位对应行，请至少添加一条匹配规则；如果想按行号顺序写入，请关闭该选项。")
-        if not mappings:
-            raise ValueError("请至少添加一条字段映射规则。")
-        source_columns, source_records = self.load_target_table_rows_for_writeback(source_table, context=context)
-        return workflow_apply_external_table_to_current_node(headers, rows, config, source_columns, source_records)
+        return workflow_output_node_runtime.apply_external_table_to_current_node_for_window(
+            self,
+            headers,
+            rows,
+            config,
+            context=context,
+        )
 
     def apply_writeback_node(self, headers, rows, config, execute_actions=False, context=None):
-        if config.get("writeback_direction", "当前表写入SQLite目标表") == "其他表写入当前表":
-            return self.apply_external_table_to_current_node(headers, rows, config, context=context)
-
-        table_name = str(config.get("target_table", "")).strip()
-        if not table_name:
-            raise ValueError("请选择目标表。")
-        write_range_mode = config.get("write_range_mode", "局部覆盖，保留目标原行数")
-        enable_write = bool(config.get("enable_write", False))
-        backup_before_write = bool(config.get("backup_before_write", True))
-        output_preview = bool(config.get("output_preview_table", True))
-
-        if write_range_mode == "按来源完整结构覆盖":
-            target_columns, _target_records = self.load_target_table_rows_for_writeback(table_name, context=context)
-            actions, full_rows = self.build_writeback_full_structure_rows_for_sqlite(headers, rows, config, target_columns)
-            stat = workflow_build_writeback_preview_stat(
-                write_range_mode,
-                actions,
-                full_rows=full_rows,
-                target_columns=target_columns,
-            )
-            if execute_actions and enable_write:
-                saved = self.save_result_to_sqlite(target_columns, full_rows, table_name, overwrite=True, backup=backup_before_write, context=context)
-                stat = workflow_build_writeback_full_structure_execute_stat(saved, full_rows, target_columns)
-            else:
-                stat += workflow_get_writeback_non_execute_suffix(execute_actions, enable_write)
-        else:
-            actions, table_name = self.build_writeback_actions(headers, rows, config, context=context)
-            action_counts = workflow_count_writeback_actions(actions)
-            target_fields = workflow_get_writeback_target_fields(config)
-            stat = workflow_build_writeback_preview_stat(write_range_mode, actions, target_fields=target_fields)
-
-            if workflow_should_execute_writeback_update(execute_actions, enable_write, action_counts, write_range_mode):
-                backup_name = ""
-                if backup_before_write:
-                    backup_name = self.backup_sqlite_table_for_writeback(table_name, context=context)
-                cleared = 0
-                if write_range_mode == "清空目标字段后覆盖，保留目标原行数":
-                    result = self.apply_writeback_transaction_to_sqlite(
-                        table_name,
-                        actions,
-                        target_fields,
-                        context=context,
-                    )
-                    cleared = result.get("cleared_fields", 0)
-                    actual = result.get("cells", 0)
-                else:
-                    actual = self.apply_writeback_updates_to_sqlite(
-                        table_name,
-                        actions,
-                        context=context,
-                    ) if action_counts["write_count"] > 0 else 0
-                stat = workflow_build_writeback_execute_stat(table_name, actual, cleared=cleared, backup_name=backup_name)
-            else:
-                stat += workflow_get_writeback_non_execute_suffix(execute_actions, enable_write)
-
-        return workflow_finish_writeback_node_output(headers, rows, actions, stat, output_preview)
+        return workflow_output_node_runtime.apply_writeback_node_for_window(
+            self,
+            headers,
+            rows,
+            config,
+            execute_actions=execute_actions,
+            context=context,
+        )
 
     def apply_filter_node(self, headers, rows, config, context=None):
         extra_tables = list(config.get("extra_tables", []))

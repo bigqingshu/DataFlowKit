@@ -11,6 +11,7 @@ from DataFlowKit import PlanWorkflowWindow, TableAccessManager
 from plugins import word_excel_read_to_db_plugin_v1 as read_plugin
 from shared.table_access_policy import extract_read_tables
 from workflow.nodes.data_nodes import apply_numeric_column_node, apply_replace_node
+from workflow import output_node_runtime
 
 
 @contextmanager
@@ -1017,13 +1018,47 @@ class TableAccessPermissionTests(unittest.TestCase):
         self.assertEqual(calls[0][1], [["new"]])
         self.assertFalse(calls[0][3]["backup"])
 
-        window.read_selected_columns_target_table = lambda config, context: (["ID"], [["1"]], "SQLite:目标表")
-        window.apply_selected_columns_to_memory_table = lambda target_headers, target_rows, target_fields, selected_rows, config: (
-            target_headers + target_fields,
-            [["1", "new"]],
+        window.get_workflow_db_path = lambda context=None: __file__
+        manager = types.SimpleNamespace(
+            table_exists=lambda table: True,
+            read_table=lambda table: {"headers": ["ID"], "rows": [["1"]]},
         )
+        window.get_table_manager = lambda context=None, node_type=None: manager
         calls.clear()
         _headers, _rows, message = window.apply_selected_columns_write_sqlite_table(
+            ["A"],
+            [["old"]],
+            {"write_mode": "局部覆盖，保留目标原行数"},
+            {"transit_tables": {}},
+            "目标表",
+            ["B"],
+            [["new"]],
+        )
+
+        self.assertIn("已复制选定列到 SQLite 表字段：目标表", message)
+        self.assertEqual(calls[0][0], ["ID", "B"])
+        self.assertEqual(calls[0][1], [["1", "new"]])
+
+    def test_output_runtime_sqlite_helper_does_not_depend_on_window_selected_columns_wrappers(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+        window.app = types.SimpleNamespace(sanitize_sql_name=lambda name, default: name or default)
+        window.get_workflow_db_path = lambda context=None: __file__
+        manager = types.SimpleNamespace(
+            table_exists=lambda table: True,
+            read_table=lambda table: {"headers": ["ID"], "rows": [["1"]]},
+        )
+        window.get_table_manager = lambda context=None, node_type=None: manager
+        calls = []
+        window.save_result_to_sqlite = lambda headers, rows, table, **kwargs: calls.append((headers, rows, table, kwargs)) or table
+
+        def legacy_wrapper_should_not_be_called(*_args, **_kwargs):
+            raise AssertionError("output runtime should call workflow helpers directly")
+
+        window.read_selected_columns_target_table = legacy_wrapper_should_not_be_called
+        window.apply_selected_columns_to_memory_table = legacy_wrapper_should_not_be_called
+
+        _headers, _rows, message = output_node_runtime.apply_selected_columns_write_sqlite_table(
+            window,
             ["A"],
             [["old"]],
             {"write_mode": "局部覆盖，保留目标原行数"},
