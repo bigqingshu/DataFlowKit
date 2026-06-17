@@ -10727,9 +10727,13 @@ class PlanWorkflowWindow:
                 break
 
         # 不在后台线程直接写 self.current_transit_tables；由 workflow_done 回到主线程后统一更新。
-        if return_context:
-            return headers, rows, logs, context
-        return headers, rows, logs
+        return workflow_run_plan_loop.build_run_plan_result(
+            headers,
+            rows,
+            logs,
+            context,
+            return_context=return_context,
+        )
 
 
     def unique_keep_order(self, values):

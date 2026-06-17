@@ -4,6 +4,7 @@ import unittest
 from workflow.run_plan_loop import (
     CANCELLED_RUN_LOG,
     MAX_STEPS_ERROR,
+    build_run_plan_result,
     advance_run_plan_step,
     disabled_node_next_pc,
     is_run_cancelled,
@@ -66,6 +67,13 @@ class RunPlanLoopTests(unittest.TestCase):
         self.assertEqual(logs, [])
         self.assertEqual(disabled_node_next_pc({"type": "删除行", "enabled": False}, 2, logs), 3)
         self.assertEqual(logs, ["跳过 3.删除行"])
+
+    def test_build_run_plan_result_respects_return_context(self):
+        base = build_run_plan_result(["A"], [["a"]], ["log"], {"ctx": 1}, return_context=False)
+        with_ctx = build_run_plan_result(["A"], [["a"]], ["log"], {"ctx": 1}, return_context=True)
+
+        self.assertEqual(base, (["A"], [["a"]], ["log"]))
+        self.assertEqual(with_ctx, (["A"], [["a"]], ["log"], {"ctx": 1}))
 
 
 if __name__ == "__main__":

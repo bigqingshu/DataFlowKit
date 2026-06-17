@@ -45,3 +45,9 @@ def disabled_node_next_pc(node, idx, logs):
         return None
     logs.append(f"跳过 {idx+1}.{node.get('type')}")
     return idx + 1
+
+
+def build_run_plan_result(headers, rows, logs, context, return_context=False):
+    if return_context:
+        return headers, rows, logs, context
+    return headers, rows, logs
