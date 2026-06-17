@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """PlanWorkflowWindow mixin for node execution compatibility wrappers."""
 
-from workflow import node_dispatch
+from workflow.node_dispatch import apply_workflow_node
 from workflow.workflow_control_node_execution_mixin import WorkflowControlNodeExecutionMixin
 from workflow.workflow_filter_node_execution_mixin import WorkflowFilterNodeExecutionMixin
 from workflow.workflow_output_node_execution_mixin import WorkflowOutputNodeExecutionMixin
@@ -17,7 +17,7 @@ class WorkflowNodeExecutionMixin(
     """Compatibility methods used by node dispatch and runtime helpers."""
 
     def apply_node(self, headers, rows, node, execute_actions=False, context=None):
-        return node_dispatch.apply_workflow_node(
+        return apply_workflow_node(
             self,
             headers,
             rows,
