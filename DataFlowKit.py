@@ -46,7 +46,6 @@ import sys
 import json
 import traceback
 import copy
-import threading
 import queue
 import time
 import uuid
@@ -10311,26 +10310,13 @@ class PlanWorkflowWindow:
             self._set_workflow_controls_enabled(True)
 
     def _start_background_workflow(self, mode, title, stop_index=None, execute_actions=False):
-        if self.is_background_workflow_running():
-            messagebox.showwarning("后台任务运行中", "当前已有工作流正在后台执行，请等待完成或先取消。")
-            return
-        if not self.confirm_jump_precheck(execute_actions=execute_actions, stop_index=stop_index):
-            self.status_var.set("工作流已取消：跳转校验未继续。")
-            return
-        if execute_actions and not self.confirm_table_access_precheck(execute_actions=True, stop_index=stop_index):
-            self.status_var.set("执行计划已取消：权限预检未继续。")
-            return
-        snapshot = self.build_workflow_task_snapshot(mode, stop_index=stop_index, execute_actions=execute_actions)
-        self.workflow_worker_queue = queue.Queue()
-        self.workflow_worker_cancel = threading.Event()
-        self._set_background_workflow_state(True, title)
-        self.workflow_worker_thread = threading.Thread(
-            target=self._background_workflow_worker,
-            args=(mode, stop_index, execute_actions, snapshot),
-            daemon=True
+        return workflow_background_workflow.start_background_workflow(
+            self,
+            mode,
+            title,
+            stop_index=stop_index,
+            execute_actions=execute_actions,
         )
-        self.workflow_worker_thread.start()
-        self.window.after(80, self._poll_background_workflow_queue)
 
     def _background_progress_callback(self, message):
         try:
@@ -10348,19 +10334,7 @@ class PlanWorkflowWindow:
         )
 
     def _poll_background_workflow_queue(self):
-        try:
-            while True:
-                msg = self.workflow_worker_queue.get_nowait()
-                self._handle_background_workflow_message(msg)
-        except queue.Empty:
-            pass
-        if self.is_background_workflow_running():
-            self.window.after(80, self._poll_background_workflow_queue)
-        else:
-            # 线程已经结束但可能还有最后几条消息，稍后再扫一次。
-            if self.workflow_worker_running:
-                self.workflow_worker_running = False
-                self.window.after(120, self._poll_background_workflow_queue)
+        return workflow_background_workflow.poll_background_workflow_queue(self)
 
     def _handle_background_workflow_message(self, msg):
         return workflow_background_workflow.handle_background_workflow_message(self, msg)

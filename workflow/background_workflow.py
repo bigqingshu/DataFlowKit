@@ -2,8 +2,33 @@
 """Background workflow worker and UI message helpers."""
 
 import copy
+import queue
+import threading
 import traceback
 from tkinter import filedialog, messagebox
+
+
+def start_background_workflow(window, mode, title, stop_index=None, execute_actions=False):
+    if window.is_background_workflow_running():
+        messagebox.showwarning("后台任务运行中", "当前已有工作流正在后台执行，请等待完成或先取消。")
+        return
+    if not window.confirm_jump_precheck(execute_actions=execute_actions, stop_index=stop_index):
+        window.status_var.set("工作流已取消：跳转校验未继续。")
+        return
+    if execute_actions and not window.confirm_table_access_precheck(execute_actions=True, stop_index=stop_index):
+        window.status_var.set("执行计划已取消：权限预检未继续。")
+        return
+    snapshot = window.build_workflow_task_snapshot(mode, stop_index=stop_index, execute_actions=execute_actions)
+    window.workflow_worker_queue = queue.Queue()
+    window.workflow_worker_cancel = threading.Event()
+    window._set_background_workflow_state(True, title)
+    window.workflow_worker_thread = threading.Thread(
+        target=window._background_workflow_worker,
+        args=(mode, stop_index, execute_actions, snapshot),
+        daemon=True,
+    )
+    window.workflow_worker_thread.start()
+    window.window.after(80, window._poll_background_workflow_queue)
 
 
 def background_workflow_worker(window, mode, stop_index=None, execute_actions=False, snapshot=None):
@@ -216,6 +241,22 @@ def handle_background_workflow_message(window, msg):
         elif mode == "execute_plan":
             window._finish_execute_plan_output(headers, rows, logs, context=context, snapshot=snapshot)
         return
+
+
+def poll_background_workflow_queue(window):
+    try:
+        while True:
+            msg = window.workflow_worker_queue.get_nowait()
+            window._handle_background_workflow_message(msg)
+    except queue.Empty:
+        pass
+    if window.is_background_workflow_running():
+        window.window.after(80, window._poll_background_workflow_queue)
+    else:
+        # 线程已经结束但可能还有最后几条消息，稍后再扫一次。
+        if window.workflow_worker_running:
+            window.workflow_worker_running = False
+            window.window.after(120, window._poll_background_workflow_queue)
 
 
 def finish_execute_plan_output(window, headers, rows, logs, context=None, snapshot=None):
