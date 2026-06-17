@@ -7,6 +7,7 @@ from workflow.table_access_window_ui import (
     apply_auto_field_mapping_by_name,
     apply_auto_field_mapping_by_order,
     build_table_access_impact_preview,
+    create_table_access_window_callbacks,
     build_table_access_permission_check,
     clear_field_mapping,
     delete_table_access_entry,
@@ -84,6 +85,74 @@ class DummyVar:
 
     def get(self):
         return self.value
+
+
+class DummyWindow:
+    def __init__(self):
+        self.calls = []
+
+    def current_table_access_window_node(self, state):
+        return {"type": "读取", "name": "节点"}
+
+    def current_table_access_window_table_entry(self, state):
+        return {"role": "target"}
+
+    def refresh_table_access_window_field_tree(self, state, field_section, field_tree):
+        self.calls.append(("refresh_field_tree", state.get("node_index")))
+
+    def refresh_table_access_node_tree(self, node_tree, state):
+        self.calls.append(("refresh_node_tree", state.get("node_index")))
+
+    def refresh_table_access_window_table_tree(self, state, table_section, field_section, node_tree, table_tree, field_tree, select_index=None):
+        self.calls.append(("refresh_table_tree", select_index))
+
+    def on_table_access_window_node_selected(self, *args, **kwargs):
+        self.calls.append(("on_node_selected", kwargs.get("force", False)))
+
+    def on_table_access_window_table_selected(self, *args, **kwargs):
+        self.calls.append(("on_table_selected", True))
+
+    def on_table_access_window_field_selected(self, *args, **kwargs):
+        self.calls.append(("on_field_selected", True))
+
+    def save_table_access_window_table_entry(self, *args, **kwargs):
+        self.calls.append(("save_table_entry", True))
+
+    def add_table_access_window_table_entry(self, *args, **kwargs):
+        self.calls.append(("add_table_entry", True))
+
+    def delete_table_access_window_table_entry(self, *args, **kwargs):
+        self.calls.append(("delete_table_entry", True))
+
+    def rebuild_table_access_window_default_access(self, *args, **kwargs):
+        self.calls.append(("rebuild_default_access", True))
+
+    def check_table_access_window_permissions(self, *args, **kwargs):
+        self.calls.append(("check_all_permissions", True))
+
+    def preview_table_access_window_impact(self, *args, **kwargs):
+        self.calls.append(("preview_impact", True))
+
+    def apply_table_access_window_table_preset(self, *args, **kwargs):
+        self.calls.append(("apply_table_preset", True))
+
+    def save_table_access_window_field_entry(self, *args, **kwargs):
+        self.calls.append(("save_field_entry", True))
+
+    def add_table_access_window_field_entry(self, *args, **kwargs):
+        self.calls.append(("add_field_entry", True))
+
+    def delete_table_access_window_field_entry(self, *args, **kwargs):
+        self.calls.append(("delete_field_entry", True))
+
+    def auto_match_table_access_window_fields(self, *args, **kwargs):
+        self.calls.append(("auto_match_fields", True))
+
+    def auto_match_table_access_window_fields_by_order(self, *args, **kwargs):
+        self.calls.append(("auto_match_fields_by_order", True))
+
+    def clear_table_access_window_fields(self, *args, **kwargs):
+        self.calls.append(("clear_fields", True))
 
 
 class TableAccessWindowUiTests(unittest.TestCase):
@@ -589,6 +658,53 @@ class TableAccessWindowUiTests(unittest.TestCase):
         window.clear_table_access_window_fields(state, field_section, field_tree, status_var)
         self.assertEqual(entry["field_mapping"], {})
         self.assertEqual(status_var.get(), "字段映射已清空。")
+
+    def test_callback_factories_delegate_to_window_methods(self):
+        window = DummyWindow()
+        state = {"node_index": 0, "table_index": 0, "field_keys": []}
+        table_section = {}
+        field_section = {}
+        node_tree = DummyTree()
+        table_tree = DummyTree()
+        field_tree = DummyTree()
+        status_var = DummyVar("status")
+
+        callbacks = create_table_access_window_callbacks(
+            window,
+            object(),
+            state,
+            table_section,
+            field_section,
+            node_tree,
+            table_tree,
+            field_tree,
+            status_var,
+        )
+
+        callbacks["refresh_node_tree"]()
+        callbacks["refresh_table_tree"](2)
+        callbacks["on_node_selected"](force=True)
+        callbacks["on_table_selected"]()
+        callbacks["on_field_selected"]()
+        callbacks["add_table_entry"]()
+        callbacks["save_table_entry"]()
+        callbacks["delete_table_entry"]()
+        callbacks["rebuild_default_access"]()
+        callbacks["check_all_permissions"]()
+        callbacks["preview_impact"]()
+        callbacks["apply_table_preset"]()
+        callbacks["save_field_entry"]()
+        callbacks["add_field_entry"]()
+        callbacks["delete_field_entry"]()
+        callbacks["auto_match_fields"]()
+        callbacks["auto_match_fields_by_order"]()
+        callbacks["clear_fields"]()
+
+        self.assertIn(("refresh_node_tree", 0), window.calls)
+        self.assertIn(("refresh_table_tree", 2), window.calls)
+        self.assertIn(("on_node_selected", True), window.calls)
+        self.assertIn(("apply_table_preset", True), window.calls)
+        self.assertIn(("clear_fields", True), window.calls)
 
 
 if __name__ == "__main__":
