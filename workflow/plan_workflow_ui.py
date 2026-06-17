@@ -6,6 +6,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from shared.atomic_json_utils import load_json_with_backup
+from workflow.node_config_dispatch_ui import dispatch_node_config_builder
 
 
 def show_table_access_precheck_dialog(window, issues, title="权限预检", allow_continue=False):
@@ -170,81 +171,14 @@ def build_node_config(window, idx):
     ttk.Checkbutton(title, text="启用", variable=window.make_node_enabled_var(idx)).pack(side=tk.LEFT, padx=8)
     ttk.Button(title, text="字段权限层", command=lambda idx=idx: window.open_table_access_window(initial_index=idx)).pack(side=tk.LEFT, padx=4)
 
-    node_type = node.get("type")
-    if node_type == "节点组 / 子工作流":
-        transit_context = window.get_transit_context_before(idx)
-        window.build_group_node_config(config, available_headers, transit_context)
-    elif node_type == "循环执行起点":
-        transit_context = window.get_transit_context_before(idx)
-        window.build_loop_start_config(config, available_headers, transit_context)
-    elif node_type == "循环判断回跳":
-        window.build_loop_judge_config(config, available_headers)
-    elif node_type == "跳转锚点节点":
-        window.build_jump_anchor_config(config)
-    elif node_type == "无条件跳转节点":
-        window.build_unconditional_jump_config(config)
-    elif node_type == "条件判断节点":
-        window.build_condition_check_config(config, available_headers)
-    elif node_type == "条件跳转节点":
-        window.build_conditional_jump_config(config)
-    elif node_type == "批量替换":
-        window.build_replace_config(config, available_headers)
-    elif node_type == "数据提取":
-        window.build_extract_config(config, available_headers)
-    elif node_type == "格式规范化 / 日期时间解析":
-        window.build_format_datetime_config(config, available_headers)
-    elif node_type == "新建日期时间列":
-        window.build_current_datetime_column_config(config, available_headers)
-    elif node_type == "新建列":
-        window.build_new_columns_config(config, available_headers)
-    elif node_type == "合并列":
-        window.build_merge_config(config, available_headers)
-    elif node_type == "批量更改列名":
-        window.build_rename_columns_config(config, available_headers)
-    elif node_type == "去重 / 重复数据处理":
-        window.build_dedupe_config(config, available_headers)
-    elif node_type == "列数字运算":
-        window.build_numeric_column_config(config, available_headers)
-    elif node_type == "匹配值输出列名":
-        transit_context = window.get_transit_context_before(idx)
-        window.build_match_value_output_field_name_config(config, available_headers, transit_context)
-    elif node_type == "插件节点":
-        transit_context = window.get_transit_context_before(idx)
-        window.build_plugin_node_config(config, available_headers, transit_context, available_rows)
-    elif node_type == "复制列":
-        window.build_copy_column_config(config, available_headers)
-    elif node_type == "复制行":
-        window.build_copy_row_config(config, available_headers)
-    elif node_type == "删除行":
-        window.build_delete_rows_config(config, available_headers)
-    elif node_type == "填充值":
-        window.build_fill_value_config(config, available_headers)
-    elif node_type == "序列填充":
-        window.build_sequence_fill_config(config, available_headers)
-    elif node_type == "区域填充":
-        window.build_area_fill_config(config, available_headers)
-    elif node_type == "行数据映射填充":
-        window.build_row_data_mapping_config(config, available_headers)
-    elif node_type == "保存中转数据":
-        window.build_save_transit_config(config, available_headers)
-    elif node_type == "选定列写入指定表":
-        transit_context = window.get_transit_context_before(idx)
-        window.build_selected_columns_write_config(config, available_headers, idx, transit_context)
-    elif node_type == "字段映射写入表":
-        window.build_writeback_config(config, available_headers)
-    elif node_type == "高级筛选":
-        transit_context = window.get_transit_context_before(idx)
-        window.build_filter_config(config, available_headers, transit_context)
-    elif node_type == "删除列":
-        window.build_delete_columns_config(config, available_headers)
-    elif node_type == "移动列":
-        window.build_move_columns_config(config, available_headers)
-    elif node_type == "获取文件列表":
-        window.build_file_list_config(config)
-    elif node_type == "批量重命名":
-        window.build_batch_rename_config(config, available_headers)
-    else:
-        ttk.Label(window.config_frame, text="未知节点类型。", foreground="red").pack(anchor=tk.W)
+    dispatch_node_config_builder(
+        window,
+        idx,
+        node.get("type"),
+        config,
+        available_headers,
+        available_rows,
+    )
 
 
 def on_preview_tree_double_click(window, event):
