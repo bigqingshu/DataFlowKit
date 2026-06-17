@@ -337,6 +337,7 @@ from workflow import group_template_ui as workflow_group_template_ui
 from workflow import jump_runtime as workflow_jump_runtime
 from workflow import run_plan_context as workflow_run_plan_context
 from workflow import run_plan_dispatch as workflow_run_plan_dispatch
+from workflow import run_plan_step as workflow_run_plan_step
 from workflow.row_data_mapping_config_ui import (
     build_row_data_mapping_config as workflow_build_row_data_mapping_config_ui,
 )
@@ -10712,41 +10713,17 @@ class PlanWorkflowWindow:
 
             node_type = node.get("type")
             config = node.get("config", {})
-            context["current_node_info"] = {
-                "node_id": node.get("node_id", ""),
-                "node_name": node.get("name", ""),
-                "node_type": node_type,
-                "node_index": idx,
-                "table_access": copy.deepcopy(node.get("table_access", {})),
-            }
-            if progress_callback is not None:
-                progress_callback({
-                    "type": "node_start",
-                    "node_index": idx,
-                    "node_total": len(node_list),
-                    "step": steps,
-                    "node_name": node_type,
-                    "message": f"开始执行节点 {idx + 1}.{node_type}"
-                })
+            workflow_run_plan_step.set_current_node_info(context, node, node_type, idx)
+            workflow_run_plan_step.emit_node_start(progress_callback, idx, len(node_list), steps, node_type)
             try:
                 before_shape = (len(rows), len(headers))
                 jump_to = None
-                if node_type in ("跳转锚点节点", "无条件跳转节点", "条件跳转节点"):
-                    current_table_manager = self.get_table_manager(context, node_type=node_type)
-                else:
-                    current_table_manager = self.check_current_table_permission(
-                        context,
-                        headers,
-                        write=False,
-                        operation="read_current_table",
-                    )
-                    if node_type != "条件判断节点":
-                        current_table_manager = self.check_current_table_permission(
-                            context,
-                            headers,
-                            write=True,
-                            operation="write_current_table",
-                        )
+                current_table_manager = workflow_run_plan_step.get_current_table_manager(
+                    self,
+                    context,
+                    headers,
+                    node_type,
+                )
 
                 headers, rows, stat, jump_to = workflow_run_plan_dispatch.dispatch_run_plan_node(
                     self,
@@ -10768,19 +10745,8 @@ class PlanWorkflowWindow:
                     rows,
                     node_type=node_type,
                 )
-                after_shape = (len(rows), len(headers))
-                logs.append(f"{idx+1}.{node_type} {before_shape[0]}×{before_shape[1]}→{after_shape[0]}×{after_shape[1]} {stat}")
-                if progress_callback is not None:
-                    progress_callback({
-                        "type": "node_done",
-                        "node_index": idx,
-                        "node_total": len(node_list),
-                        "step": steps,
-                        "node_name": node_type,
-                        "rows": len(rows),
-                        "cols": len(headers),
-                        "message": f"完成节点 {idx + 1}.{node_type}：{len(rows)} 行 × {len(headers)} 列"
-                    })
+                logs.append(workflow_run_plan_step.build_node_run_log(idx, node_type, before_shape, headers, rows, stat))
+                workflow_run_plan_step.emit_node_done(progress_callback, idx, len(node_list), steps, node_type, headers, rows)
 
                 if node_type == "保存中转数据" and config.get("stop_after_save"):
                     logs.append(f"节点 {idx+1}.保存中转数据 已设置保存后停止，流程在此停止。")
@@ -10799,14 +10765,7 @@ class PlanWorkflowWindow:
                     pc += 1
 
             except Exception as e:
-                if progress_callback is not None:
-                    progress_callback({
-                        "type": "node_error",
-                        "node_index": idx,
-                        "node_total": len(node_list),
-                        "node_name": node_type,
-                        "message": f"节点 {idx + 1}.{node_type} 执行失败：{e}"
-                    })
+                workflow_run_plan_step.emit_node_error(progress_callback, idx, len(node_list), node_type, e)
                 if raise_error:
                     raise RuntimeError(f"第 {idx+1} 个节点【{node_type}】执行失败：{e}")
                 logs.append(f"失败 {idx+1}.{node_type}：{e}")
