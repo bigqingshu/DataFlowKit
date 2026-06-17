@@ -5,14 +5,17 @@ import unittest
 from pathlib import Path
 
 from workflow.advanced_filter_window_logic import (
+    build_advanced_filter_template_data,
     build_advanced_filter_result_records,
     eval_advanced_filter_condition,
     eval_advanced_filter_conditions,
     eval_advanced_filter_join_rule,
     eval_advanced_filter_join_rules,
     load_advanced_filter_table_records,
+    normalize_advanced_filter_template_data,
     parse_advanced_filter_number,
     parse_positive_int_setting,
+    select_advanced_filter_template_tables,
 )
 
 
@@ -106,6 +109,38 @@ class AdvancedFilterWindowLogicTests(unittest.TestCase):
                 },
                 max_intermediate=1,
             )
+
+    def test_template_helpers_export_and_filter_invalid_fields(self):
+        data = build_advanced_filter_template_data(
+            "main",
+            ["main", "missing_table"],
+            [{"field": "main.A", "op": "等于", "value": "x"}, {"field": "bad", "op": "等于", "value": "y"}],
+            "OR",
+            "AND",
+            [{"left": "main.A", "op": "等于", "right": "other.A"}, {"left": "main.A", "op": "等于", "right": "bad"}],
+            ["main.A", "bad"],
+            "100",
+            "200",
+            "out",
+        )
+
+        self.assertEqual(data["selected_tables"], ["main", "missing_table"])
+        normalized = normalize_advanced_filter_template_data(
+            data,
+            tables_cache=["main", "other"],
+            valid_fields=["main.A", "other.A"],
+            current_save_table="fallback",
+        )
+
+        self.assertEqual(normalized["selected_tables"], ["main"])
+        self.assertEqual(normalized["conditions"], [{"field": "main.A", "op": "等于", "value": "x"}])
+        self.assertEqual(normalized["join_rules"], [{"left": "main.A", "op": "等于", "right": "other.A"}])
+        self.assertEqual(normalized["output_fields"], ["main.A"])
+        self.assertEqual(normalized["save_table"], "out")
+        self.assertEqual(
+            select_advanced_filter_template_tables({"main_table": "other", "selected_tables": ["missing"]}, ["main", "other"]),
+            ["other"],
+        )
 
 
 if __name__ == "__main__":

@@ -196,6 +196,71 @@ def build_advanced_filter_result_records(
     return filtered
 
 
+def build_advanced_filter_template_data(
+    main_table,
+    selected_tables,
+    conditions,
+    logic,
+    join_logic,
+    join_rules,
+    output_fields,
+    result_limit,
+    max_intermediate,
+    save_table,
+):
+    return {
+        "main_table": main_table,
+        "selected_tables": list(selected_tables or []),
+        "conditions": list(conditions or []),
+        "logic": logic,
+        "join_logic": join_logic,
+        "join_rules": list(join_rules or []),
+        "output_fields": list(output_fields or []),
+        "result_limit": result_limit,
+        "max_intermediate": max_intermediate,
+        "save_table": save_table,
+    }
+
+
+def select_advanced_filter_template_tables(data, tables_cache):
+    data = data or {}
+    tables_cache = set(tables_cache or [])
+    main_table = data.get("main_table", "")
+    selected_tables = [table for table in data.get("selected_tables", []) if table in tables_cache]
+    if not selected_tables and main_table in tables_cache:
+        selected_tables = [main_table]
+    return selected_tables
+
+
+def normalize_advanced_filter_template_data(data, tables_cache, valid_fields, current_save_table=""):
+    data = data or {}
+    valid_fields = set(valid_fields or [])
+    main_table = data.get("main_table", "")
+    selected_tables = select_advanced_filter_template_tables(data, tables_cache)
+
+    return {
+        "main_table": main_table,
+        "selected_tables": selected_tables,
+        "conditions": [
+            cond for cond in data.get("conditions", [])
+            if cond.get("field") in valid_fields
+        ],
+        "join_rules": [
+            rule for rule in data.get("join_rules", [])
+            if rule.get("left") in valid_fields and rule.get("right") in valid_fields
+        ],
+        "output_fields": [
+            field for field in data.get("output_fields", [])
+            if field in valid_fields
+        ],
+        "logic": data.get("logic", "AND"),
+        "join_logic": data.get("join_logic", "AND"),
+        "result_limit": str(data.get("result_limit", "5000")),
+        "max_intermediate": str(data.get("max_intermediate", "200000")),
+        "save_table": str(data.get("save_table", current_save_table)),
+    }
+
+
 def parse_positive_int_setting(value, default_value):
     try:
         parsed = int(str(value).strip())

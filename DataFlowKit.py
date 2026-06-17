@@ -158,6 +158,7 @@ from workflow.nodes.loop_nodes import (
 )
 from workflow.default_configs import default_config_for_type as workflow_default_config_for_type
 from workflow.advanced_filter_window_logic import (
+    build_advanced_filter_template_data as workflow_build_advanced_filter_template_data,
     build_advanced_filter_result_records as workflow_build_advanced_filter_result_records,
     eval_advanced_filter_condition as workflow_eval_advanced_filter_condition,
     eval_advanced_filter_conditions as workflow_eval_advanced_filter_conditions,
@@ -165,8 +166,10 @@ from workflow.advanced_filter_window_logic import (
     eval_advanced_filter_join_rules as workflow_eval_advanced_filter_join_rules,
     format_advanced_filter_db_value as workflow_format_advanced_filter_db_value,
     load_advanced_filter_table_records as workflow_load_advanced_filter_table_records,
+    normalize_advanced_filter_template_data as workflow_normalize_advanced_filter_template_data,
     parse_advanced_filter_number as workflow_parse_advanced_filter_number,
     parse_positive_int_setting as workflow_parse_positive_int_setting,
+    select_advanced_filter_template_tables as workflow_select_advanced_filter_template_tables,
 )
 from workflow.filter_config_window_mixin import FilterConfigWindowMixin
 from workflow.group_config_window_mixin import GroupConfigWindowMixin
@@ -4010,61 +4013,45 @@ class AdvancedFilterWindow:
             messagebox.showerror("保存失败", str(e))
 
     def export_template_data(self):
-        return {
-            "main_table": self.main_table_var.get(),
-            "selected_tables": self.get_selected_tables(),
-            "conditions": self.conditions,
-            "logic": self.logic_var.get(),
-            "join_logic": self.join_logic_var.get(),
-            "join_rules": self.join_rules,
-            "output_fields": self.output_fields,
-            "result_limit": self.result_limit_var.get(),
-            "max_intermediate": self.max_intermediate_var.get(),
-            "save_table": self.save_table_var.get()
-        }
+        return workflow_build_advanced_filter_template_data(
+            self.main_table_var.get(),
+            self.get_selected_tables(),
+            self.conditions,
+            self.logic_var.get(),
+            self.join_logic_var.get(),
+            self.join_rules,
+            self.output_fields,
+            self.result_limit_var.get(),
+            self.max_intermediate_var.get(),
+            self.save_table_var.get(),
+        )
 
     def apply_template_data(self, data):
         main_table = data.get("main_table", "")
-        selected_tables = data.get("selected_tables", [])
-        conditions = data.get("conditions", [])
-        join_rules = data.get("join_rules", [])
-        output_fields = data.get("output_fields", [])
 
         if main_table:
             self.main_table_var.set(main_table)
 
         self.selected_tables_listbox.delete(0, tk.END)
-        for table in selected_tables:
-            if table in self.tables_cache:
-                self.selected_tables_listbox.insert(tk.END, table)
-
-        if self.selected_tables_listbox.size() == 0 and main_table in self.tables_cache:
-            self.selected_tables_listbox.insert(tk.END, main_table)
+        for table in workflow_select_advanced_filter_template_tables(data, self.tables_cache):
+            self.selected_tables_listbox.insert(tk.END, table)
 
         self.refresh_fields()
 
-        valid_fields = set(self.field_display_cache)
-
-        self.conditions = [
-            cond for cond in conditions
-            if cond.get("field") in valid_fields
-        ]
-
-        self.join_rules = [
-            rule for rule in join_rules
-            if rule.get("left") in valid_fields and rule.get("right") in valid_fields
-        ]
-
-        self.output_fields = [
-            field for field in output_fields
-            if field in valid_fields
-        ]
-
-        self.logic_var.set(data.get("logic", "AND"))
-        self.join_logic_var.set(data.get("join_logic", "AND"))
-        self.result_limit_var.set(str(data.get("result_limit", "5000")))
-        self.max_intermediate_var.set(str(data.get("max_intermediate", "200000")))
-        self.save_table_var.set(str(data.get("save_table", self.save_table_var.get())))
+        state = workflow_normalize_advanced_filter_template_data(
+            data,
+            self.tables_cache,
+            self.field_display_cache,
+            current_save_table=self.save_table_var.get(),
+        )
+        self.conditions = state["conditions"]
+        self.join_rules = state["join_rules"]
+        self.output_fields = state["output_fields"]
+        self.logic_var.set(state["logic"])
+        self.join_logic_var.set(state["join_logic"])
+        self.result_limit_var.set(state["result_limit"])
+        self.max_intermediate_var.set(state["max_intermediate"])
+        self.save_table_var.set(state["save_table"])
 
         self.refresh_conditions_tree()
         self.refresh_join_tree()
