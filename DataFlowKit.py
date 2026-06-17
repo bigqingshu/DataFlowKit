@@ -191,8 +191,6 @@ from workflow.nodes.plugin_nodes import (
 )
 from workflow.default_configs import default_config_for_type as workflow_default_config_for_type
 from workflow.plugin_config_helpers import (
-    apply_plugin_custom_config_result as workflow_apply_plugin_custom_config_result,
-    build_plugin_dynamic_control_state as workflow_build_plugin_dynamic_control_state,
     build_plugin_dynamic_select_choices as workflow_build_plugin_dynamic_select_choices,
     build_plugin_field_select_initial_value as workflow_build_plugin_field_select_initial_value,
     build_plugin_input_spec as workflow_build_plugin_input_spec,
@@ -203,8 +201,6 @@ from workflow.plugin_config_helpers import (
     format_plugin_input_spec as workflow_format_plugin_input_spec,
     get_plugin_field_choices_for_table_param as workflow_get_plugin_field_choices_for_table_param,
     get_plugin_input_table_alias_choices as workflow_get_plugin_input_table_alias_choices,
-    get_plugin_static_parameter_choices as workflow_get_plugin_static_parameter_choices,
-    normalize_plugin_dynamic_parameter_choices as workflow_normalize_plugin_dynamic_parameter_choices,
     normalize_plugin_run_mode as workflow_normalize_plugin_run_mode,
     plugin_config_transit_reuse_note as workflow_plugin_config_transit_reuse_note,
 )
@@ -212,6 +208,7 @@ from workflow.plugin_schema_config_ui import (
     build_plugin_output_and_log_section as workflow_build_plugin_output_and_log_section_ui,
     build_plugin_schema_parameter_controls as workflow_build_plugin_schema_parameter_controls_ui,
 )
+from workflow import plugin_dynamic_config_ui as workflow_plugin_dynamic_config_ui
 from workflow.plugin_config_ui import (
     build_plugin_node_config as workflow_build_plugin_node_config_ui,
 )
@@ -7821,23 +7818,18 @@ class PlanWorkflowWindow:
         transit_context=None,
         input_table_headers=None,
     ):
-        choices = workflow_get_plugin_static_parameter_choices(spec)
-        provider = getattr(item.get("module"), "get_dynamic_parameter_options", None)
-        if not callable(provider):
-            return choices
-        try:
-            context = transit_context or {}
-            plugin_context = self.make_plugin_context(config, context, execute_actions=False)
-            plugin_context["input_table_headers"] = input_table_headers or self.build_plugin_input_table_headers(config, headers, context)
-            plugin_context["plugin_input_table_specs"] = copy.deepcopy(config.get("input_tables", []))
-            try:
-                plugin_context["input_tables"] = self.build_plugin_input_tables(config, headers, current_rows or [], context)
-            except Exception as table_exc:
-                plugin_context["input_tables_error"] = str(table_exc)
-            dynamic = provider(key, dict(params), plugin_context)
-            return workflow_normalize_plugin_dynamic_parameter_choices(choices, dynamic)
-        except Exception:
-            return choices
+        return workflow_plugin_dynamic_config_ui.get_plugin_dynamic_parameter_choices_for_config(
+            self,
+            item,
+            config,
+            params,
+            spec,
+            key,
+            headers,
+            current_rows=current_rows,
+            transit_context=transit_context,
+            input_table_headers=input_table_headers,
+        )
 
     def run_plugin_custom_config_window(
         self,
@@ -7850,55 +7842,24 @@ class PlanWorkflowWindow:
         dynamic_param_controls=None,
         refresh_dynamic_controls=None,
     ):
-        window_transit_context = self.plugin_config_context_with_live_transit(transit_context, include_rows=True)
-        plugin_context = self.make_plugin_context(config, window_transit_context or {}, execute_actions=False)
-        try:
-            input_tables = self.build_plugin_input_tables(config, headers, current_rows or [], window_transit_context or {})
-            plugin_context["input_tables"] = input_tables
-            plugin_context["plugin_input_table_specs"] = copy.deepcopy(config.get("input_tables", []))
-            reuse_note_for_window = self.plugin_config_transit_reuse_note(window_transit_context)
-            if reuse_note_for_window:
-                plugin_context["plugin_config_data_note"] = reuse_note_for_window
-                self.status_var.set(reuse_note_for_window)
-        except Exception as table_exc:
-            plugin_context["input_tables_error"] = str(table_exc)
-            plugin_context["plugin_input_table_specs"] = copy.deepcopy(config.get("input_tables", []))
-        result = item["module"].open_config_window(self.window, dict(params), plugin_context)
-        if not workflow_apply_plugin_custom_config_result(config, params, result):
-            return False
-        for control in dynamic_param_controls or []:
-            key = control.get("key", "")
-            var = control.get("var")
-            if var is not None and key in params:
-                var.set(params.get(key, ""))
-        if callable(refresh_dynamic_controls):
-            refresh_dynamic_controls()
-        return True
+        return workflow_plugin_dynamic_config_ui.run_plugin_custom_config_window(
+            self,
+            item,
+            config,
+            params,
+            headers,
+            current_rows=current_rows,
+            transit_context=transit_context,
+            dynamic_param_controls=dynamic_param_controls,
+            refresh_dynamic_controls=refresh_dynamic_controls,
+        )
 
     def refresh_plugin_dynamic_config_controls(self, controls, set_param, get_choices):
-        for control in controls or []:
-            combo = control.get("combo")
-            var = control.get("var")
-            spec = control.get("spec", {})
-            key = control.get("key", "")
-            typ = control.get("type", "")
-            if combo is None or var is None:
-                continue
-            current = str(var.get() or "")
-            state = workflow_build_plugin_dynamic_control_state(
-                typ,
-                spec,
-                current,
-                get_choices(control) if callable(get_choices) else [],
-            )
-            try:
-                combo.configure(values=state["choices"])
-            except Exception:
-                pass
-            desired = state["value"]
-            if desired != current:
-                var.set(desired)
-            set_param(key, var.get())
+        return workflow_plugin_dynamic_config_ui.refresh_plugin_dynamic_config_controls(
+            controls,
+            set_param,
+            get_choices,
+        )
 
     def get_group_config_source_headers(self, source_type, headers, transit_context=None, transit_name="", sqlite_table=""):
         sqlite_columns = []
