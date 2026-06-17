@@ -300,6 +300,7 @@ from workflow import run_plan_context as workflow_run_plan_context
 from workflow import run_plan_loop as workflow_run_plan_loop
 from workflow import run_plan_step as workflow_run_plan_step
 from workflow import table_runtime_services as workflow_table_runtime_services
+from workflow import table_access_audit_ui as workflow_table_access_audit_ui
 from workflow.row_data_mapping_config_ui import (
     build_row_data_mapping_config as workflow_build_row_data_mapping_config_ui,
 )
@@ -5788,160 +5789,10 @@ class PlanWorkflowWindow:
         return workflow_jump_manager_ui.open_jump_manager_window(self)
 
     def table_access_log_text(self, event):
-        try:
-            return json.dumps(event, ensure_ascii=False, default=str)
-        except Exception:
-            return str(event)
+        return workflow_table_access_audit_ui.table_access_log_text(event)
 
     def open_table_access_audit_window(self):
-        logs_state = {"logs": list(self.last_table_access_logs or [])}
-        win = tk.Toplevel(self.window)
-        win.title("表访问权限审计日志")
-        win.geometry("1320x700")
-        win.minsize(980, 520)
-        win.transient(self.window)
-
-        main = ttk.Frame(win, padding=8)
-        main.pack(fill=tk.BOTH, expand=True)
-        summary_var = tk.StringVar()
-
-        filter_frame = ttk.Frame(main)
-        filter_frame.pack(fill=tk.X, pady=(0, 6))
-        ttk.Label(filter_frame, textvariable=summary_var, font=("TkDefaultFont", 10, "bold")).pack(side=tk.LEFT, padx=(0, 16))
-        ttk.Label(filter_frame, text="状态：").pack(side=tk.LEFT, padx=(0, 4))
-        status_var = tk.StringVar(value="全部")
-        status_combo = ttk.Combobox(filter_frame, textvariable=status_var, values=["全部", "ok", "warning", "denied", "missing", "compat"], width=10, state="readonly")
-        status_combo.pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Label(filter_frame, text="搜索：").pack(side=tk.LEFT, padx=(0, 4))
-        search_var = tk.StringVar()
-        ttk.Entry(filter_frame, textvariable=search_var, width=34).pack(side=tk.LEFT, padx=(0, 8))
-
-        tree_wrap = ttk.Frame(main)
-        tree_wrap.pack(fill=tk.BOTH, expand=True)
-        columns = ("time", "node", "source", "table", "operation", "status", "mode", "policy", "message")
-        tree = ttk.Treeview(tree_wrap, columns=columns, show="headings", height=20)
-        for col, text, width in [
-            ("time", "时间", 145),
-            ("node", "节点", 155),
-            ("source", "来源", 82),
-            ("table", "表", 150),
-            ("operation", "操作", 150),
-            ("status", "状态", 78),
-            ("mode", "模式", 110),
-            ("policy", "策略", 70),
-            ("message", "信息", 360),
-        ]:
-            tree.heading(col, text=text)
-            tree.column(col, width=width, anchor=tk.W)
-        tree.tag_configure("ok", foreground="#1b5e20")
-        tree.tag_configure("warning", foreground="#8a5a00")
-        tree.tag_configure("denied", foreground="#b00020")
-        tree.tag_configure("missing", foreground="#b00020")
-        tree.tag_configure("compat", foreground="#555555")
-        yscroll = ttk.Scrollbar(tree_wrap, orient=tk.VERTICAL, command=tree.yview)
-        xscroll = ttk.Scrollbar(tree_wrap, orient=tk.HORIZONTAL, command=tree.xview)
-        tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
-        tree.grid(row=0, column=0, sticky="nsew")
-        yscroll.grid(row=0, column=1, sticky="ns")
-        xscroll.grid(row=1, column=0, sticky="ew")
-        tree_wrap.rowconfigure(0, weight=1)
-        tree_wrap.columnconfigure(0, weight=1)
-
-        def log_row(event):
-            node = event.get("node_name") or event.get("node_type") or event.get("node_id") or ""
-            source = event.get("source_type") or event.get("access_source_type") or ""
-            mode = event.get("write_mode") or event.get("mode") or ""
-            return (
-                event.get("time", ""),
-                node,
-                source,
-                event.get("table_name", ""),
-                event.get("operation_checked") or event.get("operation", ""),
-                event.get("status", ""),
-                mode,
-                event.get("policy", ""),
-                event.get("message", ""),
-            )
-
-        def refresh_tree(*_):
-            tree.delete(*tree.get_children())
-            selected_status = status_var.get()
-            keyword = search_var.get().strip().lower()
-            visible = 0
-            counts = {}
-            for idx, event in enumerate(logs_state["logs"]):
-                status = str(event.get("status", "") or "")
-                counts[status] = counts.get(status, 0) + 1
-                if selected_status != "全部" and status != selected_status:
-                    continue
-                text = self.table_access_log_text(event).lower()
-                if keyword and keyword not in text:
-                    continue
-                visible += 1
-                row = log_row(event)
-                tag = status if status in ("ok", "warning", "denied", "missing", "compat") else ""
-                tree.insert("", tk.END, iid=str(idx), values=row, tags=(tag,))
-            count_text = "，".join(f"{k or '无状态'} {v}" for k, v in sorted(counts.items()))
-            summary_var.set(f"最近日志 {len(logs_state['logs'])} 条，当前显示 {visible} 条" + (f"（{count_text}）" if count_text else ""))
-
-        def reload_logs():
-            logs_state["logs"] = list(self.last_table_access_logs or [])
-            refresh_tree()
-
-        def clear_logs():
-            self.last_table_access_logs = []
-            logs_state["logs"] = []
-            refresh_tree()
-
-        def show_log_detail(event=None):
-            sel = tree.selection()
-            if not sel:
-                return
-            item = logs_state["logs"][int(sel[0])]
-            messagebox.showinfo("审计日志详情", self.table_access_log_text(item), parent=win)
-
-        def export_logs():
-            if not logs_state["logs"]:
-                messagebox.showwarning("提示", "当前没有可导出的审计日志。", parent=win)
-                return
-            path = filedialog.asksaveasfilename(
-                title="导出表访问审计日志",
-                defaultextension=".csv",
-                filetypes=[("CSV文件", "*.csv"), ("所有文件", "*.*")],
-                parent=win,
-            )
-            if not path:
-                return
-            fieldnames = sorted({key for event in logs_state["logs"] if isinstance(event, dict) for key in event.keys()})
-            with open(path, "w", encoding="utf-8-sig", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames)
-                writer.writeheader()
-                for event in logs_state["logs"]:
-                    row = {}
-                    for key in fieldnames:
-                        value = event.get(key, "")
-                        if isinstance(value, (list, dict)):
-                            value = json.dumps(value, ensure_ascii=False)
-                        row[key] = value
-                    writer.writerow(row)
-            messagebox.showinfo("导出完成", f"已导出审计日志：\n{path}", parent=win)
-
-        tree.bind("<Double-1>", show_log_detail)
-        status_var.trace_add("write", refresh_tree)
-        search_var.trace_add("write", refresh_tree)
-
-        bottom = ttk.Frame(win, padding=(8, 0, 8, 8))
-        bottom.pack(fill=tk.X)
-        ttk.Button(bottom, text="刷新最近日志", command=reload_logs).pack(side=tk.LEFT, padx=4)
-        ttk.Button(bottom, text="导出CSV", command=export_logs).pack(side=tk.LEFT, padx=4)
-        ttk.Button(bottom, text="清空最近日志", command=clear_logs).pack(side=tk.LEFT, padx=4)
-        ttk.Button(bottom, text="详情", command=show_log_detail).pack(side=tk.LEFT, padx=4)
-        ttk.Button(bottom, text="关闭", command=win.destroy).pack(side=tk.RIGHT, padx=4)
-
-        refresh_tree()
-        if not logs_state["logs"]:
-            summary_var.set("最近日志 0 条。先预览或执行一次工作流后，这里会显示表访问审计。")
-        self.center_toplevel(win, self.window, 1320, 700)
+        return workflow_table_access_audit_ui.open_table_access_audit_window(self)
 
     def build_table_access_window_shell(self):
         win = tk.Toplevel(self.window)
