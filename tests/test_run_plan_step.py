@@ -7,6 +7,7 @@ from workflow.run_plan_step import (
     emit_node_done,
     emit_node_error,
     emit_node_start,
+    execute_run_plan_node,
     finish_node_execution,
     get_current_table_manager,
     handle_node_execution_error,
@@ -216,6 +217,141 @@ class RunPlanStepTests(unittest.TestCase):
         self.assertEqual(logs, ["失败 3.新建列：bad"])
         with self.assertRaisesRegex(RuntimeError, "第 3 个节点【新建列】执行失败：bad"):
             handle_node_execution_error(None, [], 2, 5, "新建列", ValueError("bad"), raise_error=True)
+
+    def test_execute_run_plan_node_success_uses_dispatch_and_finish(self):
+        events = []
+        calls = []
+
+        class Window:
+            def check_current_table_permission(self, context, headers, write=False, operation=""):
+                calls.append(("permission", tuple(headers), write, operation))
+                return {"write": write}
+
+            def log_current_table_transform(self, manager, before_shape, headers, rows, node_type=""):
+                calls.append(("transform", before_shape, tuple(headers), len(rows), node_type))
+
+        def dispatch(window, headers, rows, node, context, execute_actions=False, anchors_info=None, node_list=None, idx=0, end=None):
+            calls.append(("dispatch", execute_actions, anchors_info, node_list, idx, end))
+            return list(headers) + ["B"], [list(row) + ["b"] for row in rows], "OK", None
+
+        logs = []
+        node = {"type": "新建列", "config": {}, "node_id": "n1"}
+        node_list = [node]
+
+        headers, rows, pc, should_stop = execute_run_plan_node(
+            Window(),
+            ["A"],
+            [["a"]],
+            logs,
+            {},
+            node,
+            0,
+            end=0,
+            node_total=1,
+            steps=1,
+            execute_actions=True,
+            anchors_info={"anchors": []},
+            node_list=node_list,
+            progress_callback=events.append,
+            dispatch_func=dispatch,
+        )
+
+        self.assertEqual(headers, ["A", "B"])
+        self.assertEqual(rows, [["a", "b"]])
+        self.assertEqual(pc, 1)
+        self.assertFalse(should_stop)
+        self.assertEqual([event["type"] for event in events], ["node_start", "node_done"])
+        self.assertEqual(logs, ["1.新建列 1×1→1×2 OK"])
+        self.assertIn(("dispatch", True, {"anchors": []}, node_list, 0, 0), calls)
+
+    def test_execute_run_plan_node_returns_stop_after_save(self):
+        class Window:
+            def check_current_table_permission(self, context, headers, write=False, operation=""):
+                return {}
+
+            def log_current_table_transform(self, manager, before_shape, headers, rows, node_type=""):
+                pass
+
+        def dispatch(window, headers, rows, node, context, **kwargs):
+            return list(headers), [list(row) for row in rows], "保存完成", None
+
+        logs = []
+        headers, rows, pc, should_stop = execute_run_plan_node(
+            Window(),
+            ["A"],
+            [["a"]],
+            logs,
+            {},
+            {"type": "保存中转数据", "config": {"stop_after_save": True}},
+            0,
+            end=0,
+            node_total=1,
+            steps=1,
+            dispatch_func=dispatch,
+        )
+
+        self.assertEqual(headers, ["A"])
+        self.assertEqual(rows, [["a"]])
+        self.assertIsNone(pc)
+        self.assertTrue(should_stop)
+        self.assertIn("保存后停止", logs[-1])
+
+    def test_execute_run_plan_node_handles_dispatch_error(self):
+        events = []
+
+        class Window:
+            def check_current_table_permission(self, context, headers, write=False, operation=""):
+                return {}
+
+        def dispatch(window, headers, rows, node, context, **kwargs):
+            raise ValueError("bad")
+
+        logs = []
+        headers, rows, pc, should_stop = execute_run_plan_node(
+            Window(),
+            ["A"],
+            [["a"]],
+            logs,
+            {},
+            {"type": "新建列", "config": {}},
+            1,
+            end=2,
+            node_total=3,
+            steps=2,
+            progress_callback=events.append,
+            dispatch_func=dispatch,
+        )
+
+        self.assertEqual(headers, ["A"])
+        self.assertEqual(rows, [["a"]])
+        self.assertEqual(pc, 2)
+        self.assertFalse(should_stop)
+        self.assertEqual([event["type"] for event in events], ["node_start", "node_error"])
+        self.assertEqual(logs, ["失败 2.新建列：bad"])
+
+    def test_execute_run_plan_node_reraises_when_raise_error(self):
+        class Window:
+            def check_current_table_permission(self, context, headers, write=False, operation=""):
+                return {}
+
+        def dispatch(window, headers, rows, node, context, **kwargs):
+            raise ValueError("bad")
+
+        with self.assertRaisesRegex(RuntimeError, "第 2 个节点【新建列】执行失败：bad"):
+            execute_run_plan_node(
+                Window(),
+                ["A"],
+                [["a"]],
+                [],
+                {},
+                {"type": "新建列", "config": {}},
+                1,
+                end=2,
+                node_total=3,
+                steps=2,
+                raise_error=True,
+                dispatch_func=dispatch,
+            )
 
 
 if __name__ == "__main__":

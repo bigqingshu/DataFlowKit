@@ -155,3 +155,87 @@ def handle_node_execution_error(progress_callback, logs, idx, node_total, node_t
         raise RuntimeError(f"第 {idx+1} 个节点【{node_type}】执行失败：{error}")
     logs.append(f"失败 {idx+1}.{node_type}：{error}")
     return idx + 1
+
+
+def execute_run_plan_node(
+    window,
+    headers,
+    rows,
+    logs,
+    context,
+    node,
+    idx,
+    end,
+    node_total,
+    steps,
+    execute_actions=False,
+    anchors_info=None,
+    node_list=None,
+    progress_callback=None,
+    suppress_jump_at_stop=False,
+    raise_error=False,
+    dispatch_func=None,
+):
+    node_type, config = prepare_node_execution(
+        context,
+        node,
+        idx,
+        node_total,
+        steps,
+        progress_callback,
+    )
+    try:
+        before_shape, current_table_manager = begin_node_execution(
+            window,
+            context,
+            headers,
+            rows,
+            node_type,
+        )
+        if dispatch_func is None:
+            from workflow.run_plan_dispatch import dispatch_run_plan_node
+
+            dispatch_func = dispatch_run_plan_node
+
+        headers, rows, stat, jump_to = dispatch_func(
+            window,
+            headers,
+            rows,
+            node,
+            context,
+            execute_actions=execute_actions,
+            anchors_info=anchors_info,
+            node_list=node_list,
+            idx=idx,
+            end=end,
+        )
+        pc, should_stop = finish_node_execution(
+            window,
+            logs,
+            current_table_manager,
+            before_shape,
+            idx,
+            node_type,
+            config,
+            headers,
+            rows,
+            stat,
+            jump_to,
+            end,
+            node_total,
+            steps,
+            progress_callback,
+            suppress_jump_at_stop=suppress_jump_at_stop,
+        )
+        return headers, rows, pc, should_stop
+    except Exception as error:
+        pc = handle_node_execution_error(
+            progress_callback,
+            logs,
+            idx,
+            node_total,
+            node_type,
+            error,
+            raise_error=raise_error,
+        )
+        return headers, rows, pc, False

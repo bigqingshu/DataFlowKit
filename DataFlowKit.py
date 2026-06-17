@@ -336,7 +336,6 @@ from workflow import group_runtime as workflow_group_runtime
 from workflow import group_template_ui as workflow_group_template_ui
 from workflow import jump_runtime as workflow_jump_runtime
 from workflow import run_plan_context as workflow_run_plan_context
-from workflow import run_plan_dispatch as workflow_run_plan_dispatch
 from workflow import run_plan_loop as workflow_run_plan_loop
 from workflow import run_plan_step as workflow_run_plan_step
 from workflow.row_data_mapping_config_ui import (
@@ -10706,68 +10705,26 @@ class PlanWorkflowWindow:
                 pc = disabled_next_pc
                 continue
 
-            node_type, config = workflow_run_plan_step.prepare_node_execution(
+            headers, rows, pc, should_stop = workflow_run_plan_step.execute_run_plan_node(
+                self,
+                headers,
+                rows,
+                logs,
                 context,
                 node,
                 idx,
+                end,
                 len(node_list),
                 steps,
-                progress_callback,
+                execute_actions=execute_actions,
+                anchors_info=anchors_info,
+                node_list=node_list,
+                progress_callback=progress_callback,
+                suppress_jump_at_stop=suppress_jump_at_stop,
+                raise_error=raise_error,
             )
-            try:
-                jump_to = None
-                before_shape, current_table_manager = workflow_run_plan_step.begin_node_execution(
-                    self,
-                    context,
-                    headers,
-                    rows,
-                    node_type,
-                )
-
-                headers, rows, stat, jump_to = workflow_run_plan_dispatch.dispatch_run_plan_node(
-                    self,
-                    headers,
-                    rows,
-                    node,
-                    context,
-                    execute_actions=execute_actions,
-                    anchors_info=anchors_info,
-                    node_list=node_list,
-                    idx=idx,
-                    end=end,
-                )
-
-                pc, should_stop = workflow_run_plan_step.finish_node_execution(
-                    self,
-                    logs,
-                    current_table_manager,
-                    before_shape,
-                    idx,
-                    node_type,
-                    config,
-                    headers,
-                    rows,
-                    stat,
-                    jump_to,
-                    end,
-                    len(node_list),
-                    steps,
-                    progress_callback,
-                    suppress_jump_at_stop=suppress_jump_at_stop,
-                )
-                if should_stop:
-                    break
-
-            except Exception as e:
-                pc = workflow_run_plan_step.handle_node_execution_error(
-                    progress_callback,
-                    logs,
-                    idx,
-                    len(node_list),
-                    node_type,
-                    e,
-                    raise_error=raise_error,
-                )
+            if should_stop:
+                break
 
         # 不在后台线程直接写 self.current_transit_tables；由 workflow_done 回到主线程后统一更新。
         if return_context:
