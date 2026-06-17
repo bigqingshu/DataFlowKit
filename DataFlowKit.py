@@ -146,11 +146,7 @@ from workflow.nodes.data_nodes import (
     split_by_config_delimiter as workflow_split_by_config_delimiter,
 )
 from workflow.nodes.file_nodes import (
-    BATCH_RENAME_LOG_HEADERS,
-    apply_batch_rename_node as workflow_apply_batch_rename_node,
-    apply_file_list_node as workflow_apply_file_list_node,
     is_hidden_path as workflow_is_hidden_path,
-    make_numbered_path as workflow_make_numbered_path,
     parse_extensions_filter as workflow_parse_extensions_filter,
 )
 from workflow.nodes.group_nodes import (
@@ -11356,21 +11352,6 @@ class PlanWorkflowWindow:
         except Exception:
             pass
 
-    def apply_file_list_node(self, headers, rows, config, context=None):
-        node_context = dict(context or {})
-        node_context.setdefault("default_directory", getattr(self.app, "app_dir", get_app_dir()))
-        node_context["check_cancelled"] = lambda index=None: self.check_workflow_cancelled(context)
-        node_context["report_progress"] = (
-            lambda current=None, total=None, message="", node_name="获取文件列表": self.report_workflow_node_progress(
-                context,
-                current=current,
-                total=total,
-                message=message,
-                node_name=node_name,
-            )
-        )
-        return workflow_apply_file_list_node(headers, rows, config, context=node_context)
-
     def get_or_add_column_index(self, headers, rows, column_name):
         column_name = str(column_name or "").strip()
         if not column_name:
@@ -11383,48 +11364,6 @@ class PlanWorkflowWindow:
         for row in rows:
             row.append("")
         return len(headers) - 1, headers, rows
-
-    def make_numbered_path(self, path):
-        return workflow_make_numbered_path(path)
-
-    def apply_batch_rename_node(self, headers, rows, config, execute_actions=False, context=None):
-        node_context = dict(context or {})
-        node_context.update({
-            "check_cancelled": lambda index=None: self.check_workflow_cancelled(context),
-            "report_progress": lambda current=None, total=None, message="", node_name="批量重命名": self.report_workflow_node_progress(
-                context,
-                current=current,
-                total=total,
-                message=message,
-                node_name=node_name,
-            ),
-            "path_exists": os.path.exists,
-            "path_is_dir": os.path.isdir,
-            "make_dirs": lambda path: os.makedirs(path, exist_ok=True),
-            "rename_file": os.rename,
-            "replace_file": os.replace,
-            "make_numbered_path": self.make_numbered_path,
-        })
-        headers, rows, message = workflow_apply_batch_rename_node(
-            headers,
-            rows,
-            config,
-            execute_actions=execute_actions,
-            context=node_context,
-        )
-
-        if node_context.get("batch_rename_do_rename") and bool(config.get("write_log", True)):
-            log_path = config.get("log_path") or os.path.abspath("rename_log.csv")
-            try:
-                os.makedirs(os.path.dirname(os.path.abspath(log_path)), exist_ok=True)
-                with open(log_path, "w", encoding="utf-8-sig", newline="") as f:
-                    writer = csv.writer(f)
-                    writer.writerow(BATCH_RENAME_LOG_HEADERS)
-                    writer.writerows(node_context.get("batch_rename_log_rows", []))
-            except Exception as e:
-                return headers, rows, f"重命名完成 {node_context.get('batch_rename_changed', 0)} 项，但日志写入失败：{e}"
-
-        return headers, rows, message
 
     def parse_int(self, value, name):
         return workflow_parse_int(value, name)

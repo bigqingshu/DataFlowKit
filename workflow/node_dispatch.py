@@ -22,6 +22,10 @@ from workflow.nodes.data_nodes import (
     apply_row_data_mapping_node,
     apply_sequence_fill_node,
 )
+from workflow.file_node_runtime import (
+    apply_batch_rename_node_for_window,
+    apply_file_list_node_for_window,
+)
 
 
 def make_window_data_node_context(window, context):
@@ -52,7 +56,7 @@ def apply_workflow_node(window, headers, rows, node, execute_actions=False, cont
         h, r, stat, _ctrl = window.apply_loop_judge_node(headers, rows, config, context=context)
         return h, r, stat
     if node_type == "获取文件列表":
-        return window.apply_file_list_node(headers, rows, config, context=context)
+        return apply_file_list_node_for_window(window, headers, rows, config, context=context)
     if node_type == "批量替换":
         return apply_replace_node(headers, rows, config, context=make_window_data_node_context(window, context))
     if node_type == "数据提取":
@@ -107,5 +111,12 @@ def apply_workflow_node(window, headers, rows, node, execute_actions=False, cont
     if node_type == "移动列":
         return apply_move_columns_node(headers, rows, config)
     if node_type == "批量重命名":
-        return window.apply_batch_rename_node(headers, rows, config, execute_actions=execute_actions, context=context)
+        return apply_batch_rename_node_for_window(
+            window,
+            headers,
+            rows,
+            config,
+            execute_actions=execute_actions,
+            context=context,
+        )
     raise ValueError(f"未知节点类型：{node_type}")

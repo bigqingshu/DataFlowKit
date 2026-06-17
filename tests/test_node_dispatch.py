@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+import os
+import tempfile
+import types
 import unittest
 
 from workflow.node_dispatch import apply_workflow_node
@@ -21,24 +24,47 @@ class NodeDispatchTests(unittest.TestCase):
         self.assertIn("新建列完成", result[2])
 
     def test_dispatch_context_node(self):
+        progress = []
         calls = []
-        context = {"transit_tables": {}}
 
         class Window:
-            def apply_file_list_node(self, headers, rows, config, context=None):
-                calls.append((config, context))
-                return list(headers), [list(row) for row in rows], "dedupe"
+            def check_workflow_cancelled(self, context=None):
+                return None
 
-        result = apply_workflow_node(
-            Window(),
-            ["A"],
-            [["a"]],
-            {"type": "获取文件列表", "config": {"folder": "C:/tmp"}},
-            context=context,
-        )
+            def report_workflow_node_progress(self, context=None, current=None, total=None, message="", node_name=""):
+                progress.append((context, current, total, message, node_name))
 
-        self.assertEqual(result[2], "dedupe")
-        self.assertIs(calls[0][1], context)
+            def apply_batch_rename_node(self, headers, rows, config, execute_actions=False, context=None):
+                calls.append((config, execute_actions, context))
+                return list(headers), [list(row) for row in rows], "rename"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "a.txt"), "w", encoding="utf-8") as f:
+                f.write("a")
+
+            window = Window()
+            window.app = types.SimpleNamespace(app_dir=tmp)
+            result = apply_workflow_node(
+                window,
+                ["A"],
+                [["a"]],
+                {"type": "获取文件列表", "config": {"recursive": False}},
+                context={"progress_callback": lambda item: None},
+            )
+
+            self.assertEqual(result[0][0], "文件名")
+            self.assertEqual(result[1][0][0], "a.txt")
+            self.assertIn("读取文件列表 1 项", result[2])
+
+            rename_result = apply_workflow_node(
+                window,
+                ["完整路径", "新文件名"],
+                [[os.path.join(tmp, "a.txt"), "b.txt"]],
+                {"type": "批量重命名", "config": {"actual_rename": False}},
+            )
+
+        self.assertEqual(rename_result[2], "重命名预览：可处理 1 项，跳过/失败 0 项")
+        self.assertEqual(calls, [])
 
     def test_dispatch_execute_action_node(self):
         calls = []
