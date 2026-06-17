@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
+import argparse
 import hashlib
 import json
 import re
 import shutil
 import sqlite3
+import sys
 import tempfile
 import time
+import traceback
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -13,14 +16,52 @@ from xml.etree import ElementTree as ET
 PLUGIN_INFO = {
     "id": "word_excel_read_to_db_v1",
     "name": "Word/Excel读取入库V1",
-    "version": "1.1.0",
+    "version": "1.2.1",
     "api_version": "1.0",
     "category": "文件处理",
-    "description": "读取Word/Excel文件并按“每文件一表”写入数据库，输出处理摘要。",
+    "description": "按统一读取策略读取 Word/Excel，并按“每文件一表”写入数据库。",
     "input_type": "table",
     "output_type": "table",
     "danger_level": "db_write",
 }
+PARSE_CACHE_VERSION = "word_table_cell_canonical_v3_raw_text"
+
+DETAIL_HEADERS = [
+    "source_file",
+    "source_name",
+    "source_ext",
+    "block_type",
+    "sheet_name",
+    "row_index",
+    "col_index",
+    "cell_address",
+    "text",
+    "meta_json",
+    "is_merged",
+    "is_merge_origin",
+    "merge_origin_row",
+    "merge_origin_col",
+    "row_span",
+    "col_span",
+    "merged_range",
+]
+
+SUMMARY_HEADERS = ["source_row", "source_mode", "file_name", "file_path", "table_name", "read_rows", "write_rows", "status", "error"]
+
+DEFAULT_READ_STRATEGY = "win32文本段落+精确表格"
+READ_STRATEGY_CONVERT_XML = "转换docx后XML读取"
+READ_STRATEGY_CONVERT_WIN32 = "转换docx后用win32读取"
+READ_STRATEGY_CONVERT_WIN32_COMPAT = "保留旧格式转换docx后用win32读取"
+READ_STRATEGIES = [
+    DEFAULT_READ_STRATEGY,
+    "win32快速读取",
+    "win32文本反推表格",
+    "win32纯文本快速读取",
+    READ_STRATEGY_CONVERT_XML,
+    READ_STRATEGY_CONVERT_WIN32,
+    READ_STRATEGY_CONVERT_WIN32_COMPAT,
+    "win32完整读取",
+]
 
 
 def get_parameter_schema():
@@ -43,11 +84,11 @@ def get_parameter_schema():
         },
         {
             "name": "doc_read_strategy",
-            "label": ".doc读取策略",
+            "label": "读取策略",
             "type": "select",
-            "choices": ["win32快速读取", "win32文本段落+精确表格", "win32文本反推表格", "win32纯文本快速读取", "转换docx后XML读取", "win32完整读取"],
-            "default": "win32快速读取",
-            "help": ".doc 专用。win32文本段落+精确表格跳过慢速逐段读取，但保留精确 table_x/R行C列；win32文本反推表格为更快近似。",
+            "choices": list(READ_STRATEGIES),
+            "default": DEFAULT_READ_STRATEGY,
+            "help": "适用于 .doc/.docx/.docm。转换策略只使用临时 docx，不修改源文件；“保留旧格式”会保留源文档当前兼容模式。",
         },
         {
             "name": "path_source",
@@ -145,6 +186,45 @@ def get_parameter_schema():
             "default": "继续并记录失败",
         },
     ]
+
+
+def get_table_access_spec(params=None, context=None):
+    p = dict(params or {})
+    prefix = re.sub(r"[^0-9A-Za-z_\u4e00-\u9fff]+", "_", _as_text(p.get("table_prefix", "src_"))).strip()
+    mode = _as_text(p.get("write_mode", "replace")) or "replace"
+    permissions = {
+        "read_table": False,
+        "write_table": True,
+        "create_table": True,
+        "append_rows": mode == "append",
+        "update_rows": False,
+        "clear_table": False,
+        "replace_table": mode == "replace",
+        "alter_schema": mode == "append",
+        "delete_rows": False,
+        "drop_table": False,
+    }
+    return [{
+        "role": "document_output",
+        "source_type": "SQLite表",
+        "table_pattern": f"{prefix}*" if prefix else "*",
+        "pattern_type": "glob",
+        "permissions": permissions,
+        "write_mode": mode,
+    }]
+
+
+def get_output_schema(params=None, input_data=None, context=None):
+    return {
+        "type": "table",
+        "headers": list(DETAIL_HEADERS),
+        "rows": [],
+        "meta": {
+            "plugin": PLUGIN_INFO["id"],
+            "lazy_schema": True,
+            "summary_headers": list(SUMMARY_HEADERS),
+        },
+    }
 
 
 def _as_text(v):
@@ -342,15 +422,17 @@ def _ensure_cache_table(conn):
 def _stable_params_hash(params):
     ignore = {"enable_cache", "force_refresh", "cache_key_mode"}
     data = {k: params[k] for k in sorted(params.keys()) if k not in ignore}
+    data["_parse_cache_version"] = PARSE_CACHE_VERSION
     txt = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(txt.encode("utf-8")).hexdigest()
 
 
 def _parse_params_hash(params):
     data = {
+        "parse_cache_version": PARSE_CACHE_VERSION,
         "read_engine": _as_text(params.get("read_engine", "win32")) or "win32",
         "word_merge_mode": _as_text(params.get("word_merge_mode", "关闭")) or "关闭",
-        "doc_read_strategy": _as_text(params.get("doc_read_strategy", "win32快速读取")) or "win32快速读取",
+        "doc_read_strategy": _as_text(params.get("doc_read_strategy", DEFAULT_READ_STRATEGY)) or DEFAULT_READ_STRATEGY,
     }
     txt = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(txt.encode("utf-8")).hexdigest()
@@ -447,6 +529,17 @@ def _clean_word_text(text):
     return s
 
 
+def _word_raw_visible_text(text):
+    raw = "" if text is None else str(text)
+    raw = raw.replace("\x00", "")
+    while raw.endswith(("\r\x07", "\x07", "\r")):
+        if raw.endswith("\r\x07"):
+            raw = raw[:-2]
+        else:
+            raw = raw[:-1]
+    return raw
+
+
 def _split_word_cell_text(text):
     raw = "" if text is None else str(text)
     if raw == "":
@@ -460,20 +553,84 @@ def _split_word_cell_text(text):
     return [_clean_word_text(part) for part in parts]
 
 
-def _append_word_text_lines(rows, raw_text, file_path, context, progress_current, progress_total, meta_base=None):
+def _word_range_bounds(range_obj):
+    try:
+        return int(range_obj.Start), int(range_obj.End)
+    except Exception:
+        return None
+
+
+def _word_table_ranges(doc):
+    ranges = []
+    try:
+        count = int(doc.Tables.Count)
+    except Exception:
+        count = 0
+    for index in range(1, count + 1):
+        try:
+            bounds = _word_range_bounds(doc.Tables(index).Range)
+        except Exception:
+            bounds = None
+        if not bounds:
+            continue
+        start, end = bounds
+        if end > start:
+            ranges.append((start, end))
+    return ranges
+
+
+def _range_overlaps_any(start, end, ranges):
+    try:
+        start = int(start)
+        end = int(end)
+    except Exception:
+        return False
+    for left, right in ranges or []:
+        if start < right and end > left:
+            return True
+    return False
+
+
+def _word_range_in_table(range_obj):
+    try:
+        return int(range_obj.Tables.Count) > 0
+    except Exception:
+        pass
+    try:
+        return bool(range_obj.Information(12))
+    except Exception:
+        return False
+
+
+def _append_word_text_lines(rows, raw_text, file_path, context, progress_current, progress_total, meta_base=None, exclude_ranges=None):
     meta_base = dict(meta_base or {})
-    for line_index, part in enumerate(re.split(r"[\r\n]+", "" if raw_text is None else str(raw_text)), start=1):
+    exclude_ranges = list(exclude_ranges or [])
+    source_text = "" if raw_text is None else str(raw_text)
+    line_index = 0
+    for match in re.finditer(r"[^\r\n]+", source_text):
+        part = match.group(0)
         txt = _clean_word_text(part)
         if txt == "" and "\x01" not in str(part):
             continue
-        meta = {"line_index": line_index}
+        range_base = int(meta_base.get("range_base") or 0)
+        absolute_start = range_base + match.start()
+        absolute_end = range_base + match.end()
+        if exclude_ranges and _range_overlaps_any(absolute_start, absolute_end, exclude_ranges):
+            continue
+        line_index += 1
+        meta = {
+            "line_index": line_index,
+            "range_start": match.start(),
+            "range_end": match.end(),
+            "position_kind": "word_content_range",
+        }
         meta.update(meta_base)
         rec = {
-            "block_type": "word_paragraph",
+            "block_type": "word_text_range",
             "sheet_name": "",
             "row_index": line_index,
             "col_index": "",
-            "cell_address": "",
+            "cell_address": f"WRANGE{absolute_start}:{absolute_end}",
             "text": txt,
             "meta_json": _row_meta(meta),
         }
@@ -624,7 +781,10 @@ def _read_docx_like(file_path, word_merge_mode="关闭", context=None, progress_
                         "col_index": "",
                         "cell_address": "",
                         "text": txt,
-                        "meta_json": _row_meta({"paragraph_index": para_idx}),
+                        "meta_json": _row_meta({
+                            "paragraph_index": para_idx,
+                            "word_raw_text": txt,
+                        }),
                     }
                     rows.append(rec)
                     _record_progress(context, progress_current, progress_total, file_path, rec, len(rows))
@@ -698,7 +858,12 @@ def _read_docx_like(file_path, word_merge_mode="关闭", context=None, progress_
                         "col_index": col_start,
                         "cell_address": f"R{row_start}C{col_start}",
                         "text": txt,
-                        "meta_json": _row_meta({"table_index": table_idx, "row_index": row_start, "col_index": col_start}, merge),
+                        "meta_json": _row_meta({
+                            "table_index": table_idx,
+                            "row_index": row_start,
+                            "col_index": col_start,
+                            "word_raw_text": txt,
+                        }, merge),
                     }
                     rows.append(rec)
                     _record_progress(context, progress_current, progress_total, file_path, rec, len(rows))
@@ -706,16 +871,17 @@ def _read_docx_like(file_path, word_merge_mode="关闭", context=None, progress_
     return rows
 
 
-def _read_doc_via_com(file_path, word_merge_mode="关闭", context=None, progress_current=None, progress_total=None, timings=None):
+def _convert_word_to_temp_docx(file_path, preserve_compatibility=False, timings=None):
     try:
         import pythoncom
         import win32com.client
     except Exception as exc:
-        raise RuntimeError("读取 .doc 需要 pywin32 + Word") from exc
+        raise RuntimeError("转换 Word 文档需要 pywin32 + Word") from exc
 
     temp_docx = None
     temp_dir = None
     word = None
+    doc = None
     try:
         step_start = time.perf_counter()
         pythoncom.CoInitialize()
@@ -728,27 +894,45 @@ def _read_doc_via_com(file_path, word_merge_mode="关闭", context=None, progres
         doc = word.Documents.Open(str(file_path), ReadOnly=True, AddToRecentFiles=False, ConfirmConversions=False, Visible=False)
         _timing_add(timings, "打开文档", step_start)
         try:
-            # 使用临时目录文件，避免 mkstemp 文件句柄在 Windows 上占用导致 WinError 32。
             temp_dir = Path(tempfile.mkdtemp(prefix="word_doc_convert_"))
             temp_docx = temp_dir / f"{file_path.stem}_converted.docx"
-            # 12 = wdFormatXMLDocument
             step_start = time.perf_counter()
-            doc.SaveAs2(str(temp_docx), FileFormat=12)
-            _timing_add(timings, "转换docx", step_start)
+            compatibility_mode = 0 if preserve_compatibility else 15
+            try:
+                # 12 = wdFormatXMLDocument；0 = 保留当前兼容模式；15 = 当前 Word 模式。
+                doc.SaveAs2(
+                    str(temp_docx),
+                    FileFormat=12,
+                    CompatibilityMode=compatibility_mode,
+                )
+            except Exception:
+                if preserve_compatibility:
+                    raise
+                if temp_docx.exists():
+                    temp_docx.unlink()
+                doc.SaveAs2(str(temp_docx), FileFormat=12)
+            _timing_add(
+                timings,
+                "转换docx",
+                step_start,
+                strategy="保留旧格式" if preserve_compatibility else "当前格式",
+            )
         finally:
             doc.Close(False)
+            doc = None
 
-        # 某些 Word 版本 SaveAs2 后会短暂占用文件，这里做轻量重试。
-        last_err = None
-        for _ in range(5):
-            try:
-                return _read_docx_like(temp_docx, word_merge_mode, context, progress_current, progress_total, timings)
-            except Exception as exc:
-                last_err = exc
-                time.sleep(0.15)
-        raise last_err if last_err else RuntimeError("读取临时 docx 失败")
+        return temp_dir, temp_docx
+    except Exception:
+        if temp_dir is not None and temp_dir.exists():
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
     finally:
         step_start = time.perf_counter()
+        if doc is not None:
+            try:
+                doc.Close(False)
+            except Exception:
+                pass
         if word is not None:
             try:
                 word.Quit()
@@ -759,8 +943,66 @@ def _read_doc_via_com(file_path, word_merge_mode="关闭", context=None, progres
         except Exception:
             pass
         _timing_add(timings, "关闭Word", step_start)
+
+
+def _read_word_converted(
+    file_path,
+    read_mode,
+    word_merge_mode="关闭",
+    preserve_compatibility=False,
+    context=None,
+    progress_current=None,
+    progress_total=None,
+    timings=None,
+):
+    temp_dir = None
+    temp_docx = None
+    try:
+        temp_dir, temp_docx = _convert_word_to_temp_docx(
+            file_path,
+            preserve_compatibility=preserve_compatibility,
+            timings=timings,
+        )
+        last_err = None
+        for _ in range(5):
+            try:
+                if read_mode == "xml":
+                    return _read_docx_like(
+                        temp_docx,
+                        word_merge_mode,
+                        context,
+                        progress_current,
+                        progress_total,
+                        timings,
+                    )
+                return _read_word_via_com(
+                    temp_docx,
+                    word_merge_mode,
+                    context,
+                    progress_current,
+                    progress_total,
+                    timings,
+                )
+            except Exception as exc:
+                last_err = exc
+                time.sleep(0.15)
+        raise last_err if last_err else RuntimeError("读取临时 docx 失败")
+    finally:
         if temp_dir is not None and temp_dir.exists():
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _read_doc_via_com(file_path, word_merge_mode="关闭", context=None, progress_current=None, progress_total=None, timings=None):
+    return _read_word_converted(
+        file_path,
+        "xml",
+        word_merge_mode,
+        preserve_compatibility=False,
+        context=context,
+        progress_current=progress_current,
+        progress_total=progress_total,
+        timings=timings,
+    )
 
 
 def _read_word_text_via_com(file_path, context=None, progress_current=None, progress_total=None, timings=None):
@@ -786,7 +1028,7 @@ def _read_word_text_via_com(file_path, context=None, progress_current=None, prog
         _timing_add(timings, "打开文档", step_start)
 
         step_start = time.perf_counter()
-        raw_text = _as_text(doc.Content.Text)
+        raw_text = "" if doc.Content.Text is None else str(doc.Content.Text)
         _timing_add(timings, "读取全文", step_start, count=len(raw_text))
 
         step_start = time.perf_counter()
@@ -797,7 +1039,7 @@ def _read_word_text_via_com(file_path, context=None, progress_current=None, prog
             context,
             progress_current,
             progress_total,
-            {"win32_text_fast": True},
+            {"win32_text_fast": True, "range_base": int(doc.Content.Start)},
         )
         _timing_add(timings, "拆分文本", step_start, rows=len(rows))
         return rows
@@ -843,10 +1085,11 @@ def _read_word_text_table_map_via_com(file_path, context=None, progress_current=
         _timing_add(timings, "打开文档", step_start)
 
         step_start = time.perf_counter()
-        raw_text = _as_text(doc.Content.Text)
+        raw_text = "" if doc.Content.Text is None else str(doc.Content.Text)
         _timing_add(timings, "读取全文", step_start, count=len(raw_text))
 
         step_start = time.perf_counter()
+        table_ranges = _word_table_ranges(doc)
         _append_word_text_lines(
             rows,
             raw_text,
@@ -854,9 +1097,10 @@ def _read_word_text_table_map_via_com(file_path, context=None, progress_current=
             context,
             progress_current,
             progress_total,
-            {"win32_text_table_map": True},
+            {"win32_text_table_map": True, "range_base": int(doc.Content.Start)},
+            exclude_ranges=table_ranges,
         )
-        _timing_add(timings, "拆分文本", step_start, rows=len(rows))
+        _timing_add(timings, "拆分文本", step_start, rows=len(rows), excluded_table_ranges=len(table_ranges))
 
         step_start = time.perf_counter()
         try:
@@ -989,7 +1233,12 @@ def _append_word_table_cells_via_com(doc, file_path, word_merge_mode, rows, cont
                 "col_index": col_index,
                 "cell_address": f"R{row_index}C{col_index}",
                 "text": txt,
-                "meta_json": _row_meta({"table_index": t, "row_index": row_index, "col_index": col_index}, merge),
+                "meta_json": _row_meta({
+                    "table_index": t,
+                    "row_index": row_index,
+                    "col_index": col_index,
+                    "word_raw_text": _word_raw_visible_text(raw_cell_text),
+                }, merge),
             }
             rows.append(rec)
             _record_progress(context, progress_current, progress_total, file_path, rec, len(rows))
@@ -1019,10 +1268,11 @@ def _read_word_text_exact_tables_via_com(file_path, word_merge_mode="关闭", co
         _timing_add(timings, "打开文档", step_start)
 
         step_start = time.perf_counter()
-        raw_text = _as_text(doc.Content.Text)
+        raw_text = "" if doc.Content.Text is None else str(doc.Content.Text)
         _timing_add(timings, "读取全文", step_start, count=len(raw_text))
 
         step_start = time.perf_counter()
+        table_ranges = _word_table_ranges(doc)
         _append_word_text_lines(
             rows,
             raw_text,
@@ -1030,9 +1280,10 @@ def _read_word_text_exact_tables_via_com(file_path, word_merge_mode="关闭", co
             context,
             progress_current,
             progress_total,
-            {"win32_text_paragraph_exact_table": True},
+            {"win32_text_paragraph_exact_table": True, "range_base": int(doc.Content.Start)},
+            exclude_ranges=table_ranges,
         )
-        _timing_add(timings, "拆分文本", step_start, rows=len(rows))
+        _timing_add(timings, "拆分文本", step_start, rows=len(rows), excluded_table_ranges=len(table_ranges))
 
         _append_word_table_cells_via_com(doc, file_path, word_merge_mode, rows, context, progress_current, progress_total, timings)
         return rows
@@ -1082,9 +1333,16 @@ def _read_word_via_com(file_path, word_merge_mode="关闭", context=None, progre
             p_count = int(doc.Paragraphs.Count)
         except Exception:
             p_count = 0
+        skipped_table_paragraphs = 0
         for i in range(1, p_count + 1):
             try:
-                txt = _clean_word_text(doc.Paragraphs(i).Range.Text)
+                para = doc.Paragraphs(i)
+                rng = para.Range
+                if _word_range_in_table(rng):
+                    skipped_table_paragraphs += 1
+                    continue
+                raw_paragraph_text = rng.Text
+                txt = _clean_word_text(raw_paragraph_text)
             except Exception:
                 txt = ""
             if txt == "":
@@ -1096,11 +1354,14 @@ def _read_word_via_com(file_path, word_merge_mode="关闭", context=None, progre
                 "col_index": "",
                 "cell_address": "",
                 "text": txt,
-                "meta_json": _row_meta({"paragraph_index": i}),
+                "meta_json": _row_meta({
+                    "paragraph_index": i,
+                    "word_raw_text": _word_raw_visible_text(raw_paragraph_text),
+                }),
             }
             rows.append(rec)
             _record_progress(context, progress_current, progress_total, file_path, rec, len(rows))
-        _timing_add(timings, "读取段落", step_start, count=p_count, rows=len(rows))
+        _timing_add(timings, "读取段落", step_start, count=p_count, rows=len(rows), skipped_table_paragraphs=skipped_table_paragraphs)
 
         _append_word_table_cells_via_com(doc, file_path, word_merge_mode, rows, context, progress_current, progress_total, timings)
         return rows
@@ -1264,24 +1525,54 @@ def _read_file_rows(file_path, read_engine, params=None, context=None, progress_
     word_merge_mode = _as_text(params.get("word_merge_mode", "关闭")) or "关闭"
     if word_merge_mode not in ("关闭", "简化", "完整"):
         word_merge_mode = "关闭"
-    doc_strategy = _as_text(params.get("doc_read_strategy", "win32快速读取")) or "win32快速读取"
+    doc_strategy = _as_text(params.get("doc_read_strategy", DEFAULT_READ_STRATEGY)) or DEFAULT_READ_STRATEGY
+    if doc_strategy not in READ_STRATEGIES:
+        doc_strategy = DEFAULT_READ_STRATEGY
 
     if ext in (".doc", ".docx", ".docm"):
-        if ext == ".doc":
-            if doc_strategy == "win32文本段落+精确表格":
-                return _read_word_text_exact_tables_via_com(file_path, word_merge_mode, context, progress_current, progress_total, timings)
-            if doc_strategy == "win32文本反推表格":
-                return _read_word_text_table_map_via_com(file_path, context, progress_current, progress_total, timings)
-            if doc_strategy == "win32纯文本快速读取":
-                return _read_word_text_via_com(file_path, context, progress_current, progress_total, timings)
-            if doc_strategy == "转换docx后XML读取":
-                return _read_doc_via_com(file_path, word_merge_mode, context, progress_current, progress_total, timings)
-            if doc_strategy == "win32完整读取":
-                return _read_word_via_com(file_path, "完整", context, progress_current, progress_total, timings)
+        if doc_strategy == DEFAULT_READ_STRATEGY:
+            return _read_word_text_exact_tables_via_com(file_path, word_merge_mode, context, progress_current, progress_total, timings)
+        if doc_strategy == "win32文本反推表格":
+            return _read_word_text_table_map_via_com(file_path, context, progress_current, progress_total, timings)
+        if doc_strategy == "win32纯文本快速读取":
+            return _read_word_text_via_com(file_path, context, progress_current, progress_total, timings)
+        if doc_strategy == READ_STRATEGY_CONVERT_XML:
+            return _read_word_converted(
+                file_path,
+                "xml",
+                word_merge_mode,
+                preserve_compatibility=False,
+                context=context,
+                progress_current=progress_current,
+                progress_total=progress_total,
+                timings=timings,
+            )
+        if doc_strategy == READ_STRATEGY_CONVERT_WIN32:
+            return _read_word_converted(
+                file_path,
+                "win32",
+                word_merge_mode,
+                preserve_compatibility=False,
+                context=context,
+                progress_current=progress_current,
+                progress_total=progress_total,
+                timings=timings,
+            )
+        if doc_strategy == READ_STRATEGY_CONVERT_WIN32_COMPAT:
+            return _read_word_converted(
+                file_path,
+                "win32",
+                word_merge_mode,
+                preserve_compatibility=True,
+                context=context,
+                progress_current=progress_current,
+                progress_total=progress_total,
+                timings=timings,
+            )
+        if doc_strategy == "win32完整读取":
+            return _read_word_via_com(file_path, "完整", context, progress_current, progress_total, timings)
+        if doc_strategy == "win32快速读取":
             return _read_word_via_com(file_path, word_merge_mode, context, progress_current, progress_total, timings)
-        if engine == "win32":
-            return _read_word_via_com(file_path, word_merge_mode, context, progress_current, progress_total, timings)
-        return _read_docx_like(file_path, word_merge_mode, context, progress_current, progress_total, timings)
 
     if ext in (".xlsx", ".xlsm", ".xls"):
         if engine == "win32":
@@ -1299,34 +1590,6 @@ def _read_file_rows(file_path, read_engine, params=None, context=None, progress_
 
 def _write_table_with_db_api(db, table_name, headers, rows, mode):
     return db.write_table(table_name=table_name, headers=headers, rows=rows, mode=mode)
-
-
-def _write_table_sqlite_fallback(db_path, table_name, headers, rows, mode):
-    conn = sqlite3.connect(str(db_path))
-    try:
-        cur = conn.cursor()
-        qname = '"' + table_name.replace('"', '""') + '"'
-        if mode == "replace":
-            cur.execute(f"DROP TABLE IF EXISTS {qname}")
-        elif mode == "fail":
-            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
-            if cur.fetchone():
-                raise RuntimeError(f"表已存在：{table_name}")
-        elif mode == "timestamp":
-            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
-            if cur.fetchone():
-                table_name = f"{table_name}_{_short_hash(table_name)}"
-                qname = '"' + table_name.replace('"', '""') + '"'
-
-        col_defs = ", ".join(['"' + h.replace('"', '""') + '" TEXT' for h in headers])
-        cur.execute(f"CREATE TABLE IF NOT EXISTS {qname} ({col_defs})")
-        placeholders = ", ".join(["?"] * len(headers))
-        cols = ", ".join(['"' + h.replace('"', '""') + '"' for h in headers])
-        cur.executemany(f"INSERT INTO {qname} ({cols}) VALUES ({placeholders})", rows)
-        conn.commit()
-        return {"table_name": table_name, "row_count": len(rows)}
-    finally:
-        conn.close()
 
 
 def validate_params(params, input_data, context):
@@ -1354,9 +1617,9 @@ def run(input_data, params, context):
     word_merge_mode = _as_text(p.get("word_merge_mode", "关闭")) or "关闭"
     if word_merge_mode not in ("关闭", "简化", "完整"):
         word_merge_mode = "关闭"
-    doc_read_strategy = _as_text(p.get("doc_read_strategy", "win32快速读取")) or "win32快速读取"
-    if doc_read_strategy not in ("win32快速读取", "win32文本段落+精确表格", "win32文本反推表格", "win32纯文本快速读取", "转换docx后XML读取", "win32完整读取"):
-        doc_read_strategy = "win32快速读取"
+    doc_read_strategy = _as_text(p.get("doc_read_strategy", DEFAULT_READ_STRATEGY)) or DEFAULT_READ_STRATEGY
+    if doc_read_strategy not in READ_STRATEGIES:
+        doc_read_strategy = DEFAULT_READ_STRATEGY
     p["read_engine"] = read_engine
     p["word_merge_mode"] = word_merge_mode
     p["doc_read_strategy"] = doc_read_strategy
@@ -1373,7 +1636,6 @@ def run(input_data, params, context):
     _progress(context, 0, len(files), f"准备读取 {len(files)} 个文件", stage="prepare")
 
     db = context.get("db")
-    db_path = context.get("db_path", "")
     is_preview = bool(context.get("is_preview", False))
     preview_write_db = bool(p.get("preview_write_db", False))
     write_mode = _as_text(p.get("write_mode", "replace")) or "replace"
@@ -1388,38 +1650,22 @@ def run(input_data, params, context):
     cache_conn = None
     if enable_cache:
         try:
-            cache_conn = sqlite3.connect(str(_cache_db_path(context)))
+            cache_conn = sqlite3.connect(str(_cache_db_path(context)), timeout=10)
+            cache_conn.execute("PRAGMA busy_timeout=10000")
             _ensure_cache_table(cache_conn)
         except Exception as exc:
             cache_conn = None
             logs.append({"level": "WARNING", "message": f"CACHE_ERROR：初始化缓存失败：{exc}"})
 
-    detail_headers = [
-        "source_file",
-        "source_name",
-        "source_ext",
-        "block_type",
-        "sheet_name",
-        "row_index",
-        "col_index",
-        "cell_address",
-        "text",
-        "meta_json",
-        "is_merged",
-        "is_merge_origin",
-        "merge_origin_row",
-        "merge_origin_col",
-        "row_span",
-        "col_span",
-        "merged_range",
-    ]
-    summary_headers = ["source_row", "source_mode", "file_name", "file_path", "table_name", "read_rows", "write_rows", "status", "error"]
+    detail_headers = list(DETAIL_HEADERS)
+    summary_headers = list(SUMMARY_HEADERS)
     summary_rows = []
     output_rows = []
     cancelled = False
     cache_hit_count = 0
     cache_miss_count = 0
     cache_write_count = 0
+    database_requests = []
 
     try:
         file_iter = enumerate(files, start=1)
@@ -1482,7 +1728,7 @@ def run(input_data, params, context):
                 logs.append({
                     "level": "INFO",
                     "object": str(file_path),
-                    "message": f"READ_TIMING：读取耗时 {read_seconds:.2f}s，Word合并解析={word_merge_mode}，doc策略={doc_read_strategy}",
+                    "message": f"READ_TIMING：读取耗时 {read_seconds:.2f}s，Word合并解析={word_merge_mode}，读取策略={doc_read_strategy}",
                 })
                 timing_detail = _format_timing_detail(read_timings)
                 if timing_detail:
@@ -1537,11 +1783,16 @@ def run(input_data, params, context):
                 if db is not None and hasattr(db, "write_table"):
                     result = _write_table_with_db_api(db, table_name, detail_headers, detail_rows, write_mode)
                     table_name = _as_text(result.get("table_name", table_name)) or table_name
+                elif context.get("database_access") == "managed_requests":
+                    database_requests.append({
+                        "operation": "write_table",
+                        "table_name": table_name,
+                        "headers": detail_headers,
+                        "rows": detail_rows,
+                        "mode": write_mode,
+                    })
                 else:
-                    if not db_path:
-                        raise RuntimeError("缺少数据库连接：context['db'] 和 context['db_path'] 都不可用")
-                    result = _write_table_sqlite_fallback(db_path, table_name, detail_headers, detail_rows, write_mode)
-                    table_name = _as_text(result.get("table_name", table_name)) or table_name
+                    raise RuntimeError("缺少受控数据库接口：请通过 context['db'] 或 managed_requests 执行写入")
                 written_count = len(detail_rows)
 
             summary_rows.append(
@@ -1617,7 +1868,7 @@ def run(input_data, params, context):
         except Exception:
             pass
     _progress(context, len(summary_rows), len(files), "读取阶段完成", stage="done", cancelled=cancelled)
-    return {
+    result_payload = {
         "ok": True,
         "message": f"读取完成：成功 {ok_count}，失败 {fail_count}",
         "output": {
@@ -1635,3 +1886,60 @@ def run(input_data, params, context):
         "logs": logs[-200:],
         "summary": summary,
     }
+    if database_requests:
+        result_payload["database_requests"] = database_requests
+    return result_payload
+
+
+def _external_progress_callback(msg):
+    try:
+        text = json.dumps(msg, ensure_ascii=False) + "\n"
+        sys.stdout.buffer.write(text.encode("utf-8"))
+        sys.stdout.buffer.flush()
+    except Exception:
+        pass
+
+
+def _run_external_entry(input_path, output_path):
+    output_file = Path(output_path)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        payload = json.loads(Path(input_path).read_text(encoding="utf-8"))
+        input_data = payload.get("input_data") or {}
+        params = payload.get("params") or {}
+        context = payload.get("context") or {}
+        context.setdefault("plugin_id", PLUGIN_INFO["id"])
+        context["progress_callback"] = _external_progress_callback
+        context["report_progress"] = lambda current=0, total=0, message="", **extra: _external_progress_callback({
+            "type": "node_progress",
+            "current": current,
+            "total": total,
+            "message": message,
+            **extra,
+        })
+        result = run(input_data, params, context)
+    except Exception as exc:
+        result = {
+            "ok": False,
+            "message": str(exc),
+            "output": {"type": "table", "headers": ["错误"], "rows": [[str(exc)]], "meta": {"plugin": PLUGIN_INFO["id"]}},
+            "logs": [{"level": "ERROR", "message": str(exc)}, {"level": "ERROR", "message": traceback.format_exc()}],
+            "summary": {"success": 0, "failed": 1},
+        }
+    output_file.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return 0 if result.get("ok", False) else 1
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=PLUGIN_INFO["name"])
+    parser.add_argument("--input", dest="input_path")
+    parser.add_argument("--output", dest="output_path")
+    args = parser.parse_args(argv)
+    if args.input_path and args.output_path:
+        return _run_external_entry(args.input_path, args.output_path)
+    print("这是 DataFlowKit 插件，请在主程序插件节点中调用。")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

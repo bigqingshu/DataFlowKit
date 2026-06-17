@@ -108,7 +108,9 @@ plugin_data/插件ID/runs/时间戳/output.json
   "params": {},
   "context": {
     "app_dir": "...",
-    "db_path": "...",
+    "db_path": "",
+    "database_access": "managed_requests",
+    "database_available": true,
     "plugins_dir": "...",
     "plugin_data_dir": "...",
     "log_dir": "...",
@@ -133,10 +135,49 @@ plugin_data/插件ID/runs/时间戳/output.json
     "headers": [],
     "rows": []
   },
+  "database_requests": [
+    {
+      "operation": "write_table",
+      "table_name": "src_demo",
+      "headers": ["字段1"],
+      "rows": [["值1"]],
+      "mode": "replace"
+    }
+  ],
   "logs": [],
   "summary": {}
 }
 ```
+
+独立环境插件不能直接连接工作流数据库。需要写表时，通过 `database_requests` 返回受控请求，主程序会按当前插件节点的表权限统一检查并执行。当前支持的操作是 `write_table`；预览模式下请求不会实际写入。
+
+进程内插件仍应通过 `context["db"]` 访问工作流数据库，不要根据 `db_path` 自行创建 SQLite 连接。插件自己的缓存数据库不受此限制，建议继续存放在 `context["plugin_data_dir"]`。
+
+### 插件表访问声明
+
+插件可以声明默认表访问范围，主程序会把声明合并到插件节点的表权限配置中。动态表名建议使用模式声明：
+
+```python
+def get_table_access_spec(params=None, context=None):
+    prefix = str((params or {}).get("table_prefix") or "src_")
+    return [
+        {
+            "table_pattern": prefix + "*",
+            "pattern_type": "glob",
+            "write_mode": "replace",
+            "permissions": {
+                "read_table": False,
+                "write_table": True,
+                "create_table": True,
+                "append_rows": False,
+                "replace_table": True,
+                "alter_schema": False,
+            },
+        }
+    ]
+```
+
+`pattern_type` 支持 `glob`、`prefix` 和 `regex`。字段级的 `read_field`、`write_field`、`create_field` 和 `protect_field` 可继续放在 `field_mapping` 中声明。声明只是节点默认配置，最终执行仍由 `TableAccessManager` 按工作流权限策略校验。
 
 如果插件失败：
 
@@ -216,7 +257,7 @@ context["plugin_data_dir"]/cache.sqlite
 
 ## 8. 注意事项
 
-- 独立环境插件不能直接拿到主程序内存中的 `context["db"]` 对象，只能通过 `db_path` 自行连接 SQLite。
+- 独立环境插件不能直接拿到主程序内存中的 `context["db"]` 对象，也不会收到真实工作流 `db_path`；数据库写入应返回 `database_requests`。
 - 如果插件需要中转副表，主程序会把 `transit_tables` 序列化到 input.json，数据很大时要注意性能。
 - 插件写文件、改数据库、重命名等危险动作应检查 `context["execute_actions"]`，预览模式下不要执行真实写操作。
 - 插件如果输出大量日志，建议只把摘要打印到 stdout，详细日志写到插件自己的日志文件或 output.json 的 logs 中。

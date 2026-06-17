@@ -44,16 +44,400 @@ import re
 import os
 import sys
 import json
-import ast
-import fnmatch
-import importlib.util
 import traceback
 import copy
 import threading
 import queue
 import time
 import subprocess
+import uuid
 from datetime import datetime
+
+from core.data_utils import (
+    make_unique_headers_for_append as core_make_unique_headers_for_append,
+    normalize_rows as core_normalize_rows,
+    safe_cell as core_safe_cell,
+)
+from core.text_utils import (
+    make_sql_columns as core_make_sql_columns,
+    quote_ident as core_quote_ident,
+    sanitize_sql_name as core_sanitize_sql_name,
+)
+from db import PluginDatabaseAPI, TableAccessManager
+from plugin_runtime.progress import handle_plugin_stdout_line
+from plugin_runtime.scanner import scan_plugins
+from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
+from workflow.nodes.data_nodes import (
+    apply_area_fill_node as workflow_apply_area_fill_node,
+    apply_copy_column_node as workflow_apply_copy_column_node,
+    apply_copy_row_node as workflow_apply_copy_row_node,
+    apply_current_datetime_column_node as workflow_apply_current_datetime_column_node,
+    apply_delete_columns_node as workflow_apply_delete_columns_node,
+    apply_delete_rows_node as workflow_apply_delete_rows_node,
+    apply_dedupe_node as workflow_apply_dedupe_node,
+    apply_extract_node as workflow_apply_extract_node,
+    apply_filter_node as workflow_apply_filter_node,
+    apply_format_datetime_node as workflow_apply_format_datetime_node,
+    apply_fill_value_node as workflow_apply_fill_value_node,
+    apply_merge_node as workflow_apply_merge_node,
+    apply_move_columns_node as workflow_apply_move_columns_node,
+    apply_new_columns_node as workflow_apply_new_columns_node,
+    apply_match_value_output_field_name_node as workflow_apply_match_value_output_field_name_node,
+    apply_numeric_column_node as workflow_apply_numeric_column_node,
+    apply_replace_node as workflow_apply_replace_node,
+    apply_rename_columns_node as workflow_apply_rename_columns_node,
+    apply_row_data_mapping_node as workflow_apply_row_data_mapping_node,
+    apply_sequence_fill_node as workflow_apply_sequence_fill_node,
+    apply_unmatched_format_value as workflow_apply_unmatched_format_value,
+    apply_unmatched_extract as workflow_apply_unmatched_extract,
+    add_plan_filter_required_field as workflow_add_plan_filter_required_field,
+    build_plan_filter_right_index as workflow_build_plan_filter_right_index,
+    build_filter_config_probe_result as workflow_build_filter_config_probe_result,
+    build_filter_runtime_plan as workflow_build_filter_runtime_plan,
+    build_date_parts as workflow_build_date_parts,
+    build_format_component_columns as workflow_build_format_component_columns,
+    build_time_parts as workflow_build_time_parts,
+    complete_format_year as workflow_complete_format_year,
+    collect_plan_filter_required_fields as workflow_collect_plan_filter_required_fields,
+    ensure_column_count as workflow_ensure_column_count,
+    ensure_field_exists as workflow_ensure_field_exists,
+    ensure_row_count as workflow_ensure_row_count,
+    ensure_target_cell_limit as workflow_ensure_target_cell_limit,
+    eval_plan_condition_record as workflow_eval_plan_condition_record,
+    eval_plan_join_rule_record as workflow_eval_plan_join_rule_record,
+    extract_one_value as workflow_extract_one_value,
+    format_output_value as workflow_format_output_value,
+    format_numeric_column_result as workflow_format_numeric_column_result,
+    format_sequence_value as workflow_format_sequence_value,
+    get_plan_filter_config_warnings as workflow_get_plan_filter_config_warnings,
+    get_plan_filter_field_owner as workflow_get_plan_filter_field_owner,
+    get_plan_filter_hash_join_availability as workflow_get_plan_filter_hash_join_availability,
+    get_plan_filter_hash_join_rules as workflow_get_plan_filter_hash_join_rules,
+    get_plan_filter_output_base_headers as workflow_get_plan_filter_output_base_headers,
+    get_plan_filter_output_header_conflicts as workflow_get_plan_filter_output_header_conflicts,
+    get_plan_filter_output_headers as workflow_get_plan_filter_output_headers,
+    get_required_columns_for_plan_table as workflow_get_required_columns_for_plan_table,
+    get_datetime_parse_warning as workflow_get_datetime_parse_warning,
+    get_config_cell_value as workflow_get_config_cell_value,
+    get_cycle_source_values_by_config as workflow_get_cycle_source_values_by_config,
+    get_fill_targets as workflow_get_fill_targets,
+    get_source_area_values_by_config as workflow_get_source_area_values_by_config,
+    get_source_column_values_by_config as workflow_get_source_column_values_by_config,
+    get_source_row_multi_field_values_by_config as workflow_get_source_row_multi_field_values_by_config,
+    get_numeric_node_row_indexes as workflow_get_numeric_node_row_indexes,
+    get_row_mapping_end_index as workflow_get_row_mapping_end_index,
+    iter_plan_filter_join_candidates as workflow_iter_plan_filter_join_candidates,
+    last_non_empty_row_index_by_field as workflow_last_non_empty_row_index_by_field,
+    make_current_table_records as workflow_make_current_table_records,
+    make_unique_plan_headers as workflow_make_unique_plan_headers,
+    match_value_output_column_match as workflow_match_value_output_column_match,
+    normalize_datetime_source_text as workflow_normalize_datetime_source_text,
+    normalize_filter_condition_value_source as workflow_normalize_filter_condition_value_source,
+    normalize_plan_filter_config_field_references as workflow_normalize_plan_filter_config_field_references,
+    normalize_plan_filter_field_reference as workflow_normalize_plan_filter_field_reference,
+    numeric_node_fallback_value as workflow_numeric_node_fallback_value,
+    plan_filter_condition_dependencies as workflow_plan_filter_condition_dependencies,
+    plan_filter_field_belongs_to_table as workflow_plan_filter_field_belongs_to_table,
+    parse_new_columns_specs as workflow_parse_new_columns_specs,
+    parse_numeric_value_for_column_op as workflow_parse_numeric_value_for_column_op,
+    parse_date_auto_common as workflow_parse_date_auto_common,
+    parse_date_delimited as workflow_parse_date_delimited,
+    parse_date_fixed as workflow_parse_date_fixed,
+    parse_format_datetime_value as workflow_parse_format_datetime_value,
+    parse_format_int as workflow_parse_format_int,
+    parse_int as workflow_parse_int,
+    parse_row_spec_to_indexes as workflow_parse_row_spec_to_indexes,
+    parse_time_auto_common as workflow_parse_time_auto_common,
+    parse_time_delimited as workflow_parse_time_delimited,
+    parse_time_fixed as workflow_parse_time_fixed,
+    post_extract_result as workflow_post_extract_result,
+    render_current_datetime_template as workflow_render_current_datetime_template,
+    render_format_template as workflow_render_format_template,
+    record_passes_plan_conditions as workflow_record_passes_plan_conditions,
+    record_passes_plan_join_rules as workflow_record_passes_plan_join_rules,
+    record_survives_available_plan_conditions as workflow_record_survives_available_plan_conditions,
+    resolve_plan_condition_value as workflow_resolve_plan_condition_value,
+    resolve_area_end_row_index as workflow_resolve_area_end_row_index,
+    resolve_sequence_count_by_source as workflow_resolve_sequence_count_by_source,
+    resolve_start_row_index_by_mode as workflow_resolve_start_row_index_by_mode,
+    row_is_empty as workflow_row_is_empty,
+    should_write_cell as workflow_should_write_cell,
+    slice_by_position as workflow_slice_by_position,
+    split_by_config_delimiter as workflow_split_by_config_delimiter,
+)
+from workflow.nodes.file_nodes import (
+    BATCH_RENAME_LOG_HEADERS,
+    apply_batch_rename_node as workflow_apply_batch_rename_node,
+    apply_file_list_node as workflow_apply_file_list_node,
+    is_hidden_path as workflow_is_hidden_path,
+    make_numbered_path as workflow_make_numbered_path,
+    parse_extensions_filter as workflow_parse_extensions_filter,
+)
+from workflow.nodes.group_nodes import (
+    add_group_inner_node as workflow_add_group_inner_node,
+    apply_group_inner_node_list_action as workflow_apply_group_inner_node_list_action,
+    apply_group_mapping as workflow_apply_group_mapping,
+    apply_inferred_group_inputs as workflow_apply_inferred_group_inputs,
+    apply_group_template_config as workflow_apply_group_template_config,
+    auto_group_mapping_by_name as workflow_auto_group_mapping_by_name,
+    build_empty_group_stat as workflow_build_empty_group_stat,
+    build_group_final_output as workflow_build_group_final_output,
+    build_group_input_table as workflow_build_group_input_table,
+    build_group_node_log as workflow_build_group_node_log,
+    build_group_output_config_state as workflow_build_group_output_config_state,
+    build_group_status_text as workflow_build_group_status_text,
+    ensure_group_config_defaults as workflow_ensure_group_config_defaults,
+    ensure_group_parent_context as workflow_ensure_group_parent_context,
+    group_input_fields_text as workflow_group_input_fields_text,
+    group_inner_node_type_values as workflow_group_inner_node_type_values,
+    group_infer_input_apply_decision as workflow_group_infer_input_apply_decision,
+    group_mapping_detail as workflow_group_mapping_detail,
+    group_mapping_rows as workflow_group_mapping_rows,
+    group_mapping_selection_detail as workflow_group_mapping_selection_detail,
+    group_node_label as workflow_group_node_label,
+    make_group_inner_node as workflow_make_group_inner_node,
+    group_selected_input_state as workflow_group_selected_input_state,
+    group_source_field_combo_state as workflow_group_source_field_combo_state,
+    group_source_headers_for_mapping as workflow_group_source_headers_for_mapping,
+    make_group_child_context as workflow_make_group_child_context,
+    merge_group_child_audit_logs as workflow_merge_group_child_audit_logs,
+    normalize_group_sqlite_mode as workflow_normalize_group_sqlite_mode,
+    normalize_group_transit_conflict_mode as workflow_normalize_group_transit_conflict_mode,
+    parse_group_inner_node_json as workflow_parse_group_inner_node_json,
+    parse_group_input_fields as workflow_parse_group_input_fields,
+    update_group_input_fields_config as workflow_update_group_input_fields_config,
+    use_source_headers_as_group_inputs as workflow_use_source_headers_as_group_inputs,
+    unique_keep_order as workflow_unique_keep_order,
+)
+from workflow.nodes.loop_nodes import (
+    apply_loop_judge_to_state as workflow_apply_loop_judge_to_state,
+    build_loop_judge_output as workflow_build_loop_judge_output,
+    build_loop_start_output as workflow_build_loop_start_output,
+    evaluate_loop_condition as workflow_evaluate_loop_condition,
+    find_loop_judge_index as workflow_find_loop_judge_index,
+    find_loop_start_index as workflow_find_loop_start_index,
+    init_loop_state_from_source as workflow_init_loop_state_from_source,
+    loop_last_non_empty_row_index as workflow_loop_last_non_empty_row_index,
+    take_next_loop_item as workflow_take_next_loop_item,
+)
+from workflow.nodes.plugin_nodes import (
+    build_plugin_failure_output as workflow_build_plugin_failure_output,
+    build_plugin_final_output as workflow_build_plugin_final_output,
+    build_plugin_probe_final_output as workflow_build_plugin_probe_final_output,
+    build_plugin_probe_stat as workflow_build_plugin_probe_stat,
+    build_plugin_status_text as workflow_build_plugin_status_text,
+    get_plugin_output_schema_table as workflow_get_plugin_output_schema_table,
+    is_external_plugin_mode as workflow_is_external_plugin_mode,
+    make_plugin_input_data as workflow_make_plugin_input_data,
+    merge_plugin_output_fields_to_current as workflow_merge_plugin_output_fields_to_current,
+    normalize_plugin_logs as workflow_normalize_plugin_logs,
+    normalize_plugin_output_schema as workflow_normalize_plugin_output_schema,
+    normalize_plugin_run_result as workflow_normalize_plugin_run_result,
+    plugin_log_items_to_table as workflow_plugin_log_items_to_table,
+    should_save_plugin_output_as_transit as workflow_should_save_plugin_output_as_transit,
+)
+from workflow.filter_config_helpers import (
+    append_filter_condition_row as workflow_append_filter_condition_row,
+    append_filter_join_rule_row as workflow_append_filter_join_rule_row,
+    delete_filter_rows_by_indexes as workflow_delete_filter_rows_by_indexes,
+    build_filter_condition_input_state as workflow_build_filter_condition_input_state,
+    build_filter_actual_output_text as workflow_build_filter_actual_output_text,
+    build_filter_field_refresh_state as workflow_build_filter_field_refresh_state,
+    build_filter_field_refresh_status as workflow_build_filter_field_refresh_status,
+    build_filter_join_input_state as workflow_build_filter_join_input_state,
+    build_filter_risk_display_state as workflow_build_filter_risk_display_state,
+    build_filter_selectable_tables as workflow_build_filter_selectable_tables,
+    build_treeview_cell_edit_state as workflow_build_treeview_cell_edit_state,
+    ensure_filter_config_defaults as workflow_ensure_filter_config_defaults,
+    apply_treeview_cell_edit as workflow_apply_treeview_cell_edit,
+    filter_condition_from_row as workflow_filter_condition_from_row,
+    filter_conditions_from_rows as workflow_filter_conditions_from_rows,
+    filter_conditions_to_rows as workflow_filter_conditions_to_rows,
+    filter_dedupe_button_text as workflow_filter_dedupe_button_text,
+    filter_join_rules_from_rows as workflow_filter_join_rules_from_rows,
+    filter_join_rules_to_rows as workflow_filter_join_rules_to_rows,
+    invert_filter_output_fields_by_indexes as workflow_invert_filter_output_fields_by_indexes,
+    select_all_filter_output_fields as workflow_select_all_filter_output_fields,
+    select_current_table_filter_output_fields as workflow_select_current_table_filter_output_fields,
+    toggle_filter_dedupe_config as workflow_toggle_filter_dedupe_config,
+)
+from workflow.default_configs import default_config_for_type as workflow_default_config_for_type
+from workflow.plugin_config_helpers import (
+    apply_plugin_custom_config_result as workflow_apply_plugin_custom_config_result,
+    build_plugin_dynamic_control_state as workflow_build_plugin_dynamic_control_state,
+    build_plugin_dynamic_select_choices as workflow_build_plugin_dynamic_select_choices,
+    build_plugin_field_select_initial_value as workflow_build_plugin_field_select_initial_value,
+    build_plugin_input_spec as workflow_build_plugin_input_spec,
+    build_plugin_input_table_choices as workflow_build_plugin_input_table_choices,
+    build_plugin_load_status_state as workflow_build_plugin_load_status_state,
+    build_plugin_select_initial_value as workflow_build_plugin_select_initial_value,
+    default_plugin_input_spec as workflow_default_plugin_input_spec,
+    ensure_plugin_input_specs as workflow_ensure_plugin_input_specs,
+    format_plugin_input_spec as workflow_format_plugin_input_spec,
+    get_plugin_field_choices_for_table_param as workflow_get_plugin_field_choices_for_table_param,
+    get_plugin_input_table_alias_choices as workflow_get_plugin_input_table_alias_choices,
+    get_plugin_static_parameter_choices as workflow_get_plugin_static_parameter_choices,
+    normalize_plugin_dynamic_parameter_choices as workflow_normalize_plugin_dynamic_parameter_choices,
+    normalize_plugin_run_mode as workflow_normalize_plugin_run_mode,
+    plugin_config_transit_reuse_note as workflow_plugin_config_transit_reuse_note,
+)
+from workflow.plugin_schema_config_ui import (
+    build_plugin_output_and_log_section as workflow_build_plugin_output_and_log_section_ui,
+    build_plugin_schema_parameter_controls as workflow_build_plugin_schema_parameter_controls_ui,
+)
+from workflow.basic_data_config_ui import (
+    build_current_datetime_column_config as workflow_build_current_datetime_column_config_ui,
+    build_extract_config as workflow_build_extract_config_ui,
+    build_format_datetime_config as workflow_build_format_datetime_config_ui,
+    build_new_columns_config as workflow_build_new_columns_config_ui,
+    build_replace_config as workflow_build_replace_config_ui,
+)
+from workflow.rename_columns_config_ui import (
+    build_rename_columns_config as workflow_build_rename_columns_config_ui,
+)
+from workflow.match_value_output_config_ui import (
+    build_match_value_output_field_name_config as workflow_build_match_value_output_field_name_config_ui,
+)
+from workflow.merge_config_ui import (
+    build_merge_config as workflow_build_merge_config_ui,
+    display_to_sep_value as workflow_display_to_sep_value,
+    ensure_separator_count as workflow_ensure_separator_count_ui,
+    preview_plan_separator as workflow_preview_plan_separator_ui,
+    refresh_merge_separator_ui as workflow_refresh_merge_separator_ui,
+    sep_value_to_display as workflow_sep_value_to_display,
+    separator_to_input_text as workflow_separator_to_input_text,
+)
+from workflow.numeric_column_config_ui import (
+    build_numeric_column_config as workflow_build_numeric_column_config_ui,
+)
+from workflow.dedupe_config_ui import (
+    build_dedupe_config as workflow_build_dedupe_config_ui,
+)
+from workflow.file_config_ui import (
+    build_batch_rename_config as workflow_build_batch_rename_config_ui,
+    build_file_list_config as workflow_build_file_list_config_ui,
+)
+from workflow.table_edit_config_ui import (
+    build_area_fill_config as workflow_build_area_fill_config_ui,
+    build_copy_column_config as workflow_build_copy_column_config_ui,
+    build_copy_row_config as workflow_build_copy_row_config_ui,
+    build_delete_columns_config as workflow_build_delete_columns_config_ui,
+    build_delete_rows_config as workflow_build_delete_rows_config_ui,
+    build_fill_value_config as workflow_build_fill_value_config_ui,
+    build_move_columns_config as workflow_build_move_columns_config_ui,
+    build_sequence_fill_config as workflow_build_sequence_fill_config_ui,
+)
+from workflow.control_flow_config_ui import (
+    anchor_id_from_choice as workflow_anchor_id_from_choice_ui,
+    build_condition_check_config as workflow_build_condition_check_config_ui,
+    build_conditional_jump_config as workflow_build_conditional_jump_config_ui,
+    build_jump_anchor_config as workflow_build_jump_anchor_config_ui,
+    build_loop_judge_config as workflow_build_loop_judge_config_ui,
+    build_loop_start_config as workflow_build_loop_start_config_ui,
+    build_unconditional_jump_config as workflow_build_unconditional_jump_config_ui,
+    jump_anchor_choices as workflow_jump_anchor_choices_ui,
+    set_anchor_var_to_config as workflow_set_anchor_var_to_config_ui,
+)
+from workflow.filter_config_ui import (
+    build_filter_config as workflow_build_filter_config_ui,
+    invert_output_fields as workflow_invert_output_fields_ui,
+    select_all_output_fields as workflow_select_all_output_fields_ui,
+    select_current_table_output_fields as workflow_select_current_table_output_fields_ui,
+)
+from workflow.row_data_mapping_config_ui import (
+    build_row_data_mapping_config as workflow_build_row_data_mapping_config_ui,
+)
+from workflow.save_transit_config_ui import (
+    build_save_transit_config as workflow_build_save_transit_config_ui,
+)
+from workflow.writeback_config_ui import (
+    build_writeback_config as workflow_build_writeback_config_ui,
+)
+from workflow.selected_columns_write_config_ui import (
+    build_selected_columns_write_config as workflow_build_selected_columns_write_config_ui,
+)
+from workflow.nodes.selected_columns_nodes import (
+    apply_selected_columns_to_memory_table as workflow_apply_selected_columns_to_memory_table,
+    build_selected_columns_write_payload as workflow_build_selected_columns_write_payload,
+    build_selected_columns_write_preview_rows as workflow_build_selected_columns_write_preview_rows,
+    get_selected_columns_write_skip_stat as workflow_get_selected_columns_write_skip_stat,
+    get_selected_columns_write_selected_fields as workflow_get_selected_columns_write_selected_fields,
+    make_selected_columns_target_fields as workflow_make_selected_columns_target_fields,
+    normalize_selected_columns_write_mode as workflow_normalize_selected_columns_write_mode,
+    resolve_selected_columns_write_target as workflow_resolve_selected_columns_write_target,
+    selected_columns_should_write as workflow_selected_columns_should_write,
+)
+from workflow.nodes.transit_nodes import (
+    append_headers_rows as workflow_append_headers_rows,
+    apply_save_transit_node as workflow_apply_save_transit_node,
+    make_unique_transit_name as workflow_make_unique_transit_name,
+)
+from workflow.nodes.writeback_nodes import (
+    apply_external_table_to_current_node as workflow_apply_external_table_to_current_node,
+    build_writeback_execute_stat as workflow_build_writeback_execute_stat,
+    build_writeback_actions as workflow_build_writeback_actions,
+    build_writeback_full_structure_rows_for_sqlite as workflow_build_writeback_full_structure_rows_for_sqlite,
+    build_writeback_full_structure_execute_stat as workflow_build_writeback_full_structure_execute_stat,
+    build_writeback_preview_rows as workflow_build_writeback_preview_rows,
+    build_writeback_preview_stat as workflow_build_writeback_preview_stat,
+    count_writeback_actions as workflow_count_writeback_actions,
+    compare_writeback_values as workflow_compare_writeback_values,
+    finish_writeback_node_output as workflow_finish_writeback_node_output,
+    get_writeback_non_execute_suffix as workflow_get_writeback_non_execute_suffix,
+    get_writeback_target_fields as workflow_get_writeback_target_fields,
+    should_execute_writeback_update as workflow_should_execute_writeback_update,
+)
+from workflow.table_access_precheck import (
+    evaluate_node_table_access_precheck as workflow_evaluate_node_table_access_precheck,
+    evaluate_workflow_output_precheck as workflow_evaluate_workflow_output_precheck,
+    find_table_access_field_rule as workflow_find_table_access_field_rule,
+    find_matching_table_access_entry as workflow_find_matching_table_access_entry,
+    iter_nodes_for_table_access_precheck as workflow_iter_nodes_for_table_access_precheck,
+    make_table_access_precheck_issue as workflow_make_table_access_precheck_issue,
+    normalize_precheck_transit_name as workflow_normalize_precheck_transit_name,
+    table_access_entry_match_score as workflow_table_access_entry_match_score,
+    table_access_field_items as workflow_table_access_field_items,
+    table_access_entry_status as workflow_table_access_entry_status,
+    table_access_entry_table_label as workflow_table_access_entry_table_label,
+    table_access_operation_summary as workflow_table_access_operation_summary,
+    table_access_precheck_actionable as workflow_table_access_precheck_actionable,
+    table_access_precheck_blocking as workflow_table_access_precheck_blocking,
+    table_access_precheck_sort_key as workflow_table_access_precheck_sort_key,
+    table_access_precheck_summary_text as workflow_table_access_precheck_summary_text,
+)
+from workflow.table_access_defaults import (
+    build_default_table_access_for_node as workflow_build_default_table_access_for_node,
+)
+from workflow.table_access_window_ui import (
+    add_table_access_entry as workflow_add_table_access_entry,
+    apply_auto_field_mapping_by_name as workflow_apply_auto_field_mapping_by_name,
+    apply_auto_field_mapping_by_order as workflow_apply_auto_field_mapping_by_order,
+    build_table_access_impact_preview as workflow_build_table_access_impact_preview,
+    build_table_access_permission_check as workflow_build_table_access_permission_check,
+    clear_field_mapping as workflow_clear_field_mapping,
+    delete_table_access_entry as workflow_delete_table_access_entry,
+    delete_field_mapping_entry as workflow_delete_field_mapping_entry,
+    table_access_field_mapping_mode_choices as workflow_table_access_field_mapping_mode_choices,
+    table_access_field_tree_columns as workflow_table_access_field_tree_columns,
+    field_mapping_item as workflow_field_mapping_item,
+    field_mapping_mode_display as workflow_field_mapping_mode_display,
+    field_mapping_mode_value as workflow_field_mapping_mode_value,
+    load_field_form as workflow_load_field_form,
+    make_table_access_field_key as workflow_make_table_access_field_key,
+    table_access_node_tree_columns as workflow_table_access_node_tree_columns,
+    rebuild_table_access as workflow_rebuild_table_access,
+    render_field_mapping_tree as workflow_render_field_mapping_tree,
+    render_table_access_tree as workflow_render_table_access_tree,
+    reset_field_form as workflow_reset_field_form,
+    table_access_preset_choices as workflow_table_access_preset_choices,
+    table_access_role_choices as workflow_table_access_role_choices,
+    save_table_access_entry as workflow_save_table_access_entry,
+    selected_field_key as workflow_selected_field_key,
+    table_access_source_type_choices as workflow_table_access_source_type_choices,
+    table_access_table_tree_columns as workflow_table_access_table_tree_columns,
+    table_access_preset_config as workflow_table_access_preset_config,
+    upsert_field_mapping_entry as workflow_upsert_field_mapping_entry,
+)
 
 
 def get_app_dir():
@@ -70,209 +454,15 @@ def get_app_dir():
         return os.path.dirname(os.path.abspath(sys.executable))
     return os.path.dirname(os.path.abspath(__file__))
 
-class PluginDatabaseAPI:
-    """
-    插件统一数据库访问 API。
 
-    插件可通过 context["db"] 使用该对象，避免每个插件重复编写 sqlite3 读写逻辑。
-    第一版提供常用安全接口：列出表、读取表、写入表、备份表、获取字段等。
-    """
-    def __init__(self, db_path):
-        self.db_path = db_path or ""
+def load_json_file_with_recovery(path, parent=None):
+    data, info = load_json_with_backup(path)
+    warning = info.get("warning", "")
+    if warning:
+        messagebox.showwarning("配置已从备份恢复", warning, parent=parent)
+    return data
 
-    def _ensure_db_path(self):
-        if not self.db_path:
-            raise ValueError("当前未设置 SQLite 数据库路径")
 
-    def _connect(self):
-        self._ensure_db_path()
-        return sqlite3.connect(self.db_path)
-
-    @staticmethod
-    def quote_ident(name):
-        name = str(name)
-        return '"' + name.replace('"', '""') + '"'
-
-    @staticmethod
-    def make_unique_headers(headers):
-        result = []
-        used = {}
-        for idx, header in enumerate(headers, start=1):
-            name = str(header).strip() if header is not None else ""
-            if not name:
-                name = f"列{idx}"
-            base = name
-            if base in used:
-                used[base] += 1
-                name = f"{base}_{used[base]}"
-            else:
-                used[base] = 1
-            while name in result:
-                used[base] = used.get(base, 1) + 1
-                name = f"{base}_{used[base]}"
-            result.append(name)
-        return result
-
-    def list_tables(self):
-        """返回当前数据库中的普通表名列表。"""
-        with self._connect() as conn:
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT name FROM sqlite_master
-                WHERE type='table' AND name NOT LIKE 'sqlite_%'
-                ORDER BY name
-            """)
-            return [r[0] for r in cur.fetchall()]
-
-    def table_exists(self, table_name):
-        """判断表是否存在。"""
-        with self._connect() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
-            return cur.fetchone() is not None
-
-    def get_columns(self, table_name):
-        """返回指定表的字段名列表。"""
-        with self._connect() as conn:
-            cur = conn.cursor()
-            cur.execute(f"PRAGMA table_info({self.quote_ident(table_name)})")
-            return [r[1] for r in cur.fetchall()]
-
-    def read_table(self, table_name, limit=None, offset=0, include_rowid=False):
-        """
-        读取 SQLite 表为工作流 table 格式：{"type":"table", "headers":[], "rows":[]}。
-        include_rowid=True 时，会在第一列增加 __rowid__。
-        """
-        columns = self.get_columns(table_name)
-        if not columns:
-            return {"type": "table", "headers": [], "rows": [], "source_name": table_name, "meta": {"db_path": self.db_path}}
-        select_cols = ", ".join(self.quote_ident(c) for c in columns)
-        if include_rowid:
-            sql = f"SELECT rowid AS __rowid__, {select_cols} FROM {self.quote_ident(table_name)} ORDER BY rowid"
-            headers = ["__rowid__"] + columns
-        else:
-            sql = f"SELECT {select_cols} FROM {self.quote_ident(table_name)} ORDER BY rowid"
-            headers = columns
-        params = []
-        if limit is not None:
-            sql += " LIMIT ? OFFSET ?"
-            params.extend([int(limit), int(offset or 0)])
-        with self._connect() as conn:
-            cur = conn.cursor()
-            cur.execute(sql, params)
-            rows = [["" if v is None else str(v) for v in r] for r in cur.fetchall()]
-        return {"type": "table", "headers": headers, "rows": rows, "source_name": table_name, "meta": {"db_path": self.db_path}}
-
-    def backup_table(self, table_name, backup_name=None):
-        """复制指定表为备份表，返回实际备份表名。"""
-        if not self.table_exists(table_name):
-            raise ValueError(f"表不存在：{table_name}")
-        if not backup_name:
-            backup_name = f"{table_name}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        actual = backup_name
-        counter = 2
-        while self.table_exists(actual):
-            actual = f"{backup_name}_{counter}"
-            counter += 1
-        with self._connect() as conn:
-            cur = conn.cursor()
-            cur.execute(f"CREATE TABLE {self.quote_ident(actual)} AS SELECT * FROM {self.quote_ident(table_name)}")
-            conn.commit()
-        return actual
-
-    def _create_table(self, cur, table_name, headers):
-        headers = self.make_unique_headers(headers)
-        col_defs = ", ".join(f"{self.quote_ident(h)} TEXT" for h in headers)
-        cur.execute(f"CREATE TABLE {self.quote_ident(table_name)} ({col_defs})")
-        return headers
-
-    def _timestamp_table_name(self, base_name):
-        suffix = datetime.now().strftime("%Y%m%d_%H%M%S")
-        actual = f"{base_name}_{suffix}"
-        counter = 2
-        while self.table_exists(actual):
-            actual = f"{base_name}_{suffix}_{counter}"
-            counter += 1
-        return actual
-
-    def write_table(self, table_name, headers, rows, mode="replace"):
-        """
-        写入 table 数据到 SQLite。
-
-        mode 可选：
-        - replace / overwrite：删除同名表后重建。
-        - fail / new：如果表已存在则报错。
-        - timestamp / auto_timestamp：如果表已存在则自动加时间戳另存。
-        - append：追加到已有表；不存在则新建；已有表缺少字段时自动 ADD COLUMN。
-        """
-        table_name = str(table_name).strip()
-        if not table_name:
-            raise ValueError("table_name 不能为空")
-        headers = self.make_unique_headers(headers or [])
-        rows = [list(r) for r in (rows or [])]
-        if not headers:
-            raise ValueError("headers 不能为空")
-        mode = (mode or "replace").lower()
-        if mode == "overwrite":
-            mode = "replace"
-        if mode == "new":
-            mode = "fail"
-        if mode == "auto_timestamp":
-            mode = "timestamp"
-
-        actual_name = table_name
-        exists = self.table_exists(table_name)
-        if mode == "timestamp" and exists:
-            actual_name = self._timestamp_table_name(table_name)
-            exists = False
-
-        with self._connect() as conn:
-            cur = conn.cursor()
-            if mode == "replace":
-                cur.execute(f"DROP TABLE IF EXISTS {self.quote_ident(actual_name)}")
-                self._create_table(cur, actual_name, headers)
-            elif mode == "fail":
-                if exists:
-                    raise ValueError(f"表已存在：{actual_name}")
-                self._create_table(cur, actual_name, headers)
-            elif mode == "append":
-                if not exists:
-                    self._create_table(cur, actual_name, headers)
-                else:
-                    existing_cols = self.get_columns(actual_name)
-                    for h in headers:
-                        if h not in existing_cols:
-                            cur.execute(f"ALTER TABLE {self.quote_ident(actual_name)} ADD COLUMN {self.quote_ident(h)} TEXT")
-            else:
-                raise ValueError(f"未知写入模式：{mode}")
-
-            col_names = ", ".join(self.quote_ident(h) for h in headers)
-            placeholders = ", ".join(["?"] * len(headers))
-            insert_sql = f"INSERT INTO {self.quote_ident(actual_name)} ({col_names}) VALUES ({placeholders})"
-            fixed_rows = []
-            for row in rows:
-                r = list(row)
-                if len(r) < len(headers):
-                    r += [""] * (len(headers) - len(r))
-                elif len(r) > len(headers):
-                    r = r[:len(headers)]
-                fixed_rows.append(["" if v is None else str(v) for v in r])
-            if fixed_rows:
-                cur.executemany(insert_sql, fixed_rows)
-            conn.commit()
-        return {"table_name": actual_name, "rows": len(rows), "columns": len(headers), "mode": mode}
-
-    def execute_select(self, sql, params=None):
-        """执行只读 SELECT 查询，返回 table 格式。"""
-        sql_text = str(sql or "").strip()
-        if not sql_text.lower().startswith(("select", "with", "pragma")):
-            raise ValueError("execute_select 只允许 SELECT / WITH / PRAGMA 查询")
-        with self._connect() as conn:
-            cur = conn.cursor()
-            cur.execute(sql_text, params or [])
-            headers = [d[0] for d in (cur.description or [])]
-            rows = [["" if v is None else str(v) for v in r] for r in cur.fetchall()]
-        return {"type": "table", "headers": headers, "rows": rows, "source_name": "execute_select", "meta": {"db_path": self.db_path}}
 
 
 
@@ -545,15 +735,19 @@ class ClipboardTableApp:
             width += 2 if ord(ch) > 127 else 1
         return width
 
-    def export_current_preview_to_xlsx(self):
-        if not self.headers:
+    def export_current_preview_to_xlsx(self, headers=None, rows=None, table_name=None, title="导出为 xlsx"):
+        headers = list(self.headers if headers is None else headers)
+        rows = [list(row) for row in (self.rows if rows is None else rows)]
+        table_name = self.table_name_var.get() if table_name is None else table_name
+
+        if not headers:
             messagebox.showwarning("提示", "当前没有可导出的表格字段。")
             return
 
-        default_base = self.sanitize_sql_name(self.table_name_var.get(), "导出数据")
+        default_base = self.sanitize_sql_name(table_name, "导出数据")
         default_name = f"{default_base}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         path = filedialog.asksaveasfilename(
-            title="导出为 xlsx",
+            title=title,
             defaultextension=".xlsx",
             initialfile=default_name,
             filetypes=[("Excel 工作簿", "*.xlsx"), ("所有文件", "*.*")]
@@ -567,32 +761,35 @@ class ClipboardTableApp:
 
         try:
             try:
-                self.export_xlsx_with_openpyxl(path)
+                self.export_xlsx_with_openpyxl(path, headers=headers, rows=rows, table_name=table_name)
                 engine = "openpyxl"
             except ModuleNotFoundError:
-                self.export_xlsx_minimal(path)
+                self.export_xlsx_minimal(path, headers=headers, rows=rows, table_name=table_name)
                 engine = "内置简易导出器"
 
             self.info_var.set(f"导出成功：{path}")
             messagebox.showinfo(
                 "导出成功",
-                f"已导出当前预览数据。\n\n文件：{path}\n行数：{len(self.rows)}\n列数：{len(self.headers)}\n导出方式：{engine}"
+                f"已导出当前预览数据。\n\n文件：{path}\n行数：{len(rows)}\n列数：{len(headers)}\n导出方式：{engine}"
             )
         except Exception as e:
             messagebox.showerror("导出失败", str(e))
 
-    def export_xlsx_with_openpyxl(self, path):
+    def export_xlsx_with_openpyxl(self, path, headers=None, rows=None, table_name=None):
         from openpyxl import Workbook
         from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
+        headers = [str(h) for h in (self.headers if headers is None else headers)]
+        rows = [list(row) for row in (self.rows if rows is None else rows)]
+        table_name = self.table_name_var.get() if table_name is None else table_name
+
         wb = Workbook()
         ws = wb.active
-        ws.title = self.normalize_sheet_title(self.table_name_var.get())
+        ws.title = self.normalize_sheet_title(table_name)
 
-        headers = [str(h) for h in self.headers]
         ws.append(headers)
 
-        for row in self.rows:
+        for row in rows:
             fixed = list(row)
             if len(fixed) < len(headers):
                 fixed += [""] * (len(headers) - len(fixed))
@@ -618,30 +815,31 @@ class ClipboardTableApp:
         ws.freeze_panes = "A2"
         if headers:
             last_col = self.column_letter(len(headers))
-            ws.auto_filter.ref = f"A1:{last_col}{max(len(self.rows) + 1, 1)}"
+            ws.auto_filter.ref = f"A1:{last_col}{max(len(rows) + 1, 1)}"
 
         for col_idx, header in enumerate(headers, start=1):
             max_width = self.calc_display_width(header)
-            for row in self.rows[:3000]:
+            for row in rows[:3000]:
                 if col_idx - 1 < len(row):
                     max_width = max(max_width, self.calc_display_width(row[col_idx - 1]))
             ws.column_dimensions[self.column_letter(col_idx)].width = min(max(max_width + 2, 10), 40)
 
         wb.save(path)
 
-    def export_xlsx_minimal(self, path):
+    def export_xlsx_minimal(self, path, headers=None, rows=None, table_name=None):
         import zipfile
         from xml.sax.saxutils import escape
 
-        headers = [str(h) for h in self.headers]
-        rows = [headers]
-        for row in self.rows:
+        headers = [str(h) for h in (self.headers if headers is None else headers)]
+        rows = [list(row) for row in (self.rows if rows is None else rows)]
+        sheet_rows = [headers]
+        for row in rows:
             fixed = list(row)
             if len(fixed) < len(headers):
                 fixed += [""] * (len(headers) - len(fixed))
             if len(fixed) > len(headers):
                 fixed = fixed[:len(headers)]
-            rows.append(["" if value is None else str(value) for value in fixed])
+            sheet_rows.append(["" if value is None else str(value) for value in fixed])
 
         def cell_xml(row_idx, col_idx, value, style_id="0"):
             ref = f"{self.column_letter(col_idx)}{row_idx}"
@@ -651,20 +849,20 @@ class ClipboardTableApp:
         col_xml = []
         for col_idx, header in enumerate(headers, start=1):
             max_width = self.calc_display_width(header)
-            for row in self.rows[:3000]:
+            for row in rows[:3000]:
                 if col_idx - 1 < len(row):
                     max_width = max(max_width, self.calc_display_width(row[col_idx - 1]))
             width = min(max(max_width + 2, 10), 40)
             col_xml.append(f'<col min="{col_idx}" max="{col_idx}" width="{width}" customWidth="1"/>')
 
         row_xml_list = []
-        for r_idx, row in enumerate(rows, start=1):
+        for r_idx, row in enumerate(sheet_rows, start=1):
             style_id = "1" if r_idx == 1 else "0"
             cells = "".join(cell_xml(r_idx, c_idx, value, style_id) for c_idx, value in enumerate(row, start=1))
             row_xml_list.append(f'<row r="{r_idx}">{cells}</row>')
 
         last_col = self.column_letter(len(headers) if headers else 1)
-        last_row = max(len(rows), 1)
+        last_row = max(len(sheet_rows), 1)
         auto_filter = f'<autoFilter ref="A1:{last_col}{last_row}"/>' if headers else ""
 
         sheet_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -759,30 +957,12 @@ class ClipboardTableApp:
 
         if not db_path or not os.path.exists(db_path):
             return []
-
-        conn = sqlite3.connect(db_path)
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT name
-            FROM sqlite_master
-            WHERE type='table'
-              AND name NOT LIKE 'sqlite_%'
-            ORDER BY name
-        """)
-        tables = [row[0] for row in cur.fetchall()]
-        conn.close()
-        return tables
+        return TableAccessManager(db_path, node_type="主界面").list_tables()
 
     def get_table_columns(self, table_name):
         db_path = self.get_db_path()
 
-        conn = sqlite3.connect(db_path)
-        cur = conn.cursor()
-        cur.execute(f"PRAGMA table_info({self.quote_ident(table_name)})")
-        info = cur.fetchall()
-        conn.close()
-
-        return [row[1] for row in info]
+        return TableAccessManager(db_path, node_type="主界面").get_columns(table_name)
 
     def refresh_table_list(self):
         try:
@@ -1101,40 +1281,13 @@ class ClipboardTableApp:
         )
 
     def sanitize_sql_name(self, name, default_name):
-        name = str(name).strip()
-
-        if not name:
-            name = default_name
-
-        name = re.sub(r"\W+", "_", name, flags=re.UNICODE)
-
-        if re.match(r"^\d", name):
-            name = "t_" + name
-
-        if not name:
-            name = default_name
-
-        return name
+        return core_sanitize_sql_name(name, default_name)
 
     def make_sql_columns(self, headers):
-        result = []
-        used = {}
-
-        for index, header in enumerate(headers, start=1):
-            col = self.sanitize_sql_name(header, f"col_{index}")
-
-            if col in used:
-                used[col] += 1
-                col = f"{col}_{used[col]}"
-            else:
-                used[col] = 1
-
-            result.append(col)
-
-        return result
+        return core_make_sql_columns(headers)
 
     def quote_ident(self, name):
-        return '"' + str(name).replace('"', '""') + '"'
+        return core_quote_ident(name)
 
     def table_exists(self, conn, table_name):
         cur = conn.cursor()
@@ -1179,28 +1332,17 @@ class ClipboardTableApp:
             return
 
         try:
-            conn = sqlite3.connect(db_path)
-            cur = conn.cursor()
-
-            if not self.table_exists(conn, table_name):
-                conn.close()
+            manager = TableAccessManager(db_path, node_type="主界面读取")
+            if not manager.table_exists(table_name):
                 messagebox.showwarning("提示", f"表不存在：{table_name}")
                 return
 
-            cur.execute(f"PRAGMA table_info({self.quote_ident(table_name)})")
-            table_info = cur.fetchall()
-
-            headers = [row[1] for row in table_info]
+            data = manager.read_table(table_name)
+            headers = list(data.get("headers", []))
 
             if not headers:
-                conn.close()
                 messagebox.showwarning("提示", f"表没有字段：{table_name}")
                 return
-
-            cur.execute(f"SELECT * FROM {self.quote_ident(table_name)}")
-            db_rows = cur.fetchall()
-
-            conn.close()
 
             if self.edit_entry is not None:
                 self.edit_entry.destroy()
@@ -1209,10 +1351,7 @@ class ClipboardTableApp:
             self.raw_data = ""
 
             self.headers = self.make_display_headers(headers)
-            self.rows = [
-                [self.format_db_value(value) for value in row]
-                for row in db_rows
-            ]
+            self.rows = [list(row) for row in data.get("rows", [])]
 
             self.refresh_tree()
 
@@ -1232,29 +1371,6 @@ class ClipboardTableApp:
         table_name = self.sanitize_sql_name(table_name_raw, "result_table")
         sql_columns = self.make_sql_columns(headers)
 
-        conn = sqlite3.connect(db_path)
-        cur = conn.cursor()
-
-        if recreate:
-            cur.execute(f"DROP TABLE IF EXISTS {self.quote_ident(table_name)}")
-        else:
-            table_name = self.get_available_table_name(conn, table_name)
-
-        col_defs = [f"{self.quote_ident(col)} TEXT" for col in sql_columns]
-        create_sql = (
-            f"CREATE TABLE IF NOT EXISTS {self.quote_ident(table_name)} "
-            f"({', '.join(col_defs)})"
-        )
-        cur.execute(create_sql)
-
-        placeholders = ", ".join(["?"] * len(sql_columns))
-        col_names = ", ".join(self.quote_ident(col) for col in sql_columns)
-
-        insert_sql = (
-            f"INSERT INTO {self.quote_ident(table_name)} "
-            f"({col_names}) VALUES ({placeholders})"
-        )
-
         normalized_rows = []
         for row in rows:
             fixed_row = list(row)
@@ -1264,14 +1380,16 @@ class ClipboardTableApp:
                 fixed_row = fixed_row[:len(sql_columns)]
             normalized_rows.append(fixed_row)
 
-        if normalized_rows:
-            cur.executemany(insert_sql, normalized_rows)
-
-        conn.commit()
-        conn.close()
+        mode = "replace" if recreate else "timestamp"
+        info = TableAccessManager(db_path, node_type="主界面保存").write_table(
+            table_name,
+            sql_columns,
+            normalized_rows,
+            mode=mode,
+        )
         self.refresh_table_list()
 
-        return table_name, len(normalized_rows)
+        return info.get("table_name", table_name), len(normalized_rows)
 
     def save_to_sqlite(self):
         if not self.headers or not self.rows:
@@ -1401,23 +1519,11 @@ class ClipboardTableApp:
             self.info_var.set("已取消删除当前表。")
             return
 
-        backup_name = None
         try:
-            conn = sqlite3.connect(db_path)
-            try:
-                if not self.table_exists(conn, table_name):
-                    raise ValueError(f"表不存在或已被删除：{table_name}")
-
-                if backup_choice:
-                    backup_name = self.backup_sqlite_table_before_delete(conn, table_name)
-
-                conn.execute(f"DROP TABLE {self.quote_ident(table_name)}")
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-            finally:
-                conn.close()
+            backup_name = TableAccessManager(db_path, node_type="主界面删除").drop_table(
+                table_name,
+                backup=bool(backup_choice),
+            )
 
             self.refresh_table_list()
 
@@ -2064,8 +2170,7 @@ class DataExtractWindow:
         if not path:
             return
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(self.collect_template(), f, ensure_ascii=False, indent=2)
+            atomic_write_json(path, self.collect_template())
             self.status_var.set(f"已保存模板：{path}")
         except Exception as e:
             messagebox.showerror("保存模板失败", str(e))
@@ -2078,8 +2183,7 @@ class DataExtractWindow:
         if not path:
             return
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = load_json_file_with_recovery(path, parent=self.window)
             self.apply_template(data)
             self.status_var.set(f"已载入模板：{path}")
         except Exception as e:
@@ -2849,8 +2953,7 @@ class MergeColumnsWindow:
         if not path:
             return
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(self.collect_template(), f, ensure_ascii=False, indent=2)
+            atomic_write_json(path, self.collect_template())
             self.status_var.set(f"已保存合并模板：{path}")
         except Exception as e:
             messagebox.showerror("保存模板失败", str(e))
@@ -2863,8 +2966,7 @@ class MergeColumnsWindow:
         if not path:
             return
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = load_json_file_with_recovery(path, parent=self.window)
             self.apply_template(data)
             self.status_var.set(f"已载入合并模板：{path}")
         except Exception as e:
@@ -3301,8 +3403,7 @@ class BatchReplaceWindow:
             "rules": rules
         }
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            atomic_write_json(path, data)
             self.status_var.set(f"已保存替换规则模板：{path}")
         except Exception as e:
             messagebox.showerror("保存失败", str(e))
@@ -3316,8 +3417,7 @@ class BatchReplaceWindow:
             return
 
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = load_json_file_with_recovery(path, parent=self.window)
 
             rules = data.get("rules", data if isinstance(data, list) else [])
             valid_rules = []
@@ -3716,21 +3816,16 @@ class AdvancedFilterWindow:
                 return
 
             limit = self.get_int_setting(self.result_limit_var, 5000)
-
-            conn = sqlite3.connect(self.app.get_db_path())
-            cur = conn.cursor()
-            cur.execute(
-                f"SELECT * FROM {self.app.quote_ident(table_name)} LIMIT ?",
-                (limit,)
+            data = TableAccessManager(
+                self.app.get_db_path(),
+                node_type="高级筛选窗口预览",
+            ).read_table(
+                table_name,
+                limit=limit,
             )
-            rows = cur.fetchall()
-            conn.close()
 
-            self.preview_headers = columns[:]
-            self.preview_rows = [
-                [self.format_db_value(value) for value in row]
-                for row in rows
-            ]
+            self.preview_headers = list(data.get("headers", columns))
+            self.preview_rows = [list(row) for row in data.get("rows", [])]
 
             self.refresh_preview_tree()
 
@@ -3968,19 +4063,16 @@ class AdvancedFilterWindow:
         return self.app.format_db_value(value)
 
     def load_table_records(self, table_name):
-        db_path = self.app.get_db_path()
-
-        conn = sqlite3.connect(db_path)
-        cur = conn.cursor()
-
         columns = self.columns_cache.get(table_name)
         if columns is None:
             columns = self.app.get_table_columns(table_name)
             self.columns_cache[table_name] = columns
 
-        cur.execute(f"SELECT * FROM {self.app.quote_ident(table_name)}")
-        rows = cur.fetchall()
-        conn.close()
+        data = TableAccessManager(
+            self.app.get_db_path(),
+            node_type="高级筛选窗口读取",
+        ).read_table(table_name)
+        rows = [list(row) for row in data.get("rows", [])]
 
         records = []
         for row in rows:
@@ -3988,7 +4080,7 @@ class AdvancedFilterWindow:
             for idx, col in enumerate(columns):
                 key = f"{table_name}.{col}"
                 value = row[idx] if idx < len(row) else ""
-                record[key] = self.format_db_value(value)
+                record[key] = value
             records.append(record)
 
         return records
@@ -4353,8 +4445,7 @@ class AdvancedFilterWindow:
 
         try:
             data = self.export_template_data()
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            atomic_write_json(path, data)
 
             self.status_var.set(f"筛选模板已保存：{path}")
 
@@ -4373,8 +4464,7 @@ class AdvancedFilterWindow:
             return
 
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = load_json_file_with_recovery(path, parent=self.window)
 
             self.apply_template_data(data)
             self.status_var.set(f"筛选模板已载入：{path}")
@@ -4396,11 +4486,39 @@ class PlanWorkflowWindow:
     - 计划内的“高级筛选”支持以上一步结果作为“当前表”，再选择数据库中的其他表进行多表匹配。
     """
 
-    NODE_TYPES = ["获取文件列表", "节点组 / 子工作流", "循环执行起点", "批量替换", "数据提取", "格式规范化 / 日期时间解析", "新建日期时间列", "新建列", "合并列", "批量更改列名", "去重 / 重复数据处理", "列数字运算", "匹配值输出列名", "复制列", "复制行", "删除行", "填充值", "序列填充", "区域填充", "行数据映射填充", "保存中转数据", "选定列写入指定表", "字段映射写入表", "高级筛选", "删除列", "移动列", "批量重命名", "循环判断回跳"]
+    NODE_TYPES = ["获取文件列表", "节点组 / 子工作流", "循环执行起点", "跳转锚点节点", "无条件跳转节点", "条件判断节点", "条件跳转节点", "批量替换", "数据提取", "格式规范化 / 日期时间解析", "新建日期时间列", "新建列", "合并列", "批量更改列名", "去重 / 重复数据处理", "列数字运算", "匹配值输出列名", "复制列", "复制行", "删除行", "填充值", "序列填充", "区域填充", "行数据映射填充", "保存中转数据", "选定列写入指定表", "字段映射写入表", "高级筛选", "删除列", "移动列", "批量重命名", "循环判断回跳"]
+    TABLE_ACCESS_POLICY_CHOICES = ["只审计", "预检确认", "强制拦截"]
+    MAX_EXPANDED_ROWS = 200000
+    MAX_TARGET_CELLS = 1000000
+    TABLE_ACCESS_POLICY_DISPLAY = {
+        "audit": "只审计",
+        "prompt": "预检确认",
+        "strict": "强制拦截",
+        "off": "关闭",
+    }
+    STANDARD_WRITE_MODE_CHOICES = [
+        "",
+        "current_table_default",
+        "create_new",
+        "append",
+        "overlay_by_order",
+        "update_by_key",
+        "upsert_by_key",
+        "clear_keep_schema",
+        "keep_schema_insert",
+        "replace_table",
+        "timestamp_new",
+        "fail_if_exists",
+        "write_fields_only",
+        "fill_blank_fields",
+    ]
     LOGIC_TYPES = ["AND", "OR"]
     FILTER_OPS = ["等于", "不等于", "包含", "不包含", "开头是", "结尾是", "大于", "小于", "大于等于", "小于等于", "为空", "不为空", "正则匹配"]
+    FILTER_VALUE_SOURCES = ["固定值", "字段值"]
     REPLACE_MATCH_MODES = ["包含", "完全相等", "开头是", "结尾是", "正则匹配", "为空", "不为空"]
     REPLACE_MODES = ["局部替换匹配字符串", "整格替换为新值"]
+    REPLACE_VALUE_SOURCES = ["手动输入", "列字段"]
+    REPLACE_ROW_POLICIES = ["当前行", "第一行", "固定行号", "按匹配行号", "按命中序号"]
     EXTRACT_METHODS = [
         "正则提取", "固定位置提取", "从左取N位", "从右取N位", "按分隔符提取",
         "前后关键字之间提取", "指定字符前提取", "指定字符后提取", "删除前缀", "删除后缀"
@@ -4423,7 +4541,7 @@ class PlanWorkflowWindow:
         self.app = app
         self.window = tk.Toplevel(app.root)
         self.window.title("计划 / 工作流处理")
-        self.window.geometry("1680x850")
+        self.window.geometry("1680x950")
         self.window.minsize(1050, 650)
         self.window.transient(app.root)
 
@@ -4437,6 +4555,7 @@ class PlanWorkflowWindow:
         self.output_mode_var = tk.StringVar(value="输出到主界面预览区")
         self.output_table_var = tk.StringVar(value=self.make_default_output_table_name())
         self.backup_before_overwrite_var = tk.BooleanVar(value=True)
+        self.table_access_policy_var = tk.StringVar(value="只审计")
         self.node_type_var = tk.StringVar(value=self.NODE_TYPES[0])
         self.selected_node_index = None
         self.preview_edit_mode = False
@@ -4444,6 +4563,9 @@ class PlanWorkflowWindow:
         self.preview_edit_btn_text = tk.StringVar(value="修改模式:关")
         self.preview_dirty = False
         self.current_transit_tables = {}
+        self.last_workflow_context = {}
+        self.last_table_access_logs = []
+        self.last_table_access_precheck = []
         # “当前预览结果”独立缓存：结果预览区临时载入 SQLite/中转/主界面表时，
         # 不应覆盖最后一次计划预览/执行得到的结果，否则下拉切换后会丢失原预览结果。
         self.plan_preview_headers = list(self.preview_headers)
@@ -4452,6 +4574,9 @@ class PlanWorkflowWindow:
         # 结果预览区表格选择：用于快速查看当前预览、主界面表、SQLite表和中转副表。
         self.preview_table_var = tk.StringVar(value="当前预览结果")
         self.preview_table_map = {}
+        self.preview_search_var = tk.StringVar(value="")
+        self.preview_search_matches = []
+        self.preview_search_index = -1
 
         # 循环单步调试缓存：在“循环判断回跳”节点点击“执行循环一次”时复用。
         # 用于逐次运行循环体，后续预览节点可接着这个 N 次循环后的上下文继续执行。
@@ -4501,6 +4626,50 @@ class PlanWorkflowWindow:
         base = self.app.sanitize_sql_name(self.app.table_name_var.get(), "计划结果")
         return f"{base}_计划结果_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
+    def normalize_table_access_policy(self, value=None):
+        if value is None:
+            value = self.table_access_policy_var.get()
+        return TableAccessManager.normalize_permission_policy(value)
+
+    def table_access_policy_display(self, value=None):
+        policy = self.normalize_table_access_policy(value)
+        return self.TABLE_ACCESS_POLICY_DISPLAY.get(policy, "只审计")
+
+    def set_table_access_policy(self, value):
+        self.table_access_policy_var.set(self.table_access_policy_display(value))
+
+    def normalize_table_access_write_mode(self, mode):
+        return TableAccessManager.normalize_write_mode(mode)
+
+    def write_mode_permission_set(self, mode, exists=False, read=False, partial=False):
+        perms = {key: False for key, _ in self.table_access_permission_items()}
+        for key in TableAccessManager.required_permissions_for_write_mode(mode, exists=exists, partial=partial):
+            if key in perms:
+                perms[key] = True
+        if read:
+            perms["read_table"] = True
+        return perms
+
+    def write_mode_display_text(self, mode):
+        standard = self.normalize_table_access_write_mode(mode)
+        labels = {
+            "": "",
+            "current_table_default": "当前表默认",
+            "create_new": "新建表写入",
+            "append": "追加行",
+            "overlay_by_order": "按顺序覆盖",
+            "update_by_key": "按键更新",
+            "upsert_by_key": "匹配更新或追加",
+            "clear_keep_schema": "清空保留结构写入",
+            "keep_schema_insert": "保留结构写入",
+            "replace_table": "替换整表",
+            "timestamp_new": "自动时间戳新表",
+            "fail_if_exists": "存在则报错",
+            "write_fields_only": "指定字段写入",
+            "fill_blank_fields": "字段空缺补齐",
+        }
+        return labels.get(standard, str(mode or ""))
+
     def build_ui(self):
         main = ttk.Frame(self.window, padding=8)
         main.pack(fill=tk.BOTH, expand=True)
@@ -4548,6 +4717,24 @@ class PlanWorkflowWindow:
         ttk.Button(node_btns2, text="合并为组", command=self.merge_selected_nodes_to_group).pack(side=tk.LEFT, padx=2, pady=2)
         ttk.Button(node_btns2, text="展开组", command=self.expand_selected_group).pack(side=tk.LEFT, padx=2, pady=2)
         ttk.Button(node_btns2, text="清空节点", command=self.clear_nodes).pack(side=tk.LEFT, padx=2, pady=2)
+
+        node_btns3 = ttk.Frame(node_frame)
+        node_btns3.pack(fill=tk.X)
+        ttk.Button(node_btns3, text="字段权限层", command=self.open_table_access_window).pack(side=tk.LEFT, padx=2, pady=2)
+        ttk.Button(node_btns3, text="权限预检", command=self.open_table_access_precheck_window).pack(side=tk.LEFT, padx=2, pady=2)
+        ttk.Button(node_btns3, text="审计日志", command=self.open_table_access_audit_window).pack(side=tk.LEFT, padx=2, pady=2)
+        ttk.Button(node_btns3, text="跳转管理", command=self.open_jump_manager_window).pack(side=tk.LEFT, padx=2, pady=2)
+
+        policy_frame = ttk.Frame(node_frame)
+        policy_frame.pack(fill=tk.X)
+        ttk.Label(policy_frame, text="权限策略：").pack(side=tk.LEFT, padx=(2, 2), pady=2)
+        ttk.Combobox(
+            policy_frame,
+            textvariable=self.table_access_policy_var,
+            values=self.TABLE_ACCESS_POLICY_CHOICES,
+            width=10,
+            state="readonly",
+        ).pack(side=tk.LEFT, padx=2, pady=2)
 
         tpl_frame = ttk.LabelFrame(left, text="3. 计划模板", padding=8)
         tpl_frame.pack(fill=tk.X)
@@ -4610,19 +4797,28 @@ class PlanWorkflowWindow:
 
         progress_frame = ttk.LabelFrame(right, text="执行进度", padding=8)
         progress_frame.pack(fill=tk.X, pady=(0, 8))
-        ttk.Label(progress_frame, textvariable=self.workflow_progress_text).grid(row=0, column=0, sticky=tk.W, padx=4, pady=2)
+        self.workflow_progress_label = ttk.Label(progress_frame, textvariable=self.workflow_progress_text, anchor=tk.W)
+        self.workflow_progress_label.grid(row=0, column=0, sticky="ew", padx=4, pady=(2, 0))
         self.workflow_progress_bar = ttk.Progressbar(progress_frame, variable=self.workflow_progress_var, maximum=100, mode="determinate")
-        self.workflow_progress_bar.grid(row=0, column=1, sticky="ew", padx=4, pady=2)
-        ttk.Label(progress_frame, textvariable=self.node_progress_text).grid(row=1, column=0, sticky=tk.W, padx=4, pady=2)
+        self.workflow_progress_bar.grid(row=1, column=0, sticky="ew", padx=4, pady=(2, 6))
+        self.node_progress_label = ttk.Label(progress_frame, textvariable=self.node_progress_text, anchor=tk.W)
+        self.node_progress_label.grid(row=2, column=0, sticky="ew", padx=4, pady=(2, 0))
         self.node_progress_bar = ttk.Progressbar(progress_frame, variable=self.node_progress_var, maximum=100, mode="determinate")
-        self.node_progress_bar.grid(row=1, column=1, sticky="ew", padx=4, pady=2)
+        self.node_progress_bar.grid(row=3, column=0, sticky="ew", padx=4, pady=(2, 6))
         worker_btns = ttk.Frame(progress_frame)
-        worker_btns.grid(row=0, column=2, rowspan=2, sticky=tk.E, padx=4)
+        worker_btns.grid(row=2, column=1, sticky=tk.E, padx=(8, 4), pady=0)
         self.workflow_cancel_button = ttk.Button(worker_btns, text="取消后台任务", command=self.cancel_background_workflow)
         self.workflow_cancel_button.pack(side=tk.LEFT, padx=2)
         self.workflow_cancel_button.configure(state="disabled")
-        ttk.Label(progress_frame, textvariable=self.worker_status_text).grid(row=2, column=0, columnspan=3, sticky=tk.W, padx=4, pady=(4, 0))
-        progress_frame.columnconfigure(1, weight=1)
+        self.worker_status_label = ttk.Label(progress_frame, textvariable=self.worker_status_text, anchor=tk.W, wraplength=980, justify=tk.LEFT)
+        self.worker_status_label.grid(row=4, column=0, columnspan=2, sticky="ew", padx=4, pady=(4, 0))
+        progress_frame.columnconfigure(0, weight=1)
+        def update_progress_wrap(event, label=self.worker_status_label):
+            try:
+                label.configure(wraplength=max(320, int(event.width) - 32))
+            except Exception:
+                pass
+        progress_frame.bind("<Configure>", update_progress_wrap)
 
         output_frame = ttk.LabelFrame(right, text="5. 输出设置", padding=8)
         output_frame.pack(fill=tk.X)
@@ -4670,15 +4866,42 @@ class PlanWorkflowWindow:
             foreground="gray"
         ).pack(side=tk.LEFT, padx=6)
 
+        preview_search_frame = ttk.Frame(preview_frame)
+        preview_search_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+        ttk.Label(preview_search_frame, text="搜索：").pack(side=tk.LEFT, padx=(4, 4))
+        preview_search_entry = ttk.Entry(preview_search_frame, textvariable=self.preview_search_var, width=38)
+        preview_search_entry.pack(side=tk.LEFT, padx=(4, 4))
+        preview_search_entry.bind("<Return>", lambda e: self.search_preview_table(reset=True))
+        ttk.Button(
+            preview_search_frame,
+            text="搜索",
+            command=lambda: self.search_preview_table(reset=True)
+        ).pack(side=tk.LEFT, padx=(12, 8))
+        ttk.Button(
+            preview_search_frame,
+            text="上一个",
+            command=self.search_preview_prev
+        ).pack(side=tk.LEFT, padx=(12, 8))
+        ttk.Button(
+            preview_search_frame,
+            text="下一个",
+            command=self.search_preview_next
+        ).pack(side=tk.LEFT, padx=(12, 8))
+        ttk.Button(
+            preview_search_frame,
+            text="导出为 xlsx",
+            command=self.export_preview_to_xlsx
+        ).pack(side=tk.LEFT, padx=(4, 8))
+
         self.preview_tree = ttk.Treeview(preview_frame, show="headings")
         y_scroll = ttk.Scrollbar(preview_frame, orient=tk.VERTICAL, command=self.preview_tree.yview)
         x_scroll = ttk.Scrollbar(preview_frame, orient=tk.HORIZONTAL, command=self.preview_tree.xview)
         self.preview_tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
-        self.preview_tree.grid(row=1, column=0, sticky="nsew")
-        y_scroll.grid(row=1, column=1, sticky="ns")
-        x_scroll.grid(row=2, column=0, sticky="ew")
+        self.preview_tree.grid(row=2, column=0, sticky="nsew")
+        y_scroll.grid(row=2, column=1, sticky="ns")
+        x_scroll.grid(row=3, column=0, sticky="ew")
         self.preview_tree.bind("<Double-1>", self.on_preview_tree_double_click)
-        preview_frame.rowconfigure(1, weight=1)
+        preview_frame.rowconfigure(2, weight=1)
         preview_frame.columnconfigure(0, weight=1)
 
         ttk.Label(right, textvariable=self.status_var, padding=(0, 4)).pack(fill=tk.X)
@@ -4776,16 +4999,23 @@ class PlanWorkflowWindow:
             return
         self.build_node_config(idx)
 
-    def refresh_node_list(self):
-        selected = self.get_selected_node_index()
+    def refresh_node_list(self, select_index=None, reveal=True):
+        self.ensure_node_tree_identity(self.nodes)
+        selected = self.get_selected_node_index() if select_index is None else select_index
         self.node_listbox.delete(0, tk.END)
         for idx, node in enumerate(self.nodes, start=1):
             mark = "√" if node.get("enabled", True) else "×"
             self.node_listbox.insert(tk.END, f"[{mark}] {idx}. {node.get('type')}：{node.get('name', '')}")
         if selected is not None and self.nodes:
             selected = min(selected, len(self.nodes) - 1)
+            self.selected_node_index = selected
+            self.node_listbox.selection_clear(0, tk.END)
             self.node_listbox.selection_set(selected)
             self.node_listbox.activate(selected)
+            if reveal:
+                self.node_listbox.see(selected)
+        elif not self.nodes:
+            self.selected_node_index = None
 
 
     # ------------------------------------------------------------------
@@ -4829,256 +5059,14 @@ class PlanWorkflowWindow:
         self.rebuild_current_config()
 
     def load_plugins(self, show_status=False):
-        """扫描 plugins 目录并注册插件。
-
-        新版插件注册分为“元信息识别”和“运行环境加载”两层：
-        1. 优先读取 plugins/插件目录/plugin.json，不 import 插件业务代码。
-        2. 其次静态解析单文件 .py 里的 PLUGIN_INFO / PARAMETER_SCHEMA，不执行插件代码。
-        3. 最后才尝试 import 插件，兼容旧版只提供 get_parameter_schema() 的插件。
-
-        如果单文件插件 import 失败，但已经能静态读取元信息，则仍注册为“仅插件独立环境运行”。
-        这样 exe 环境下即使缺少 intelhex、python-docx、pywin32 等插件依赖，插件也不会在扫描阶段消失。
-        """
+        """扫描 plugins 目录并注册插件。"""
         self.plugin_registry = {}
         self.plugin_display_map = {}
         self.plugin_load_errors = []
         plugins_dir = self.get_plugins_dir()
-
-        def normalize_run_mode(value, default="主程序内置环境"):
-            text = str(value or default or "").strip()
-            if text in ("external_python", "独立环境", "插件独立环境", "external", "external-python"):
-                return "插件独立环境"
-            return "主程序内置环境"
-
-        def normalize_info_schema(info, schema, source_name):
-            if not isinstance(info, dict):
-                raise RuntimeError("缺少 PLUGIN_INFO / plugin_info 字典")
-            plugin_id = str(info.get("id", "")).strip()
-            if not plugin_id:
-                raise RuntimeError("插件 id 不能为空")
-            api_version = str(info.get("api_version", "1.0")).strip()
-            if api_version != "1.0":
-                raise RuntimeError(f"插件协议版本不兼容：{api_version}，当前支持 1.0")
-            if schema is None:
-                schema = []
-            if not isinstance(schema, list):
-                raise RuntimeError("插件参数 schema 必须是 list")
-            if plugin_id in self.plugin_registry:
-                raise RuntimeError(f"插件 id 重复：{plugin_id}（来源：{source_name}）")
-            return plugin_id, dict(info), schema
-
-        def static_read_py_metadata(path):
-            """静态读取 .py 插件中的 PLUGIN_INFO / PARAMETER_SCHEMA，避免执行业务依赖 import。"""
-            with open(path, "r", encoding="utf-8") as f:
-                source = f.read()
-            tree = ast.parse(source, filename=path)
-            values = {}
-            for node in tree.body:
-                target_name = None
-                value_node = None
-                if isinstance(node, ast.Assign):
-                    if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-                        target_name = node.targets[0].id
-                        value_node = node.value
-                elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-                    target_name = node.target.id
-                    value_node = node.value
-                if target_name in ("PLUGIN_INFO", "plugin_info", "PARAMETER_SCHEMA", "parameter_schema", "PLUGIN_SCHEMA", "SCHEMA") and value_node is not None:
-                    try:
-                        values[target_name] = ast.literal_eval(value_node)
-                    except Exception:
-                        # 非常量表达式无法静态解析，交给后续 import 兜底。
-                        pass
-            info = values.get("PLUGIN_INFO") or values.get("plugin_info")
-            schema = (
-                values.get("PARAMETER_SCHEMA")
-                or values.get("parameter_schema")
-                or values.get("PLUGIN_SCHEMA")
-                or values.get("SCHEMA")
-                or []
-            )
-            return info, schema
-
-        def import_plugin_module(path, filename):
-            module_name = f"workflow_plugin_{os.path.splitext(filename)[0]}_{abs(hash(path))}"
-            spec = importlib.util.spec_from_file_location(module_name, path)
-            if spec is None or spec.loader is None:
-                raise RuntimeError("无法创建插件导入 spec")
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            return module
-
-        def build_registry_item(plugin_id, info, schema, path, *, module=None, external_entry=None,
-                                requirements_path="", manifest_path="", run_mode_default="主程序内置环境",
-                                import_ok=True, import_error="", metadata_source="import"):
-            run_mode_default = normalize_run_mode(run_mode_default, "主程序内置环境")
-            if import_ok:
-                available_run_modes = ["主程序内置环境", "插件独立环境"]
-                load_status = "可内置运行"
-            else:
-                available_run_modes = ["插件独立环境"]
-                load_status = "仅独立环境运行"
-                run_mode_default = "插件独立环境"
-            self.plugin_registry[plugin_id] = {
-                "id": plugin_id,
-                "info": info,
-                "module": module,
-                "schema": schema,
-                "path": path,
-                "external_entry": external_entry or path,
-                "requirements_path": requirements_path,
-                "manifest_path": manifest_path,
-                "run_mode_default": run_mode_default,
-                "import_ok": bool(import_ok),
-                "import_error": import_error or "",
-                "load_status": load_status,
-                "available_run_modes": available_run_modes,
-                "metadata_source": metadata_source,
-            }
-
-        def register_py_file(path, filename):
-            static_info = None
-            static_schema = []
-            static_error = ""
-            try:
-                static_info, static_schema = static_read_py_metadata(path)
-            except Exception as e:
-                static_error = str(e)
-
-            # 如果插件静态声明默认独立环境，则扫描阶段不强制 import，避免业务依赖缺失导致插件消失。
-            declared_mode = ""
-            if isinstance(static_info, dict):
-                declared_mode = normalize_run_mode(static_info.get("run_mode") or static_info.get("run_mode_default"), "")
-            if static_info and declared_mode == "插件独立环境":
-                plugin_id, info, schema = normalize_info_schema(static_info, static_schema, filename)
-                build_registry_item(
-                    plugin_id, info, schema, path,
-                    module=None,
-                    external_entry=path,
-                    run_mode_default="插件独立环境",
-                    import_ok=False,
-                    import_error="插件声明默认使用独立环境，扫描阶段已跳过主程序 import。",
-                    metadata_source="static_py",
-                )
-                return
-
-            try:
-                module = import_plugin_module(path, filename)
-                info = getattr(module, "PLUGIN_INFO", None) or static_info
-                schema_func = getattr(module, "get_parameter_schema", None)
-                if callable(schema_func):
-                    schema = schema_func()
-                else:
-                    schema = getattr(module, "PARAMETER_SCHEMA", None) or static_schema or []
-                plugin_id, info, schema = normalize_info_schema(info, schema, filename)
-                if not callable(getattr(module, "run", None)):
-                    raise RuntimeError("插件缺少 run(input_data, params, context) 函数")
-                build_registry_item(
-                    plugin_id, info, schema, path,
-                    module=module,
-                    external_entry=path,
-                    run_mode_default=info.get("run_mode", "主程序内置环境"),
-                    import_ok=True,
-                    metadata_source="import_py",
-                )
-            except Exception as import_exc:
-                if static_info:
-                    # import 失败但元信息已静态读取成功：仍注册，让用户可选择插件独立环境运行。
-                    plugin_id, info, schema = normalize_info_schema(static_info, static_schema, filename)
-                    build_registry_item(
-                        plugin_id, info, schema, path,
-                        module=None,
-                        external_entry=path,
-                        run_mode_default="插件独立环境",
-                        import_ok=False,
-                        import_error=str(import_exc),
-                        metadata_source="static_py_import_failed",
-                    )
-                else:
-                    detail = str(import_exc)
-                    if static_error:
-                        detail = f"静态元信息读取失败：{static_error}；导入失败：{detail}"
-                    raise RuntimeError(detail)
-
-        def register_manifest(plugin_dir, manifest_path):
-            with open(manifest_path, "r", encoding="utf-8") as f:
-                manifest = json.load(f)
-            info = manifest.get("PLUGIN_INFO") or manifest.get("plugin_info") or manifest.get("info")
-            if info is None and "id" in manifest:
-                info = manifest
-            schema = manifest.get("schema") or manifest.get("parameters") or manifest.get("parameter_schema") or []
-            plugin_id, info, schema = normalize_info_schema(info, schema, manifest_path)
-            entry = manifest.get("entry") or manifest.get("main") or info.get("entry") or "plugin.py"
-            entry_path = entry if os.path.isabs(entry) else os.path.join(plugin_dir, entry)
-            req = manifest.get("requirements") or info.get("requirements") or "requirements.txt"
-            req_path = req if os.path.isabs(req) else os.path.join(plugin_dir, req)
-            run_mode_default = normalize_run_mode(manifest.get("run_mode") or info.get("run_mode") or "插件独立环境", "插件独立环境")
-
-            # plugin.json 是推荐的独立环境格式：默认不 import 业务入口。
-            # 如果 manifest 明确要求主程序内置环境，则尝试 import；失败时仍注册为仅独立环境运行。
-            module = None
-            import_ok = False
-            import_error = ""
-            metadata_source = "plugin_json"
-            if run_mode_default == "主程序内置环境":
-                try:
-                    module = import_plugin_module(entry_path, os.path.basename(entry_path))
-                    if not callable(getattr(module, "run", None)):
-                        raise RuntimeError("插件缺少 run(input_data, params, context) 函数")
-                    import_ok = True
-                    metadata_source = "plugin_json_imported"
-                except Exception as e:
-                    import_error = str(e)
-                    run_mode_default = "插件独立环境"
-            else:
-                import_error = "plugin.json 注册插件，扫描阶段默认不导入业务入口。"
-
-            build_registry_item(
-                plugin_id, info, schema, entry_path,
-                module=module,
-                external_entry=entry_path,
-                requirements_path=req_path if os.path.exists(req_path) else "",
-                manifest_path=manifest_path,
-                run_mode_default=run_mode_default,
-                import_ok=import_ok,
-                import_error=import_error,
-                metadata_source=metadata_source,
-            )
-
-        # 先扫描插件包目录，避免与同名 py 文件冲突时信息不完整。
-        for name in sorted(os.listdir(plugins_dir)):
-            full = os.path.join(plugins_dir, name)
-            if not os.path.isdir(full):
-                continue
-            manifest_path = os.path.join(full, "plugin.json")
-            if not os.path.exists(manifest_path):
-                continue
-            try:
-                register_manifest(full, manifest_path)
-            except Exception as e:
-                self.plugin_load_errors.append({
-                    "file": f"{name}/plugin.json",
-                    "path": manifest_path,
-                    "error": str(e),
-                    "traceback": traceback.format_exc(),
-                })
-
-        # 再扫描旧版单文件插件。
-        for filename in sorted(os.listdir(plugins_dir)):
-            path = os.path.join(plugins_dir, filename)
-            if os.path.isdir(path):
-                continue
-            if not filename.endswith(".py") or filename.startswith("_"):
-                continue
-            try:
-                register_py_file(path, filename)
-            except Exception as e:
-                self.plugin_load_errors.append({
-                    "file": filename,
-                    "path": path,
-                    "error": str(e),
-                    "traceback": traceback.format_exc(),
-                })
+        registry, errors = scan_plugins(plugins_dir)
+        self.plugin_registry = registry
+        self.plugin_load_errors = errors
 
         used_names = {}
         external_only_count = 0
@@ -5105,6 +5093,7 @@ class PlanWorkflowWindow:
                 first = self.plugin_load_errors[0]
                 msg += f"；示例：{first.get('file')} - {first.get('error')}"
             self.status_var.set(msg)
+
 
     def default_config_for_plugin(self, plugin_id):
         item = self.plugin_registry.get(plugin_id, {})
@@ -5152,16 +5141,7 @@ class PlanWorkflowWindow:
         if not db_path or not os.path.exists(db_path):
             return []
         try:
-            conn = sqlite3.connect(db_path)
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT name FROM sqlite_master
-                WHERE type='table' AND name NOT LIKE 'sqlite_%'
-                ORDER BY name
-            """)
-            tables = [r[0] for r in cur.fetchall()]
-            conn.close()
-            return tables
+            return TableAccessManager(db_path).list_tables()
         except Exception:
             return []
 
@@ -5183,6 +5163,2611 @@ class PlanWorkflowWindow:
             return self.app.db_path_var.get().strip()
         except Exception:
             return ""
+
+    def make_node_id(self):
+        return "node_" + uuid.uuid4().hex[:12]
+
+    def table_permission_set(self, read=False, write=False, create=False, append=False, update=False,
+                             clear=False, replace=False, alter=False, delete=False, drop=False):
+        return {
+            "read_table": bool(read),
+            "write_table": bool(write),
+            "create_table": bool(create),
+            "append_rows": bool(append),
+            "update_rows": bool(update),
+            "clear_table": bool(clear),
+            "replace_table": bool(replace),
+            "alter_schema": bool(alter),
+            "delete_rows": bool(delete),
+            "drop_table": bool(drop),
+        }
+
+    def make_table_access_entry(self, role, table, source_type="SQLite表", is_current_table=False,
+                                permissions=None, write_mode="", field_mapping=None, log_only=False,
+                                table_pattern="", pattern_type="glob", declared_by=""):
+        return {
+            "role": role,
+            "table": table,
+            "table_pattern": str(table_pattern or "").strip(),
+            "pattern_type": str(pattern_type or "glob").strip(),
+            "declared_by": str(declared_by or "").strip(),
+            "source_type": source_type,
+            "is_current_table": bool(is_current_table),
+            "permissions": permissions or self.table_permission_set(read=True),
+            "write_mode": self.normalize_table_access_write_mode(write_mode),
+            "field_mapping_mode": "by_name",
+            "field_mapping": field_mapping or {},
+            "log_only": bool(log_only),
+        }
+
+    def get_plugin_table_access_specs(self, config):
+        config = config or {}
+        plugin_id = str(config.get("plugin_id", "") or "").strip()
+        item = self.plugin_registry.get(plugin_id, {}) if hasattr(self, "plugin_registry") else {}
+        module = item.get("module")
+        params = dict(config.get("params", {}) or {})
+        specs = None
+        provider = getattr(module, "get_table_access_spec", None) if module is not None else None
+        if callable(provider):
+            try:
+                specs = provider(params, {"plugin_id": plugin_id, "config_probe": True})
+            except TypeError:
+                specs = provider(params)
+            except Exception:
+                specs = None
+        if specs is None:
+            info = item.get("info", {}) or {}
+            specs = info.get("table_access") or info.get("table_access_spec") or []
+        if isinstance(specs, dict):
+            specs = specs.get("tables") or [specs]
+        return [spec for spec in (specs or []) if isinstance(spec, dict)]
+
+    def plugin_has_table_access_declaration(self, config):
+        config = config or {}
+        plugin_id = str(config.get("plugin_id", "") or "").strip()
+        item = self.plugin_registry.get(plugin_id, {}) if hasattr(self, "plugin_registry") else {}
+        module = item.get("module")
+        if callable(getattr(module, "get_table_access_spec", None)):
+            return True
+        info = item.get("info", {}) or {}
+        return bool(info.get("table_access") or info.get("table_access_spec"))
+
+    def plugin_needs_table_access_declaration(self, config):
+        config = config or {}
+        plugin_id = str(config.get("plugin_id", "") or "").strip()
+        item = self.plugin_registry.get(plugin_id, {}) if hasattr(self, "plugin_registry") else {}
+        info = item.get("info", {}) or {}
+        danger = str(info.get("danger_level", "") or "").strip().lower()
+        return danger in {"db_write", "database_write"} or bool(info.get("database_requests"))
+
+    def make_plugin_declared_access_entry(self, plugin_id, spec):
+        spec = spec or {}
+        permissions = {key: False for key, _ in self.table_access_permission_items()}
+        permissions.update({
+            key: bool(value)
+            for key, value in (spec.get("permissions") or {}).items()
+            if key in permissions
+        })
+        return self.make_table_access_entry(
+            spec.get("role") or "plugin_declared",
+            spec.get("table") or "",
+            source_type=spec.get("source_type") or "SQLite表",
+            is_current_table=bool(spec.get("is_current_table")),
+            permissions=permissions,
+            write_mode=spec.get("write_mode") or "",
+            field_mapping=copy.deepcopy(spec.get("field_mapping") or {}),
+            log_only=bool(spec.get("log_only")),
+            table_pattern=spec.get("table_pattern") or "",
+            pattern_type=spec.get("pattern_type") or "glob",
+            declared_by=plugin_id,
+        )
+
+    def default_table_access_for_node(self, node):
+        return workflow_build_default_table_access_for_node(
+            node,
+            self.make_table_access_entry,
+            self.table_permission_set,
+            normalize_selected_columns_write_mode=getattr(self, "normalize_selected_columns_write_mode", None),
+            normalize_group_transit_conflict_mode=getattr(self, "normalize_group_transit_conflict_mode", None),
+            get_plugin_table_access_specs=self.get_plugin_table_access_specs,
+            make_plugin_declared_access_entry=self.make_plugin_declared_access_entry,
+        )
+
+    def ensure_node_identity(self, node, force_new=False):
+        if not isinstance(node, dict):
+            return node
+        if force_new or not str(node.get("node_id", "")).strip():
+            node["node_id"] = self.make_node_id()
+        if not isinstance(node.get("table_access"), dict):
+            node["table_access"] = self.default_table_access_for_node(node)
+        return node
+
+    def ensure_node_tree_identity(self, nodes, force_new=False):
+        for node in nodes or []:
+            self.ensure_node_identity(node, force_new=force_new)
+            cfg = node.get("config", {}) if isinstance(node, dict) else {}
+            child_nodes = cfg.get("nodes") if isinstance(cfg, dict) else None
+            if isinstance(child_nodes, list):
+                self.ensure_node_tree_identity(child_nodes, force_new=force_new)
+
+    def refresh_node_table_access(self, node):
+        if isinstance(node, dict) and (
+            not isinstance(node.get("table_access"), dict)
+            or bool(node.get("table_access", {}).get("auto_generated", True))
+        ):
+            node["table_access"] = self.default_table_access_for_node(node)
+        return node
+
+    def refresh_node_tree_table_access(self, nodes):
+        for node in nodes or []:
+            self.ensure_node_identity(node)
+            self.refresh_node_table_access(node)
+            cfg = node.get("config", {}) if isinstance(node, dict) else {}
+            child_nodes = cfg.get("nodes") if isinstance(cfg, dict) else None
+            if isinstance(child_nodes, list):
+                self.refresh_node_tree_table_access(child_nodes)
+
+    def table_access_permission_items(self):
+        return [
+            ("read_table", "读表"),
+            ("write_table", "写表"),
+            ("create_table", "新建表"),
+            ("append_rows", "追加行"),
+            ("update_rows", "更新行"),
+            ("clear_table", "清空表"),
+            ("replace_table", "替换表"),
+            ("alter_schema", "改结构"),
+            ("delete_rows", "删行"),
+            ("drop_table", "删表"),
+        ]
+
+    def field_permission_items(self):
+        return [
+            ("read_field", "可读"),
+            ("write_field", "可写"),
+            ("create_field", "可创建"),
+            ("protect_field", "保护"),
+        ]
+
+    def get_node_table_access(self, node):
+        self.ensure_node_identity(node)
+        access = node.get("table_access")
+        if not isinstance(access, dict):
+            access = self.default_table_access_for_node(node)
+            node["table_access"] = access
+        access.setdefault("version", 1)
+        tables = access.get("tables")
+        if not isinstance(tables, list):
+            access["tables"] = []
+        return access
+
+    def mark_node_table_access_manual(self, node):
+        access = self.get_node_table_access(node)
+        access["auto_generated"] = False
+        return access
+
+    def table_access_table_choices(self, node=None):
+        values = ["__CURRENT_TABLE__"]
+        try:
+            values.extend(self.app.get_table_names())
+        except Exception:
+            pass
+        if isinstance(node, dict):
+            for entry in self.get_node_table_access(node).get("tables", []):
+                table = str((entry or {}).get("table", "") or "").strip()
+                if table:
+                    values.append(table)
+        result = []
+        for value in values:
+            if value not in result:
+                result.append(value)
+        return result
+
+    def table_permission_summary(self, entry):
+        perms = (entry or {}).get("permissions") or {}
+        labels = []
+        label_map = dict(self.table_access_permission_items())
+        for key, _ in self.table_access_permission_items():
+            if perms.get(key):
+                labels.append(label_map.get(key, key))
+        if not labels:
+            return "无权限"
+        return "/".join(labels[:4]) + ("..." if len(labels) > 4 else "")
+
+    def table_access_entry_table_label(self, entry):
+        return workflow_table_access_entry_table_label(entry)
+
+    def table_access_operation_summary(self, entry):
+        return workflow_table_access_operation_summary(
+            entry,
+            write_mode_formatter=self.write_mode_display_text,
+        )
+
+    def table_access_entry_status(self, entry):
+        return workflow_table_access_entry_status(entry)
+
+    def table_access_node_status(self, node):
+        access = self.get_node_table_access(node)
+        tables = access.get("tables", [])
+        if not tables:
+            return "未配置"
+        statuses = [self.table_access_entry_status(entry) for entry in tables]
+        if any(s in ("未绑定", "未授权") for s in statuses):
+            return "待配置"
+        if any(s == "危险写入" for s in statuses):
+            return "需确认"
+        if any(s == "已授权" for s in statuses):
+            return "已授权"
+        if all(s in ("只读", "只记录", "当前表") for s in statuses):
+            return "只读/记录"
+        return "OK"
+
+    def table_access_field_items(self, entry):
+        return workflow_table_access_field_items(entry)
+
+    def find_table_access_field_rule(self, entry, target="", source="", field_index=None):
+        return workflow_find_table_access_field_rule(entry, target=target, source=source, field_index=field_index)
+
+    def make_table_access_field_key(self, mapping, source_field, target_field):
+        return workflow_make_table_access_field_key(mapping, source_field, target_field)
+
+    def field_permission_status(self, item):
+        item = item or {}
+        perms = item.get("permissions") or {}
+        if perms.get("protect_field"):
+            return "保护"
+        if perms.get("write_field"):
+            return "可写"
+        if perms.get("read_field"):
+            return "只读"
+        return "未授权"
+
+    def field_bool_text(self, value):
+        return "是" if bool(value) else "否"
+
+    def get_table_access_field_choices(self, node_index, entry):
+        entry = entry or {}
+        table = str(entry.get("table", "") or "").strip()
+        choices = []
+        try:
+            headers, _ = self.get_headers_rows_before(node_index)
+            choices.extend(headers or [])
+        except Exception:
+            choices.extend(self.preview_headers or [])
+        if table and table != "__CURRENT_TABLE__" and entry.get("source_type", "SQLite表") == "SQLite表":
+            try:
+                choices.extend(self.app.get_table_columns(table))
+            except Exception:
+                pass
+        for _, item in self.table_access_field_items(entry):
+            for key in ("source_field", "target_field", "field", "name"):
+                value = str(item.get(key, "") or "").strip()
+                if value:
+                    choices.append(value)
+        result = []
+        for value in choices:
+            if value and value not in result:
+                result.append(value)
+        return result
+
+    def auto_match_table_access_fields(self, node_index, entry):
+        entry = entry or {}
+        source_fields = []
+        try:
+            source_fields, _ = self.get_headers_rows_before(node_index)
+        except Exception:
+            source_fields = list(self.preview_headers or [])
+
+        table = str(entry.get("table", "") or "").strip()
+        target_fields = []
+        if table and table != "__CURRENT_TABLE__" and entry.get("source_type", "SQLite表") == "SQLite表":
+            try:
+                target_fields = self.app.get_table_columns(table)
+            except Exception:
+                target_fields = []
+        return workflow_apply_auto_field_mapping_by_name(
+            entry,
+            source_fields,
+            target_fields,
+            lambda value: self.app.sanitize_sql_name(value, ""),
+            make_key=self.make_table_access_field_key,
+        )
+
+    def auto_match_table_access_fields_by_order(self, node_index, entry):
+        entry = entry or {}
+        try:
+            source_fields, _ = self.get_headers_rows_before(node_index)
+        except Exception:
+            source_fields = list(self.preview_headers or [])
+
+        table = str(entry.get("table", "") or "").strip()
+        target_fields = []
+        if table and table != "__CURRENT_TABLE__" and entry.get("source_type", "SQLite表") == "SQLite表":
+            try:
+                target_fields = self.app.get_table_columns(table)
+            except Exception:
+                target_fields = []
+        return workflow_apply_auto_field_mapping_by_order(entry, source_fields, target_fields)
+
+    def apply_table_access_preset_to_vars(self, preset, permission_vars, log_only_var=None):
+        config = workflow_table_access_preset_config(
+            preset,
+            [key for key, _ in self.table_access_permission_items()],
+        )
+        if config is None:
+            return
+        for key, var in permission_vars.items():
+            var.set(bool(config["permissions"].get(key)))
+        if log_only_var is not None:
+            log_only_var.set(bool(config["log_only"]))
+
+    def table_access_entry_match_score(self, actual, expected):
+        return workflow_table_access_entry_match_score(actual, expected)
+
+    def find_matching_table_access_entry(self, actual_tables, expected):
+        return workflow_find_matching_table_access_entry(actual_tables, expected)
+
+    def normalize_precheck_transit_name(self, table_name):
+        return workflow_normalize_precheck_transit_name(table_name)
+
+    def add_table_access_precheck_issue(self, issues, severity, node_label, node, entry, message,
+                                        suggestion="", category="permission", blocking=None):
+        issues.append(workflow_make_table_access_precheck_issue(
+            severity,
+            node_label,
+            node,
+            entry,
+            message,
+            suggestion=suggestion,
+            category=category,
+            blocking=blocking,
+            write_mode_formatter=self.write_mode_display_text,
+        ))
+
+    def table_access_precheck_sort_key(self, issue):
+        return workflow_table_access_precheck_sort_key(issue)
+
+    def table_access_precheck_summary_text(self, issues):
+        return workflow_table_access_precheck_summary_text(issues)
+
+    def table_access_precheck_actionable(self, issues):
+        return workflow_table_access_precheck_actionable(issues)
+
+    def table_access_precheck_blocking(self, issues):
+        return workflow_table_access_precheck_blocking(issues)
+
+    def get_precheck_sqlite_tables(self):
+        db_path = self.get_workflow_db_path()
+        if not db_path or not os.path.exists(db_path):
+            return None
+        try:
+            return set(TableAccessManager(db_path, node_type="权限预检").list_tables())
+        except Exception:
+            return None
+
+    def iter_nodes_for_table_access_precheck(self, nodes=None, stop_index=None, prefix=""):
+        node_list = nodes if nodes is not None else self.nodes
+        yield from workflow_iter_nodes_for_table_access_precheck(node_list, stop_index=stop_index, prefix=prefix)
+
+    def build_table_access_precheck(self, execute_actions=True, stop_index=None, nodes=None):
+        """
+        执行前权限预检。
+
+        以节点配置重新推导“期望表访问”，再和当前保存的 table_access 对比。
+        这样既能发现默认映射遗漏，也能发现用户手动收窄权限后的运行风险。
+        """
+        node_list = nodes if nodes is not None else self.nodes
+        self.ensure_node_tree_identity(node_list)
+        self.refresh_node_tree_table_access(node_list)
+
+        issues = []
+        db_path = self.get_workflow_db_path()
+        sqlite_tables = self.get_precheck_sqlite_tables()
+        produced_transit = set((self.current_transit_tables or {}).keys())
+        permission_label_map = dict(self.table_access_permission_items())
+        db_exists = os.path.exists(db_path) if db_path else None
+
+        if execute_actions:
+            output_mode = self.output_mode_var.get()
+            output_table = self.output_table_var.get().strip()
+            issues.extend(workflow_evaluate_workflow_output_precheck(
+                output_mode,
+                output_table,
+                db_path=db_path,
+                write_mode_formatter=self.write_mode_display_text,
+            ))
+
+        for node_label, node in self.iter_nodes_for_table_access_precheck(node_list, stop_index=stop_index):
+            if not isinstance(node, dict):
+                continue
+            if not node.get("enabled", True):
+                continue
+
+            node_type = node.get("type", "")
+            config = node.get("config", {}) or {}
+            expected_access = self.default_table_access_for_node(node)
+            actual_access = self.get_node_table_access(node)
+            node_result = workflow_evaluate_node_table_access_precheck(
+                node_label,
+                node,
+                expected_access,
+                actual_access,
+                permission_label_map=permission_label_map,
+                execute_actions=execute_actions,
+                db_path=db_path,
+                db_exists=db_exists,
+                sqlite_tables=sqlite_tables,
+                produced_transit=produced_transit,
+                needs_plugin_declaration=node_type == "插件节点" and self.plugin_needs_table_access_declaration(config),
+                has_plugin_declaration=node_type == "插件节点" and self.plugin_has_table_access_declaration(config),
+                write_mode_formatter=self.write_mode_display_text,
+            )
+            issues.extend(node_result.get("issues", []))
+            for transit_name in node_result.get("produced_transit", []) or []:
+                produced_transit.add(transit_name)
+
+        issues.sort(key=self.table_access_precheck_sort_key)
+        self.last_table_access_precheck = issues
+        return issues
+
+    def show_table_access_precheck_dialog(self, issues, title="权限预检", allow_continue=False):
+        issues = list(issues or [])
+        result = {"continue": not allow_continue}
+        win = tk.Toplevel(self.window)
+        win.title(title)
+        win.geometry("1280x680")
+        win.minsize(980, 520)
+        win.transient(self.window)
+
+        main = ttk.Frame(win, padding=8)
+        main.pack(fill=tk.BOTH, expand=True)
+        summary_var = tk.StringVar(value=self.table_access_precheck_summary_text(issues))
+        ttk.Label(main, textvariable=summary_var, font=("TkDefaultFont", 10, "bold")).pack(anchor=tk.W, pady=(0, 6))
+
+        filter_frame = ttk.Frame(main)
+        filter_frame.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(filter_frame, text="级别：").pack(side=tk.LEFT, padx=(0, 4))
+        severity_var = tk.StringVar(value="全部")
+        severity_combo = ttk.Combobox(filter_frame, textvariable=severity_var, values=["全部", "error", "warning", "info"], width=10, state="readonly")
+        severity_combo.pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Label(filter_frame, text="搜索：").pack(side=tk.LEFT, padx=(0, 4))
+        search_var = tk.StringVar()
+        search_entry = ttk.Entry(filter_frame, textvariable=search_var, width=34)
+        search_entry.pack(side=tk.LEFT, padx=(0, 8))
+
+        tree_wrap = ttk.Frame(main)
+        tree_wrap.pack(fill=tk.BOTH, expand=True)
+        columns = ("severity", "category", "blocking", "node", "source", "table", "role", "operation", "message", "suggestion")
+        tree = ttk.Treeview(tree_wrap, columns=columns, show="headings", height=18)
+        for col, text, width in [
+            ("severity", "级别", 72),
+            ("category", "类型", 72),
+            ("blocking", "阻断", 52),
+            ("node", "节点", 180),
+            ("source", "来源", 82),
+            ("table", "表", 150),
+            ("role", "角色", 82),
+            ("operation", "操作", 150),
+            ("message", "问题", 320),
+            ("suggestion", "建议", 260),
+        ]:
+            tree.heading(col, text=text)
+            tree.column(col, width=width, anchor=tk.W)
+        tree.tag_configure("error", foreground="#b00020")
+        tree.tag_configure("warning", foreground="#8a5a00")
+        tree.tag_configure("info", foreground="#335c99")
+        yscroll = ttk.Scrollbar(tree_wrap, orient=tk.VERTICAL, command=tree.yview)
+        xscroll = ttk.Scrollbar(tree_wrap, orient=tk.HORIZONTAL, command=tree.xview)
+        tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+        tree_wrap.rowconfigure(0, weight=1)
+        tree_wrap.columnconfigure(0, weight=1)
+
+        def row_text(issue):
+            return " ".join(str(issue.get(key, "") or "") for key in ["severity", "category", "blocking", "node", "source_type", "table", "role", "operation", "message", "suggestion"])
+
+        def refresh_tree(*_):
+            tree.delete(*tree.get_children())
+            selected_sev = severity_var.get()
+            keyword = search_var.get().strip().lower()
+            visible = 0
+            for idx, issue in enumerate(issues):
+                sev = issue.get("severity", "info")
+                if selected_sev != "全部" and sev != selected_sev:
+                    continue
+                if keyword and keyword not in row_text(issue).lower():
+                    continue
+                visible += 1
+                tree.insert(
+                    "",
+                    tk.END,
+                    iid=str(idx),
+                    values=(
+                        sev,
+                        issue.get("category", ""),
+                        "是" if issue.get("blocking") else "否",
+                        issue.get("node", ""),
+                        issue.get("source_type", ""),
+                        issue.get("table", ""),
+                        issue.get("role", ""),
+                        issue.get("operation", ""),
+                        issue.get("message", ""),
+                        issue.get("suggestion", ""),
+                    ),
+                    tags=(sev,),
+                )
+            summary_var.set(self.table_access_precheck_summary_text(issues) + f" 当前显示 {visible} 项。")
+
+        def show_detail(event=None):
+            sel = tree.selection()
+            if not sel:
+                return
+            issue = issues[int(sel[0])]
+            detail = (
+                f"级别：{issue.get('severity', '')}\n"
+                f"类型：{issue.get('category', '')}\n"
+                f"阻断执行：{'是' if issue.get('blocking') else '否'}\n"
+                f"节点：{issue.get('node', '')}\n"
+                f"表：{issue.get('source_type', '')} / {issue.get('table', '')}\n"
+                f"角色：{issue.get('role', '')}\n"
+                f"操作：{issue.get('operation', '')}\n\n"
+                f"问题：{issue.get('message', '')}\n\n"
+                f"建议：{issue.get('suggestion', '')}"
+            )
+            messagebox.showinfo("预检详情", detail, parent=win)
+
+        tree.bind("<Double-1>", show_detail)
+        severity_var.trace_add("write", refresh_tree)
+        search_var.trace_add("write", refresh_tree)
+
+        bottom = ttk.Frame(win, padding=(8, 0, 8, 8))
+        bottom.pack(fill=tk.X)
+        ttk.Button(bottom, text="打开字段权限层", command=lambda: (win.destroy(), self.open_table_access_window())).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bottom, text="详情", command=show_detail).pack(side=tk.LEFT, padx=4)
+        if allow_continue:
+            def continue_run():
+                result["continue"] = True
+                win.destroy()
+            def cancel_run():
+                result["continue"] = False
+                win.destroy()
+            ttk.Button(bottom, text="继续执行", command=continue_run).pack(side=tk.RIGHT, padx=4)
+            ttk.Button(bottom, text="取消执行", command=cancel_run).pack(side=tk.RIGHT, padx=4)
+            win.protocol("WM_DELETE_WINDOW", cancel_run)
+        else:
+            ttk.Button(bottom, text="关闭", command=win.destroy).pack(side=tk.RIGHT, padx=4)
+
+        refresh_tree()
+        self.center_toplevel(win, self.window, 1280, 680)
+        try:
+            win.grab_set()
+        except Exception:
+            pass
+        self.window.wait_window(win)
+        return bool(result.get("continue"))
+
+    def confirm_table_access_precheck(self, execute_actions=True, stop_index=None):
+        issues = self.build_table_access_precheck(execute_actions=execute_actions, stop_index=stop_index)
+        self.last_table_access_precheck = list(issues or [])
+        actionable = self.table_access_precheck_actionable(issues)
+        if not actionable:
+            self.status_var.set(self.table_access_precheck_summary_text(issues))
+            return True
+        policy = self.normalize_table_access_policy()
+        if policy == "audit":
+            self.status_var.set(self.table_access_precheck_summary_text(actionable) + " 当前策略为只审计，执行不会因预检提示而中断。")
+            return True
+        if policy == "strict":
+            blocking = self.table_access_precheck_blocking(actionable)
+            if not blocking:
+                self.status_var.set(self.table_access_precheck_summary_text(actionable) + " 当前仅有风险提醒，强制模式允许继续执行。")
+                return True
+            self.show_table_access_precheck_dialog(
+                blocking,
+                title="执行前权限预检 - 强制拦截",
+                allow_continue=False,
+            )
+            self.status_var.set("执行计划已拦截：当前权限策略为强制拦截，请先处理权限预检项。")
+            return False
+        return self.show_table_access_precheck_dialog(
+            actionable,
+            title="执行前权限预检",
+            allow_continue=True,
+        )
+
+    def open_table_access_precheck_window(self):
+        issues = self.build_table_access_precheck(execute_actions=True)
+        self.show_table_access_precheck_dialog(issues, title="权限预检", allow_continue=False)
+
+    def jump_node_label(self, idx, node):
+        node_type = node.get("type", "")
+        name = str(node.get("name", "") or "").strip()
+        label = f"{idx + 1}.{node_type}"
+        if name:
+            label += f" / {name}"
+        return label
+
+    def collect_jump_anchors(self, nodes=None):
+        node_list = nodes if nodes is not None else self.nodes
+        anchors = []
+        by_id = {}
+        for idx, node in enumerate(node_list or []):
+            if node.get("type") != "跳转锚点节点":
+                continue
+            cfg = node.get("config", {}) or {}
+            anchor_id = str(cfg.get("anchor_id", "") or "").strip()
+            entry = {
+                "anchor_id": anchor_id,
+                "anchor_name": str(cfg.get("anchor_name", "") or node.get("name", "") or "").strip(),
+                "description": str(cfg.get("description", "") or "").strip(),
+                "node_index": idx,
+                "node_id": node.get("node_id", ""),
+                "node_name": node.get("name", ""),
+                "enabled": bool(node.get("enabled", True)),
+                "node": node,
+            }
+            anchors.append(entry)
+            if anchor_id:
+                by_id.setdefault(anchor_id, []).append(entry)
+        return {"all": anchors, "by_id": by_id}
+
+    def collect_condition_flag_producers(self, nodes=None):
+        node_list = nodes if nodes is not None else self.nodes
+        flags = {}
+        for idx, node in enumerate(node_list or []):
+            if node.get("type") != "条件判断节点" or not node.get("enabled", True):
+                continue
+            flag_name = str((node.get("config", {}) or {}).get("flag_name", "") or "").strip()
+            if not flag_name:
+                continue
+            flags.setdefault(flag_name, []).append({
+                "node_index": idx,
+                "node": node,
+                "label": self.jump_node_label(idx, node),
+            })
+        return flags
+
+    def resolve_jump_anchor_index(self, anchor_id, anchors_info=None, nodes=None):
+        anchor_id = str(anchor_id or "").strip()
+        if not anchor_id:
+            return None, "目标锚点未配置"
+        anchors_info = anchors_info if isinstance(anchors_info, dict) else self.collect_jump_anchors(nodes=nodes)
+        matches = list((anchors_info.get("by_id") or {}).get(anchor_id, []) or [])
+        if not matches:
+            return None, f"目标锚点不存在：{anchor_id}"
+        enabled = [item for item in matches if item.get("enabled")]
+        if not enabled:
+            return None, f"目标锚点已禁用：{anchor_id}"
+        if len(enabled) > 1:
+            return None, f"目标锚点重复：{anchor_id}"
+        target_idx = int(enabled[0].get("node_index", -1))
+        return target_idx, f"有效：节点 {target_idx + 1}"
+
+    def jump_relation_status_text(self, relation, anchors_info=None, nodes=None):
+        if not relation.get("enabled", True):
+            return "跳转节点已禁用"
+        target = str(relation.get("target_anchor_id", "") or "").strip()
+        if not target:
+            return "未配置目标锚点"
+        target_idx, message = self.resolve_jump_anchor_index(target, anchors_info=anchors_info, nodes=nodes)
+        if target_idx is None:
+            return message
+        return f"有效 -> 节点 {target_idx + 1}"
+
+    def collect_jump_relations(self, nodes=None, anchors_info=None):
+        node_list = nodes if nodes is not None else self.nodes
+        anchors_info = anchors_info if isinstance(anchors_info, dict) else self.collect_jump_anchors(nodes=node_list)
+        relations = []
+        for idx, node in enumerate(node_list or []):
+            node_type = node.get("type", "")
+            cfg = node.get("config", {}) or {}
+            enabled = bool(node.get("enabled", True))
+            if node_type == "无条件跳转节点":
+                relation = {
+                    "source_index": idx,
+                    "source_label": self.jump_node_label(idx, node),
+                    "source_type": node_type,
+                    "kind": "无条件",
+                    "flag_name": "",
+                    "condition_value": "始终",
+                    "target_anchor_id": str(cfg.get("target_anchor_id", "") or "").strip(),
+                    "enabled": enabled,
+                    "is_default": False,
+                    "node": node,
+                }
+                relation["status"] = self.jump_relation_status_text(relation, anchors_info=anchors_info, nodes=node_list)
+                relations.append(relation)
+            elif node_type == "条件跳转节点":
+                flag_name = str(cfg.get("flag_name", "") or "").strip()
+                rules = cfg.get("jump_rules", [])
+                if not isinstance(rules, list):
+                    rules = []
+                for rule_idx, rule in enumerate(rules):
+                    if not isinstance(rule, dict):
+                        continue
+                    relation = {
+                        "source_index": idx,
+                        "source_label": self.jump_node_label(idx, node),
+                        "source_type": node_type,
+                        "kind": "条件",
+                        "flag_name": flag_name,
+                        "condition_value": str(rule.get("value", "") or "").strip(),
+                        "target_anchor_id": str(rule.get("target_anchor_id", "") or "").strip(),
+                        "enabled": enabled,
+                        "is_default": False,
+                        "rule_index": rule_idx,
+                        "node": node,
+                    }
+                    relation["status"] = self.jump_relation_status_text(relation, anchors_info=anchors_info, nodes=node_list)
+                    relations.append(relation)
+                default_anchor = str(cfg.get("default_anchor_id", "") or "").strip()
+                if default_anchor:
+                    relation = {
+                        "source_index": idx,
+                        "source_label": self.jump_node_label(idx, node),
+                        "source_type": node_type,
+                        "kind": "默认",
+                        "flag_name": flag_name,
+                        "condition_value": "DEFAULT",
+                        "target_anchor_id": default_anchor,
+                        "enabled": enabled,
+                        "is_default": True,
+                        "node": node,
+                    }
+                    relation["status"] = self.jump_relation_status_text(relation, anchors_info=anchors_info, nodes=node_list)
+                    relations.append(relation)
+                if not rules and not default_anchor:
+                    relation = {
+                        "source_index": idx,
+                        "source_label": self.jump_node_label(idx, node),
+                        "source_type": node_type,
+                        "kind": "条件",
+                        "flag_name": flag_name,
+                        "condition_value": "",
+                        "target_anchor_id": "",
+                        "enabled": enabled,
+                        "is_default": False,
+                        "node": node,
+                        "status": "未配置跳转规则",
+                    }
+                    relations.append(relation)
+        return relations
+
+    def add_jump_validation_issue(self, issues, severity, item, message, suggestion="", relation=None, anchor=None):
+        issues.append({
+            "severity": severity,
+            "item": item,
+            "message": message,
+            "suggestion": suggestion,
+            "relation": relation,
+            "anchor": anchor,
+        })
+
+    def next_enabled_node_after_anchor(self, anchor, nodes=None):
+        node_list = nodes if nodes is not None else self.nodes
+        start = int(anchor.get("node_index", -1)) + 1
+        for idx in range(start, len(node_list or [])):
+            if (node_list[idx] or {}).get("enabled", True):
+                return idx
+        return None
+
+    def validate_jump_relations(self, nodes=None):
+        node_list = nodes if nodes is not None else self.nodes
+        anchors_info = self.collect_jump_anchors(nodes=node_list)
+        relations = self.collect_jump_relations(nodes=node_list, anchors_info=anchors_info)
+        flag_producers = self.collect_condition_flag_producers(nodes=node_list)
+        issues = []
+
+        for anchor in anchors_info.get("all", []):
+            anchor_id = anchor.get("anchor_id", "")
+            label = f"{anchor.get('node_index', -1) + 1}.锚点"
+            if not anchor_id:
+                self.add_jump_validation_issue(
+                    issues, "error", label, "锚点ID为空，其他跳转节点无法引用它。",
+                    "给锚点填写唯一、稳定的锚点ID。", anchor=anchor
+                )
+            if anchor.get("enabled") and self.next_enabled_node_after_anchor(anchor, nodes=node_list) is None:
+                self.add_jump_validation_issue(
+                    issues, "warning", anchor_id or label, "锚点后没有可执行节点。",
+                    "如果该锚点不是终点，请在锚点后添加处理节点。", anchor=anchor
+                )
+
+        for anchor_id, matches in (anchors_info.get("by_id") or {}).items():
+            enabled_matches = [m for m in matches if m.get("enabled")]
+            if len(matches) > 1:
+                self.add_jump_validation_issue(
+                    issues, "error", anchor_id, f"锚点ID重复：{len(matches)} 个节点使用同一个ID。",
+                    "保留一个锚点ID，其他锚点改名；重复锚点运行时默认不跳转。",
+                    anchor=matches[0],
+                )
+            if matches and not enabled_matches:
+                self.add_jump_validation_issue(
+                    issues, "warning", anchor_id, "该锚点当前全部处于禁用状态。",
+                    "启用目标锚点，或调整跳转节点目标。", anchor=matches[0]
+                )
+
+        referenced = {str(rel.get("target_anchor_id", "") or "").strip() for rel in relations if str(rel.get("target_anchor_id", "") or "").strip()}
+        for anchor in anchors_info.get("all", []):
+            anchor_id = anchor.get("anchor_id", "")
+            if anchor_id and anchor.get("enabled") and anchor_id not in referenced:
+                self.add_jump_validation_issue(
+                    issues, "info", anchor_id, "锚点未被任何跳转节点引用。",
+                    "如果只是流程定位标记可以保留；如果希望跳到这里，请在跳转节点中绑定它。", anchor=anchor
+                )
+
+        checked_flag_nodes = set()
+        for rel in relations:
+            if not rel.get("enabled", True):
+                continue
+            source_idx = int(rel.get("source_index", -1))
+            source_label = rel.get("source_label", "")
+            target = str(rel.get("target_anchor_id", "") or "").strip()
+            if rel.get("source_type") == "条件跳转节点":
+                flag_name = str(rel.get("flag_name", "") or "").strip()
+                flag_key = (source_idx, flag_name)
+                if flag_key not in checked_flag_nodes:
+                    checked_flag_nodes.add(flag_key)
+                    if not flag_name:
+                        self.add_jump_validation_issue(
+                            issues, "warning", source_label, "条件跳转节点未填写读取标志。",
+                            "填写条件判断节点输出的标志名；未填写时运行默认不跳转。", relation=rel
+                        )
+                    elif flag_name not in flag_producers:
+                        self.add_jump_validation_issue(
+                            issues, "warning", source_label, f"未找到条件标志来源：{flag_name}",
+                            "在该节点之前添加条件判断节点，或确认标志名完全一致。", relation=rel
+                        )
+                    elif all(item.get("node_index", 0) > source_idx for item in flag_producers.get(flag_name, [])):
+                        self.add_jump_validation_issue(
+                            issues, "warning", source_label, f"条件标志 {flag_name} 的生成节点位于跳转节点之后。",
+                            "把条件判断节点移到条件跳转节点之前。", relation=rel
+                        )
+                if not str(rel.get("condition_value", "") or "").strip() and not rel.get("is_default"):
+                    self.add_jump_validation_issue(
+                        issues, "warning", source_label, "条件规则的条件值为空。",
+                        "填写 TRUE/FALSE 或条件判断节点实际输出值；空值规则很容易误判。", relation=rel
+                    )
+
+            if not target:
+                self.add_jump_validation_issue(
+                    issues, "warning", source_label, "跳转目标锚点未配置，运行时默认不跳转。",
+                    "选择一个锚点；如果确实希望未命中时继续执行，可以保留默认锚点为空。", relation=rel
+                )
+                continue
+
+            target_idx, message = self.resolve_jump_anchor_index(target, anchors_info=anchors_info, nodes=node_list)
+            if target_idx is None:
+                self.add_jump_validation_issue(
+                    issues, "error", source_label, message,
+                    "检查锚点ID是否存在、是否启用，以及是否重复。", relation=rel
+                )
+                continue
+            if target_idx == source_idx:
+                self.add_jump_validation_issue(
+                    issues, "error", source_label, "跳转目标指向当前节点，可能形成自跳转。",
+                    "改为跳到独立锚点，或删除该规则。", relation=rel
+                )
+            elif target_idx < source_idx:
+                self.add_jump_validation_issue(
+                    issues, "warning", source_label, f"目标锚点在当前节点之前：节点 {target_idx + 1}",
+                    "这会形成回跳路径，请确认有条件能够退出，避免死循环。", relation=rel
+                )
+
+        severity_order = {"error": 0, "warning": 1, "info": 2}
+        issues.sort(key=lambda item: (severity_order.get(item.get("severity"), 9), item.get("item", "")))
+        return issues
+
+    def jump_validation_summary_text(self, issues):
+        issues = list(issues or [])
+        if not issues:
+            return "跳转校验完成：未发现明显问题。"
+        counts = {}
+        for issue in issues:
+            sev = issue.get("severity", "info")
+            counts[sev] = counts.get(sev, 0) + 1
+        parts = []
+        if counts.get("error"):
+            parts.append(f"错误 {counts['error']}")
+        if counts.get("warning"):
+            parts.append(f"警告 {counts['warning']}")
+        if counts.get("info"):
+            parts.append(f"提示 {counts['info']}")
+        return "跳转校验完成：" + "，".join(parts)
+
+    def jump_issue_detail_text(self, issue):
+        if not issue:
+            return ""
+        lines = [
+            f"级别：{issue.get('severity', '')}",
+            f"对象：{issue.get('item', '')}",
+            f"问题：{issue.get('message', '')}",
+        ]
+        if issue.get("suggestion"):
+            lines.append(f"建议：{issue.get('suggestion')}")
+        rel = issue.get("relation") or {}
+        if rel:
+            lines.extend([
+                "",
+                "关系：",
+                f"来源：{rel.get('source_label', '')}",
+                f"类型：{rel.get('kind', '')}",
+                f"读取标志：{rel.get('flag_name', '')}",
+                f"条件值：{rel.get('condition_value', '')}",
+                f"目标锚点：{rel.get('target_anchor_id', '')}",
+                f"状态：{rel.get('status', '')}",
+            ])
+        anchor = issue.get("anchor") or {}
+        if anchor:
+            lines.extend([
+                "",
+                "锚点：",
+                f"节点：{anchor.get('node_index', -1) + 1}",
+                f"锚点ID：{anchor.get('anchor_id', '')}",
+                f"名称：{anchor.get('anchor_name', '')}",
+                f"启用：{'是' if anchor.get('enabled') else '否'}",
+            ])
+        return "\n".join(lines)
+
+    def show_jump_precheck_dialog(self, issues, title="跳转校验", allow_continue=False):
+        issues = list(issues or [])
+        result = {"continue": not allow_continue}
+        win = tk.Toplevel(self.window)
+        win.title(title)
+        win.geometry("1180x620")
+        win.minsize(900, 480)
+        win.transient(self.window)
+
+        main = ttk.Frame(win, padding=8)
+        main.pack(fill=tk.BOTH, expand=True)
+        summary_var = tk.StringVar(value=self.jump_validation_summary_text(issues))
+        ttk.Label(main, textvariable=summary_var, font=("TkDefaultFont", 10, "bold")).pack(anchor=tk.W, pady=(0, 6))
+        ttk.Label(main, text="跳转目标无效时运行会默认不跳转；这里用于提前发现配置风险。", foreground="gray").pack(anchor=tk.W, pady=(0, 6))
+
+        tree_wrap = ttk.Frame(main)
+        tree_wrap.pack(fill=tk.BOTH, expand=True)
+        columns = ("severity", "item", "message", "suggestion")
+        tree = ttk.Treeview(tree_wrap, columns=columns, show="headings", height=18)
+        for col, text, width in [
+            ("severity", "级别", 70),
+            ("item", "对象", 180),
+            ("message", "问题", 420),
+            ("suggestion", "建议", 360),
+        ]:
+            tree.heading(col, text=text)
+            tree.column(col, width=width, anchor=tk.W)
+        tree.tag_configure("error", foreground="#b00020")
+        tree.tag_configure("warning", foreground="#8a5a00")
+        tree.tag_configure("info", foreground="#335c99")
+        yscroll = ttk.Scrollbar(tree_wrap, orient=tk.VERTICAL, command=tree.yview)
+        xscroll = ttk.Scrollbar(tree_wrap, orient=tk.HORIZONTAL, command=tree.xview)
+        tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+        tree_wrap.rowconfigure(0, weight=1)
+        tree_wrap.columnconfigure(0, weight=1)
+
+        for idx, issue in enumerate(issues):
+            sev = issue.get("severity", "info")
+            tree.insert(
+                "",
+                tk.END,
+                iid=str(idx),
+                values=(sev, issue.get("item", ""), issue.get("message", ""), issue.get("suggestion", "")),
+                tags=(sev,),
+            )
+
+        def show_detail(event=None):
+            sel = tree.selection()
+            if not sel:
+                return
+            issue = issues[int(sel[0])]
+            messagebox.showinfo("跳转校验详情", self.jump_issue_detail_text(issue), parent=win)
+
+        def open_manager():
+            result["continue"] = False
+            win.destroy()
+            self.open_jump_manager_window()
+
+        tree.bind("<Double-1>", show_detail)
+
+        bottom = ttk.Frame(win, padding=(8, 0, 8, 8))
+        bottom.pack(fill=tk.X)
+        ttk.Button(bottom, text="打开跳转管理", command=open_manager).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bottom, text="详情", command=show_detail).pack(side=tk.LEFT, padx=4)
+        if allow_continue:
+            def continue_run():
+                result["continue"] = True
+                win.destroy()
+            def cancel_run():
+                result["continue"] = False
+                win.destroy()
+            ttk.Button(bottom, text="继续运行", command=continue_run).pack(side=tk.RIGHT, padx=4)
+            ttk.Button(bottom, text="取消运行", command=cancel_run).pack(side=tk.RIGHT, padx=4)
+            win.protocol("WM_DELETE_WINDOW", cancel_run)
+        else:
+            ttk.Button(bottom, text="关闭", command=win.destroy).pack(side=tk.RIGHT, padx=4)
+
+        self.center_toplevel(win, self.window, 1180, 620)
+        try:
+            win.grab_set()
+        except Exception:
+            pass
+        self.window.wait_window(win)
+        return bool(result.get("continue"))
+
+    def confirm_jump_precheck(self, execute_actions=False, stop_index=None):
+        issues = self.validate_jump_relations()
+        actionable = [issue for issue in issues if issue.get("severity") in ("error", "warning")]
+        self.last_jump_precheck = list(issues or [])
+        if not actionable:
+            return True
+        errors = [issue for issue in actionable if issue.get("severity") == "error"]
+        if not execute_actions and not errors:
+            self.status_var.set(self.jump_validation_summary_text(actionable) + " 预览继续执行；可在跳转管理中查看。")
+            return True
+        return self.show_jump_precheck_dialog(
+            actionable,
+            title="执行前跳转校验" if execute_actions else "预览前跳转校验",
+            allow_continue=True,
+        )
+
+    def open_jump_manager_window(self):
+        self.ensure_node_tree_identity(self.nodes)
+        win = tk.Toplevel(self.window)
+        win.title("跳转管理")
+        win.geometry("1360x740")
+        win.minsize(1050, 560)
+        win.transient(self.window)
+
+        main = ttk.Frame(win, padding=8)
+        main.pack(fill=tk.BOTH, expand=True)
+        summary_var = tk.StringVar()
+        ttk.Label(
+            main,
+            text="跳转系统只管理锚点与跳转关系，不管理表映射、字段映射或字段权限。",
+            foreground="gray",
+        ).pack(anchor=tk.W, pady=(0, 4))
+        ttk.Label(main, textvariable=summary_var, font=("TkDefaultFont", 10, "bold")).pack(anchor=tk.W, pady=(0, 6))
+
+        panes = ttk.Panedwindow(main, orient=tk.HORIZONTAL)
+        panes.pack(fill=tk.BOTH, expand=True)
+
+        left = ttk.LabelFrame(panes, text="锚点", padding=6)
+        middle = ttk.LabelFrame(panes, text="跳转关系", padding=6)
+        right = ttk.Frame(panes)
+        panes.add(left, weight=1)
+        panes.add(middle, weight=2)
+        panes.add(right, weight=2)
+
+        anchor_tree = ttk.Treeview(left, columns=("index", "anchor", "name", "refs", "status"), show="headings", height=20)
+        for col, text, width in [
+            ("index", "#", 45),
+            ("anchor", "锚点ID", 150),
+            ("name", "名称", 120),
+            ("refs", "引用", 55),
+            ("status", "状态", 85),
+        ]:
+            anchor_tree.heading(col, text=text)
+            anchor_tree.column(col, width=width, anchor=tk.W)
+        anchor_scroll = ttk.Scrollbar(left, orient=tk.VERTICAL, command=anchor_tree.yview)
+        anchor_tree.configure(yscrollcommand=anchor_scroll.set)
+        anchor_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        anchor_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        anchor_tree.tag_configure("disabled", foreground="#777777")
+        anchor_tree.tag_configure("error", foreground="#b00020")
+
+        relation_tree = ttk.Treeview(
+            middle,
+            columns=("source", "kind", "flag", "value", "target", "status"),
+            show="headings",
+            height=20,
+        )
+        for col, text, width in [
+            ("source", "来源节点", 190),
+            ("kind", "类型", 70),
+            ("flag", "标志", 120),
+            ("value", "条件值", 90),
+            ("target", "目标锚点", 140),
+            ("status", "状态", 190),
+        ]:
+            relation_tree.heading(col, text=text)
+            relation_tree.column(col, width=width, anchor=tk.W)
+        rel_y = ttk.Scrollbar(middle, orient=tk.VERTICAL, command=relation_tree.yview)
+        rel_x = ttk.Scrollbar(middle, orient=tk.HORIZONTAL, command=relation_tree.xview)
+        relation_tree.configure(yscrollcommand=rel_y.set, xscrollcommand=rel_x.set)
+        relation_tree.grid(row=0, column=0, sticky="nsew")
+        rel_y.grid(row=0, column=1, sticky="ns")
+        rel_x.grid(row=1, column=0, sticky="ew")
+        middle.rowconfigure(0, weight=1)
+        middle.columnconfigure(0, weight=1)
+        relation_tree.tag_configure("ok", foreground="#1b5e20")
+        relation_tree.tag_configure("warning", foreground="#8a5a00")
+        relation_tree.tag_configure("error", foreground="#b00020")
+        relation_tree.tag_configure("disabled", foreground="#777777")
+
+        detail_frame = ttk.LabelFrame(right, text="详情", padding=6)
+        detail_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
+        detail_text = tk.Text(detail_frame, height=12, wrap=tk.WORD)
+        detail_text.pack(fill=tk.BOTH, expand=True)
+        detail_text.configure(state=tk.DISABLED)
+
+        issue_frame = ttk.LabelFrame(right, text="校验结果", padding=6)
+        issue_frame.pack(fill=tk.BOTH, expand=True)
+        issue_tree = ttk.Treeview(issue_frame, columns=("severity", "item", "message", "suggestion"), show="headings", height=10)
+        for col, text, width in [
+            ("severity", "级别", 70),
+            ("item", "对象", 130),
+            ("message", "问题", 220),
+            ("suggestion", "建议", 220),
+        ]:
+            issue_tree.heading(col, text=text)
+            issue_tree.column(col, width=width, anchor=tk.W)
+        issue_scroll = ttk.Scrollbar(issue_frame, orient=tk.VERTICAL, command=issue_tree.yview)
+        issue_tree.configure(yscrollcommand=issue_scroll.set)
+        issue_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        issue_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        issue_tree.tag_configure("error", foreground="#b00020")
+        issue_tree.tag_configure("warning", foreground="#8a5a00")
+        issue_tree.tag_configure("info", foreground="#335c99")
+
+        state = {"anchors": [], "relations": [], "issues": []}
+
+        def set_detail(text):
+            detail_text.configure(state=tk.NORMAL)
+            detail_text.delete("1.0", tk.END)
+            detail_text.insert("1.0", text or "")
+            detail_text.configure(state=tk.DISABLED)
+
+        def relation_tag(relation):
+            if not relation.get("enabled", True):
+                return "disabled"
+            status = relation.get("status", "")
+            if status.startswith("有效"):
+                return "ok"
+            if "不存在" in status or "重复" in status:
+                return "error"
+            return "warning"
+
+        def refresh_all():
+            self.ensure_node_tree_identity(self.nodes)
+            anchors_info = self.collect_jump_anchors()
+            relations = self.collect_jump_relations(anchors_info=anchors_info)
+            issues = self.validate_jump_relations()
+            state["anchors"] = anchors_info.get("all", [])
+            state["relations"] = relations
+            state["issues"] = issues
+
+            refs = {}
+            for rel in relations:
+                target = str(rel.get("target_anchor_id", "") or "").strip()
+                if target:
+                    refs[target] = refs.get(target, 0) + 1
+
+            anchor_tree.delete(*anchor_tree.get_children())
+            for idx, anchor in enumerate(state["anchors"]):
+                anchor_id = anchor.get("anchor_id", "")
+                status = "启用" if anchor.get("enabled") else "禁用"
+                tag = ""
+                if not anchor.get("enabled"):
+                    tag = "disabled"
+                if anchor_id and len((anchors_info.get("by_id") or {}).get(anchor_id, [])) > 1:
+                    status = "重复"
+                    tag = "error"
+                anchor_tree.insert(
+                    "",
+                    tk.END,
+                    iid=str(idx),
+                    values=(anchor.get("node_index", -1) + 1, anchor_id, anchor.get("anchor_name", ""), refs.get(anchor_id, 0), status),
+                    tags=(tag,),
+                )
+
+            relation_tree.delete(*relation_tree.get_children())
+            for idx, rel in enumerate(relations):
+                relation_tree.insert(
+                    "",
+                    tk.END,
+                    iid=str(idx),
+                    values=(
+                        rel.get("source_label", ""),
+                        rel.get("kind", ""),
+                        rel.get("flag_name", ""),
+                        rel.get("condition_value", ""),
+                        rel.get("target_anchor_id", ""),
+                        rel.get("status", ""),
+                    ),
+                    tags=(relation_tag(rel),),
+                )
+
+            issue_tree.delete(*issue_tree.get_children())
+            for idx, issue in enumerate(issues):
+                issue_tree.insert(
+                    "",
+                    tk.END,
+                    iid=str(idx),
+                    values=(issue.get("severity", ""), issue.get("item", ""), issue.get("message", ""), issue.get("suggestion", "")),
+                    tags=(issue.get("severity", ""),),
+                )
+            summary_var.set(
+                f"锚点 {len(state['anchors'])} 个，跳转关系 {len(relations)} 条。"
+                + self.jump_validation_summary_text(issues)
+            )
+            if state["anchors"]:
+                anchor_tree.selection_set("0")
+                anchor_tree.focus("0")
+                show_anchor_detail()
+            else:
+                set_detail("当前工作流还没有跳转锚点节点。")
+
+        def show_anchor_detail(event=None):
+            sel = anchor_tree.selection()
+            if not sel:
+                return
+            idx = int(sel[0])
+            anchors = state.get("anchors", [])
+            if idx < 0 or idx >= len(anchors):
+                return
+            anchor = anchors[idx]
+            anchor_id = anchor.get("anchor_id", "")
+            refs = [rel for rel in state.get("relations", []) if rel.get("target_anchor_id") == anchor_id]
+            lines = [
+                f"锚点节点：{anchor.get('node_index', -1) + 1}",
+                f"锚点ID：{anchor_id}",
+                f"显示名称：{anchor.get('anchor_name', '')}",
+                f"启用：{'是' if anchor.get('enabled') else '否'}",
+                f"说明：{anchor.get('description', '') or '-'}",
+                "",
+                f"引用关系：{len(refs)} 条",
+            ]
+            for rel in refs[:20]:
+                lines.append(f"- {rel.get('source_label', '')} / {rel.get('kind', '')} / {rel.get('condition_value', '')}")
+            if len(refs) > 20:
+                lines.append(f"... 仅显示前 20 条，共 {len(refs)} 条。")
+            set_detail("\n".join(lines))
+
+        def show_relation_detail(event=None):
+            sel = relation_tree.selection()
+            if not sel:
+                return
+            idx = int(sel[0])
+            relations = state.get("relations", [])
+            if idx < 0 or idx >= len(relations):
+                return
+            rel = relations[idx]
+            lines = [
+                f"来源节点：{rel.get('source_label', '')}",
+                f"跳转类型：{rel.get('kind', '')}",
+                f"读取标志：{rel.get('flag_name', '') or '-'}",
+                f"条件值：{rel.get('condition_value', '') or '-'}",
+                f"目标锚点：{rel.get('target_anchor_id', '') or '-'}",
+                f"状态：{rel.get('status', '')}",
+                "",
+                "运行规则：",
+                "目标有效时跳到锚点节点；锚点节点自身不计算，随后继续执行锚点后的节点。",
+                "目标缺失、禁用、不存在或重复时，默认不跳转并继续后续节点。",
+            ]
+            set_detail("\n".join(lines))
+
+        def show_issue_detail(event=None):
+            sel = issue_tree.selection()
+            if not sel:
+                return
+            idx = int(sel[0])
+            issues = state.get("issues", [])
+            if 0 <= idx < len(issues):
+                set_detail(self.jump_issue_detail_text(issues[idx]))
+
+        anchor_tree.bind("<<TreeviewSelect>>", show_anchor_detail)
+        relation_tree.bind("<<TreeviewSelect>>", show_relation_detail)
+        issue_tree.bind("<<TreeviewSelect>>", show_issue_detail)
+        relation_tree.bind("<Double-1>", show_relation_detail)
+        issue_tree.bind("<Double-1>", show_issue_detail)
+
+        bottom = ttk.Frame(win, padding=(8, 0, 8, 8))
+        bottom.pack(fill=tk.X)
+        ttk.Button(bottom, text="刷新", command=refresh_all).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bottom, text="关闭", command=win.destroy).pack(side=tk.RIGHT, padx=4)
+
+        refresh_all()
+        self.center_toplevel(win, self.window, 1360, 740)
+
+    def table_access_log_text(self, event):
+        try:
+            return json.dumps(event, ensure_ascii=False, default=str)
+        except Exception:
+            return str(event)
+
+    def open_table_access_audit_window(self):
+        logs_state = {"logs": list(self.last_table_access_logs or [])}
+        win = tk.Toplevel(self.window)
+        win.title("表访问权限审计日志")
+        win.geometry("1320x700")
+        win.minsize(980, 520)
+        win.transient(self.window)
+
+        main = ttk.Frame(win, padding=8)
+        main.pack(fill=tk.BOTH, expand=True)
+        summary_var = tk.StringVar()
+
+        filter_frame = ttk.Frame(main)
+        filter_frame.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(filter_frame, textvariable=summary_var, font=("TkDefaultFont", 10, "bold")).pack(side=tk.LEFT, padx=(0, 16))
+        ttk.Label(filter_frame, text="状态：").pack(side=tk.LEFT, padx=(0, 4))
+        status_var = tk.StringVar(value="全部")
+        status_combo = ttk.Combobox(filter_frame, textvariable=status_var, values=["全部", "ok", "warning", "denied", "missing", "compat"], width=10, state="readonly")
+        status_combo.pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Label(filter_frame, text="搜索：").pack(side=tk.LEFT, padx=(0, 4))
+        search_var = tk.StringVar()
+        ttk.Entry(filter_frame, textvariable=search_var, width=34).pack(side=tk.LEFT, padx=(0, 8))
+
+        tree_wrap = ttk.Frame(main)
+        tree_wrap.pack(fill=tk.BOTH, expand=True)
+        columns = ("time", "node", "source", "table", "operation", "status", "mode", "policy", "message")
+        tree = ttk.Treeview(tree_wrap, columns=columns, show="headings", height=20)
+        for col, text, width in [
+            ("time", "时间", 145),
+            ("node", "节点", 155),
+            ("source", "来源", 82),
+            ("table", "表", 150),
+            ("operation", "操作", 150),
+            ("status", "状态", 78),
+            ("mode", "模式", 110),
+            ("policy", "策略", 70),
+            ("message", "信息", 360),
+        ]:
+            tree.heading(col, text=text)
+            tree.column(col, width=width, anchor=tk.W)
+        tree.tag_configure("ok", foreground="#1b5e20")
+        tree.tag_configure("warning", foreground="#8a5a00")
+        tree.tag_configure("denied", foreground="#b00020")
+        tree.tag_configure("missing", foreground="#b00020")
+        tree.tag_configure("compat", foreground="#555555")
+        yscroll = ttk.Scrollbar(tree_wrap, orient=tk.VERTICAL, command=tree.yview)
+        xscroll = ttk.Scrollbar(tree_wrap, orient=tk.HORIZONTAL, command=tree.xview)
+        tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+        tree_wrap.rowconfigure(0, weight=1)
+        tree_wrap.columnconfigure(0, weight=1)
+
+        def log_row(event):
+            node = event.get("node_name") or event.get("node_type") or event.get("node_id") or ""
+            source = event.get("source_type") or event.get("access_source_type") or ""
+            mode = event.get("write_mode") or event.get("mode") or ""
+            return (
+                event.get("time", ""),
+                node,
+                source,
+                event.get("table_name", ""),
+                event.get("operation_checked") or event.get("operation", ""),
+                event.get("status", ""),
+                mode,
+                event.get("policy", ""),
+                event.get("message", ""),
+            )
+
+        def refresh_tree(*_):
+            tree.delete(*tree.get_children())
+            selected_status = status_var.get()
+            keyword = search_var.get().strip().lower()
+            visible = 0
+            counts = {}
+            for idx, event in enumerate(logs_state["logs"]):
+                status = str(event.get("status", "") or "")
+                counts[status] = counts.get(status, 0) + 1
+                if selected_status != "全部" and status != selected_status:
+                    continue
+                text = self.table_access_log_text(event).lower()
+                if keyword and keyword not in text:
+                    continue
+                visible += 1
+                row = log_row(event)
+                tag = status if status in ("ok", "warning", "denied", "missing", "compat") else ""
+                tree.insert("", tk.END, iid=str(idx), values=row, tags=(tag,))
+            count_text = "，".join(f"{k or '无状态'} {v}" for k, v in sorted(counts.items()))
+            summary_var.set(f"最近日志 {len(logs_state['logs'])} 条，当前显示 {visible} 条" + (f"（{count_text}）" if count_text else ""))
+
+        def reload_logs():
+            logs_state["logs"] = list(self.last_table_access_logs or [])
+            refresh_tree()
+
+        def clear_logs():
+            self.last_table_access_logs = []
+            logs_state["logs"] = []
+            refresh_tree()
+
+        def show_log_detail(event=None):
+            sel = tree.selection()
+            if not sel:
+                return
+            item = logs_state["logs"][int(sel[0])]
+            messagebox.showinfo("审计日志详情", self.table_access_log_text(item), parent=win)
+
+        def export_logs():
+            if not logs_state["logs"]:
+                messagebox.showwarning("提示", "当前没有可导出的审计日志。", parent=win)
+                return
+            path = filedialog.asksaveasfilename(
+                title="导出表访问审计日志",
+                defaultextension=".csv",
+                filetypes=[("CSV文件", "*.csv"), ("所有文件", "*.*")],
+                parent=win,
+            )
+            if not path:
+                return
+            fieldnames = sorted({key for event in logs_state["logs"] if isinstance(event, dict) for key in event.keys()})
+            with open(path, "w", encoding="utf-8-sig", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                for event in logs_state["logs"]:
+                    row = {}
+                    for key in fieldnames:
+                        value = event.get(key, "")
+                        if isinstance(value, (list, dict)):
+                            value = json.dumps(value, ensure_ascii=False)
+                        row[key] = value
+                    writer.writerow(row)
+            messagebox.showinfo("导出完成", f"已导出审计日志：\n{path}", parent=win)
+
+        tree.bind("<Double-1>", show_log_detail)
+        status_var.trace_add("write", refresh_tree)
+        search_var.trace_add("write", refresh_tree)
+
+        bottom = ttk.Frame(win, padding=(8, 0, 8, 8))
+        bottom.pack(fill=tk.X)
+        ttk.Button(bottom, text="刷新最近日志", command=reload_logs).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bottom, text="导出CSV", command=export_logs).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bottom, text="清空最近日志", command=clear_logs).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bottom, text="详情", command=show_log_detail).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bottom, text="关闭", command=win.destroy).pack(side=tk.RIGHT, padx=4)
+
+        refresh_tree()
+        if not logs_state["logs"]:
+            summary_var.set("最近日志 0 条。先预览或执行一次工作流后，这里会显示表访问审计。")
+        self.center_toplevel(win, self.window, 1320, 700)
+
+    def build_table_access_window_shell(self):
+        win = tk.Toplevel(self.window)
+        win.title("字段权限层")
+        win.geometry("1180x720")
+        win.minsize(900, 560)
+        win.transient(self.window)
+
+        main = ttk.Frame(win, padding=8)
+        main.pack(fill=tk.BOTH, expand=True)
+
+        panes = ttk.Panedwindow(main, orient=tk.HORIZONTAL)
+        panes.pack(fill=tk.BOTH, expand=True)
+
+        left = ttk.LabelFrame(panes, text="节点层", padding=6)
+        detail = ttk.Frame(panes)
+        panes.add(left, weight=1)
+        panes.add(detail, weight=3)
+
+        detail_tabs = ttk.Notebook(detail)
+        detail_tabs.pack(fill=tk.BOTH, expand=True)
+        middle = ttk.Frame(detail_tabs, padding=6)
+        right = ttk.Frame(detail_tabs, padding=6)
+        detail_tabs.add(middle, text="表权限层")
+        detail_tabs.add(right, text="字段权限层")
+
+        return {
+            "win": win,
+            "left": left,
+            "middle": middle,
+            "right": right,
+        }
+
+    def build_table_access_list_section(self, parent):
+        node_tree = ttk.Treeview(
+            parent,
+            columns=("index", "type", "name", "status"),
+            show="headings",
+            height=22,
+        )
+        for col, text, width in workflow_table_access_node_tree_columns():
+            node_tree.heading(col, text=text)
+            node_tree.column(col, width=width, anchor=tk.W)
+        node_y = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=node_tree.yview)
+        node_tree.configure(yscrollcommand=node_y.set)
+        node_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        node_y.pack(side=tk.RIGHT, fill=tk.Y)
+        return {"node_tree": node_tree}
+
+    def build_table_access_table_form_section(self, parent):
+        table_tree_frame = ttk.Frame(parent)
+        table_tree_frame.pack(fill=tk.BOTH, expand=True)
+        table_tree = ttk.Treeview(
+            table_tree_frame,
+            columns=("role", "table", "operation", "current", "permissions", "mode", "status"),
+            show="headings",
+            height=12,
+        )
+        for col, text, width in workflow_table_access_table_tree_columns():
+            table_tree.heading(col, text=text)
+            table_tree.column(col, width=width, anchor=tk.W, stretch=False)
+        table_y = ttk.Scrollbar(table_tree_frame, orient=tk.VERTICAL, command=table_tree.yview)
+        table_x = ttk.Scrollbar(table_tree_frame, orient=tk.HORIZONTAL, command=table_tree.xview)
+        table_tree.configure(yscrollcommand=table_y.set, xscrollcommand=table_x.set)
+        table_tree.grid(row=0, column=0, sticky="nsew")
+        table_y.grid(row=0, column=1, sticky="ns")
+        table_x.grid(row=1, column=0, sticky="ew")
+        table_tree_frame.rowconfigure(0, weight=1)
+        table_tree_frame.columnconfigure(0, weight=1)
+
+        table_form = ttk.LabelFrame(parent, text="表角色设置", padding=6)
+        table_form.pack(fill=tk.X, pady=(6, 0))
+        role_var = tk.StringVar()
+        source_type_var = tk.StringVar(value="SQLite表")
+        table_var = tk.StringVar()
+        write_mode_var = tk.StringVar()
+        preset_var = tk.StringVar(value="自定义")
+        is_current_var = tk.BooleanVar(value=False)
+        log_only_var = tk.BooleanVar(value=False)
+        permission_vars = {key: tk.BooleanVar(value=False) for key, _ in self.table_access_permission_items()}
+
+        ttk.Label(table_form, text="角色").grid(row=0, column=0, sticky=tk.W, padx=3, pady=3)
+        ttk.Combobox(table_form, textvariable=role_var, values=workflow_table_access_role_choices(), width=12).grid(row=0, column=1, sticky=tk.W, padx=3, pady=3)
+        ttk.Label(table_form, text="来源").grid(row=0, column=2, sticky=tk.W, padx=3, pady=3)
+        ttk.Combobox(table_form, textvariable=source_type_var, values=workflow_table_access_source_type_choices(), width=12, state="readonly").grid(row=0, column=3, sticky=tk.W, padx=3, pady=3)
+        ttk.Label(table_form, text="实际表").grid(row=1, column=0, sticky=tk.W, padx=3, pady=3)
+        table_combo = ttk.Combobox(table_form, textvariable=table_var, values=self.table_access_table_choices(), width=25)
+        table_combo.grid(row=1, column=1, columnspan=2, sticky=tk.W, padx=3, pady=3)
+        ttk.Label(table_form, text="写入模式").grid(row=1, column=3, sticky=tk.W, padx=3, pady=3)
+        ttk.Combobox(
+            table_form,
+            textvariable=write_mode_var,
+            values=self.STANDARD_WRITE_MODE_CHOICES,
+            width=19,
+        ).grid(row=1, column=4, sticky=tk.W, padx=3, pady=3)
+        ttk.Label(table_form, text="预设").grid(row=2, column=0, sticky=tk.W, padx=3, pady=3)
+        preset_combo = ttk.Combobox(
+            table_form,
+            textvariable=preset_var,
+            values=workflow_table_access_preset_choices(),
+            width=18,
+            state="readonly",
+        )
+        preset_combo.grid(row=2, column=1, sticky=tk.W, padx=3, pady=3)
+        ttk.Checkbutton(table_form, text="当前表", variable=is_current_var).grid(row=2, column=2, sticky=tk.W, padx=3, pady=3)
+        ttk.Checkbutton(table_form, text="只记录", variable=log_only_var).grid(row=2, column=3, sticky=tk.W, padx=3, pady=3)
+        ttk.Label(table_form, text="字段权限范围").grid(row=4, column=0, sticky=tk.W, padx=3, pady=3)
+        field_mapping_mode_var = tk.StringVar(value="按字段名")
+        ttk.Combobox(
+            table_form,
+            textvariable=field_mapping_mode_var,
+            values=workflow_table_access_field_mapping_mode_choices(),
+            width=12,
+            state="readonly",
+        ).grid(row=4, column=1, sticky=tk.W, padx=3, pady=3)
+
+        perm_frame = ttk.Frame(table_form)
+        perm_frame.grid(row=3, column=0, columnspan=5, sticky=tk.W, pady=(4, 0))
+        for idx, (key, label) in enumerate(self.table_access_permission_items()):
+            ttk.Checkbutton(perm_frame, text=label, variable=permission_vars[key]).grid(row=idx // 5, column=idx % 5, sticky=tk.W, padx=4, pady=2)
+
+        return {
+            "table_tree": table_tree,
+            "table_form": table_form,
+            "role_var": role_var,
+            "source_type_var": source_type_var,
+            "table_var": table_var,
+            "write_mode_var": write_mode_var,
+            "preset_var": preset_var,
+            "preset_combo": preset_combo,
+            "is_current_var": is_current_var,
+            "log_only_var": log_only_var,
+            "permission_vars": permission_vars,
+            "field_mapping_mode_var": field_mapping_mode_var,
+            "table_combo": table_combo,
+        }
+
+    def build_table_access_field_form_section(self, parent):
+        field_tree_frame = ttk.Frame(parent)
+        field_tree_frame.pack(fill=tk.BOTH, expand=True)
+        field_tree = ttk.Treeview(
+            field_tree_frame,
+            columns=("source_index", "source", "target_index", "target", "read", "write", "create", "protect", "status"),
+            show="headings",
+            height=14,
+        )
+        for col, text, width in workflow_table_access_field_tree_columns():
+            field_tree.heading(col, text=text)
+            field_tree.column(col, width=width, anchor=tk.W, stretch=False)
+        field_y = ttk.Scrollbar(field_tree_frame, orient=tk.VERTICAL, command=field_tree.yview)
+        field_x = ttk.Scrollbar(field_tree_frame, orient=tk.HORIZONTAL, command=field_tree.xview)
+        field_tree.configure(yscrollcommand=field_y.set, xscrollcommand=field_x.set)
+        field_tree.grid(row=0, column=0, sticky="nsew")
+        field_y.grid(row=0, column=1, sticky="ns")
+        field_x.grid(row=1, column=0, sticky="ew")
+        field_tree_frame.rowconfigure(0, weight=1)
+        field_tree_frame.columnconfigure(0, weight=1)
+
+        field_form = ttk.LabelFrame(parent, text="字段权限设置", padding=6)
+        field_form.pack(fill=tk.X, pady=(6, 0))
+        source_field_var = tk.StringVar()
+        target_field_var = tk.StringVar()
+        source_index_var = tk.StringVar()
+        target_index_var = tk.StringVar()
+        field_permission_vars = {key: tk.BooleanVar(value=False) for key, _ in self.field_permission_items()}
+
+        ttk.Label(field_form, text="来源字段").grid(row=0, column=0, sticky=tk.W, padx=3, pady=3)
+        source_field_combo = ttk.Combobox(field_form, textvariable=source_field_var, width=22)
+        source_field_combo.grid(row=0, column=1, sticky=tk.W, padx=3, pady=3)
+        ttk.Label(field_form, text="源序号").grid(row=0, column=2, sticky=tk.W, padx=3, pady=3)
+        ttk.Entry(field_form, textvariable=source_index_var, width=6).grid(row=0, column=3, sticky=tk.W, padx=3, pady=3)
+        ttk.Label(field_form, text="目标字段").grid(row=1, column=0, sticky=tk.W, padx=3, pady=3)
+        target_field_combo = ttk.Combobox(field_form, textvariable=target_field_var, width=22)
+        target_field_combo.grid(row=1, column=1, sticky=tk.W, padx=3, pady=3)
+        ttk.Label(field_form, text="目序号").grid(row=1, column=2, sticky=tk.W, padx=3, pady=3)
+        ttk.Entry(field_form, textvariable=target_index_var, width=6).grid(row=1, column=3, sticky=tk.W, padx=3, pady=3)
+        fp_frame = ttk.Frame(field_form)
+        fp_frame.grid(row=2, column=0, columnspan=4, sticky=tk.W, pady=(4, 0))
+        for idx, (key, label) in enumerate(self.field_permission_items()):
+            ttk.Checkbutton(fp_frame, text=label, variable=field_permission_vars[key]).grid(row=0, column=idx, sticky=tk.W, padx=4, pady=2)
+
+        return {
+            "field_tree": field_tree,
+            "field_form": field_form,
+            "source_field_var": source_field_var,
+            "target_field_var": target_field_var,
+            "source_index_var": source_index_var,
+            "target_index_var": target_index_var,
+            "field_permission_vars": field_permission_vars,
+            "source_field_combo": source_field_combo,
+            "target_field_combo": target_field_combo,
+        }
+
+    def build_table_access_table_action_buttons(self, table_form, commands):
+        table_btns = ttk.Frame(table_form)
+        table_btns.grid(row=5, column=0, columnspan=5, sticky=tk.W, pady=(6, 0))
+        buttons = {
+            "add_table_entry": ttk.Button(table_btns, text="新增表角色", command=commands["add_table_entry"]),
+            "save_table_entry": ttk.Button(table_btns, text="保存表设置", command=commands["save_table_entry"]),
+            "delete_table_entry": ttk.Button(table_btns, text="删除表角色", command=commands["delete_table_entry"]),
+            "rebuild_default_access": ttk.Button(table_btns, text="重建默认", command=commands["rebuild_default_access"]),
+            "check_all_permissions": ttk.Button(table_btns, text="检查权限", command=commands["check_all_permissions"]),
+            "preview_impact": ttk.Button(table_btns, text="预览影响", command=commands["preview_impact"]),
+        }
+        for button in buttons.values():
+            button.pack(side=tk.LEFT, padx=3)
+        return buttons
+
+    def build_table_access_field_action_buttons(self, field_form, commands):
+        field_btns = ttk.Frame(field_form)
+        field_btns.grid(row=3, column=0, columnspan=4, sticky=tk.W, pady=(6, 0))
+        buttons = {
+            "add_field_entry": ttk.Button(field_btns, text="新增字段", command=commands["add_field_entry"]),
+            "save_field_entry": ttk.Button(field_btns, text="保存字段", command=commands["save_field_entry"]),
+            "delete_field_entry": ttk.Button(field_btns, text="删除字段", command=commands["delete_field_entry"]),
+            "auto_match_fields": ttk.Button(field_btns, text="按字段名生成权限", command=commands["auto_match_fields"]),
+            "auto_match_fields_by_order": ttk.Button(field_btns, text="按列顺序生成权限", command=commands["auto_match_fields_by_order"]),
+            "clear_fields": ttk.Button(field_btns, text="清空字段", command=commands["clear_fields"]),
+        }
+        for button in buttons.values():
+            button.pack(side=tk.LEFT, padx=3)
+        return buttons
+
+    def build_table_access_bottom_buttons(self, win, commands):
+        bottom = ttk.Frame(win, padding=(8, 0, 8, 8))
+        bottom.pack(fill=tk.X)
+        buttons = {
+            "refresh": ttk.Button(bottom, text="刷新节点列表", command=commands["refresh"]),
+            "precheck": ttk.Button(bottom, text="权限预检", command=commands["precheck"]),
+            "audit": ttk.Button(bottom, text="审计日志", command=commands["audit"]),
+            "close": ttk.Button(bottom, text="关闭", command=commands["close"]),
+        }
+        buttons["refresh"].pack(side=tk.LEFT, padx=4)
+        buttons["precheck"].pack(side=tk.LEFT, padx=4)
+        buttons["audit"].pack(side=tk.LEFT, padx=4)
+        buttons["close"].pack(side=tk.RIGHT, padx=4)
+        return buttons
+
+    def current_table_access_window_node(self, state):
+        idx = state.get("node_index")
+        if idx is None or idx < 0 or idx >= len(self.nodes):
+            return None
+        return self.nodes[idx]
+
+    def refresh_table_access_node_tree(self, node_tree, state):
+        state["refreshing_node_tree"] = True
+        try:
+            node_tree.delete(*node_tree.get_children())
+            for idx, node in enumerate(self.nodes):
+                mark = "√" if node.get("enabled", True) else "×"
+                node_tree.insert(
+                    "",
+                    tk.END,
+                    iid=str(idx),
+                    values=(idx + 1, f"{mark} {node.get('type', '')}", node.get("name", ""), self.table_access_node_status(node)),
+                )
+            selected = state.get("node_index")
+            if selected is not None and 0 <= selected < len(self.nodes):
+                node_tree.selection_set(str(selected))
+                node_tree.focus(str(selected))
+        finally:
+            state["refreshing_node_tree"] = False
+
+    def load_table_access_table_form(self, table_section, entry, table_choices):
+        entry = entry or {}
+        table_section["role_var"].set(entry.get("role", "target"))
+        table_section["source_type_var"].set(entry.get("source_type", "SQLite表"))
+        table_section["table_var"].set(entry.get("table", ""))
+        table_section["write_mode_var"].set(self.normalize_table_access_write_mode(entry.get("write_mode", "")))
+        table_section["field_mapping_mode_var"].set(workflow_field_mapping_mode_display(entry))
+        table_section["is_current_var"].set(bool(entry.get("is_current_table")))
+        table_section["log_only_var"].set(bool(entry.get("log_only")))
+        perms = entry.get("permissions") or {}
+        for key, var in table_section["permission_vars"].items():
+            var.set(bool(perms.get(key)))
+        table_section["preset_var"].set("自定义")
+        table_section["table_combo"].configure(values=table_choices)
+
+    def refresh_table_access_field_choices(self, field_section, choices):
+        field_section["source_field_combo"].configure(values=choices)
+        field_section["target_field_combo"].configure(values=choices)
+
+    def refresh_table_access_field_tree(self, state, field_tree, entry, field_section, choices):
+        state["field_keys"] = workflow_render_field_mapping_tree(
+            field_tree,
+            entry,
+            self.field_bool_text,
+            self.field_permission_status,
+        )
+        self.refresh_table_access_field_choices(field_section, choices)
+
+    def current_table_access_window_access(self, state):
+        node = self.current_table_access_window_node(state)
+        return self.get_node_table_access(node) if node is not None else {"tables": []}
+
+    def current_table_access_window_table_entry(self, state):
+        access = self.current_table_access_window_access(state)
+        idx = state.get("table_index")
+        tables = access.get("tables", [])
+        if idx is None or idx < 0 or idx >= len(tables):
+            return None
+        return tables[idx]
+
+    def load_table_access_window_table_form(self, state, table_section, entry):
+        self.load_table_access_table_form(
+            table_section,
+            entry,
+            self.table_access_table_choices(self.current_table_access_window_node(state)),
+        )
+
+    def collect_table_access_window_table_form(self, table_section):
+        permission_vars = table_section["permission_vars"]
+        return {
+            "role": table_section["role_var"].get(),
+            "source_type": table_section["source_type_var"].get(),
+            "table": table_section["table_var"].get(),
+            "is_current_table": table_section["is_current_var"].get(),
+            "log_only": table_section["log_only_var"].get(),
+            "write_mode": self.normalize_table_access_write_mode(table_section["write_mode_var"].get()),
+            "field_mapping_mode": workflow_field_mapping_mode_value(table_section["field_mapping_mode_var"].get()),
+            "permissions": {key: bool(var.get()) for key, var in permission_vars.items()},
+        }
+
+    def refresh_table_access_window_field_tree(self, state, field_section, field_tree):
+        entry = self.current_table_access_window_table_entry(state)
+        self.refresh_table_access_field_tree(
+            state,
+            field_tree,
+            entry,
+            field_section,
+            self.get_table_access_field_choices(state.get("node_index") or 0, entry or {}),
+        )
+
+    def refresh_table_access_window_table_tree(
+        self,
+        state,
+        table_section,
+        field_section,
+        node_tree,
+        table_tree,
+        field_tree,
+        select_index=None,
+    ):
+        access = self.current_table_access_window_access(state)
+        tables = access.get("tables", [])
+        if tables:
+            if select_index is None:
+                select_index = state.get("table_index")
+            select_index = workflow_render_table_access_tree(
+                table_tree,
+                tables,
+                self.table_access_entry_table_label,
+                self.table_access_operation_summary,
+                self.table_permission_summary,
+                self.write_mode_display_text,
+                self.table_access_entry_status,
+                select_index=select_index,
+            )
+            state["table_index"] = select_index
+            self.load_table_access_window_table_form(state, table_section, tables[select_index])
+        else:
+            workflow_render_table_access_tree(
+                table_tree,
+                tables,
+                self.table_access_entry_table_label,
+                self.table_access_operation_summary,
+                self.table_permission_summary,
+                self.write_mode_display_text,
+                self.table_access_entry_status,
+            )
+            state["table_index"] = None
+            self.load_table_access_window_table_form(state, table_section, {})
+        self.refresh_table_access_window_field_tree(state, field_section, field_tree)
+        self.refresh_table_access_node_tree(node_tree, state)
+
+    def on_table_access_window_node_selected(
+        self,
+        state,
+        table_section,
+        field_section,
+        node_tree,
+        table_tree,
+        field_tree,
+        status_var,
+        event=None,
+        force=False,
+    ):
+        if state.get("refreshing_node_tree"):
+            return
+        sel = node_tree.selection()
+        if not sel:
+            return
+        selected_index = int(sel[0])
+        if not force and selected_index == state.get("node_index"):
+            return
+        state["node_index"] = selected_index
+        state["table_index"] = None
+        self.refresh_table_access_window_table_tree(
+            state,
+            table_section,
+            field_section,
+            node_tree,
+            table_tree,
+            field_tree,
+        )
+        node = self.current_table_access_window_node(state)
+        if node:
+            status_var.set(f"当前节点：{state['node_index'] + 1}.{node.get('type')} / {node.get('name', '')}")
+
+    def on_table_access_window_table_selected(
+        self,
+        state,
+        table_section,
+        field_section,
+        table_tree,
+        field_tree,
+        event=None,
+    ):
+        sel = table_tree.selection()
+        if not sel:
+            return
+        state["table_index"] = int(sel[0])
+        entry = self.current_table_access_window_table_entry(state)
+        self.load_table_access_window_table_form(state, table_section, entry)
+        self.refresh_table_access_window_field_tree(state, field_section, field_tree)
+
+    def on_table_access_window_field_selected(self, state, field_section, field_tree, event=None):
+        sel = field_tree.selection()
+        if not sel:
+            return
+        row_idx = int(sel[0])
+        entry = self.current_table_access_window_table_entry(state)
+        if not entry or row_idx >= len(state["field_keys"]):
+            return
+        key = state["field_keys"][row_idx]
+        item = workflow_field_mapping_item(entry, key)
+        if item is None:
+            return
+        workflow_load_field_form(
+            item,
+            field_section["source_field_var"],
+            field_section["target_field_var"],
+            field_section["source_index_var"],
+            field_section["target_index_var"],
+            field_section["field_permission_vars"],
+        )
+
+    def save_table_access_window_table_entry(
+        self,
+        state,
+        table_section,
+        field_section,
+        node_tree,
+        table_tree,
+        field_tree,
+        status_var,
+    ):
+        node = self.current_table_access_window_node(state)
+        if node is None:
+            return
+        access = self.mark_node_table_access_manual(node)
+        result = workflow_save_table_access_entry(
+            access,
+            state.get("table_index"),
+            self.collect_table_access_window_table_form(table_section),
+            lambda: self.make_table_access_entry("target", ""),
+        )
+        idx = result["table_index"]
+        state["table_index"] = idx
+        self.refresh_table_access_window_table_tree(
+            state,
+            table_section,
+            field_section,
+            node_tree,
+            table_tree,
+            field_tree,
+            select_index=idx,
+        )
+        status_var.set("表角色设置已保存。")
+
+    def add_table_access_window_table_entry(
+        self,
+        state,
+        table_section,
+        field_section,
+        node_tree,
+        table_tree,
+        field_tree,
+    ):
+        node = self.current_table_access_window_node(state)
+        if node is None:
+            return
+        access = self.mark_node_table_access_manual(node)
+        result = workflow_add_table_access_entry(
+            access,
+            self.make_table_access_entry(
+                "target",
+                "",
+                permissions=self.table_permission_set(read=True),
+            ),
+        )
+        state["table_index"] = result["table_index"]
+        self.refresh_table_access_window_table_tree(
+            state,
+            table_section,
+            field_section,
+            node_tree,
+            table_tree,
+            field_tree,
+            select_index=state["table_index"],
+        )
+
+    def delete_table_access_window_table_entry(
+        self,
+        state,
+        table_section,
+        field_section,
+        node_tree,
+        table_tree,
+        field_tree,
+        status_var,
+    ):
+        node = self.current_table_access_window_node(state)
+        idx = state.get("table_index")
+        if node is None or idx is None:
+            return
+        access = self.mark_node_table_access_manual(node)
+        result = workflow_delete_table_access_entry(access, idx)
+        state["table_index"] = result["table_index"]
+        self.refresh_table_access_window_table_tree(
+            state,
+            table_section,
+            field_section,
+            node_tree,
+            table_tree,
+            field_tree,
+            select_index=state["table_index"],
+        )
+        status_var.set("表角色已删除。")
+
+    def rebuild_table_access_window_default_access(
+        self,
+        win,
+        state,
+        table_section,
+        field_section,
+        node_tree,
+        table_tree,
+        field_tree,
+        status_var,
+    ):
+        node = self.current_table_access_window_node(state)
+        if node is None:
+            return
+        if not messagebox.askyesno("重建默认映射", "将根据当前节点配置重建 table_access，并覆盖手动设置。继续吗？", parent=win):
+            return
+        workflow_rebuild_table_access(node, self.default_table_access_for_node(node))
+        state["table_index"] = None
+        self.refresh_table_access_window_table_tree(
+            state,
+            table_section,
+            field_section,
+            node_tree,
+            table_tree,
+            field_tree,
+        )
+        status_var.set("已重建默认映射。")
+
+    def check_table_access_window_permissions(self, win, status_var):
+        result = workflow_build_table_access_permission_check(
+            self.nodes,
+            self.get_node_table_access,
+            self.table_access_entry_status,
+        )
+        messagebox.showinfo("权限检查", result["message"], parent=win)
+        status_var.set("权限检查完成。")
+
+    def preview_table_access_window_impact(self, win, state):
+        node = self.current_table_access_window_node(state)
+        entry = self.current_table_access_window_table_entry(state)
+        message = workflow_build_table_access_impact_preview(
+            state.get("node_index") or 0,
+            node,
+            entry,
+            self.table_access_field_items(entry) if entry is not None else [],
+            self.table_access_entry_table_label,
+            self.table_access_operation_summary,
+            self.table_access_entry_status,
+            self.table_permission_summary,
+            self.write_mode_display_text,
+        )
+        if message is None:
+            messagebox.showwarning("预览影响", "请先选择节点和表角色。", parent=win)
+            return
+        messagebox.showinfo("预览影响", message, parent=win)
+
+    def apply_table_access_window_table_preset(self, table_section, event=None):
+        preset = table_section["preset_var"].get()
+        self.apply_table_access_preset_to_vars(
+            preset,
+            table_section["permission_vars"],
+            table_section["log_only_var"],
+        )
+        preset_config = workflow_table_access_preset_config(
+            preset,
+            [key for key, _ in self.table_access_permission_items()],
+        )
+        if preset_config and preset_config.get("write_mode"):
+            table_section["write_mode_var"].set(preset_config["write_mode"])
+
+    def save_table_access_window_field_entry(self, state, table_section, field_section, field_tree, status_var):
+        entry = self.current_table_access_window_table_entry(state)
+        node = self.current_table_access_window_node(state)
+        if entry is None or node is None:
+            return
+        self.mark_node_table_access_manual(node)
+        sel = field_tree.selection()
+        key = workflow_selected_field_key(sel, state["field_keys"])
+        workflow_upsert_field_mapping_entry(
+            entry,
+            key,
+            field_section["source_field_var"].get(),
+            field_section["target_field_var"].get(),
+            field_section["source_index_var"].get(),
+            field_section["target_index_var"].get(),
+            "by_order" if table_section["field_mapping_mode_var"].get() == "按列顺序" else "by_name",
+            {pkey: bool(var.get()) for pkey, var in field_section["field_permission_vars"].items()},
+            self.make_table_access_field_key,
+        )
+        self.refresh_table_access_window_field_tree(state, field_section, field_tree)
+        status_var.set("字段映射已保存。")
+
+    def add_table_access_window_field_entry(self, table_section, field_section, field_tree):
+        workflow_reset_field_form(
+            field_section["source_field_var"],
+            field_section["target_field_var"],
+            field_section["source_index_var"],
+            field_section["target_index_var"],
+            field_section["field_permission_vars"],
+            write_enabled=table_section["permission_vars"]["write_table"].get(),
+        )
+        field_tree.selection_remove(field_tree.selection())
+
+    def delete_table_access_window_field_entry(self, state, field_section, field_tree, status_var):
+        entry = self.current_table_access_window_table_entry(state)
+        node = self.current_table_access_window_node(state)
+        sel = field_tree.selection()
+        if entry is None or node is None or not sel:
+            return
+        key = workflow_selected_field_key(sel, state["field_keys"])
+        if key and workflow_delete_field_mapping_entry(entry, key):
+            self.mark_node_table_access_manual(node)
+            self.refresh_table_access_window_field_tree(state, field_section, field_tree)
+            status_var.set("字段映射已删除。")
+
+    def auto_match_table_access_window_fields(self, state, field_section, field_tree, status_var):
+        entry = self.current_table_access_window_table_entry(state)
+        node = self.current_table_access_window_node(state)
+        if entry is None or node is None:
+            return
+        self.mark_node_table_access_manual(node)
+        count = self.auto_match_table_access_fields(state.get("node_index") or 0, entry)
+        self.refresh_table_access_window_field_tree(state, field_section, field_tree)
+        status_var.set(f"自动字段匹配完成：{count} 个字段。")
+
+    def auto_match_table_access_window_fields_by_order(self, state, table_section, field_section, field_tree, status_var):
+        entry = self.current_table_access_window_table_entry(state)
+        node = self.current_table_access_window_node(state)
+        if entry is None or node is None:
+            return
+        self.mark_node_table_access_manual(node)
+        count = self.auto_match_table_access_fields_by_order(state.get("node_index") or 0, entry)
+        table_section["field_mapping_mode_var"].set("按列顺序")
+        self.refresh_table_access_window_field_tree(state, field_section, field_tree)
+        status_var.set(f"按列顺序字段匹配完成：{count} 个字段。")
+
+    def clear_table_access_window_fields(self, state, field_section, field_tree, status_var):
+        entry = self.current_table_access_window_table_entry(state)
+        node = self.current_table_access_window_node(state)
+        if entry is None or node is None:
+            return
+        self.mark_node_table_access_manual(node)
+        workflow_clear_field_mapping(entry)
+        self.refresh_table_access_window_field_tree(state, field_section, field_tree)
+        status_var.set("字段映射已清空。")
+
+    def create_table_access_selection_callbacks(
+        self,
+        state,
+        table_section,
+        field_section,
+        node_tree,
+        table_tree,
+        field_tree,
+        status_var,
+    ):
+        def current_node():
+            return self.current_table_access_window_node(state)
+
+        def current_table_entry():
+            return self.current_table_access_window_table_entry(state)
+
+        def refresh_field_tree():
+            self.refresh_table_access_window_field_tree(state, field_section, field_tree)
+
+        def refresh_node_tree():
+            self.refresh_table_access_node_tree(node_tree, state)
+
+        def refresh_table_tree(select_index=None):
+            self.refresh_table_access_window_table_tree(
+                state,
+                table_section,
+                field_section,
+                node_tree,
+                table_tree,
+                field_tree,
+                select_index=select_index,
+            )
+
+        def on_node_selected(event=None, force=False):
+            self.on_table_access_window_node_selected(
+                state,
+                table_section,
+                field_section,
+                node_tree,
+                table_tree,
+                field_tree,
+                status_var,
+                event=event,
+                force=force,
+            )
+
+        def on_table_selected(event=None):
+            self.on_table_access_window_table_selected(
+                state,
+                table_section,
+                field_section,
+                table_tree,
+                field_tree,
+                event=event,
+            )
+
+        def on_field_selected(event=None):
+            self.on_table_access_window_field_selected(state, field_section, field_tree, event=event)
+
+        return {
+            "current_node": current_node,
+            "current_table_entry": current_table_entry,
+            "refresh_node_tree": refresh_node_tree,
+            "refresh_table_tree": refresh_table_tree,
+            "refresh_field_tree": refresh_field_tree,
+            "on_node_selected": on_node_selected,
+            "on_table_selected": on_table_selected,
+            "on_field_selected": on_field_selected,
+        }
+
+    def create_table_access_table_action_callbacks(
+        self,
+        win,
+        state,
+        table_section,
+        field_section,
+        node_tree,
+        table_tree,
+        field_tree,
+        status_var,
+    ):
+        def save_table_entry():
+            self.save_table_access_window_table_entry(
+                state,
+                table_section,
+                field_section,
+                node_tree,
+                table_tree,
+                field_tree,
+                status_var,
+            )
+
+        def add_table_entry():
+            self.add_table_access_window_table_entry(
+                state,
+                table_section,
+                field_section,
+                node_tree,
+                table_tree,
+                field_tree,
+            )
+
+        def delete_table_entry():
+            self.delete_table_access_window_table_entry(
+                state,
+                table_section,
+                field_section,
+                node_tree,
+                table_tree,
+                field_tree,
+                status_var,
+            )
+
+        def rebuild_default_access():
+            self.rebuild_table_access_window_default_access(
+                win,
+                state,
+                table_section,
+                field_section,
+                node_tree,
+                table_tree,
+                field_tree,
+                status_var,
+            )
+
+        def check_all_permissions():
+            self.check_table_access_window_permissions(win, status_var)
+
+        def preview_impact():
+            self.preview_table_access_window_impact(win, state)
+
+        def apply_table_preset(event=None):
+            self.apply_table_access_window_table_preset(table_section, event=event)
+
+        return {
+            "save_table_entry": save_table_entry,
+            "add_table_entry": add_table_entry,
+            "delete_table_entry": delete_table_entry,
+            "rebuild_default_access": rebuild_default_access,
+            "check_all_permissions": check_all_permissions,
+            "preview_impact": preview_impact,
+            "apply_table_preset": apply_table_preset,
+        }
+
+    def create_table_access_field_action_callbacks(
+        self,
+        state,
+        table_section,
+        field_section,
+        field_tree,
+        status_var,
+    ):
+        def save_field_entry():
+            self.save_table_access_window_field_entry(state, table_section, field_section, field_tree, status_var)
+
+        def add_field_entry():
+            self.add_table_access_window_field_entry(table_section, field_section, field_tree)
+
+        def delete_field_entry():
+            self.delete_table_access_window_field_entry(state, field_section, field_tree, status_var)
+
+        def auto_match_fields():
+            self.auto_match_table_access_window_fields(state, field_section, field_tree, status_var)
+
+        def auto_match_fields_by_order():
+            self.auto_match_table_access_window_fields_by_order(state, table_section, field_section, field_tree, status_var)
+
+        def clear_fields():
+            self.clear_table_access_window_fields(state, field_section, field_tree, status_var)
+
+        return {
+            "save_field_entry": save_field_entry,
+            "add_field_entry": add_field_entry,
+            "delete_field_entry": delete_field_entry,
+            "auto_match_fields": auto_match_fields,
+            "auto_match_fields_by_order": auto_match_fields_by_order,
+            "clear_fields": clear_fields,
+        }
+
+    def create_table_access_window_callbacks(
+        self,
+        win,
+        state,
+        table_section,
+        field_section,
+        node_tree,
+        table_tree,
+        field_tree,
+        status_var,
+    ):
+        selection_callbacks = self.create_table_access_selection_callbacks(
+            state,
+            table_section,
+            field_section,
+            node_tree,
+            table_tree,
+            field_tree,
+            status_var,
+        )
+        table_callbacks = self.create_table_access_table_action_callbacks(
+            win,
+            state,
+            table_section,
+            field_section,
+            node_tree,
+            table_tree,
+            field_tree,
+            status_var,
+        )
+        field_callbacks = self.create_table_access_field_action_callbacks(
+            state,
+            table_section,
+            field_section,
+            field_tree,
+            status_var,
+        )
+        callbacks = {}
+        callbacks.update(selection_callbacks)
+        callbacks.update(table_callbacks)
+        callbacks.update(field_callbacks)
+        return callbacks
+
+    def open_table_access_window(self, initial_index=None):
+        self.ensure_node_tree_identity(self.nodes)
+        if initial_index is None:
+            initial_index = self.get_selected_node_index()
+        if initial_index is None and self.nodes:
+            initial_index = 0
+
+        state = {"node_index": initial_index, "table_index": None, "field_keys": [], "refreshing_node_tree": False}
+
+        shell = self.build_table_access_window_shell()
+        win = shell["win"]
+        left = shell["left"]
+        middle = shell["middle"]
+        right = shell["right"]
+
+        left_section = self.build_table_access_list_section(left)
+        node_tree = left_section["node_tree"]
+
+        table_section = self.build_table_access_table_form_section(middle)
+        table_tree = table_section["table_tree"]
+        table_form = table_section["table_form"]
+        preset_combo = table_section["preset_combo"]
+
+        field_section = self.build_table_access_field_form_section(right)
+        field_tree = field_section["field_tree"]
+        field_form = field_section["field_form"]
+
+        status_var = tk.StringVar(value="选择节点后可编辑表权限与字段映射。")
+        ttk.Label(win, textvariable=status_var, foreground="gray").pack(fill=tk.X, padx=8, pady=(0, 6))
+
+        callbacks = self.create_table_access_window_callbacks(
+            win,
+            state,
+            table_section,
+            field_section,
+            node_tree,
+            table_tree,
+            field_tree,
+            status_var,
+        )
+
+        preset_combo.bind("<<ComboboxSelected>>", callbacks["apply_table_preset"])
+        node_tree.bind("<<TreeviewSelect>>", callbacks["on_node_selected"])
+        table_tree.bind("<<TreeviewSelect>>", callbacks["on_table_selected"])
+        field_tree.bind("<<TreeviewSelect>>", callbacks["on_field_selected"])
+
+        self.build_table_access_table_action_buttons(
+            table_form,
+            {
+                "add_table_entry": callbacks["add_table_entry"],
+                "save_table_entry": callbacks["save_table_entry"],
+                "delete_table_entry": callbacks["delete_table_entry"],
+                "rebuild_default_access": callbacks["rebuild_default_access"],
+                "check_all_permissions": callbacks["check_all_permissions"],
+                "preview_impact": callbacks["preview_impact"],
+            },
+        )
+        self.build_table_access_field_action_buttons(
+            field_form,
+            {
+                "add_field_entry": callbacks["add_field_entry"],
+                "save_field_entry": callbacks["save_field_entry"],
+                "delete_field_entry": callbacks["delete_field_entry"],
+                "auto_match_fields": callbacks["auto_match_fields"],
+                "auto_match_fields_by_order": callbacks["auto_match_fields_by_order"],
+                "clear_fields": callbacks["clear_fields"],
+            },
+        )
+        self.build_table_access_bottom_buttons(
+            win,
+            {
+                "refresh": lambda: (callbacks["refresh_node_tree"](), callbacks["refresh_table_tree"](state.get("table_index"))),
+                "precheck": self.open_table_access_precheck_window,
+                "audit": self.open_table_access_audit_window,
+                "close": win.destroy,
+            },
+        )
+
+        callbacks["refresh_node_tree"]()
+        if self.nodes:
+            initial_index = max(0, min(int(initial_index or 0), len(self.nodes) - 1))
+            node_tree.selection_set(str(initial_index))
+            node_tree.focus(str(initial_index))
+            callbacks["on_node_selected"](force=True)
+        else:
+            status_var.set("当前没有节点，请先添加工作流节点。")
+
+    def get_table_manager(self, context=None, node=None, node_type="", node_name=""):
+        db_path = self.get_workflow_db_path(context)
+        if isinstance(context, dict) and "table_access_policy" not in context:
+            snapshot = context.get("workflow_snapshot") or {}
+            if isinstance(snapshot, dict) and snapshot.get("table_access_policy") is not None:
+                context["table_access_policy"] = TableAccessManager.normalize_permission_policy(snapshot.get("table_access_policy"))
+        current = (context or {}).get("current_node_info", {}) if isinstance(context, dict) else {}
+        table_access = None
+        if isinstance(node, dict):
+            self.ensure_node_identity(node)
+            node_id = node.get("node_id", "")
+            node_name = node.get("name", node_name)
+            node_type = node.get("type", node_type)
+            table_access = node.get("table_access") if isinstance(node.get("table_access"), dict) else None
+        else:
+            node_id = current.get("node_id", "")
+            node_name = current.get("node_name", node_name)
+            node_type = current.get("node_type", node_type)
+            table_access = current.get("table_access") if isinstance(current.get("table_access"), dict) else None
+        return TableAccessManager(
+            db_path,
+            node_id=node_id,
+            node_name=node_name,
+            node_type=node_type,
+            context=context,
+            table_access=table_access,
+        )
+
+    def get_workflow_output_manager(self, table_name, overwrite=False, context=None):
+        db_path = self.get_workflow_db_path(context)
+        exists = bool(db_path and os.path.exists(db_path) and TableAccessManager(db_path).table_exists(table_name))
+        permissions = self.table_permission_set(
+            read=bool(overwrite and exists),
+            write=True,
+            create=True,
+            replace=bool(overwrite),
+        )
+        access = {
+            "version": 1,
+            "auto_generated": True,
+            "system_scope": "workflow_output",
+            "tables": [
+                self.make_table_access_entry(
+                    "workflow_output",
+                    table_name,
+                    permissions=permissions,
+                    write_mode="replace_table" if overwrite else "timestamp_new",
+                    declared_by="workflow_output",
+                )
+            ],
+        }
+        policy = None
+        if isinstance(context, dict):
+            snapshot = context.get("workflow_snapshot") or {}
+            policy = context.get("table_access_policy") or (snapshot.get("table_access_policy") if isinstance(snapshot, dict) else None)
+        return TableAccessManager(
+            db_path,
+            node_id="__workflow_output__",
+            node_name="工作流最终输出",
+            node_type="工作流输出",
+            context=context if isinstance(context, dict) else None,
+            table_access=access,
+            permission_policy=policy,
+        )
+
+    def transit_write_permissions_for_mode(self, exists=False, write_mode="", partial=False):
+        required = TableAccessManager.required_permissions_for_write_mode(write_mode or "replace_table", exists=exists, partial=partial)
+        standard = TableAccessManager.normalize_write_mode(write_mode)
+        if standard in {"overlay_by_order", "write_fields_only", "fill_blank_fields", "clear_keep_schema"}:
+            required.append("alter_schema")
+        result = []
+        for perm in required:
+            if perm not in result:
+                result.append(perm)
+        return result
+
+    def check_transit_table_permission(self, context, table_name, permissions, operation="transit_table",
+                                       fields=None, field_action=None, write_mode="", node_type=""):
+        table_name = str(table_name or "").strip()
+        if not table_name:
+            return None
+        manager = self.get_table_manager(context if isinstance(context, dict) else None, node_type=node_type or "中转副表")
+        manager.check_table_permission(
+            table_name,
+            permissions,
+            operation=operation,
+            fields=fields,
+            field_action=field_action,
+            write_mode=write_mode,
+            source_type="中转副表",
+        )
+        return manager
+
+    def check_transit_table_write_permission(self, context, table_name, exists=False, write_mode="",
+                                             fields=None, partial=False, node_type="", operation="write_transit_table"):
+        return self.check_transit_table_permission(
+            context,
+            table_name,
+            self.transit_write_permissions_for_mode(exists=exists, write_mode=write_mode, partial=partial),
+            operation=operation,
+            fields=fields,
+            field_action="write",
+            write_mode=write_mode,
+            node_type=node_type,
+        )
+
+    def log_transit_table_event(self, manager, operation, table_name, headers=None, rows=None, message="", **extra):
+        if not isinstance(manager, TableAccessManager):
+            return
+        headers = list(headers or [])
+        row_count = len(rows or [])
+        extra.setdefault("source_type", "中转副表")
+        extra.setdefault("rows", row_count)
+        extra.setdefault("columns", len(headers))
+        if not message:
+            message = f"{operation} {table_name}：{row_count} 行 × {len(headers)} 列"
+        manager._log_event(operation, table_name, message=message, **extra)
+
+    def check_current_table_permission(self, context, headers, write=False, operation="current_table"):
+        manager = self.get_table_manager(context if isinstance(context, dict) else None, node_type="当前工作流表")
+        manager.check_table_permission(
+            "__CURRENT_TABLE__",
+            ["write_table", "update_rows"] if write else ["read_table"],
+            operation=operation,
+            fields=list(headers or []),
+            field_action="write" if write else "read",
+            write_mode="current_table_default" if write else "",
+            source_type="当前工作流表",
+        )
+        return manager
+
+    def log_current_table_transform(self, manager, before_shape, headers, rows, node_type=""):
+        if not isinstance(manager, TableAccessManager):
+            return
+        after_shape = (len(rows or []), len(headers or []))
+        manager._log_event(
+            "transform_current_table",
+            "__CURRENT_TABLE__",
+            source_type="当前工作流表",
+            before_rows=before_shape[0],
+            before_columns=before_shape[1],
+            rows=after_shape[0],
+            columns=after_shape[1],
+            message=f"当前工作流表处理完成：{before_shape[0]}×{before_shape[1]} -> {after_shape[0]}×{after_shape[1]}，节点 {node_type}",
+        )
 
     def get_workflow_output_mode(self, context=None):
         snapshot = self.get_workflow_snapshot(context)
@@ -5218,7 +7803,7 @@ class PlanWorkflowWindow:
         db_path = self.get_workflow_db_path(context)
         if not db_path:
             raise ValueError("请先设置 SQLite 数据库路径。")
-        return PluginDatabaseAPI(db_path).get_columns(table_name)
+        return self.get_table_manager(context).get_columns(table_name)
 
     def read_plugin_input_table_source(self, spec, current_headers, current_rows, context=None):
         """按插件节点多表配置读取一张输入表。"""
@@ -5239,13 +7824,9 @@ class PlanWorkflowWindow:
             table = str(spec.get("sqlite_table") or spec.get("table") or "").strip()
             if not table:
                 raise ValueError("插件额外输入表未选择 SQLite 表。")
-            headers = self.get_workflow_sqlite_columns(table, context)
-            db_path = self.get_workflow_db_path(context)
-            with sqlite3.connect(db_path) as conn:
-                cur = conn.cursor()
-                cols = ", ".join(self.app.quote_ident(h) for h in headers)
-                cur.execute(f"SELECT {cols} FROM {self.app.quote_ident(table)} ORDER BY rowid")
-                rows = [["" if v is None else str(v) for v in row] for row in cur.fetchall()]
+            data = self.get_table_manager(context).read_table(table)
+            headers = list(data.get("headers", []))
+            rows = [list(row) for row in data.get("rows", [])]
             return {
                 "type": "table",
                 "headers": headers,
@@ -5257,11 +7838,20 @@ class PlanWorkflowWindow:
             name = str(spec.get("transit_table") or spec.get("table") or "").strip()
             if not name:
                 raise ValueError("插件额外输入表未选择中转副表。")
+            manager = self.check_transit_table_permission(
+                context,
+                name,
+                ["read_table"],
+                operation="read_transit_table",
+                field_action="read",
+                node_type="插件节点",
+            )
             item = (context.get("transit_tables", {}) or {}).get(name)
             if not item:
                 raise ValueError(f"插件额外输入表未找到中转副表：{name}")
             headers = list(item.get("headers", []) or [])
             rows = [list(r) for r in (item.get("rows", []) or [])]
+            self.log_transit_table_event(manager, "read_transit_table", name, headers, rows, message=f"读取中转副表 {name}：{len(rows)} 行 × {len(headers)} 列")
             return {
                 "type": "table",
                 "headers": headers,
@@ -5375,62 +7965,743 @@ class PlanWorkflowWindow:
         except Exception:
             pass
 
-    def build_plugin_node_config(self, config, headers, transit_context=None, current_rows=None):
-        frame = ttk.LabelFrame(self.config_frame, text="外部插件节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        plugin_id = config.get("plugin_id", "")
-        item = self.plugin_registry.get(plugin_id)
-        if not item:
-            ttk.Label(frame, text=f"插件未加载或缺失：{plugin_id}", foreground="red").grid(row=0, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
-            ttk.Label(frame, text="请将对应插件 .py 放入 plugins 目录后点击左侧“刷新插件”。", foreground="gray").grid(row=1, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
-            return
+    def plugin_config_context_with_live_transit(self, transit_context=None, include_rows=False):
+        """插件配置期复用上次真实预览生成的中转副表。
 
-        info = item.get("info", {})
-        params = config.setdefault("params", {})
-        ttk.Label(frame, text=f"插件：{info.get('name', plugin_id)}", font=("TkDefaultFont", 10, "bold")).grid(row=0, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
-        ttk.Label(frame, text=f"ID：{plugin_id}    版本：{info.get('version', '')}    分类：{info.get('category', '')}", foreground="gray").grid(row=1, column=0, columnspan=4, sticky=tk.W, padx=4, pady=2)
-        ttk.Label(frame, text=info.get("description", ""), foreground="gray", wraplength=1050).grid(row=2, column=0, columnspan=4, sticky=tk.W, padx=4, pady=(0, 8))
+        include_rows=False 时只补表名和字段，避免点选插件节点时复制大表；
+        打开插件自带设置窗口时再传入真实行数据。
+        """
+        config_context = copy.deepcopy(transit_context or {"transit_tables": {}})
+        transit_tables = config_context.setdefault("transit_tables", {})
+        reused = []
 
-        load_status = item.get("load_status", "可内置运行")
-        import_error = str(item.get("import_error", "") or "").strip()
-        metadata_source = item.get("metadata_source", "")
+        live_tables = {}
+        if isinstance(getattr(self, "last_workflow_context", None), dict):
+            live_tables.update(self.last_workflow_context.get("transit_tables", {}) or {})
+        live_tables.update(getattr(self, "current_transit_tables", {}) or {})
+
+        for name, live_item in live_tables.items():
+            if not isinstance(live_item, dict):
+                continue
+            live_rows = list(live_item.get("rows", []) or [])
+            if not live_rows:
+                continue
+            existing = transit_tables.get(name)
+            existing_rows = []
+            if isinstance(existing, dict):
+                existing_rows = list(existing.get("rows", []) or [])
+            if existing_rows:
+                continue
+            if include_rows:
+                transit_tables[name] = copy.deepcopy(live_item)
+            else:
+                headers = list(live_item.get("headers", []) or [])
+                source = live_item.get("source", "上次真实预览")
+                if isinstance(existing, dict):
+                    merged = copy.deepcopy(existing)
+                    if not merged.get("headers") and headers:
+                        merged["headers"] = headers
+                    merged.setdefault("rows", [])
+                    merged.setdefault("source", source)
+                    transit_tables[name] = merged
+                else:
+                    transit_tables[name] = {"headers": headers, "rows": [], "source": source}
+            if name not in reused:
+                reused.append(name)
+
+        if reused:
+            config_context["_reused_preview_transit_tables"] = reused
+        return config_context
+
+    def plugin_config_transit_reuse_note(self, transit_context=None):
+        return workflow_plugin_config_transit_reuse_note(transit_context)
+
+    def get_plugin_dynamic_parameter_choices_for_config(
+        self,
+        item,
+        config,
+        params,
+        spec,
+        key,
+        headers,
+        current_rows=None,
+        transit_context=None,
+        input_table_headers=None,
+    ):
+        choices = workflow_get_plugin_static_parameter_choices(spec)
+        provider = getattr(item.get("module"), "get_dynamic_parameter_options", None)
+        if not callable(provider):
+            return choices
+        try:
+            context = transit_context or {}
+            plugin_context = self.make_plugin_context(config, context, execute_actions=False)
+            plugin_context["input_table_headers"] = input_table_headers or self.build_plugin_input_table_headers(config, headers, context)
+            plugin_context["plugin_input_table_specs"] = copy.deepcopy(config.get("input_tables", []))
+            try:
+                plugin_context["input_tables"] = self.build_plugin_input_tables(config, headers, current_rows or [], context)
+            except Exception as table_exc:
+                plugin_context["input_tables_error"] = str(table_exc)
+            dynamic = provider(key, dict(params), plugin_context)
+            return workflow_normalize_plugin_dynamic_parameter_choices(choices, dynamic)
+        except Exception:
+            return choices
+
+    def run_plugin_custom_config_window(
+        self,
+        item,
+        config,
+        params,
+        headers,
+        current_rows=None,
+        transit_context=None,
+        dynamic_param_controls=None,
+        refresh_dynamic_controls=None,
+    ):
+        window_transit_context = self.plugin_config_context_with_live_transit(transit_context, include_rows=True)
+        plugin_context = self.make_plugin_context(config, window_transit_context or {}, execute_actions=False)
+        try:
+            input_tables = self.build_plugin_input_tables(config, headers, current_rows or [], window_transit_context or {})
+            plugin_context["input_tables"] = input_tables
+            plugin_context["plugin_input_table_specs"] = copy.deepcopy(config.get("input_tables", []))
+            reuse_note_for_window = self.plugin_config_transit_reuse_note(window_transit_context)
+            if reuse_note_for_window:
+                plugin_context["plugin_config_data_note"] = reuse_note_for_window
+                self.status_var.set(reuse_note_for_window)
+        except Exception as table_exc:
+            plugin_context["input_tables_error"] = str(table_exc)
+            plugin_context["plugin_input_table_specs"] = copy.deepcopy(config.get("input_tables", []))
+        result = item["module"].open_config_window(self.window, dict(params), plugin_context)
+        if not workflow_apply_plugin_custom_config_result(config, params, result):
+            return False
+        for control in dynamic_param_controls or []:
+            key = control.get("key", "")
+            var = control.get("var")
+            if var is not None and key in params:
+                var.set(params.get(key, ""))
+        if callable(refresh_dynamic_controls):
+            refresh_dynamic_controls()
+        return True
+
+    def refresh_plugin_dynamic_config_controls(self, controls, set_param, get_choices):
+        for control in controls or []:
+            combo = control.get("combo")
+            var = control.get("var")
+            spec = control.get("spec", {})
+            key = control.get("key", "")
+            typ = control.get("type", "")
+            if combo is None or var is None:
+                continue
+            current = str(var.get() or "")
+            state = workflow_build_plugin_dynamic_control_state(
+                typ,
+                spec,
+                current,
+                get_choices(control) if callable(get_choices) else [],
+            )
+            try:
+                combo.configure(values=state["choices"])
+            except Exception:
+                pass
+            desired = state["value"]
+            if desired != current:
+                var.set(desired)
+            set_param(key, var.get())
+
+    def get_group_config_source_headers(self, source_type, headers, transit_context=None, transit_name="", sqlite_table=""):
+        sqlite_columns = []
+        if source_type == "SQLite表" and sqlite_table:
+            try:
+                sqlite_columns = self.get_workflow_sqlite_columns(
+                    sqlite_table,
+                    context=transit_context if isinstance(transit_context, dict) else None,
+                )
+            except Exception:
+                sqlite_columns = []
+        return workflow_group_source_headers_for_mapping(
+            source_type,
+            headers,
+            (transit_context or {}).get("transit_tables", {}) if isinstance(transit_context, dict) else {},
+            transit_name,
+            sqlite_columns,
+        )
+
+    def save_group_inner_node_json_text(self, config, index, text):
+        nodes = config.setdefault("nodes", [])
+        if index is None or index < 0 or index >= len(nodes):
+            raise ValueError("请先选择一个组内节点。")
+        nodes[index] = workflow_parse_group_inner_node_json(text)
+        return index
+
+    def load_group_template_into_config(self, config):
+        data = self.load_group_template_dialog()
+        if data is None:
+            return False
+        workflow_apply_group_template_config(config, self.group_config_from_template_data(data))
+        self.rebuild_current_config()
+        return True
+
+    def get_group_inner_node_type_values(self):
+        return workflow_group_inner_node_type_values(self.get_node_type_values())
+
+    def make_group_inner_node(self, node_type):
+        return workflow_make_group_inner_node(
+            node_type,
+            plugin_display_map=getattr(self, "plugin_display_map", {}),
+            plugin_registry=getattr(self, "plugin_registry", {}),
+            plugin_config_factory=self.default_config_for_plugin,
+            default_name_factory=self.default_name_for_node,
+            default_config_factory=self.default_config_for_type,
+        )
+
+    def add_group_inner_node_to_config(self, config, node_type):
+        _, index = workflow_add_group_inner_node(
+            config,
+            node_type,
+            plugin_display_map=getattr(self, "plugin_display_map", {}),
+            plugin_registry=getattr(self, "plugin_registry", {}),
+            plugin_config_factory=self.default_config_for_plugin,
+            default_name_factory=self.default_name_for_node,
+            default_config_factory=self.default_config_for_type,
+        )
+        return index
+
+    def apply_group_inner_node_list_action_to_config(self, config, index, action, delta=0):
+        nodes, select_idx = workflow_apply_group_inner_node_list_action(
+            config.setdefault("nodes", []),
+            index,
+            action,
+            delta=delta,
+        )
+        config["nodes"] = nodes
+        return select_idx
+
+    def build_group_input_source_controls(self, input_frame, config, transit_context=None):
+        source_values = ["当前工作表", "中转副表", "SQLite表"]
+        source_type_var = self.add_labeled_combo(input_frame, "入口数据源：", config.get("input_source_type", "当前工作表"), source_values, 0, 0, 16)
+        self.sync_var_to_config(source_type_var, config, "input_source_type")
+
+        sqlite_tables = self.get_sqlite_table_names()
+        sqlite_var = self.add_labeled_combo(input_frame, "SQLite表：", config.get("input_sqlite_table", sqlite_tables[0] if sqlite_tables else ""), sqlite_tables, 0, 2, 26, readonly=False)
+        self.sync_var_to_config(sqlite_var, config, "input_sqlite_table")
+
+        transit_tables = sorted((transit_context or {}).get("transit_tables", {}).keys())
+        transit_var = self.add_labeled_combo(input_frame, "中转副表：", config.get("input_transit_table", transit_tables[0] if transit_tables else ""), transit_tables, 0, 4, 26, readonly=False)
+        self.sync_var_to_config(transit_var, config, "input_transit_table")
+        return {
+            "source_type_var": source_type_var,
+            "sqlite_var": sqlite_var,
+            "transit_var": transit_var,
+            "sqlite_tables": sqlite_tables,
+            "transit_tables": transit_tables,
+        }
+
+    def build_group_input_fields_controls(self, input_frame, config, refresh_mapping):
+        fields_text = workflow_group_input_fields_text(config)
+        input_fields_var = self.add_labeled_entry(input_frame, "组入口字段：", fields_text, 1, 0, 70)
+        ttk.Label(input_frame, text="留空=兼容旧版，直接把入口数据源整表传入组内；填写后才按映射生成标准入口表。", foreground="gray").grid(row=1, column=2, columnspan=5, sticky=tk.W, padx=4, pady=4)
+
+        def update_input_fields(*_):
+            workflow_update_group_input_fields_config(config, input_fields_var.get())
+            refresh_mapping()
+        input_fields_var.trace_add("write", update_input_fields)
+
+        missing_var = self.add_labeled_combo(input_frame, "缺失字段：", config.get("missing_input_policy", "缺失填空"), ["缺失填空", "缺失报错"], 2, 0, 14)
+        self.sync_var_to_config(missing_var, config, "missing_input_policy")
+        return {"input_fields_var": input_fields_var, "missing_var": missing_var}
+
+    def build_group_mapping_tree_control(self, input_frame):
+        mapping_wrap = ttk.Frame(input_frame)
+        mapping_wrap.grid(row=3, column=0, columnspan=8, sticky="ew", padx=4, pady=(4, 2))
+        mapping_wrap.columnconfigure(0, weight=1)
+        mapping_tree = ttk.Treeview(mapping_wrap, columns=("入口字段", "外部字段", "默认值"), show="headings", height=5)
+        for col, width in [("入口字段", 180), ("外部字段", 260), ("默认值", 180)]:
+            mapping_tree.heading(col, text=col)
+            mapping_tree.column(col, width=width, anchor=tk.W, stretch=False)
+        mapping_y = ttk.Scrollbar(mapping_wrap, orient=tk.VERTICAL, command=mapping_tree.yview)
+        mapping_tree.configure(yscrollcommand=mapping_y.set)
+        mapping_tree.grid(row=0, column=0, sticky="ew")
+        mapping_y.grid(row=0, column=1, sticky="ns")
+        return {"mapping_wrap": mapping_wrap, "mapping_tree": mapping_tree, "mapping_y": mapping_y}
+
+    def build_group_mapping_edit_controls(self, input_frame):
+        map_edit = ttk.Frame(input_frame)
+        map_edit.grid(row=4, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(2, 4))
+        selected_input_var = tk.StringVar(value="")
+        source_field_var = tk.StringVar(value="")
+        default_value_var = tk.StringVar(value="")
+        ttk.Label(map_edit, text="组入口字段：").pack(side=tk.LEFT, padx=(0, 2))
+        selected_input_combo = ttk.Combobox(map_edit, textvariable=selected_input_var, values=[], width=20, state="readonly")
+        selected_input_combo.pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Label(map_edit, text="映射外部字段：").pack(side=tk.LEFT, padx=(0, 2))
+        source_field_combo = ttk.Combobox(map_edit, textvariable=source_field_var, values=[], width=30, state="readonly")
+        source_field_combo.pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Label(map_edit, text="缺失默认值：").pack(side=tk.LEFT, padx=(0, 2))
+        default_value_entry = ttk.Entry(map_edit, textvariable=default_value_var, width=20)
+        default_value_entry.pack(side=tk.LEFT, padx=(0, 6))
+        return {
+            "map_edit": map_edit,
+            "selected_input_var": selected_input_var,
+            "source_field_var": source_field_var,
+            "default_value_var": default_value_var,
+            "selected_input_combo": selected_input_combo,
+            "source_field_combo": source_field_combo,
+            "default_value_entry": default_value_entry,
+        }
+
+    def build_group_mapping_action_buttons(
+        self,
+        map_edit,
+        apply_mapping,
+        auto_mapping,
+        use_source_headers,
+        infer_inputs,
+    ):
+        buttons = {
+            "apply_mapping": ttk.Button(map_edit, text="应用映射", command=apply_mapping),
+            "auto_mapping": ttk.Button(map_edit, text="同名自动映射", command=auto_mapping),
+            "use_source_headers": ttk.Button(map_edit, text="用来源字段作为入口", command=use_source_headers),
+            "infer_inputs": ttk.Button(map_edit, text="从组内节点推导入口字段", command=infer_inputs),
+        }
+        for button in buttons.values():
+            button.pack(side=tk.LEFT, padx=2)
+        return buttons
+
+    def build_group_input_mapping_section(self, frame, config, headers, transit_context=None, row=2):
+        input_frame = ttk.LabelFrame(frame, text="入口字段映射", padding=6)
+        input_frame.grid(row=row, column=0, columnspan=8, sticky="ew", padx=4, pady=6)
+        input_frame.columnconfigure(1, weight=1)
+
+        callbacks = {}
+        source_controls = self.build_group_input_source_controls(input_frame, config, transit_context=transit_context)
+        source_type_var = source_controls["source_type_var"]
+        sqlite_var = source_controls["sqlite_var"]
+        transit_var = source_controls["transit_var"]
+
+        fields_controls = self.build_group_input_fields_controls(input_frame, config, lambda: callbacks["refresh_mapping_tree"]())
+        input_fields_var = fields_controls["input_fields_var"]
+
+        tree_controls = self.build_group_mapping_tree_control(input_frame)
+        mapping_tree = tree_controls["mapping_tree"]
+
+        edit_controls = self.build_group_mapping_edit_controls(input_frame)
+        selected_input_var = edit_controls["selected_input_var"]
+        source_field_var = edit_controls["source_field_var"]
+        default_value_var = edit_controls["default_value_var"]
+        selected_input_combo = edit_controls["selected_input_combo"]
+        source_field_combo = edit_controls["source_field_combo"]
+
+        def get_source_headers_for_mapping():
+            source_type = source_type_var.get() or config.get("input_source_type", "当前工作表")
+            return self.get_group_config_source_headers(
+                source_type,
+                headers,
+                transit_context=transit_context,
+                transit_name=transit_var.get().strip() or config.get("input_transit_table", ""),
+                sqlite_table=sqlite_var.get().strip() or config.get("input_sqlite_table", ""),
+            )
+
+        callbacks.update(self.create_group_input_mapping_callbacks(
+            config,
+            transit_context,
+            get_source_headers_for_mapping,
+            mapping_tree,
+            selected_input_combo,
+            selected_input_var,
+            source_field_combo,
+            source_field_var,
+            default_value_var,
+            input_fields_var,
+        ))
+        mapping_tree.bind("<<TreeviewSelect>>", callbacks["on_mapping_select"])
+        selected_input_combo.bind("<<ComboboxSelected>>", callbacks["sync_mapping_edit_from_selected"])
+
+        self.build_group_mapping_action_buttons(
+            edit_controls["map_edit"],
+            callbacks["apply_mapping_one"],
+            callbacks["auto_mapping_by_name"],
+            callbacks["use_current_headers_as_inputs"],
+            callbacks["infer_inputs_from_inner_nodes"],
+        )
+        for v in (source_type_var, sqlite_var, transit_var):
+            v.trace_add("write", lambda *_: callbacks["refresh_source_field_combo"]())
+        callbacks["refresh_mapping_tree"]()
+        return input_frame
+
+    def build_group_output_section(self, frame, config, row=3):
+        output_frame = ttk.LabelFrame(frame, text="输出设置", padding=6)
+        output_frame.grid(row=row, column=0, columnspan=8, sticky="ew", padx=4, pady=6)
+        output_state = workflow_build_group_output_config_state(config)
+
+        main_out_var = self.add_labeled_combo(output_frame, "主输出：", output_state["main_output_mode"], output_state["main_output_choices"], 0, 0, 18)
+        self.sync_var_to_config(main_out_var, config, "main_output_mode")
+        scope_var = self.add_labeled_combo(output_frame, "组内中转：", output_state["transit_scope"], output_state["transit_scope_choices"], 0, 2, 18)
+        self.sync_var_to_config(scope_var, config, "transit_scope")
+
+        save_transit_var = tk.BooleanVar(value=output_state["save_to_transit"])
+        ttk.Checkbutton(output_frame, text="同时保存到中转副表", variable=save_transit_var).grid(row=1, column=0, sticky=tk.W, padx=4, pady=4)
+        self.sync_bool_to_config(save_transit_var, config, "save_to_transit")
+        transit_name_var = self.add_labeled_entry(output_frame, "中转表名：", output_state["output_transit_name"], 1, 1, 24)
+        self.sync_var_to_config(transit_name_var, config, "output_transit_name")
+        transit_conflict_var = self.add_labeled_combo(output_frame, "同名处理：", output_state["output_transit_conflict_mode"], output_state["output_transit_conflict_choices"], 1, 3, 18)
+        self.sync_var_to_config(transit_conflict_var, config, "output_transit_conflict_mode")
+
+        save_sqlite_var = tk.BooleanVar(value=output_state["save_to_sqlite"])
+        ttk.Checkbutton(output_frame, text="执行计划时保存到 SQLite", variable=save_sqlite_var).grid(row=2, column=0, sticky=tk.W, padx=4, pady=4)
+        self.sync_bool_to_config(save_sqlite_var, config, "save_to_sqlite")
+        sqlite_name_var = self.add_labeled_entry(output_frame, "SQLite表名：", output_state["output_sqlite_table"], 2, 1, 24)
+        self.sync_var_to_config(sqlite_name_var, config, "output_sqlite_table")
+        sqlite_mode_var = self.add_labeled_combo(output_frame, "写入模式：", output_state["output_sqlite_mode"], output_state["output_sqlite_mode_choices"], 2, 3, 20)
+        self.sync_var_to_config(sqlite_mode_var, config, "output_sqlite_mode")
+        sqlite_preview_var = tk.BooleanVar(value=output_state["sqlite_save_in_preview"])
+        ttk.Checkbutton(output_frame, text="预览也允许写 SQLite（慎用）", variable=sqlite_preview_var).grid(row=3, column=0, columnspan=3, sticky=tk.W, padx=4, pady=4)
+        self.sync_bool_to_config(sqlite_preview_var, config, "sqlite_save_in_preview")
+        ttk.Label(output_frame, text=output_state["hint_text"], foreground="gray").grid(row=3, column=3, columnspan=3, sticky=tk.W, padx=4, pady=4)
+        return output_frame
+
+    def refresh_group_source_field_combo(self, source_field_combo, source_field_var, source_headers):
+        state = workflow_group_source_field_combo_state(source_field_var.get(), source_headers)
+        source_field_combo["values"] = state["values"]
+        source_field_var.set(state["value"])
+        return list(state["values"][1:])
+
+    def sync_group_mapping_edit_from_selected(
+        self,
+        config,
+        mapping_tree,
+        selected_input_var,
+        source_field_var,
+        default_value_var,
+        refresh_source_fields,
+    ):
+        key = selected_input_var.get().strip()
+        detail = workflow_group_mapping_detail(config, key)
+        refresh_source_fields()
+        source_field_var.set(detail["source_field"])
+        default_value_var.set(detail["default_value"])
+        # 同步选中映射表中的对应行，便于表格总览和下拉编辑保持一致。
+        for iid in mapping_tree.get_children():
+            vals = mapping_tree.item(iid, "values")
+            if vals and str(vals[0]) == key:
+                mapping_tree.selection_set(iid)
+                mapping_tree.focus(iid)
+                mapping_tree.see(iid)
+                break
+
+    def refresh_group_selected_input_combo(self, config, selected_input_combo, selected_input_var, sync_detail=None):
+        state = workflow_group_selected_input_state(config, selected_input_var.get().strip())
+        fields = state["values"]
+        selected_input_combo["values"] = fields
+        selected_input_var.set(state["value"])
+        if callable(sync_detail):
+            sync_detail()
+        return fields
+
+    def refresh_group_mapping_tree(self, config, mapping_tree, refresh_selected_inputs):
+        mapping_tree.delete(*mapping_tree.get_children())
+        for row_values in workflow_group_mapping_rows(config):
+            mapping_tree.insert("", tk.END, values=row_values)
+        refresh_selected_inputs()
+
+    def apply_group_mapping_from_controls(self, config, selected_input_var, source_field_var, default_value_var, refresh_mapping):
+        result = workflow_apply_group_mapping(
+            config,
+            selected_input_var.get(),
+            source_field_var.get(),
+            default_value_var.get(),
+        )
+        if not result["ok"]:
+            messagebox.showwarning("提示", result["message"])
+            return False
+        refresh_mapping()
+        return True
+
+    def auto_group_mapping_by_name_from_source(self, config, get_source_headers, refresh_mapping):
+        workflow_auto_group_mapping_by_name(config, get_source_headers())
+        refresh_mapping()
+        return True
+
+    def use_group_source_headers_as_inputs(self, config, get_source_headers, set_input_fields_text, refresh_mapping):
+        vals = get_source_headers()
+        workflow_use_source_headers_as_group_inputs(config, vals)
+        set_input_fields_text(",".join(vals))
+        refresh_mapping()
+        return vals
+
+    def create_group_input_mapping_callbacks(
+        self,
+        config,
+        transit_context,
+        get_source_headers,
+        mapping_tree,
+        selected_input_combo,
+        selected_input_var,
+        source_field_combo,
+        source_field_var,
+        default_value_var,
+        input_fields_var,
+    ):
+        def refresh_source_field_combo():
+            return self.refresh_group_source_field_combo(
+                source_field_combo,
+                source_field_var,
+                get_source_headers(),
+            )
+
+        def sync_mapping_edit_from_selected(event=None):
+            self.sync_group_mapping_edit_from_selected(
+                config,
+                mapping_tree,
+                selected_input_var,
+                source_field_var,
+                default_value_var,
+                refresh_source_field_combo,
+            )
+
+        def refresh_selected_input_combo(sync_detail=True):
+            return self.refresh_group_selected_input_combo(
+                config,
+                selected_input_combo,
+                selected_input_var,
+                sync_detail=sync_mapping_edit_from_selected if sync_detail else None,
+            )
+
+        def refresh_mapping_tree():
+            self.refresh_group_mapping_tree(
+                config,
+                mapping_tree,
+                lambda: refresh_selected_input_combo(sync_detail=True),
+            )
+
+        def on_mapping_select(event=None):
+            sel = mapping_tree.selection()
+            if not sel:
+                return
+            vals = mapping_tree.item(sel[0], "values")
+            if not vals:
+                return
+            detail = workflow_group_mapping_selection_detail(vals)
+            selected_input_var.set(detail["key"])
+            refresh_source_field_combo()
+            source_field_var.set(detail["source_field"])
+            default_value_var.set(detail["default_value"])
+
+        def apply_mapping_one():
+            self.apply_group_mapping_from_controls(
+                config,
+                selected_input_var,
+                source_field_var,
+                default_value_var,
+                refresh_mapping_tree,
+            )
+
+        def auto_mapping_by_name():
+            self.auto_group_mapping_by_name_from_source(config, get_source_headers, refresh_mapping_tree)
+
+        def use_current_headers_as_inputs():
+            self.use_group_source_headers_as_inputs(
+                config,
+                get_source_headers,
+                input_fields_var.set,
+                refresh_mapping_tree,
+            )
+
+        def infer_inputs_from_inner_nodes():
+            self.infer_and_apply_group_input_fields_for_config(
+                config,
+                transit_context,
+                get_source_headers,
+                input_fields_var.set,
+                refresh_mapping_tree,
+            )
+
+        return {
+            "refresh_source_field_combo": refresh_source_field_combo,
+            "refresh_selected_input_combo": refresh_selected_input_combo,
+            "sync_mapping_edit_from_selected": sync_mapping_edit_from_selected,
+            "refresh_mapping_tree": refresh_mapping_tree,
+            "on_mapping_select": on_mapping_select,
+            "apply_mapping_one": apply_mapping_one,
+            "auto_mapping_by_name": auto_mapping_by_name,
+            "use_current_headers_as_inputs": use_current_headers_as_inputs,
+            "infer_inputs_from_inner_nodes": infer_inputs_from_inner_nodes,
+        }
+
+    def infer_and_apply_group_input_fields_for_config(
+        self,
+        config,
+        transit_context,
+        get_source_headers,
+        set_input_fields_text,
+        refresh_mapping,
+    ):
+        inferred, details = self.infer_group_input_fields_from_nodes(
+            config.get("nodes", []),
+            context=transit_context,
+        )
+        detail_text = self.format_group_input_infer_details(inferred, details)
+        decision = workflow_group_infer_input_apply_decision(config, inferred)
+        if decision["action"] == "show_empty":
+            messagebox.showinfo("入口字段推导", decision["message_prefix"] + "\n\n" + detail_text)
+            return False
+
+        if decision["action"] == "show_detail":
+            answer = messagebox.askyesnocancel(
+                "入口字段推导",
+                "已从组内节点推导出入口字段：\n"
+                + ", ".join(inferred)
+                + "\n\n是否覆盖现有组入口字段？\n\n"
+                + "是：覆盖现有入口字段\n"
+                + "否：合并到现有入口字段\n"
+                + "取消：只查看结果，不应用"
+            )
+            if answer is None:
+                messagebox.showinfo("入口字段推导明细", detail_text)
+                return False
+            decision = workflow_group_infer_input_apply_decision(config, inferred, answer=answer)
+
+        source_headers = get_source_headers()
+        new_fields = workflow_apply_inferred_group_inputs(config, inferred, source_headers, merge=decision["merge"])
+        set_input_fields_text(",".join(new_fields))
+        refresh_mapping()
+        messagebox.showinfo("入口字段推导完成", detail_text)
+        return True
+
+    def build_group_inner_nodes_section(self, frame, config, row):
+        inner_frame = ttk.LabelFrame(frame, text="组内节点", padding=6)
+        inner_frame.grid(row=row, column=0, columnspan=8, sticky="nsew", padx=4, pady=6)
+        inner_frame.columnconfigure(0, weight=1)
+        inner_frame.rowconfigure(1, weight=1)
+
+        add_row = ttk.Frame(inner_frame)
+        add_row.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        inner_type_var = tk.StringVar(value="批量替换")
+        inner_values = self.get_group_inner_node_type_values()
+        ttk.Combobox(add_row, textvariable=inner_type_var, values=inner_values, width=26, state="readonly").pack(side=tk.LEFT, padx=(0, 4))
+
+        list_wrap = ttk.Frame(inner_frame)
+        list_wrap.grid(row=1, column=0, sticky="nsew")
+        list_wrap.columnconfigure(0, weight=1)
+        list_wrap.rowconfigure(0, weight=1)
+        group_list = tk.Listbox(list_wrap, height=9, exportselection=False)
+        yscroll = ttk.Scrollbar(list_wrap, orient=tk.VERTICAL, command=group_list.yview)
+        group_list.configure(yscrollcommand=yscroll.set)
+        group_list.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+
+        def refresh_group_list(select_idx=None):
+            group_list.delete(0, tk.END)
+            for i, n in enumerate(config.setdefault("nodes", [])):
+                group_list.insert(tk.END, workflow_group_node_label(i, n))
+            if select_idx is not None and 0 <= select_idx < len(config.get("nodes", [])):
+                group_list.selection_set(select_idx)
+                group_list.activate(select_idx)
+
+        def get_group_selected_index():
+            sel = group_list.curselection()
+            return int(sel[0]) if sel else None
+
+        def add_inner_node():
+            try:
+                select_idx = self.add_group_inner_node_to_config(config, inner_type_var.get())
+                refresh_group_list(select_idx)
+            except Exception as e:
+                messagebox.showerror("添加失败", str(e))
+
+        def apply_inner_action(action, delta=0):
+            i = get_group_selected_index()
+            select_idx = self.apply_group_inner_node_list_action_to_config(config, i, action, delta=delta)
+            refresh_group_list(select_idx)
+
+        def edit_inner_json():
+            i = get_group_selected_index()
+            nodes = config.setdefault("nodes", [])
+            if i is None:
+                messagebox.showwarning("提示", "请先选择一个组内节点。")
+                return
+            win = tk.Toplevel(self.window)
+            win.title("编辑组内节点 JSON")
+            win.geometry("760x560")
+            txt = tk.Text(win, wrap="none")
+            txt.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+            txt.insert("1.0", json.dumps(nodes[i], ensure_ascii=False, indent=2))
+            btns = ttk.Frame(win)
+            btns.pack(fill=tk.X, padx=8, pady=(0, 8))
+
+            def save_json():
+                try:
+                    self.save_group_inner_node_json_text(config, i, txt.get("1.0", tk.END))
+                    refresh_group_list(i)
+                    win.destroy()
+                except Exception as e:
+                    messagebox.showerror("JSON错误", str(e))
+
+            ttk.Button(btns, text="保存", command=save_json).pack(side=tk.LEFT, padx=4)
+            ttk.Button(btns, text="取消", command=win.destroy).pack(side=tk.LEFT, padx=4)
+
+        ttk.Button(add_row, text="添加内部节点", command=add_inner_node).pack(side=tk.LEFT, padx=2)
+        ttk.Button(add_row, text="保存组模板", command=lambda: self.save_group_template_from_config(config)).pack(side=tk.LEFT, padx=2)
+        ttk.Button(add_row, text="载入组模板", command=lambda: self.load_group_template_into_config(config)).pack(side=tk.LEFT, padx=2)
+        ttk.Button(add_row, text="打开groups目录", command=self.open_group_dir).pack(side=tk.LEFT, padx=2)
+
+        btn_row = ttk.Frame(inner_frame)
+        btn_row.grid(row=2, column=0, sticky=tk.W, pady=(4, 0))
+        for text_, cmd in [
+            ("删除", lambda: apply_inner_action("delete")),
+            ("上移", lambda: apply_inner_action("move", delta=-1)),
+            ("下移", lambda: apply_inner_action("move", delta=1)),
+            ("复制", lambda: apply_inner_action("copy")),
+            ("启用/禁用", lambda: apply_inner_action("toggle")),
+            ("编辑JSON", edit_inner_json),
+        ]:
+            ttk.Button(btn_row, text=text_, command=cmd).pack(side=tk.LEFT, padx=2)
+
+        refresh_group_list()
+        return inner_frame
+
+    def build_plugin_run_environment_section(self, frame, config, item, plugin_id, start_row=3):
         available_run_modes = item.get("available_run_modes") or ["主程序内置环境", "插件独立环境"]
-        status_text = f"加载状态：{load_status}"
-        if metadata_source:
-            status_text += f"    元信息来源：{metadata_source}"
-        if load_status == "仅独立环境运行":
-            status_text += "    该插件不会在扫描阶段强制导入业务依赖。"
-        ttk.Label(frame, text=status_text, foreground=("#b26a00" if load_status == "仅独立环境运行" else "gray"), wraplength=1050).grid(row=3, column=0, columnspan=4, sticky=tk.W, padx=4, pady=2)
-        if import_error:
-            ttk.Label(frame, text=f"主程序环境导入提示：{import_error}", foreground="#b26a00", wraplength=1050).grid(row=4, column=0, columnspan=4, sticky=tk.W, padx=4, pady=(0, 6))
+        status_state = workflow_build_plugin_load_status_state(
+            item.get("load_status", "可内置运行"),
+            item.get("metadata_source", ""),
+            item.get("import_error", ""),
+        )
+        row = start_row
+        ttk.Label(frame, text=status_state["text"], foreground=status_state["foreground"], wraplength=1050).grid(row=row, column=0, columnspan=4, sticky=tk.W, padx=4, pady=2)
+        row += 1
+        if status_state["import_error_text"]:
+            ttk.Label(frame, text=status_state["import_error_text"], foreground="#b26a00", wraplength=1050).grid(row=row, column=0, columnspan=4, sticky=tk.W, padx=4, pady=(0, 6))
+            row += 1
 
-        run_mode_var = tk.StringVar(value=config.get("run_mode", item.get("run_mode_default", "主程序内置环境")))
-        if run_mode_var.get() in ("external_python", "独立环境", "插件独立环境"):
-            run_mode_var.set("插件独立环境")
-        else:
-            run_mode_var.set("主程序内置环境")
-        if run_mode_var.get() not in available_run_modes:
-            run_mode_var.set(available_run_modes[0] if available_run_modes else "插件独立环境")
-            config["run_mode"] = run_mode_var.get()
-        ttk.Label(frame, text="运行环境：").grid(row=5, column=0, sticky=tk.W, padx=4, pady=4)
+        normalized_run_mode = workflow_normalize_plugin_run_mode(
+            config.get("run_mode", item.get("run_mode_default", "主程序内置环境")),
+            available_run_modes,
+        )
+        config["run_mode"] = normalized_run_mode
+        run_mode_var = tk.StringVar(value=normalized_run_mode)
+        ttk.Label(frame, text="运行环境：").grid(row=row, column=0, sticky=tk.W, padx=4, pady=4)
         run_mode_combo = ttk.Combobox(frame, textvariable=run_mode_var, values=available_run_modes, state="readonly", width=18)
-        run_mode_combo.grid(row=5, column=1, sticky=tk.W, padx=4, pady=4)
+        run_mode_combo.grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
         run_mode_var.trace_add("write", lambda *_, v=run_mode_var: config.__setitem__("run_mode", v.get()))
-        ttk.Label(frame, text="独立环境适合插件依赖未打包进主程序的情况", foreground="gray").grid(row=5, column=2, columnspan=2, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(frame, text="独立环境适合插件依赖未打包进主程序的情况", foreground="gray").grid(row=row, column=2, columnspan=2, sticky=tk.W, padx=4, pady=4)
+        row += 1
 
         external_python_var = tk.StringVar(value=config.get("external_python", ""))
-        ttk.Label(frame, text="独立Python：").grid(row=6, column=0, sticky=tk.W, padx=4, pady=4)
-        ttk.Entry(frame, textvariable=external_python_var, width=58).grid(row=6, column=1, columnspan=2, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(frame, text="独立Python：").grid(row=row, column=0, sticky=tk.W, padx=4, pady=4)
+        ttk.Entry(frame, textvariable=external_python_var, width=58).grid(row=row, column=1, columnspan=2, sticky=tk.W, padx=4, pady=4)
+
         def choose_external_python(v=external_python_var):
             path = filedialog.askopenfilename(title="选择插件独立环境 python.exe", filetypes=[("Python", "python.exe;python"), ("所有文件", "*.*")])
             if path:
                 v.set(path)
-        ttk.Button(frame, text="选择", command=choose_external_python).grid(row=6, column=3, sticky=tk.W, padx=4, pady=4)
+
+        ttk.Button(frame, text="选择", command=choose_external_python).grid(row=row, column=3, sticky=tk.W, padx=4, pady=4)
         external_python_var.trace_add("write", lambda *_, v=external_python_var: config.__setitem__("external_python", v.get()))
+        row += 1
 
         env_dir_var = tk.StringVar(value=config.get("external_env_dir", self.get_plugin_env_dir(plugin_id)))
-        ttk.Label(frame, text="环境目录：").grid(row=7, column=0, sticky=tk.W, padx=4, pady=4)
-        ttk.Entry(frame, textvariable=env_dir_var, width=58).grid(row=7, column=1, columnspan=2, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(frame, text="环境目录：").grid(row=row, column=0, sticky=tk.W, padx=4, pady=4)
+        ttk.Entry(frame, textvariable=env_dir_var, width=58).grid(row=row, column=1, columnspan=2, sticky=tk.W, padx=4, pady=4)
+
         def open_env_dir(v=env_dir_var):
             path = v.get().strip() or self.get_plugin_env_dir(plugin_id)
             os.makedirs(path, exist_ok=True)
@@ -5438,12 +8709,15 @@ class PlanWorkflowWindow:
                 os.startfile(path)
             except Exception as e:
                 messagebox.showerror("打开失败", f"无法打开环境目录：\n{path}\n\n{e}")
-        ttk.Button(frame, text="打开", command=open_env_dir).grid(row=7, column=3, sticky=tk.W, padx=4, pady=4)
+
+        ttk.Button(frame, text="打开", command=open_env_dir).grid(row=row, column=3, sticky=tk.W, padx=4, pady=4)
         env_dir_var.trace_add("write", lambda *_, v=env_dir_var: config.__setitem__("external_env_dir", v.get()))
+        row += 1
 
         entry_var = tk.StringVar(value=config.get("external_entry", item.get("external_entry", item.get("path", ""))))
-        ttk.Label(frame, text="外部入口：").grid(row=8, column=0, sticky=tk.W, padx=4, pady=4)
-        ttk.Entry(frame, textvariable=entry_var, width=58).grid(row=8, column=1, columnspan=2, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(frame, text="外部入口：").grid(row=row, column=0, sticky=tk.W, padx=4, pady=4)
+        ttk.Entry(frame, textvariable=entry_var, width=58).grid(row=row, column=1, columnspan=2, sticky=tk.W, padx=4, pady=4)
+
         def test_external_python(v=external_python_var):
             py = v.get().strip() or self.find_external_python(config, item, allow_current=True)
             try:
@@ -5451,21 +8725,103 @@ class PlanWorkflowWindow:
                 messagebox.showinfo("测试成功", out.strip())
             except Exception as e:
                 messagebox.showerror("测试失败", str(e))
-        ttk.Button(frame, text="测试环境", command=test_external_python).grid(row=8, column=3, sticky=tk.W, padx=4, pady=4)
+
+        ttk.Button(frame, text="测试环境", command=test_external_python).grid(row=row, column=3, sticky=tk.W, padx=4, pady=4)
         entry_var.trace_add("write", lambda *_, v=entry_var: config.__setitem__("external_entry", v.get()))
+        return row + 1
 
-        row = 9
-        input_specs = config.setdefault("input_tables", [])
-        if not isinstance(input_specs, list):
-            input_specs = []
-            config["input_tables"] = input_specs
-        transit_context = transit_context or {"transit_tables": {}}
-        transit_names = sorted((transit_context.get("transit_tables", {}) or {}).keys())
+    def refresh_plugin_input_listbox(self, input_lb, config):
+        input_lb.delete(0, tk.END)
+        for spec in config.get("input_tables", []) or []:
+            input_lb.insert(tk.END, workflow_format_plugin_input_spec(spec))
+
+    def open_plugin_input_spec_editor(
+        self,
+        config,
+        index,
+        sqlite_tables,
+        transit_names,
+        refresh_input_lb,
+        refresh_plugin_dynamic_controls,
+    ):
+        specs = config.setdefault("input_tables", [])
+        editing = index is not None and 0 <= index < len(specs)
+        source_spec = copy.deepcopy(specs[index]) if editing else workflow_default_plugin_input_spec(len(specs), sqlite_tables, transit_names)
+        win = tk.Toplevel(self.window)
         try:
-            sqlite_tables = self.app.get_table_names()
+            win.withdraw()
         except Exception:
-            sqlite_tables = self.get_sqlite_table_names()
+            pass
+        win.title("插件输入表设置")
+        win.transient(self.window)
+        body = ttk.Frame(win, padding=10)
+        body.pack(fill=tk.BOTH, expand=True)
 
+        alias_var = tk.StringVar(value=source_spec.get("alias", ""))
+        source_type_var = tk.StringVar(value=source_spec.get("source_type", "SQLite表"))
+        sqlite_var = tk.StringVar(value=source_spec.get("sqlite_table", source_spec.get("table", "")))
+        transit_var = tk.StringVar(value=source_spec.get("transit_table", source_spec.get("table", "")))
+        enabled_var = tk.BooleanVar(value=bool(source_spec.get("enabled", True)))
+
+        ttk.Label(body, text="别名：").grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
+        ttk.Entry(body, textvariable=alias_var, width=30).grid(row=0, column=1, sticky=tk.W, padx=4, pady=4)
+        ttk.Checkbutton(body, text="启用", variable=enabled_var).grid(row=0, column=2, sticky=tk.W, padx=4, pady=4)
+
+        ttk.Label(body, text="来源类型：").grid(row=1, column=0, sticky=tk.W, padx=4, pady=4)
+        ttk.Combobox(
+            body,
+            textvariable=source_type_var,
+            values=["当前工作流表", "SQLite表", "中转副表"],
+            state="readonly",
+            width=18,
+        ).grid(row=1, column=1, sticky=tk.W, padx=4, pady=4)
+
+        ttk.Label(body, text="SQLite表：").grid(row=2, column=0, sticky=tk.W, padx=4, pady=4)
+        ttk.Combobox(body, textvariable=sqlite_var, values=sqlite_tables, width=34, state="normal").grid(row=2, column=1, columnspan=2, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(body, text="中转副表：").grid(row=3, column=0, sticky=tk.W, padx=4, pady=4)
+        ttk.Combobox(body, textvariable=transit_var, values=transit_names, width=34, state="normal").grid(row=3, column=1, columnspan=2, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(body, text="建议别名示例：文档读取表、新内容表。别名是插件读取多表时的键名。", foreground="gray", wraplength=520).grid(row=4, column=0, columnspan=3, sticky=tk.W, padx=4, pady=(4, 8))
+
+        btns = ttk.Frame(body)
+        btns.grid(row=5, column=0, columnspan=3, sticky=tk.E, padx=4, pady=4)
+
+        def on_ok():
+            new_spec = workflow_build_plugin_input_spec(
+                alias_var.get(),
+                source_type_var.get(),
+                sqlite_var.get(),
+                transit_var.get(),
+                enabled_var.get(),
+                fallback_index=len(specs),
+            )
+            if editing:
+                specs[index] = new_spec
+            else:
+                specs.append(new_spec)
+            config["input_tables"] = specs
+            refresh_input_lb()
+            win.destroy()
+            refresh_plugin_dynamic_controls()
+
+        ttk.Button(btns, text="确定", command=on_ok).pack(side=tk.RIGHT, padx=4)
+        ttk.Button(btns, text="取消", command=win.destroy).pack(side=tk.RIGHT, padx=4)
+
+        def show_input_window():
+            self.show_centered_toplevel(win, self.window)
+            win.grab_set()
+
+        win.after_idle(show_input_window)
+
+    def build_plugin_input_tables_section(
+        self,
+        frame,
+        config,
+        row,
+        sqlite_tables,
+        transit_names,
+        refresh_plugin_dynamic_controls,
+    ):
+        input_specs = workflow_ensure_plugin_input_specs(config)
         input_frame = ttk.LabelFrame(frame, text="插件多表输入（可选）", padding=6)
         input_frame.grid(row=row, column=0, columnspan=4, sticky="ew", padx=4, pady=(4, 8))
         ttk.Label(
@@ -5477,106 +8833,22 @@ class PlanWorkflowWindow:
         input_lb = tk.Listbox(input_frame, height=4, width=88, exportselection=False)
         input_lb.grid(row=1, column=0, columnspan=4, sticky="ew", padx=4, pady=4)
 
-        def format_input_spec(spec):
-            spec = spec or {}
-            alias = str(spec.get("alias") or "").strip() or "输入表"
-            source_type = str(spec.get("source_type") or "当前工作流表").strip() or "当前工作流表"
-            if source_type == "SQLite表":
-                detail = spec.get("sqlite_table") or spec.get("table") or ""
-            elif source_type == "中转副表":
-                detail = spec.get("transit_table") or spec.get("table") or ""
-            else:
-                detail = "当前工作流表"
-            enabled = "" if spec.get("enabled", True) else " [停用]"
-            return f"{alias} <- {source_type}:{detail}{enabled}"
-
         def refresh_input_lb():
-            input_lb.delete(0, tk.END)
-            for spec in config.get("input_tables", []) or []:
-                input_lb.insert(tk.END, format_input_spec(spec))
-
-        dynamic_param_controls = []
-        refreshing_dynamic_controls = False
-
-        def edit_input_spec(index=None):
-            specs = config.setdefault("input_tables", [])
-            editing = index is not None and 0 <= index < len(specs)
-            source_spec = copy.deepcopy(specs[index]) if editing else {
-                "alias": f"输入表{len(specs) + 1}",
-                "source_type": "SQLite表",
-                "sqlite_table": sqlite_tables[0] if sqlite_tables else "",
-                "transit_table": transit_names[0] if transit_names else "",
-                "enabled": True,
-            }
-            win = tk.Toplevel(self.window)
-            try:
-                win.withdraw()
-            except Exception:
-                pass
-            win.title("插件输入表设置")
-            win.transient(self.window)
-            body = ttk.Frame(win, padding=10)
-            body.pack(fill=tk.BOTH, expand=True)
-
-            alias_var = tk.StringVar(value=source_spec.get("alias", ""))
-            source_type_var = tk.StringVar(value=source_spec.get("source_type", "SQLite表"))
-            sqlite_var = tk.StringVar(value=source_spec.get("sqlite_table", source_spec.get("table", "")))
-            transit_var = tk.StringVar(value=source_spec.get("transit_table", source_spec.get("table", "")))
-            enabled_var = tk.BooleanVar(value=bool(source_spec.get("enabled", True)))
-
-            ttk.Label(body, text="别名：").grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
-            ttk.Entry(body, textvariable=alias_var, width=30).grid(row=0, column=1, sticky=tk.W, padx=4, pady=4)
-            ttk.Checkbutton(body, text="启用", variable=enabled_var).grid(row=0, column=2, sticky=tk.W, padx=4, pady=4)
-
-            ttk.Label(body, text="来源类型：").grid(row=1, column=0, sticky=tk.W, padx=4, pady=4)
-            ttk.Combobox(
-                body,
-                textvariable=source_type_var,
-                values=["当前工作流表", "SQLite表", "中转副表"],
-                state="readonly",
-                width=18,
-            ).grid(row=1, column=1, sticky=tk.W, padx=4, pady=4)
-
-            ttk.Label(body, text="SQLite表：").grid(row=2, column=0, sticky=tk.W, padx=4, pady=4)
-            ttk.Combobox(body, textvariable=sqlite_var, values=sqlite_tables, width=34, state="normal").grid(row=2, column=1, columnspan=2, sticky=tk.W, padx=4, pady=4)
-            ttk.Label(body, text="中转副表：").grid(row=3, column=0, sticky=tk.W, padx=4, pady=4)
-            ttk.Combobox(body, textvariable=transit_var, values=transit_names, width=34, state="normal").grid(row=3, column=1, columnspan=2, sticky=tk.W, padx=4, pady=4)
-            ttk.Label(body, text="建议别名示例：文档读取表、新内容表。别名是插件读取多表时的键名。", foreground="gray", wraplength=520).grid(row=4, column=0, columnspan=3, sticky=tk.W, padx=4, pady=(4, 8))
-
-            btns = ttk.Frame(body)
-            btns.grid(row=5, column=0, columnspan=3, sticky=tk.E, padx=4, pady=4)
-
-            def on_ok():
-                alias = alias_var.get().strip() or f"输入表{len(specs) + 1}"
-                source_type = source_type_var.get().strip() or "SQLite表"
-                new_spec = {
-                    "alias": alias,
-                    "source_type": source_type,
-                    "sqlite_table": sqlite_var.get().strip(),
-                    "transit_table": transit_var.get().strip(),
-                    "enabled": bool(enabled_var.get()),
-                }
-                if editing:
-                    specs[index] = new_spec
-                else:
-                    specs.append(new_spec)
-                config["input_tables"] = specs
-                refresh_input_lb()
-                win.destroy()
-                refresh_plugin_dynamic_controls()
-
-            ttk.Button(btns, text="确定", command=on_ok).pack(side=tk.RIGHT, padx=4)
-            ttk.Button(btns, text="取消", command=win.destroy).pack(side=tk.RIGHT, padx=4)
-
-            def show_input_window():
-                self.show_centered_toplevel(win, self.window)
-                win.grab_set()
-
-            win.after_idle(show_input_window)
+            self.refresh_plugin_input_listbox(input_lb, config)
 
         def selected_input_index():
             sel = input_lb.curselection()
             return int(sel[0]) if sel else None
+
+        def edit_input_spec(index=None):
+            self.open_plugin_input_spec_editor(
+                config,
+                index,
+                sqlite_tables,
+                transit_names,
+                refresh_input_lb,
+                refresh_plugin_dynamic_controls,
+            )
 
         def edit_selected_input():
             idx = selected_input_index()
@@ -5598,12 +8870,15 @@ class PlanWorkflowWindow:
         ttk.Button(input_btns, text="删除", command=delete_selected_input).pack(fill=tk.X, pady=2)
         ttk.Button(input_btns, text="刷新", command=lambda: (refresh_input_lb(), refresh_plugin_dynamic_controls())).pack(fill=tk.X, pady=2)
         refresh_input_lb()
-        row += 1
+        return {
+            "input_specs": input_specs,
+            "input_listbox": input_lb,
+            "refresh_input_lb": refresh_input_lb,
+            "next_row": row + 1,
+        }
 
-        schema = item.get("schema", [])
-        if not schema:
-            ttk.Label(frame, text="该插件没有声明参数。", foreground="gray").grid(row=row, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
-            row += 1
+    def create_plugin_dynamic_config_context(self, item, config, params, headers, transit_context, current_rows, dynamic_param_controls):
+        state = {"refreshing_dynamic_controls": False}
 
         def set_param(key, value):
             params[key] = value
@@ -5613,54 +8888,30 @@ class PlanWorkflowWindow:
             return self.build_plugin_input_table_headers(config, headers, transit_context or {})
 
         def get_input_table_alias_choices():
-            table_headers = get_input_table_header_map()
-            choices = []
-            for key in ("当前表",):
-                if key in table_headers and key not in choices:
-                    choices.append(key)
-            for spec in config.get("input_tables", []) or []:
-                if not isinstance(spec, dict) or spec.get("enabled", True) is False:
-                    continue
-                alias = str(spec.get("alias") or "").strip()
-                if alias and alias in table_headers and alias not in choices:
-                    choices.append(alias)
-            for key in table_headers:
-                if key not in choices:
-                    choices.append(key)
-            return choices
+            return workflow_get_plugin_input_table_alias_choices(
+                get_input_table_header_map(),
+                config.get("input_tables", []) or [],
+            )
 
         def get_field_choices_for_table_param(spec):
-            table_param = (
-                spec.get("table_param")
-                or spec.get("source_table_param")
-                or spec.get("depends_on")
-                or spec.get("table_alias_param")
+            return workflow_get_plugin_field_choices_for_table_param(
+                spec,
+                params,
+                get_input_table_header_map(),
             )
-            alias = str(params.get(table_param, "") or spec.get("table_alias", "") or spec.get("default_table_alias", "")).strip()
-            if not alias:
-                alias = "当前表"
-            return list(get_input_table_header_map().get(alias, []) or [])
 
         def get_dynamic_parameter_choices(spec, key):
-            choices = list(spec.get("choices", spec.get("options", [])) or [])
-            provider = getattr(item.get("module"), "get_dynamic_parameter_options", None)
-            if callable(provider):
-                try:
-                    plugin_context = self.make_plugin_context(config, transit_context or {}, execute_actions=False)
-                    plugin_context["input_table_headers"] = get_input_table_header_map()
-                    plugin_context["plugin_input_table_specs"] = copy.deepcopy(config.get("input_tables", []))
-                    try:
-                        plugin_context["input_tables"] = self.build_plugin_input_tables(config, headers, current_rows or [], transit_context or {})
-                    except Exception as table_exc:
-                        plugin_context["input_tables_error"] = str(table_exc)
-                    dynamic = provider(key, dict(params), plugin_context)
-                    if isinstance(dynamic, dict):
-                        dynamic = dynamic.get("choices", dynamic.get("options", []))
-                    if isinstance(dynamic, (list, tuple)):
-                        choices = [str(v) for v in dynamic]
-                except Exception:
-                    pass
-            return choices
+            return self.get_plugin_dynamic_parameter_choices_for_config(
+                item,
+                config,
+                params,
+                spec,
+                key,
+                headers,
+                current_rows=current_rows,
+                transit_context=transit_context or {},
+                input_table_headers=get_input_table_header_map(),
+            )
 
         def dynamic_choices_for_control(control):
             typ = control.get("type", "")
@@ -5675,278 +8926,151 @@ class PlanWorkflowWindow:
             return []
 
         def refresh_plugin_dynamic_controls():
-            nonlocal refreshing_dynamic_controls
-            refreshing_dynamic_controls = True
+            state["refreshing_dynamic_controls"] = True
             try:
-                for control in dynamic_param_controls:
-                    combo = control.get("combo")
-                    var = control.get("var")
-                    spec = control.get("spec", {})
-                    key = control.get("key", "")
-                    typ = control.get("type", "")
-                    if combo is None or var is None:
-                        continue
-                    choices = [str(v) for v in dynamic_choices_for_control(control)]
-                    current = str(var.get() or "")
-                    display_choices = list(choices)
-                    allow_custom = bool(spec.get("allow_custom", True))
-                    default_value = str(spec.get("default", "") or "")
-                    desired = current
-                    if typ == "input_table_select":
-                        if current not in choices:
-                            desired = choices[0] if choices else "当前表"
-                    elif typ == "input_table_field_select":
-                        if not current:
-                            desired = default_value if default_value in choices else (choices[0] if choices else default_value)
-                        elif current not in choices:
-                            if allow_custom:
-                                display_choices = [current] + [c for c in choices if c != current]
-                            else:
-                                desired = choices[0] if choices else default_value
-                    elif typ == "dynamic_select":
-                        if not current:
-                            desired = default_value if default_value in choices else (choices[0] if choices else default_value)
-                        elif current not in choices:
-                            if allow_custom:
-                                display_choices = [current] + [c for c in choices if c != current]
-                            else:
-                                desired = choices[0] if choices else default_value
-                    try:
-                        combo.configure(values=display_choices)
-                    except Exception:
-                        pass
-                    if desired != current:
-                        var.set(desired)
-                    set_param(key, var.get())
+                self.refresh_plugin_dynamic_config_controls(
+                    dynamic_param_controls,
+                    set_param,
+                    dynamic_choices_for_control,
+                )
             finally:
-                refreshing_dynamic_controls = False
+                state["refreshing_dynamic_controls"] = False
 
-        for spec in schema:
-            if not isinstance(spec, dict):
-                continue
-            key = spec.get("name")
-            if not key:
-                continue
-            label = spec.get("label", key)
-            typ = spec.get("type", "text")
-            default = spec.get("default", [] if typ == "multi_field_select" else "")
-            value = params.get(key, default)
-            ttk.Label(frame, text=f"{label}：").grid(row=row, column=0, sticky=tk.W, padx=4, pady=4)
+        return {
+            "set_param": set_param,
+            "get_input_table_alias_choices": get_input_table_alias_choices,
+            "get_field_choices_for_table_param": get_field_choices_for_table_param,
+            "get_dynamic_parameter_choices": get_dynamic_parameter_choices,
+            "refresh_plugin_dynamic_controls": refresh_plugin_dynamic_controls,
+            "is_refreshing_dynamic_controls": lambda: state["refreshing_dynamic_controls"],
+        }
 
-            if typ in ("text", "string", "regex", "textarea"):
-                var = tk.StringVar(value="" if value is None else str(value))
-                ttk.Entry(frame, textvariable=var, width=42).grid(row=row, column=1, columnspan=2, sticky=tk.W, padx=4, pady=4)
-                var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
-            elif typ == "number":
-                var = tk.StringVar(value="" if value is None else str(value))
-                ttk.Entry(frame, textvariable=var, width=18).grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
-                var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
-            elif typ == "bool":
-                var = tk.BooleanVar(value=bool(value))
-                ttk.Checkbutton(frame, variable=var).grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
-                var.trace_add("write", lambda *_, k=key, v=var: set_param(k, bool(v.get())))
-            elif typ == "select":
-                choices = spec.get("choices", spec.get("options", []))
-                var = tk.StringVar(value=str(value) if value not in (None, "") else (choices[0] if choices else ""))
-                ttk.Combobox(frame, textvariable=var, values=choices, width=28, state="readonly").grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
-                var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
-            elif typ == "dynamic_select":
-                choices = get_dynamic_parameter_choices(spec, key)
-                if value not in (None, "") and str(value) not in choices:
-                    choices = [str(value)] + choices
-                var = tk.StringVar(value=str(value) if value not in (None, "") else (choices[0] if choices else ""))
-                state = "normal" if spec.get("allow_custom", True) else "readonly"
-                combo = ttk.Combobox(frame, textvariable=var, values=choices, width=28, state=state)
-                combo.grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
-                dynamic_param_controls.append({"type": typ, "spec": spec, "key": key, "var": var, "combo": combo})
-                var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
-            elif typ == "input_table_select":
-                choices = get_input_table_alias_choices()
-                if value not in (None, "") and str(value) not in choices:
-                    choices = [str(value)] + choices
-                var = tk.StringVar(value=str(value) if value not in (None, "") else (choices[0] if choices else "当前表"))
-                combo = ttk.Combobox(frame, textvariable=var, values=choices, width=28, state="readonly")
-                combo.grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
-                dynamic_param_controls.append({"type": typ, "spec": spec, "key": key, "var": var, "combo": combo})
-                def update_table_param(*_, k=key, v=var):
-                    set_param(k, v.get())
-                    if not refreshing_dynamic_controls:
-                        refresh_plugin_dynamic_controls()
-                var.trace_add("write", update_table_param)
-            elif typ == "input_table_field_select":
-                choices = get_field_choices_for_table_param(spec)
-                if value not in (None, "") and str(value) not in choices:
-                    choices = [str(value)] + choices
-                default_value = spec.get("default", "")
-                var = tk.StringVar(value=str(value) if value not in (None, "") else (default_value if default_value in choices else (choices[0] if choices else default_value)))
-                state = "normal" if spec.get("allow_custom", True) else "readonly"
-                combo = ttk.Combobox(frame, textvariable=var, values=choices, width=28, state=state)
-                combo.grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
-                dynamic_param_controls.append({"type": typ, "spec": spec, "key": key, "var": var, "combo": combo})
-                var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
-            elif typ == "field_select":
-                choices = list(headers)
-                var = tk.StringVar(value=str(value) if value else (choices[0] if choices else ""))
-                ttk.Combobox(frame, textvariable=var, values=choices, width=28, state="readonly").grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
-                var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
-            elif typ == "multi_field_select":
-                lb_frame = ttk.Frame(frame)
-                lb_frame.grid(row=row, column=1, columnspan=3, sticky=tk.W, padx=4, pady=4)
-                lb = tk.Listbox(lb_frame, selectmode=tk.MULTIPLE, height=min(7, max(3, len(headers))), width=38, exportselection=False)
-                scr = ttk.Scrollbar(lb_frame, orient=tk.VERTICAL, command=lb.yview)
-                lb.configure(yscrollcommand=scr.set)
-                for h in headers:
-                    lb.insert(tk.END, h)
-                selected = value if isinstance(value, list) else []
-                for i, h in enumerate(headers):
-                    if h in selected:
-                        lb.selection_set(i)
-                lb.pack(side=tk.LEFT, fill=tk.BOTH)
-                scr.pack(side=tk.LEFT, fill=tk.Y)
-                def update_multi(event=None, k=key, lbox=lb):
-                    set_param(k, [lbox.get(i) for i in lbox.curselection()])
-                lb.bind("<<ListboxSelect>>", update_multi)
-            elif typ == "file_path":
-                var = tk.StringVar(value="" if value is None else str(value))
-                ttk.Entry(frame, textvariable=var, width=50).grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
-                def choose_file(v=var, k=key):
-                    p = filedialog.askopenfilename(title="选择文件")
-                    if p:
-                        v.set(p); set_param(k, p)
-                ttk.Button(frame, text="选择", command=choose_file).grid(row=row, column=2, sticky=tk.W, padx=4, pady=4)
-                var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
-            elif typ == "folder_path":
-                var = tk.StringVar(value="" if value is None else str(value))
-                ttk.Entry(frame, textvariable=var, width=50).grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
-                def choose_folder(v=var, k=key):
-                    p = filedialog.askdirectory(title="选择文件夹")
-                    if p:
-                        v.set(p); set_param(k, p)
-                ttk.Button(frame, text="选择", command=choose_folder).grid(row=row, column=2, sticky=tk.W, padx=4, pady=4)
-                var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
-            elif typ == "table_select":
-                choices = self.get_sqlite_table_names()
-                var = tk.StringVar(value=str(value) if value else (choices[0] if choices else ""))
-                ttk.Combobox(frame, textvariable=var, values=choices, width=28, state="readonly").grid(row=row, column=1, sticky=tk.W, padx=4, pady=4)
-                var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
-            else:
-                var = tk.StringVar(value="" if value is None else str(value))
-                ttk.Entry(frame, textvariable=var, width=42).grid(row=row, column=1, columnspan=2, sticky=tk.W, padx=4, pady=4)
-                var.trace_add("write", lambda *_, k=key, v=var: set_param(k, v.get()))
+    def build_plugin_schema_parameter_controls(
+        self,
+        frame,
+        schema,
+        config,
+        params,
+        headers,
+        row,
+        dynamic_param_controls,
+        dynamic_context,
+    ):
+        return workflow_build_plugin_schema_parameter_controls_ui(
+            self,
+            frame,
+            schema,
+            config,
+            params,
+            headers,
+            row,
+            dynamic_param_controls,
+            dynamic_context,
+        )
 
-            help_text = spec.get("help") or spec.get("description")
-            if help_text:
-                ttk.Label(frame, text=help_text, foreground="gray", wraplength=600).grid(row=row, column=3, sticky=tk.W, padx=4, pady=4)
+    def build_plugin_output_and_log_section(
+        self,
+        frame,
+        config,
+        item,
+        params,
+        headers,
+        current_rows,
+        transit_context,
+        dynamic_param_controls,
+        refresh_plugin_dynamic_controls,
+        row,
+    ):
+        return workflow_build_plugin_output_and_log_section_ui(
+            self,
+            frame,
+            config,
+            item,
+            params,
+            headers,
+            current_rows,
+            transit_context,
+            dynamic_param_controls,
+            refresh_plugin_dynamic_controls,
+            row,
+        )
+
+    def build_plugin_node_config(self, config, headers, transit_context=None, current_rows=None):
+        frame = ttk.LabelFrame(self.config_frame, text="外部插件节点", padding=8)
+        frame.pack(fill=tk.BOTH, expand=True, pady=8)
+        plugin_id = config.get("plugin_id", "")
+        item = self.plugin_registry.get(plugin_id)
+        if not item:
+            ttk.Label(frame, text=f"插件未加载或缺失：{plugin_id}", foreground="red").grid(row=0, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
+            ttk.Label(frame, text="请将对应插件 .py 放入 plugins 目录后点击左侧“刷新插件”。", foreground="gray").grid(row=1, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
+            return
+
+        info = item.get("info", {})
+        params = config.setdefault("params", {})
+        ttk.Label(frame, text=f"插件：{info.get('name', plugin_id)}", font=("TkDefaultFont", 10, "bold")).grid(row=0, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(frame, text=f"ID：{plugin_id}    版本：{info.get('version', '')}    分类：{info.get('category', '')}", foreground="gray").grid(row=1, column=0, columnspan=4, sticky=tk.W, padx=4, pady=2)
+        ttk.Label(frame, text=info.get("description", ""), foreground="gray", wraplength=1050).grid(row=2, column=0, columnspan=4, sticky=tk.W, padx=4, pady=(0, 8))
+
+        row = self.build_plugin_run_environment_section(frame, config, item, plugin_id, start_row=3)
+        transit_context = self.plugin_config_context_with_live_transit(transit_context, include_rows=False)
+        reuse_note = self.plugin_config_transit_reuse_note(transit_context)
+        if reuse_note:
+            ttk.Label(frame, text=reuse_note, foreground="#0f766e", wraplength=1050).grid(row=row, column=0, columnspan=4, sticky=tk.W, padx=4, pady=(2, 6))
             row += 1
+        try:
+            sqlite_tables = self.app.get_table_names()
+        except Exception:
+            sqlite_tables = self.get_sqlite_table_names()
+        table_choices = workflow_build_plugin_input_table_choices(sqlite_tables, transit_context)
 
-        ttk.Separator(frame, orient=tk.HORIZONTAL).grid(row=row, column=0, columnspan=4, sticky="ew", pady=8)
-        row += 1
+        dynamic_param_controls = []
+        dynamic_context = self.create_plugin_dynamic_config_context(
+            item,
+            config,
+            params,
+            headers,
+            transit_context,
+            current_rows,
+            dynamic_param_controls,
+        )
+        refresh_plugin_dynamic_controls = dynamic_context["refresh_plugin_dynamic_controls"]
 
-        ttk.Label(frame, text="插件输出处理：", font=("TkDefaultFont", 10, "bold")).grid(row=row, column=0, columnspan=4, sticky=tk.W, padx=4, pady=(4, 2))
-        row += 1
-        output_choices = ["使用插件返回结果", "保存为中转副表并保持当前表", "保存为中转副表并使用插件返回结果", "追加字段到当前表"]
-        output_var = self.add_labeled_combo(frame, "输出方式：", config.get("output_mode", "使用插件返回结果"), output_choices, row, 0, 28)
-        output_var.trace_add("write", lambda *_, v=output_var: config.__setitem__("output_mode", v.get()))
-        row += 1
+        input_section = self.build_plugin_input_tables_section(
+            frame,
+            config,
+            row,
+            table_choices["sqlite_tables"],
+            table_choices["transit_names"],
+            refresh_plugin_dynamic_controls,
+        )
+        row = input_section["next_row"]
 
-        save_transit_var = tk.BooleanVar(value=bool(config.get("save_output_as_transit", False)))
-        ttk.Checkbutton(frame, text="插件输出保存为中转副表", variable=save_transit_var).grid(row=row, column=0, columnspan=2, sticky=tk.W, padx=4, pady=4)
-        save_transit_var.trace_add("write", lambda *_, v=save_transit_var: config.__setitem__("save_output_as_transit", bool(v.get())))
-        ttk.Label(frame, text="中转名称：").grid(row=row, column=2, sticky=tk.W, padx=4, pady=4)
-        transit_var = tk.StringVar(value=config.get("transit_name", info.get("name", plugin_id)))
-        ttk.Entry(frame, textvariable=transit_var, width=24).grid(row=row, column=3, sticky=tk.W, padx=4, pady=4)
-        transit_var.trace_add("write", lambda *_, v=transit_var: config.__setitem__("transit_name", v.get()))
-        row += 1
-
-        conflict_var = self.add_labeled_combo(frame, "中转同名处理：", config.get("transit_conflict_mode", "覆盖"), ["覆盖", "追加", "自动加时间戳"], row, 0, 18)
-        conflict_var.trace_add("write", lambda *_, v=conflict_var: config.__setitem__("transit_conflict_mode", v.get()))
-        fail_var = self.add_labeled_combo(frame, "插件失败时：", config.get("plugin_failure_policy", "停止工作流"), ["停止工作流", "保留原表继续", "输出错误表继续"], row, 2, 18)
-        fail_var.trace_add("write", lambda *_, v=fail_var: config.__setitem__("plugin_failure_policy", v.get()))
-        row += 1
-
-        ttk.Label(frame, text="插件日志：", font=("TkDefaultFont", 10, "bold")).grid(row=row, column=0, columnspan=4, sticky=tk.W, padx=4, pady=(8, 2))
-        row += 1
-        log_file_var = tk.BooleanVar(value=bool(config.get("save_plugin_log_file", True)))
-        ttk.Checkbutton(frame, text="保存详细日志到 logs/plugins", variable=log_file_var).grid(row=row, column=0, columnspan=2, sticky=tk.W, padx=4, pady=4)
-        log_file_var.trace_add("write", lambda *_, v=log_file_var: config.__setitem__("save_plugin_log_file", bool(v.get())))
-        log_sqlite_var = tk.BooleanVar(value=bool(config.get("save_plugin_log_sqlite", False)))
-        ttk.Checkbutton(frame, text="写入 SQLite 日志表 _plugin_log", variable=log_sqlite_var).grid(row=row, column=2, columnspan=2, sticky=tk.W, padx=4, pady=4)
-        log_sqlite_var.trace_add("write", lambda *_, v=log_sqlite_var: config.__setitem__("save_plugin_log_sqlite", bool(v.get())))
-        row += 1
-        log_transit_var = tk.BooleanVar(value=bool(config.get("save_plugin_log_transit", False)))
-        ttk.Checkbutton(frame, text="日志保存为中转副表", variable=log_transit_var).grid(row=row, column=0, columnspan=2, sticky=tk.W, padx=4, pady=4)
-        log_transit_var.trace_add("write", lambda *_, v=log_transit_var: config.__setitem__("save_plugin_log_transit", bool(v.get())))
-        ttk.Label(frame, text="日志中转名：").grid(row=row, column=2, sticky=tk.W, padx=4, pady=4)
-        log_transit_name_var = tk.StringVar(value=config.get("plugin_log_transit_name", f"{info.get('name', plugin_id)}_日志"))
-        ttk.Entry(frame, textvariable=log_transit_name_var, width=24).grid(row=row, column=3, sticky=tk.W, padx=4, pady=4)
-        log_transit_name_var.trace_add("write", lambda *_, v=log_transit_name_var: config.__setitem__("plugin_log_transit_name", v.get()))
-        row += 1
-        log_preview_var = tk.BooleanVar(value=bool(config.get("plugin_log_in_preview", False)))
-        ttk.Checkbutton(frame, text="预览模式也写入插件日志文件/SQLite", variable=log_preview_var).grid(row=row, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
-        log_preview_var.trace_add("write", lambda *_, v=log_preview_var: config.__setitem__("plugin_log_in_preview", bool(v.get())))
-        row += 1
-
-        if callable(getattr(item.get("module"), "open_config_window", None)):
-            def open_custom_config():
-                try:
-                    plugin_context = self.make_plugin_context(config, transit_context or {}, execute_actions=False)
-                    try:
-                        input_tables = self.build_plugin_input_tables(config, headers, current_rows or [], transit_context or {})
-                        plugin_context["input_tables"] = input_tables
-                        plugin_context["plugin_input_table_specs"] = copy.deepcopy(config.get("input_tables", []))
-                    except Exception as table_exc:
-                        plugin_context["input_tables_error"] = str(table_exc)
-                        plugin_context["plugin_input_table_specs"] = copy.deepcopy(config.get("input_tables", []))
-                    result = item["module"].open_config_window(self.window, dict(params), plugin_context)
-                    if isinstance(result, dict):
-                        params.clear()
-                        params.update(result)
-                        config["params"] = params
-                        for control in dynamic_param_controls:
-                            key = control.get("key", "")
-                            var = control.get("var")
-                            if var is not None and key in params:
-                                var.set(params.get(key, ""))
-                        refresh_plugin_dynamic_controls()
-                except Exception as e:
-                    messagebox.showerror("插件设置窗口错误", str(e))
-            ttk.Button(frame, text="打开插件自带设置窗口", command=open_custom_config).grid(row=row, column=0, sticky=tk.W, padx=4, pady=8)
-            row += 1
-
-        ttk.Label(frame, text="插件节点会接收当前工作流表格，并返回新的表格；预览模式下 context['is_preview']=True。", foreground="gray", wraplength=1050).grid(row=row, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
+        schema = item.get("schema", [])
+        row = self.build_plugin_schema_parameter_controls(
+            frame,
+            schema,
+            config,
+            params,
+            headers,
+            row,
+            dynamic_param_controls,
+            dynamic_context,
+        )
+        self.build_plugin_output_and_log_section(
+            frame,
+            config,
+            item,
+            params,
+            headers,
+            current_rows,
+            transit_context,
+            dynamic_param_controls,
+            refresh_plugin_dynamic_controls,
+            row,
+        )
 
     def normalize_plugin_logs(self, logs, plugin_id="", node_name="插件节点"):
-        """把插件返回的 logs 统一转为 dict 列表，便于写文件/SQLite/中转副表。"""
-        normalized = []
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        if logs is None:
-            logs = []
-        if isinstance(logs, (str, bytes)):
-            logs = [logs.decode("utf-8", "ignore") if isinstance(logs, bytes) else logs]
-        if isinstance(logs, dict):
-            logs = [logs]
-        for item in logs:
-            if isinstance(item, dict):
-                normalized.append({
-                    "time": item.get("time") or now,
-                    "level": str(item.get("level", "INFO")).upper(),
-                    "plugin_id": item.get("plugin_id") or plugin_id,
-                    "node_name": item.get("node_name") or node_name,
-                    "object": item.get("object", ""),
-                    "message": item.get("message", item.get("msg", "")),
-                    "traceback": item.get("traceback", ""),
-                })
-            else:
-                normalized.append({
-                    "time": now,
-                    "level": "INFO",
-                    "plugin_id": plugin_id,
-                    "node_name": node_name,
-                    "object": "",
-                    "message": str(item),
-                    "traceback": "",
-                })
-        return normalized
+        return workflow_normalize_plugin_logs(logs, plugin_id=plugin_id, node_name=node_name)
 
     def save_plugin_logs_to_file(self, plugin_id, log_items):
         if not log_items:
@@ -5963,49 +9087,31 @@ class PlanWorkflowWindow:
                     f.write(str(tb).rstrip() + "\n")
         return path
 
-    def save_plugin_logs_to_sqlite(self, log_items, db_path=None):
+    def save_plugin_logs_to_sqlite(self, log_items, db_path=None, context=None):
         if not log_items:
             return 0
         db_path = str(db_path or "").strip()
         if not db_path:
-            db_path = self.get_workflow_db_path(context if 'context' in locals() else None)
+            db_path = self.get_workflow_db_path(context)
         if not db_path:
             return 0
-        conn = sqlite3.connect(db_path)
-        try:
-            cur = conn.cursor()
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS _plugin_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    time TEXT,
-                    level TEXT,
-                    plugin_id TEXT,
-                    node_name TEXT,
-                    object TEXT,
-                    message TEXT,
-                    traceback TEXT
+        if isinstance(context, dict):
+            manager = self.get_table_manager(context, node_type="插件日志")
+            if not manager.db_path:
+                current = context.get("current_node_info", {}) if isinstance(context.get("current_node_info"), dict) else {}
+                manager = TableAccessManager(
+                    db_path,
+                    node_id=current.get("node_id", ""),
+                    node_name=current.get("node_name", ""),
+                    node_type=current.get("node_type", "插件日志"),
+                    context=context,
+                    table_access=current.get("table_access") if isinstance(current.get("table_access"), dict) else None,
                 )
-            """)
-            data = [(
-                it.get("time", ""), it.get("level", "INFO"), it.get("plugin_id", ""),
-                it.get("node_name", ""), it.get("object", ""), it.get("message", ""), it.get("traceback", "")
-            ) for it in log_items]
-            cur.executemany("""
-                INSERT INTO _plugin_log(time, level, plugin_id, node_name, object, message, traceback)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, data)
-            conn.commit()
-            return len(data)
-        finally:
-            conn.close()
+            return manager.write_plugin_logs(log_items)
+        return TableAccessManager(db_path, node_type="插件日志").write_plugin_logs(log_items)
 
     def plugin_log_items_to_table(self, log_items):
-        headers = ["时间", "级别", "插件ID", "节点名称", "对象", "信息", "错误堆栈"]
-        rows = [[
-            it.get("time", ""), it.get("level", ""), it.get("plugin_id", ""),
-            it.get("node_name", ""), it.get("object", ""), it.get("message", ""), it.get("traceback", "")
-        ] for it in log_items]
-        return headers, rows
+        return workflow_plugin_log_items_to_table(log_items)
 
     def save_plugin_output_to_transit(self, context, name, headers, rows, conflict_mode="覆盖", source="插件输出"):
         if context is None:
@@ -6014,55 +9120,96 @@ class PlanWorkflowWindow:
         base_name = str(name or "插件输出").strip() or "插件输出"
         headers = list(headers or [])
         rows = [list(r) for r in (rows or [])]
+        exists_before = base_name in transit_tables
         if conflict_mode == "自动加时间戳":
+            manager = self.check_transit_table_write_permission(
+                context,
+                base_name,
+                exists=exists_before,
+                write_mode=conflict_mode,
+                fields=headers,
+                node_type="插件节点",
+            )
             final_name = self.make_unique_transit_name(base_name, transit_tables)
             transit_tables[final_name] = {"headers": headers, "rows": rows, "source": source}
+            self.log_transit_table_event(manager, "write_transit_table", final_name, headers, rows, write_mode=conflict_mode, message=f"写入中转副表 {final_name}：{len(rows)} 行 × {len(headers)} 列")
             return f"中转副表：{final_name}"
         if conflict_mode == "追加" and base_name in transit_tables:
+            manager = self.check_transit_table_write_permission(
+                context,
+                base_name,
+                exists=True,
+                write_mode=conflict_mode,
+                fields=headers,
+                node_type="插件节点",
+            )
             old = transit_tables.get(base_name, {}) or {}
             mh, mr = self.append_headers_rows(old.get("headers", []), old.get("rows", []), headers, rows)
             transit_tables[base_name] = {"headers": mh, "rows": mr, "source": f"{source}:追加"}
+            self.log_transit_table_event(manager, "append_transit_table", base_name, mh, mr, write_mode=conflict_mode, appended_rows=len(rows), message=f"追加中转副表 {base_name}：新增 {len(rows)} 行，累计 {len(mr)} 行")
             return f"中转副表追加：{base_name}（新增 {len(rows)} 行，累计 {len(mr)} 行）"
+        manager = self.check_transit_table_write_permission(
+            context,
+            base_name,
+            exists=exists_before,
+            write_mode=conflict_mode or "覆盖",
+            fields=headers,
+            node_type="插件节点",
+        )
         transit_tables[base_name] = {"headers": headers, "rows": rows, "source": source}
+        self.log_transit_table_event(manager, "write_transit_table", base_name, headers, rows, write_mode=conflict_mode or "覆盖", message=f"写入中转副表 {base_name}：{len(rows)} 行 × {len(headers)} 列")
         return f"中转副表：{base_name}"
 
+    def save_plugin_log_outputs(self, plugin_id, plugin_name, config, log_items, plugin_context=None, context=None, execute_actions=False, include_transit=True, suppress_errors=False):
+        log_saved_parts = []
+        plugin_context = plugin_context or {}
+        should_save_persistent = execute_actions or config.get("plugin_log_in_preview", False)
+        if config.get("save_plugin_log_file", True) and should_save_persistent:
+            try:
+                path = self.save_plugin_logs_to_file(plugin_id, log_items)
+                if path:
+                    log_saved_parts.append(f"日志文件：{path}")
+            except Exception as e:
+                if not suppress_errors:
+                    log_saved_parts.append(f"日志文件保存失败：{e}")
+        if config.get("save_plugin_log_sqlite", False) and should_save_persistent:
+            try:
+                cnt = self.save_plugin_logs_to_sqlite(log_items, db_path=plugin_context.get("db_path"), context=context)
+                if cnt:
+                    log_saved_parts.append(f"SQLite日志：{cnt}条")
+            except Exception as e:
+                if not suppress_errors:
+                    log_saved_parts.append(f"SQLite日志保存失败：{e}")
+        if include_transit and config.get("save_plugin_log_transit", False):
+            try:
+                lh, lr = self.plugin_log_items_to_table(log_items)
+                log_name = config.get("plugin_log_transit_name") or f"{plugin_name or plugin_id}_日志"
+                part = self.save_plugin_output_to_transit(context, log_name, lh, lr, config.get("transit_conflict_mode", "覆盖"), source=f"插件日志:{plugin_id}")
+                log_saved_parts.append(part)
+            except Exception as e:
+                if not suppress_errors:
+                    log_saved_parts.append(f"日志中转保存失败：{e}")
+        return log_saved_parts
+
+    def save_plugin_result_transit_output(self, config, item, plugin_id, context, headers, rows, source_prefix="插件"):
+        if not workflow_should_save_plugin_output_as_transit(config):
+            return []
+        name = config.get("transit_name") or item.get("info", {}).get("name", plugin_id)
+        part = self.save_plugin_output_to_transit(
+            context,
+            name,
+            headers,
+            rows,
+            config.get("transit_conflict_mode", "覆盖"),
+            source=f"{source_prefix}:{plugin_id}",
+        )
+        return [part]
+
     def merge_plugin_output_fields_to_current(self, cur_headers, cur_rows, out_headers, out_rows):
-        """按行号把插件输出字段合并到当前表；重名字段覆盖，缺失行补空。"""
-        cur_headers = list(cur_headers or [])
-        cur_rows = [list(r) for r in self.normalize_rows(cur_rows, len(cur_headers))]
-        out_headers = list(out_headers or [])
-        out_rows = [list(r) for r in self.normalize_rows(out_rows, len(out_headers))]
-        merged_headers = list(cur_headers)
-        for h in out_headers:
-            if h not in merged_headers:
-                merged_headers.append(h)
-        total = max(len(cur_rows), len(out_rows))
-        result = []
-        cur_index = {h: i for i, h in enumerate(cur_headers)}
-        out_index = {h: i for i, h in enumerate(out_headers)}
-        for i in range(total):
-            base = []
-            cur_row = cur_rows[i] if i < len(cur_rows) else []
-            out_row = out_rows[i] if i < len(out_rows) else []
-            for h in merged_headers:
-                if h in out_index and i < len(out_rows):
-                    oi = out_index[h]
-                    base.append(out_row[oi] if oi < len(out_row) else "")
-                else:
-                    ci = cur_index.get(h)
-                    base.append(cur_row[ci] if ci is not None and ci < len(cur_row) else "")
-            result.append(base)
-        return merged_headers, result
+        return workflow_merge_plugin_output_fields_to_current(cur_headers, cur_rows, out_headers, out_rows)
 
     def is_external_plugin_mode(self, config, item=None):
-        mode = str(config.get("run_mode", "")).strip()
-        if mode in ("插件独立环境", "external_python", "独立环境"):
-            return True
-        if item:
-            default_mode = str(item.get("run_mode_default", item.get("info", {}).get("run_mode", ""))).strip()
-            if not mode and default_mode in ("插件独立环境", "external_python", "独立环境"):
-                return True
-        return False
+        return workflow_is_external_plugin_mode(config, item)
 
     def find_external_python(self, config, item=None, allow_current=False, return_info=False):
         """查找外部插件 Python。
@@ -6103,12 +9250,17 @@ class PlanWorkflowWindow:
             workflow_name = self.get_workflow_output_table(context)
         return {
             "app_dir": app_dir,
-            "db_path": db_path,
+            # 独立进程不接收真实数据库路径。需要落库时返回 database_requests，
+            # 由主程序在当前节点权限上下文中统一执行。
+            "db_path": "",
+            "database_access": "managed_requests",
+            "database_available": bool(db_path),
             "plugins_dir": self.get_plugins_dir(),
             "plugin_data_dir": self.get_plugin_data_dir(plugin_id),
             "log_dir": self.get_plugin_log_dir(),
             "is_preview": not bool(execute_actions),
             "execute_actions": bool(execute_actions),
+            "is_config_probe": bool(context.get("is_config_probe")),
             "workflow_name": workflow_name,
             "node_name": config.get("name") or config.get("node_name") or "插件节点",
             "plugin_id": plugin_id,
@@ -6195,26 +9347,6 @@ class PlanWorkflowWindow:
                 except Exception:
                     pass
 
-        def handle_stdout_line(line):
-            text = str(line or "").rstrip("\r\n")
-            if not text:
-                return
-            try:
-                msg = json.loads(text)
-                if isinstance(msg, dict) and msg.get("type") in ("node_progress", "node_log", "log"):
-                    if callable(progress_callback):
-                        m = dict(msg)
-                        m.setdefault("type", "node_progress")
-                        m.setdefault("node_name", config.get("name") or "插件节点")
-                        m.setdefault("plugin_id", plugin_id)
-                        progress_callback(m)
-                    if msg.get("message"):
-                        logs.append({"level": msg.get("level", "INFO"), "message": msg.get("message")})
-                else:
-                    logs.append({"level": "INFO", "message": text})
-            except Exception:
-                logs.append({"level": "INFO", "message": text})
-
         def terminate_process(proc, reason, exc):
             try:
                 if proc.poll() is None:
@@ -6244,7 +9376,13 @@ class PlanWorkflowWindow:
                         line = stdout_queue.get_nowait()
                     except queue.Empty:
                         break
-                    handle_stdout_line(line)
+                    handle_plugin_stdout_line(
+                        line,
+                        logs,
+                        progress_callback=progress_callback,
+                        node_name=config.get("name") or "插件节点",
+                        plugin_id=plugin_id,
+                    )
                     drained += 1
 
                 if cancel_event is not None and cancel_event.is_set():
@@ -6279,6 +9417,13 @@ class PlanWorkflowWindow:
             old_logs = result.get("logs", []) or []
             if logs:
                 result["logs"] = old_logs + logs
+            if result.get("ok", True):
+                self.execute_external_plugin_database_requests(
+                    result,
+                    config,
+                    context,
+                    execute_actions=execute_actions,
+                )
             if used_current_fallback:
                 summary = result.get("summary", {}) or {}
                 summary["used_current_python_fallback"] = True
@@ -6288,6 +9433,54 @@ class PlanWorkflowWindow:
                 result["ok"] = False
                 result["message"] = result.get("message") or f"外部插件进程返回错误码：{code}"
         return result
+
+    def execute_external_plugin_database_requests(self, result, config, context=None, execute_actions=False):
+        if not isinstance(result, dict):
+            return []
+        requests = [item for item in (result.get("database_requests") or []) if isinstance(item, dict)]
+        if not requests:
+            return []
+        logs = result.setdefault("logs", [])
+        if not execute_actions:
+            logs.append({
+                "level": "INFO",
+                "message": f"预览模式未执行外部插件数据库请求：{len(requests)} 项",
+            })
+            result["database_results"] = [
+                {"status": "preview_skipped", "operation": item.get("operation", "")}
+                for item in requests
+            ]
+            return result["database_results"]
+
+        manager = self.get_table_manager(
+            context if isinstance(context, dict) else None,
+            node_type="插件节点",
+            node_name=config.get("name") or config.get("node_name") or "插件节点",
+        )
+        results = []
+        for index, request in enumerate(requests, start=1):
+            operation = str(request.get("operation", "") or "").strip()
+            if operation != "write_table":
+                raise ValueError(f"外部插件数据库请求不支持操作：{operation or '<empty>'}")
+            table_name = str(request.get("table_name", "") or "").strip()
+            headers = list(request.get("headers") or [])
+            rows = [list(row) for row in (request.get("rows") or [])]
+            mode = request.get("mode") or "replace"
+            info = manager.write_table(table_name, headers, rows, mode=mode)
+            results.append({
+                "status": "ok",
+                "request_index": index,
+                "operation": operation,
+                **info,
+            })
+            logs.append({
+                "level": "INFO",
+                "message": f"主程序已执行外部插件数据库请求 {index}/{len(requests)}：{table_name}",
+            })
+        result["database_results"] = results
+        if isinstance(context, dict) and results:
+            context["needs_refresh_table_list"] = True
+        return results
 
     def make_plugin_context(self, config, context=None, execute_actions=False):
         plugin_id = config.get("plugin_id", "")
@@ -6332,12 +9525,13 @@ class PlanWorkflowWindow:
         return {
             "app_dir": app_dir,
             "db_path": db_path,
-            "db": PluginDatabaseAPI(db_path),
+            "db": self.get_table_manager(context, node_type="插件节点", node_name=node_name),
             "plugins_dir": self.get_plugins_dir(),
             "plugin_data_dir": self.get_plugin_data_dir(plugin_id),
             "log_dir": self.get_plugin_log_dir(),
             "is_preview": not bool(execute_actions),
             "execute_actions": bool(execute_actions),
+            "is_config_probe": bool(context.get("is_config_probe")),
             "workflow_name": workflow_name,
             "node_name": node_name,
             "plugin_id": plugin_id,
@@ -6351,66 +9545,140 @@ class PlanWorkflowWindow:
             "cancel_event": cancel_event,
         }
 
+    def is_plugin_config_probe(self, context=None, execute_actions=False):
+        """配置界面字段探测：只推断字段，不真实执行插件。"""
+        return bool((context or {}).get("is_config_probe")) and not bool(execute_actions)
+
+    def build_plugin_probe_input_tables(self, config, current_headers, context=None):
+        """构建仅含字段的插件输入表，避免配置阶段加载整表或触发重节点。"""
+        table_headers = self.build_plugin_input_table_headers(config, current_headers, context or {})
+        tables = {}
+        for alias, headers in (table_headers or {}).items():
+            tables[alias] = {
+                "type": "table",
+                "headers": list(headers or []),
+                "rows": [],
+                "source_name": alias,
+                "meta": {"lazy_schema": True, "source_type": "config_probe"},
+            }
+        primary = tables.get("当前表") or {
+            "type": "table",
+            "headers": list(current_headers or []),
+            "rows": [],
+            "source_name": "workflow_current",
+            "meta": {"lazy_schema": True, "source_type": "config_probe"},
+        }
+        tables.setdefault("当前表", primary)
+        tables.setdefault("workflow_current", primary)
+        tables.setdefault("primary", primary)
+        return tables
+
+    def normalize_plugin_output_schema(self, schema, fallback_headers=None):
+        return workflow_normalize_plugin_output_schema(schema, fallback_headers=fallback_headers)
+
+    def get_plugin_output_schema_table(self, item, input_data, params, plugin_context, fallback_headers=None):
+        return workflow_get_plugin_output_schema_table(item, input_data, params, plugin_context, fallback_headers=fallback_headers)
+
+    def apply_lazy_plugin_probe_node(self, headers, rows, config, item, params, runtime_context):
+        """配置阶段插件懒加载：返回字段和空值，不调用插件 run。"""
+        plugin_id = config.get("plugin_id", "")
+        input_tables = self.build_plugin_probe_input_tables(config, headers, runtime_context)
+        runtime_context["input_tables"] = input_tables
+        runtime_context["plugin_input_table_specs"] = copy.deepcopy(config.get("input_tables", []))
+        input_data = workflow_make_plugin_input_data(plugin_id, headers, [], input_tables, lazy_schema=True)
+        plugin_context = self.make_plugin_context(config, runtime_context, execute_actions=False)
+        schema_table = self.get_plugin_output_schema_table(item, input_data, params, plugin_context, fallback_headers=headers)
+        schema_declared = schema_table is not None
+        if schema_table is None:
+            schema_table = {
+                "type": "table",
+                "headers": list(headers),
+                "rows": [list(r) for r in rows],
+                "meta": {"lazy_schema": True, "schema_fallback": "pass_through"},
+            }
+
+        new_headers = list(schema_table.get("headers", headers))
+        new_rows = [list(r) for r in schema_table.get("rows", [])]
+        output_mode = config.get("output_mode", "使用插件返回结果")
+        transit_parts = self.save_plugin_result_transit_output(config, item, plugin_id, runtime_context, new_headers, new_rows, source_prefix="插件字段探测")
+
+        final_headers, final_rows = workflow_build_plugin_probe_final_output(
+            headers,
+            rows,
+            new_headers,
+            new_rows,
+            output_mode,
+            schema_declared,
+        )
+
+        plugin_name = item.get("info", {}).get("name", plugin_id)
+        stat = workflow_build_plugin_probe_stat(plugin_name, schema_declared, final_headers, transit_parts)
+        return final_headers, final_rows, stat
+
+    def run_plugin_node_runtime(self, headers, rows, config, item, params, runtime_context, execute_actions=False):
+        plugin_id = config.get("plugin_id", "")
+        input_tables = self.build_plugin_input_tables(config, headers, rows, runtime_context)
+        runtime_context["input_tables"] = input_tables
+        runtime_context["plugin_input_table_specs"] = copy.deepcopy(config.get("input_tables", []))
+        input_data = workflow_make_plugin_input_data(plugin_id, headers, rows, input_tables)
+        plugin_context = self.make_plugin_context(config, runtime_context, execute_actions=execute_actions)
+
+        if self.is_external_plugin_mode(config, item):
+            result = self.run_external_plugin_process(
+                item,
+                input_data,
+                params,
+                config,
+                runtime_context,
+                execute_actions=execute_actions,
+            )
+        else:
+            module = item.get("module")
+            if module is None:
+                raise RuntimeError("该插件未在主程序环境中导入。请将运行环境设置为“插件独立环境”，或改用单文件内置插件。")
+            validate = getattr(module, "validate_params", None)
+            if callable(validate):
+                ok_msg = validate(params, input_data, plugin_context)
+                if isinstance(ok_msg, tuple):
+                    ok, msg = ok_msg
+                    if not ok:
+                        raise ValueError(msg or "插件参数校验失败")
+                elif ok_msg is False:
+                    raise ValueError("插件参数校验失败")
+            result = module.run(input_data, params, plugin_context)
+
+        normalized_result = workflow_normalize_plugin_run_result(result, input_data, headers, rows)
+        return normalized_result, plugin_context, input_data
+
     def apply_plugin_node(self, headers, rows, config, context=None, execute_actions=False):
         plugin_id = config.get("plugin_id", "")
         item = self.plugin_registry.get(plugin_id)
         if not item:
             raise ValueError(f"插件未加载或缺失：{plugin_id}")
-        module = item.get("module")
         params = dict(config.get("params", {}))
         runtime_context = dict(context or {})
-        input_tables = self.build_plugin_input_tables(config, headers, rows, runtime_context)
-        runtime_context["input_tables"] = input_tables
-        runtime_context["plugin_input_table_specs"] = copy.deepcopy(config.get("input_tables", []))
-        input_data = {
-            "type": "table",
-            "headers": list(headers),
-            "rows": [list(r) for r in rows],
-            "source_name": "workflow_current",
-            "meta": {"plugin_id": plugin_id},
-            "tables": input_tables,
-        }
-        plugin_context = self.make_plugin_context(config, runtime_context, execute_actions=execute_actions)
+        if isinstance(context, dict):
+            runtime_context["table_access_logs"] = context.setdefault("table_access_logs", [])
+        if self.is_plugin_config_probe(runtime_context, execute_actions=execute_actions):
+            return self.apply_lazy_plugin_probe_node(headers, rows, config, item, params, runtime_context)
+        plugin_context = None
         failure_policy = config.get("plugin_failure_policy", "停止工作流")
 
         try:
-            if self.is_external_plugin_mode(config, item):
-                result = self.run_external_plugin_process(item, input_data, params, config, runtime_context, execute_actions=execute_actions)
-            else:
-                if module is None:
-                    raise RuntimeError("该插件未在主程序环境中导入。请将运行环境设置为“插件独立环境”，或改用单文件内置插件。")
-                validate = getattr(module, "validate_params", None)
-                if callable(validate):
-                    ok_msg = validate(params, input_data, plugin_context)
-                    if isinstance(ok_msg, tuple):
-                        ok, msg = ok_msg
-                        if not ok:
-                            raise ValueError(msg or "插件参数校验失败")
-                    elif ok_msg is False:
-                        raise ValueError("插件参数校验失败")
-                result = module.run(input_data, params, plugin_context)
-            message = ""
-            output = None
-            logs = []
-            summary = {}
-            if isinstance(result, dict) and ("ok" in result or "output" in result):
-                if result.get("ok", True) is False:
-                    logs = result.get("logs", []) or []
-                    raise RuntimeError(result.get("message") or "插件执行失败")
-                message = result.get("message", "")
-                logs = result.get("logs", []) or []
-                summary = result.get("summary", {}) or {}
-                output = result.get("output", input_data)
-            else:
-                output = result
-            if output is None:
-                output = input_data
-            if not isinstance(output, dict):
-                raise ValueError("插件返回值必须是 table dict 或包含 output 的 dict")
-            if output.get("type", "table") != "table":
-                raise ValueError(f"暂不支持插件输出类型：{output.get('type')}")
-            new_headers = list(output.get("headers", headers))
-            new_rows = [list(r) for r in output.get("rows", rows)]
+            normalized_result, plugin_context, _input_data = self.run_plugin_node_runtime(
+                headers,
+                rows,
+                config,
+                item,
+                params,
+                runtime_context,
+                execute_actions=execute_actions,
+            )
+            message = normalized_result["message"]
+            logs = normalized_result["logs"]
+            summary = normalized_result["summary"]
+            new_headers = normalized_result["headers"]
+            new_rows = normalized_result["rows"]
             ok = True
             error_message = ""
         except Exception as e:
@@ -6423,547 +9691,84 @@ class PlanWorkflowWindow:
             new_rows = [list(r) for r in rows]
             if failure_policy == "停止工作流":
                 log_items = self.normalize_plugin_logs(logs, plugin_id=plugin_id, node_name=config.get("name") or "插件节点")
-                if config.get("save_plugin_log_file", True) and (execute_actions or config.get("plugin_log_in_preview", False)):
-                    try:
-                        self.save_plugin_logs_to_file(plugin_id, log_items)
-                    except Exception:
-                        pass
-                if config.get("save_plugin_log_sqlite", False) and (execute_actions or config.get("plugin_log_in_preview", False)):
-                    try:
-                        self.save_plugin_logs_to_sqlite(log_items, db_path=plugin_context.get("db_path"))
-                    except Exception:
-                        pass
+                self.save_plugin_log_outputs(
+                    plugin_id,
+                    item.get("info", {}).get("name", plugin_id),
+                    config,
+                    log_items,
+                    plugin_context=plugin_context,
+                    context=runtime_context,
+                    execute_actions=execute_actions,
+                    include_transit=False,
+                    suppress_errors=True,
+                )
                 raise
-            elif failure_policy == "输出错误表继续":
-                new_headers = ["插件ID", "错误信息", "错误堆栈"]
-                new_rows = [[plugin_id, error_message, traceback.format_exc()]]
             else:
-                new_headers = list(headers)
-                new_rows = [list(r) for r in rows]
+                new_headers, new_rows = workflow_build_plugin_failure_output(
+                    plugin_id,
+                    error_message,
+                    traceback.format_exc(),
+                    headers,
+                    rows,
+                    failure_policy,
+                )
 
         log_items = self.normalize_plugin_logs(logs, plugin_id=plugin_id, node_name=config.get("name") or "插件节点")
-        log_saved_parts = []
-        if config.get("save_plugin_log_file", True) and (execute_actions or config.get("plugin_log_in_preview", False)):
-            try:
-                path = self.save_plugin_logs_to_file(plugin_id, log_items)
-                if path:
-                    log_saved_parts.append(f"日志文件：{path}")
-            except Exception as e:
-                log_saved_parts.append(f"日志文件保存失败：{e}")
-        if config.get("save_plugin_log_sqlite", False) and (execute_actions or config.get("plugin_log_in_preview", False)):
-            try:
-                cnt = self.save_plugin_logs_to_sqlite(log_items, db_path=plugin_context.get("db_path"))
-                if cnt:
-                    log_saved_parts.append(f"SQLite日志：{cnt}条")
-            except Exception as e:
-                log_saved_parts.append(f"SQLite日志保存失败：{e}")
-        if config.get("save_plugin_log_transit", False):
-            try:
-                lh, lr = self.plugin_log_items_to_table(log_items)
-                log_name = config.get("plugin_log_transit_name") or f"{item.get('info', {}).get('name', plugin_id)}_日志"
-                part = self.save_plugin_output_to_transit(context, log_name, lh, lr, config.get("transit_conflict_mode", "覆盖"), source=f"插件日志:{plugin_id}")
-                log_saved_parts.append(part)
-            except Exception as e:
-                log_saved_parts.append(f"日志中转保存失败：{e}")
+        plugin_name = item.get("info", {}).get("name", plugin_id)
+        log_saved_parts = self.save_plugin_log_outputs(
+            plugin_id,
+            plugin_name,
+            config,
+            log_items,
+            plugin_context=plugin_context,
+            context=context,
+            execute_actions=execute_actions,
+        )
 
         output_mode = config.get("output_mode", "使用插件返回结果")
-        save_as_transit = bool(config.get("save_output_as_transit", False)) or output_mode.startswith("保存为中转副表")
-        transit_parts = []
-        if save_as_transit:
-            name = config.get("transit_name") or item.get("info", {}).get("name", plugin_id)
-            part = self.save_plugin_output_to_transit(
-                context, name, new_headers, new_rows, config.get("transit_conflict_mode", "覆盖"), source=f"插件:{plugin_id}"
-            )
-            transit_parts.append(part)
+        transit_parts = self.save_plugin_result_transit_output(config, item, plugin_id, context, new_headers, new_rows)
 
-        if output_mode == "保存为中转副表并保持当前表":
-            final_headers = list(headers)
-            final_rows = [list(r) for r in rows]
-        elif output_mode == "追加字段到当前表":
-            final_headers, final_rows = self.merge_plugin_output_fields_to_current(headers, rows, new_headers, new_rows)
-        else:
-            final_headers, final_rows = new_headers, new_rows
-
-        short_log = "；".join(str(x.get("message", x)) if isinstance(x, dict) else str(x) for x in log_items[:3])
-        stat_parts = [f"插件 {item.get('info', {}).get('name', plugin_id)} 完成"]
-        if not ok:
-            stat_parts.append(f"失败处理：{failure_policy}")
-        if message:
-            stat_parts.append(str(message))
-        if summary:
-            try:
-                stat_parts.append("摘要:" + json.dumps(summary, ensure_ascii=False)[:200])
-            except Exception:
-                pass
-        if transit_parts:
-            stat_parts.extend(transit_parts)
-        if log_saved_parts:
-            stat_parts.extend(log_saved_parts)
-        if short_log:
-            stat_parts.append(short_log)
-        return final_headers, final_rows, "；".join(stat_parts)
+        final_headers, final_rows = workflow_build_plugin_final_output(
+            headers,
+            rows,
+            new_headers,
+            new_rows,
+            output_mode,
+        )
+        stat = workflow_build_plugin_status_text(
+            plugin_name,
+            plugin_id,
+            ok,
+            failure_policy,
+            message,
+            summary,
+            transit_parts,
+            log_saved_parts,
+            log_items,
+        )
+        return final_headers, final_rows, stat
 
     def default_config_for_type(self, node_type):
-        first = self.preview_headers[0] if self.preview_headers else ""
-        second = self.preview_headers[1] if len(self.preview_headers) > 1 else first
-        if node_type == "节点组 / 子工作流":
-            return {
-                "group_name": f"节点组_{datetime.now().strftime('%H%M%S')}",
-                "nodes": [],
-                "description": "",
-                # 入口：默认保持旧版行为，直接使用当前工作表；填写 input_fields 后才启用标准入口字段映射。
-                "input_source_type": "当前工作表",
-                "input_sqlite_table": "",
-                "input_transit_table": "",
-                "input_fields": [],
-                "input_mapping": {},
-                "input_defaults": {},
-                "missing_input_policy": "缺失填空",
-                # 组内中转：默认私有，避免子工作流污染父级上下文。
-                "transit_scope": "组内中转私有",
-                "allow_loop_nodes": False,
-                # 输出：主输出决定后续节点拿到什么表；副作用输出用于保存到中转副表/SQLite。
-                "main_output_mode": "输出为当前工作表",
-                "save_to_transit": False,
-                "output_transit_name": "",
-                "output_transit_conflict_mode": "覆盖整表",
-                "save_to_sqlite": False,
-                "output_sqlite_table": "",
-                "output_sqlite_mode": "自动加时间戳新表",
-                "sqlite_save_in_preview": False,
-            }
-        if node_type == "循环执行起点":
-            return {
-                "loop_id": f"loop_{datetime.now().strftime('%H%M%S')}",
-                "source_type": "当前表",
-                "source_table": "",
-                "transit_table": "",
-                "fields": list(self.preview_headers[:3]),
-                "flag_field": "执行标志",
-                "init_flag_mode": "空值填0，非0不执行",
-                "boundary_mode": "整体表格数据边界",
-                "reference_field": first,
-                "current_table_name": "当前循环项",
-                "output_current_as_table": True,
-                "running_flag_policy": "执行中1标记失败3",
-                "max_loop_count": "10000",
-            }
-        if node_type == "循环判断回跳":
-            return {
-                "loop_id": "",
-                "condition_source": "当前表",
-                "condition_mode": "始终成功",
-                "condition_field": first,
-                "condition_op": "等于",
-                "condition_value": "成功",
-                "on_success": "标记完成2并继续循环",
-                "on_fail": "标记失败3并继续下一条",
-                "end_output_mode": "循环队列表",
-                "result_table_name": "循环结果",
-            }
-        if node_type == "批量替换":
-            return {
-                "target_field": first,
-                "match_mode": "包含",
-                "match_value": "",
-                "replace_value": "",
-                "replace_mode": "局部替换匹配字符串",
-                "case_sensitive": True,
-            }
-        if node_type == "数据提取":
-            return {
-                "source_field": first,
-                "method": "正则提取",
-                "output_mode": "生成新字段",
-                "new_field": "提取结果",
-                "unmatched_mode": "留空",
-                "unmatched_fixed": "未匹配",
-                "case_sensitive": True,
-                "strip_result": True,
-                "regex_pattern": "",
-                "regex_group": "0",
-                "regex_find_all": False,
-                "regex_joiner": ";",
-                "start_pos": "1",
-                "extract_len": "1",
-                "position_base": "从1开始",
-                "n_chars": "1",
-                "delimiter": "-",
-                "part_index": "1",
-                "ignore_empty_part": False,
-                "before_key": "",
-                "after_key": "",
-                "between_occurrence": "1",
-                "marker": "-",
-                "find_mode": "第一次出现",
-                "prefix": "",
-                "suffix": "",
-            }
-        if node_type == "格式规范化 / 日期时间解析":
-            return {
-                "source_field": first,
-                "time_source_field": second,
-                "use_separate_time_field": False,
-                "parse_type": "日期",
-                "input_structure": "固定位置",
-                "position_base": "从1开始",
-                "year_start": "1",
-                "year_len": "2",
-                "month_start": "3",
-                "month_len": "2",
-                "day_start": "5",
-                "day_len": "2",
-                "hour_start": "1",
-                "hour_len": "2",
-                "minute_start": "3",
-                "minute_len": "2",
-                "second_start": "5",
-                "second_len": "0",
-                "date_delimiter": "自动识别",
-                "time_delimiter": "自动识别",
-                "custom_date_delimiter": "-",
-                "custom_time_delimiter": ":",
-                "date_order": "年-月-日",
-                "year_rule": "20xx",
-                "auto_window_pivot": "80",
-                "output_template": "{YYYY}-{MM}-{DD}",
-                "time_output_template": "{HH}:{mm}",
-                "datetime_output_template": "{YYYY}-{MM}-{DD} {HH}:{mm}",
-                "output_mode": "生成新字段",
-                "new_field": "标准日期",
-                "unmatched_mode": "留空",
-                "unmatched_fixed": "未匹配",
-                "strip_value": True,
-                "output_status": True,
-                "status_field": "格式解析状态",
-                "component_prefix": "解析",
-            }
-        if node_type == "新建日期时间列":
-            return {
-                "output_mode": "生成新字段",
-                "new_field": "当前日期时间",
-                "target_field": first,
-                "time_mode": "整次运行固定同一时间",
-                "format_mode": "占位符模板",
-                "template": "{YYYY}-{MM}-{DD} {HH}:{mm}:{ss}",
-                "strftime_template": "%Y-%m-%d %H:%M:%S",
-            }
-        if node_type == "新建列":
-            return {
-                "columns_text": "新字段1\n新字段2",
-                "value_mode": "统一默认值",
-                "default_value": "",
-                "conflict_mode": "自动改名",
-                "strip_column_name": True,
-                "allow_empty_name": False,
-            }
-        if node_type == "合并列":
-            fields = [f for f in [first, second] if f]
-            return {
-                "fields": fields,
-                "separators": ["-"] * max(len(fields) - 1, 0),
-                "output_field": "合并结果",
-                "skip_empty": True,
-                "trim_value": True,
-                "empty_placeholder": "",
-            }
-        if node_type == "批量更改列名":
-            return {
-                "mode": "手动映射改名",
-                "mappings": [],
-                "prefix": "",
-                "suffix": "",
-                "replace_match": "",
-                "replace_value": "",
-                "scope": "全部字段",
-                "scope_fields": [],
-                "duplicate_policy": "自动追加编号",
-                "missing_policy": "跳过并记录警告",
-                "trim_names": True,
-            }
-        if node_type == "去重 / 重复数据处理":
-            return {
-                "dedupe_mode": "指定字段/组合字段去重",
-                "key_fields": [first] if first else [],
-                "trim": True,
-                "ignore_case": False,
-                "empty_key_policy": "空键参与去重",
-                "keep_policy": "保留第一条",
-                "output_mode": "输出去重后的数据",
-                "add_marker_columns": True,
-                "duplicate_group_field": "重复组编号",
-                "duplicate_status_field": "重复状态",
-                "duplicate_index_field": "组内序号",
-                "duplicate_count_field": "重复次数",
-                "keep_flag_field": "是否保留",
-            }
-        if node_type == "列数字运算":
-            return {
-                "target_field": first,
-                "operation": "加",
-                "operand_source": "固定值",
-                "operand_value": "1",
-                "operand_field": second,
-                "row_offset": "0",
-                "sequence_start": "1",
-                "sequence_step": "1",
-                "output_mode": "生成新字段",
-                "output_field": f"{first}_计算结果" if first else "计算结果",
-                "non_number_policy": "留空",
-                "non_number_fixed": "",
-                "divide_zero_policy": "留空",
-                "divide_zero_fixed": "",
-                "decimal_places": "自动",
-                "range_mode": "全部行",
-                "start_row": "1",
-                "end_row": "1",
-                "reference_field": first,
-            }
-        if node_type == "匹配值输出列名":
+        table_names = []
+        needs_sqlite_defaults = {"匹配值输出列名", "选定列写入指定表", "字段映射写入表"}
+        if node_type in needs_sqlite_defaults:
             try:
-                tables = self.app.get_table_names()
+                table_names = self.app.get_table_names()
             except Exception:
-                tables = []
-            lookup_table = tables[0] if tables else ""
-            lookup_fields = []
-            if lookup_table:
-                try:
-                    lookup_fields = self.app.get_table_columns(lookup_table)[:3]
-                except Exception:
-                    lookup_fields = []
-            return {
-                "source_field": first,
-                "lookup_table": lookup_table,
-                "lookup_fields": lookup_fields,
-                "match_mode": "完全相等",
-                "output_field": "匹配字段名",
-                "output_match_value": True,
-                "match_value_field": "匹配值",
-                "output_match_row": True,
-                "match_row_field": "匹配行号",
-                "output_status": True,
-                "status_field": "匹配状态",
-                "multi_match_policy": "合并所有字段名",
-                "multi_match_separator": ";",
-                "no_match_value": "未匹配",
-                "skip_empty_lookup_value": True,
-            }
-        if node_type == "复制列":
-            return {
-                "source_field": first,
-                "output_mode": "生成新字段",
-                "new_field": f"{first}_复制" if first else "复制列",
-                "target_field": first,
-                "trim_value": False,
-                "empty_default": "",
-            }
-        if node_type == "复制行":
-            return {
-                "source_row": "1",
-                "copy_count": "1",
-                "insert_mode": "表尾",
-                "insert_row": "1",
-            }
-        if node_type == "删除行":
-            return {
-                "delete_mode": "按行号列表",
-                "row_spec": "1",
-                "start_row": "1",
-                "end_row": "1",
-                "condition_field": first,
-                "condition_op": "包含",
-                "condition_value": "",
-                "case_sensitive": True,
-                "empty_mode": "整行为空",
-                "empty_field": first,
-            }
-        if node_type == "填充值":
-            return {
-                "target_field": first,
-                "start_row": "1",
-                "direction": "向下",
-                "value_source": "手动输入值",
-                "manual_value": "",
-                "source_field": first,
-                "source_end_field": second,
-                "source_row": "1",
-                "multi_field_fill_direction": "横向填充",
-                "source_start_row": "1",
-                "source_end_row": "1",
-                "source_range_mode": "来源列数据边界",
-                "start_row_mode": "手动指定起始行",
-                "end_mode": "填充到数据边界",
-                "count": "1",
-                "end_row": "1",
-                "end_field": first,
-                "reference_field": first,
-                "overwrite_rule": "只填充空单元格",
-            }
-        if node_type == "序列填充":
-            return {
-                "target_field": first,
-                "start_row": "1",
-                "direction": "向下",
-                "start_row_mode": "手动指定起始行",
-                "start_value": "1",
-                "step": "1",
-                "count_source_mode": "使用结束条件",
-                "end_mode": "填充到数据边界",
-                "count": "1",
-                "end_row": "1",
-                "end_field": first,
-                "reference_field": first,
-                "overwrite_rule": "覆盖所有目标单元格",
-                "zero_pad": "0",
-                "prefix": "",
-                "suffix": "",
-            }
-        if node_type == "区域填充":
-            return {
-                "start_field": first,
-                "end_field": second,
-                "start_row": "1",
-                "end_row": "1",
-                "value_source": "手动输入值",
-                "manual_value": "",
-                "source_field": first,
-                "source_end_field": second,
-                "source_row": "1",
-                "multi_field_fill_direction": "横向填充",
-                "source_start_row": "1",
-                "source_end_row": "1",
-                "source_range_mode": "来源列数据边界",
-                "start_row_mode": "手动指定起始行",
-                "end_row_mode": "手动指定结束行",
-                "reference_field": first,
-                "overwrite_rule": "只填充空单元格",
-            }
-        if node_type == "行数据映射填充":
-            default_value_fields = [h for h in self.preview_headers[:3]]
-            default_keep_fields = [h for h in self.preview_headers[:2]]
-            return {
-                "mode": "按行取值展开",
-                "start_row": "1",
-                "end_mode": "填充到数据边界",
-                "count": "1",
-                "end_row": "1",
-                "value_fields": default_value_fields,
-                "keep_fields": default_keep_fields,
-                "output_value_field": "输出内容",
-                "output_source_field": True,
-                "source_field_name": "来源字段",
-                "output_original_row": True,
-                "original_row_field": "原始行号",
-                "output_status": True,
-                "status_field": "状态",
-                "empty_mode": "跳过空值",
-                "empty_fixed": "未填写",
-                "trim_value": True,
-            }
-        if node_type == "保存中转数据":
-            base_name = f"中转_{datetime.now().strftime('%H%M%S')}"
-            export_dir = os.path.join(getattr(self.app, "app_dir", get_app_dir()), "export")
-            return {
-                "transit_name": base_name,
-                "save_memory": True,
-                "save_sqlite": False,
-                "sqlite_table": base_name,
-                "sqlite_mode": "自动加时间戳",
-                "save_xlsx": False,
-                "xlsx_path": os.path.join(export_dir, f"{base_name}.xlsx"),
-                "stop_after_save": False,
-            }
-        if node_type == "选定列写入指定表":
+                pass
+        table_columns = {}
+        for table in table_names[:1]:
             try:
-                tables = self.app.get_table_names()
+                table_columns[table] = self.app.get_table_columns(table)
             except Exception:
-                tables = []
-            target_table = tables[0] if tables else "选定列结果"
-            return {
-                "source_type": "当前工作流表",
-                "source_sqlite_table": tables[0] if tables else "",
-                "source_transit_table": "",
-                "selected_fields": list(self.preview_headers[:3]),
-                "target_type": "SQLite表",
-                "target_table": target_table,
-                "target_transit_table": "选定列结果",
-                "write_mode": "复制列到目标表新建字段",
-                "field_name_mode": "使用原字段名",
-                "target_prefix": "",
-                "target_suffix": "",
-                "field_mappings": [],
-                "overwrite_rule": "只写入空单元格",
-                "enable_write": False,
-                "backup_before_write": True,
-            }
-        if node_type == "字段映射写入表":
-            try:
-                tables = self.app.get_table_names()
-            except Exception:
-                tables = []
-            target_table = tables[0] if tables else ""
-            return {
-                "writeback_direction": "当前表写入SQLite目标表",
-                "target_table": target_table,
-                "source_table": target_table,
-                "use_match_rules": True,
-                "match_rules": [],
-                "field_mappings": [],
-                "overwrite_policy": "目标已有值且不同才覆盖",
-                "source_empty_policy": "跳过",
-                "source_empty_fixed": "",
-                "no_match_policy": "跳过并记录",
-                "multi_match_policy": "跳过并记录",
-                "duplicate_target_policy": "跳过重复并记录异常",
-                "enable_write": False,
-                "backup_before_write": True,
-                "output_preview_table": True,
-                "sequential_insert_missing_rows": True,
-            }
-        if node_type == "高级筛选":
-            return {
-                "logic": "AND",
-                "conditions": [],
-                "join_rules": [],
-                "join_logic": "AND",
-                "extra_tables": [],
-                "output_fields": [],
-                "result_limit": "5000",
-                "max_intermediate": "200000",
-                "remove_duplicates": False,
-            }
-        if node_type == "删除列":
-            return {"fields": []}
-        if node_type == "移动列":
-            return {"order": list(self.preview_headers)}
-        if node_type == "获取文件列表":
-            return {
-                "directory": getattr(self.app, "app_dir", get_app_dir()),
-                "recursive": True,
-                "include_files": True,
-                "include_dirs": False,
-                "include_hidden": False,
-                "extensions": "",
-                "name_contains": "",
-                "glob_pattern": "*",
-                "max_files": "20000",
-            }
-        if node_type == "批量重命名":
-            return {
-                "path_field": "完整路径",
-                "new_name_field": "新文件名",
-                "name_value_type": "仅文件名",
-                "new_path_field": "新完整路径",
-                "status_field": "重命名状态",
-                "auto_append_ext": False,
-                "allow_dirs": False,
-                "create_target_dirs": False,
-                "conflict_mode": "跳过目标已存在",
-                "actual_rename": False,
-                "write_log": True,
-                "log_path": os.path.abspath("rename_log.csv"),
-            }
-        return {}
+                table_columns[table] = []
+        return workflow_default_config_for_type(
+            node_type,
+            preview_headers=self.preview_headers,
+            table_names=table_names,
+            table_columns=table_columns,
+            app_dir=getattr(self.app, "app_dir", get_app_dir()),
+        )
 
     def default_name_for_node(self, node_type):
         return {
@@ -7012,13 +9817,16 @@ class PlanWorkflowWindow:
                 "name": self.default_name_for_node(node_type),
                 "config": self.default_config_for_type(node_type),
             }
-        self.nodes.append(node)
-        self.refresh_node_list()
-        idx = len(self.nodes) - 1
-        self.node_listbox.selection_clear(0, tk.END)
-        self.node_listbox.selection_set(idx)
-        self.node_listbox.activate(idx)
-        self.build_node_config(idx)
+        self.ensure_node_identity(node)
+        selected = self.node_listbox.curselection()
+        insert_at = int(selected[0]) + 1 if len(selected) == 1 else len(self.nodes)
+        self.nodes.insert(insert_at, node)
+        self.refresh_node_list(select_index=insert_at, reveal=True)
+        self.build_node_config(insert_at)
+        if len(selected) == 1:
+            self.status_var.set(f"已在当前节点下方插入：{node.get('name', node.get('type', '节点'))}")
+        else:
+            self.status_var.set(f"已追加节点：{node.get('name', node.get('type', '节点'))}")
 
     def delete_node(self):
         idx = self.get_selected_node_index()
@@ -7033,9 +9841,7 @@ class PlanWorkflowWindow:
         if idx is None or idx <= 0:
             return
         self.nodes[idx - 1], self.nodes[idx] = self.nodes[idx], self.nodes[idx - 1]
-        self.refresh_node_list()
-        self.node_listbox.selection_clear(0, tk.END)
-        self.node_listbox.selection_set(idx - 1)
+        self.refresh_node_list(select_index=idx - 1, reveal=True)
         self.rebuild_current_config()
 
     def move_node_down(self):
@@ -7043,9 +9849,7 @@ class PlanWorkflowWindow:
         if idx is None or idx >= len(self.nodes) - 1:
             return
         self.nodes[idx + 1], self.nodes[idx] = self.nodes[idx], self.nodes[idx + 1]
-        self.refresh_node_list()
-        self.node_listbox.selection_clear(0, tk.END)
-        self.node_listbox.selection_set(idx + 1)
+        self.refresh_node_list(select_index=idx + 1, reveal=True)
         self.rebuild_current_config()
 
     def toggle_node_enabled(self):
@@ -7053,10 +9857,7 @@ class PlanWorkflowWindow:
         if idx is None:
             return
         self.nodes[idx]["enabled"] = not self.nodes[idx].get("enabled", True)
-        self.refresh_node_list()
-        self.node_listbox.selection_clear(0, tk.END)
-        self.node_listbox.selection_set(idx)
-        self.node_listbox.activate(idx)
+        self.refresh_node_list(select_index=idx, reveal=True)
 
     def copy_node(self):
         idx = self.get_selected_node_index()
@@ -7065,10 +9866,9 @@ class PlanWorkflowWindow:
         import copy
         new_node = copy.deepcopy(self.nodes[idx])
         new_node["name"] = f"{new_node.get('name', new_node.get('type'))}_复制"
+        self.ensure_node_tree_identity([new_node], force_new=True)
         self.nodes.insert(idx + 1, new_node)
-        self.refresh_node_list()
-        self.node_listbox.selection_clear(0, tk.END)
-        self.node_listbox.selection_set(idx + 1)
+        self.refresh_node_list(select_index=idx + 1, reveal=True)
         self.rebuild_current_config()
 
     def clear_nodes(self):
@@ -7081,7 +9881,7 @@ class PlanWorkflowWindow:
     def update_node_name(self, idx, name_var):
         if 0 <= idx < len(self.nodes):
             self.nodes[idx]["name"] = name_var.get().strip() or self.nodes[idx]["type"]
-            self.refresh_node_list()
+            self.refresh_node_list(select_index=idx, reveal=True)
 
     def make_config_preview_context(self):
         """
@@ -7098,6 +9898,7 @@ class PlanWorkflowWindow:
             "transit_tables": {},
             "loop_states": {},
             "loop_results": {},
+            "is_config_probe": True,
             "allow_selected_columns_write_in_preview": True,
             "selected_columns_config_preview_only": True,
         }
@@ -7142,6 +9943,7 @@ class PlanWorkflowWindow:
         ttk.Entry(title, textvariable=name_var, width=28).pack(side=tk.LEFT, padx=4)
         ttk.Button(title, text="更新名称", command=lambda: self.update_node_name(idx, name_var)).pack(side=tk.LEFT, padx=4)
         ttk.Checkbutton(title, text="启用", variable=self.make_node_enabled_var(idx)).pack(side=tk.LEFT, padx=8)
+        ttk.Button(title, text="字段权限层", command=lambda idx=idx: self.open_table_access_window(initial_index=idx)).pack(side=tk.LEFT, padx=4)
 
         node_type = node.get("type")
         if node_type == "节点组 / 子工作流":
@@ -7152,6 +9954,14 @@ class PlanWorkflowWindow:
             self.build_loop_start_config(config, available_headers, transit_context)
         elif node_type == "循环判断回跳":
             self.build_loop_judge_config(config, available_headers)
+        elif node_type == "跳转锚点节点":
+            self.build_jump_anchor_config(config)
+        elif node_type == "无条件跳转节点":
+            self.build_unconditional_jump_config(config)
+        elif node_type == "条件判断节点":
+            self.build_condition_check_config(config, available_headers)
+        elif node_type == "条件跳转节点":
+            self.build_conditional_jump_config(config)
         elif node_type == "批量替换":
             self.build_replace_config(config, available_headers)
         elif node_type == "数据提取":
@@ -7216,7 +10026,7 @@ class PlanWorkflowWindow:
         def on_change(*_):
             if 0 <= idx < len(self.nodes):
                 self.nodes[idx]["enabled"] = bool(var.get())
-                self.refresh_node_list()
+                self.refresh_node_list(select_index=idx, reveal=True)
         var.trace_add("write", on_change)
         return var
 
@@ -7294,24 +10104,7 @@ class PlanWorkflowWindow:
             wraplength=1120,
         ).grid(row=0, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
 
-        # 兼容旧模板：缺失的新字段在打开配置界面时补默认值。
-        config.setdefault("input_source_type", "当前工作表")
-        config.setdefault("input_sqlite_table", "")
-        config.setdefault("input_transit_table", "")
-        config.setdefault("input_fields", [])
-        config.setdefault("input_mapping", {})
-        config.setdefault("input_defaults", {})
-        config.setdefault("missing_input_policy", "缺失填空")
-        config.setdefault("main_output_mode", "输出为当前工作表")
-        config.setdefault("save_to_transit", False)
-        config.setdefault("output_transit_name", config.get("group_name", "节点组结果"))
-        config.setdefault("output_transit_conflict_mode", "覆盖整表")
-        config.setdefault("save_to_sqlite", False)
-        config.setdefault("output_sqlite_table", config.get("group_name", "节点组结果"))
-        config.setdefault("output_sqlite_mode", "自动加时间戳新表")
-        config.setdefault("sqlite_save_in_preview", False)
-        config.setdefault("transit_scope", "组内中转私有")
-        config.setdefault("nodes", [])
+        workflow_ensure_group_config_defaults(config)
 
         name_var = self.add_labeled_entry(frame, "组名称：", config.get("group_name", "节点组"), 1, 0, 26)
         self.sync_var_to_config(name_var, config, "group_name")
@@ -7321,424 +10114,19 @@ class PlanWorkflowWindow:
         # -------------------------
         # 1. 入口数据源与字段映射
         # -------------------------
-        input_frame = ttk.LabelFrame(frame, text="入口字段映射", padding=6)
-        input_frame.grid(row=2, column=0, columnspan=8, sticky="ew", padx=4, pady=6)
-        input_frame.columnconfigure(1, weight=1)
-
-        source_values = ["当前工作表", "中转副表", "SQLite表"]
-        source_type_var = self.add_labeled_combo(input_frame, "入口数据源：", config.get("input_source_type", "当前工作表"), source_values, 0, 0, 16)
-        self.sync_var_to_config(source_type_var, config, "input_source_type")
-
-        sqlite_tables = self.get_sqlite_table_names()
-        sqlite_var = self.add_labeled_combo(input_frame, "SQLite表：", config.get("input_sqlite_table", sqlite_tables[0] if sqlite_tables else ""), sqlite_tables, 0, 2, 26, readonly=False)
-        self.sync_var_to_config(sqlite_var, config, "input_sqlite_table")
-
-        transit_tables = sorted((transit_context or {}).get("transit_tables", {}).keys())
-        transit_var = self.add_labeled_combo(input_frame, "中转副表：", config.get("input_transit_table", transit_tables[0] if transit_tables else ""), transit_tables, 0, 4, 26, readonly=False)
-        self.sync_var_to_config(transit_var, config, "input_transit_table")
-
-        fields_text = ",".join(self.parse_group_input_fields(config))
-        input_fields_var = self.add_labeled_entry(input_frame, "组入口字段：", fields_text, 1, 0, 70)
-        ttk.Label(input_frame, text="留空=兼容旧版，直接把入口数据源整表传入组内；填写后才按映射生成标准入口表。", foreground="gray").grid(row=1, column=2, columnspan=5, sticky=tk.W, padx=4, pady=4)
-
-        def update_input_fields(*_):
-            text = input_fields_var.get()
-            fields = [x.strip() for x in re.split(r"[,，;；\n]+", text) if x.strip()]
-            config["input_fields"] = self.unique_keep_order(fields)
-            config.setdefault("input_mapping", {})
-            config.setdefault("input_defaults", {})
-            # 删除已不存在入口字段的映射，避免旧垃圾配置干扰。
-            valid = set(config["input_fields"])
-            config["input_mapping"] = {k: v for k, v in config.get("input_mapping", {}).items() if k in valid}
-            config["input_defaults"] = {k: v for k, v in config.get("input_defaults", {}).items() if k in valid}
-            refresh_mapping_tree()
-        input_fields_var.trace_add("write", update_input_fields)
-
-        missing_var = self.add_labeled_combo(input_frame, "缺失字段：", config.get("missing_input_policy", "缺失填空"), ["缺失填空", "缺失报错"], 2, 0, 14)
-        self.sync_var_to_config(missing_var, config, "missing_input_policy")
-
-        mapping_wrap = ttk.Frame(input_frame)
-        mapping_wrap.grid(row=3, column=0, columnspan=8, sticky="ew", padx=4, pady=(4, 2))
-        mapping_wrap.columnconfigure(0, weight=1)
-        mapping_tree = ttk.Treeview(mapping_wrap, columns=("入口字段", "外部字段", "默认值"), show="headings", height=5)
-        for col, width in [("入口字段", 180), ("外部字段", 260), ("默认值", 180)]:
-            mapping_tree.heading(col, text=col)
-            mapping_tree.column(col, width=width, anchor=tk.W, stretch=False)
-        mapping_y = ttk.Scrollbar(mapping_wrap, orient=tk.VERTICAL, command=mapping_tree.yview)
-        mapping_tree.configure(yscrollcommand=mapping_y.set)
-        mapping_tree.grid(row=0, column=0, sticky="ew")
-        mapping_y.grid(row=0, column=1, sticky="ns")
-
-        map_edit = ttk.Frame(input_frame)
-        map_edit.grid(row=4, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(2, 4))
-        selected_input_var = tk.StringVar(value="")
-        source_field_var = tk.StringVar(value="")
-        default_value_var = tk.StringVar(value="")
-        ttk.Label(map_edit, text="组入口字段：").pack(side=tk.LEFT, padx=(0, 2))
-        selected_input_combo = ttk.Combobox(map_edit, textvariable=selected_input_var, values=[], width=20, state="readonly")
-        selected_input_combo.pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Label(map_edit, text="映射外部字段：").pack(side=tk.LEFT, padx=(0, 2))
-        source_field_combo = ttk.Combobox(map_edit, textvariable=source_field_var, values=[], width=30, state="readonly")
-        source_field_combo.pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Label(map_edit, text="缺失默认值：").pack(side=tk.LEFT, padx=(0, 2))
-        ttk.Entry(map_edit, textvariable=default_value_var, width=20).pack(side=tk.LEFT, padx=(0, 6))
-
-        def get_source_headers_for_mapping():
-            source_type = source_type_var.get() or config.get("input_source_type", "当前工作表")
-            if source_type == "当前工作表":
-                return list(headers)
-            if source_type == "中转副表":
-                name = transit_var.get().strip() or config.get("input_transit_table", "")
-                item = (transit_context or {}).get("transit_tables", {}).get(name, {})
-                return list(item.get("headers", []))
-            if source_type == "SQLite表":
-                name = sqlite_var.get().strip() or config.get("input_sqlite_table", "")
-                if not name:
-                    return []
-                try:
-                    return PluginDatabaseAPI(self.get_workflow_db_path(context if 'context' in locals() else None)).get_columns(name)
-                except Exception:
-                    return []
-            return list(headers)
-
-        def refresh_source_field_combo():
-            vals = get_source_headers_for_mapping()
-            combo_vals = [""] + vals
-            source_field_combo["values"] = combo_vals
-            if source_field_var.get() not in combo_vals:
-                source_field_var.set("")
-            return vals
-
-        def refresh_selected_input_combo(sync_detail=True):
-            fields = self.parse_group_input_fields(config)
-            selected_input_combo["values"] = fields
-            current = selected_input_var.get().strip()
-            if current not in fields:
-                selected_input_var.set(fields[0] if fields else "")
-            if sync_detail:
-                sync_mapping_edit_from_selected()
-            return fields
-
-        def sync_mapping_edit_from_selected(event=None):
-            key = selected_input_var.get().strip()
-            mapping = config.setdefault("input_mapping", {})
-            defaults = config.setdefault("input_defaults", {})
-            refresh_source_field_combo()
-            source_field_var.set(mapping.get(key, "") if key else "")
-            default_value_var.set(defaults.get(key, "") if key else "")
-            # 同步选中映射表中的对应行，便于表格总览和下拉编辑保持一致。
-            for iid in mapping_tree.get_children():
-                vals = mapping_tree.item(iid, "values")
-                if vals and str(vals[0]) == key:
-                    mapping_tree.selection_set(iid)
-                    mapping_tree.focus(iid)
-                    mapping_tree.see(iid)
-                    break
-
-        def refresh_mapping_tree():
-            mapping_tree.delete(*mapping_tree.get_children())
-            fields = self.parse_group_input_fields(config)
-            mapping = config.setdefault("input_mapping", {})
-            defaults = config.setdefault("input_defaults", {})
-            for f in fields:
-                mapping_tree.insert("", tk.END, values=(f, mapping.get(f, ""), defaults.get(f, "")))
-            refresh_selected_input_combo(sync_detail=True)
-
-        def on_mapping_select(event=None):
-            sel = mapping_tree.selection()
-            if not sel:
-                return
-            vals = mapping_tree.item(sel[0], "values")
-            if not vals:
-                return
-            selected_input_var.set(vals[0])
-            refresh_source_field_combo()
-            source_field_var.set(vals[1] if len(vals) > 1 else "")
-            default_value_var.set(vals[2] if len(vals) > 2 else "")
-        mapping_tree.bind("<<TreeviewSelect>>", on_mapping_select)
-        selected_input_combo.bind("<<ComboboxSelected>>", sync_mapping_edit_from_selected)
-
-        def apply_mapping_one():
-            key = selected_input_var.get().strip()
-            if not key:
-                messagebox.showwarning("提示", "请先在组入口字段下拉框中选择一个入口字段。")
-                return
-            if key not in self.parse_group_input_fields(config):
-                messagebox.showwarning("提示", f"入口字段不存在：{key}\n请先在上方“组入口字段”中添加。")
-                return
-            config.setdefault("input_mapping", {})[key] = source_field_var.get().strip()
-            config.setdefault("input_defaults", {})[key] = default_value_var.get()
-            refresh_mapping_tree()
-
-        def auto_mapping_by_name():
-            source_headers = get_source_headers_for_mapping()
-            mapping = config.setdefault("input_mapping", {})
-            for f in self.parse_group_input_fields(config):
-                if f in source_headers:
-                    mapping[f] = f
-                elif not mapping.get(f):
-                    # 简单忽略大小写尝试一次。
-                    lower_map = {str(h).lower(): h for h in source_headers}
-                    mapping[f] = lower_map.get(str(f).lower(), "")
-            refresh_mapping_tree()
-
-        def use_current_headers_as_inputs():
-            vals = get_source_headers_for_mapping()
-            config["input_fields"] = list(vals)
-            config["input_mapping"] = {h: h for h in vals}
-            config.setdefault("input_defaults", {})
-            input_fields_var.set(",".join(vals))
-            refresh_mapping_tree()
-
-        def infer_inputs_from_inner_nodes():
-            inferred, details = self.infer_group_input_fields_from_nodes(config.get("nodes", []))
-            detail_text = self.format_group_input_infer_details(inferred, details)
-            if not inferred:
-                messagebox.showinfo("入口字段推导", "没有从组内节点推导到需要外部传入的入口字段。\n\n" + detail_text)
-                return
-
-            current = self.parse_group_input_fields(config)
-            if current:
-                answer = messagebox.askyesnocancel(
-                    "入口字段推导",
-                    "已从组内节点推导出入口字段：\n"
-                    + ", ".join(inferred)
-                    + "\n\n是否覆盖现有组入口字段？\n\n"
-                    + "是：覆盖现有入口字段\n"
-                    + "否：合并到现有入口字段\n"
-                    + "取消：只查看结果，不应用"
-                )
-                if answer is None:
-                    messagebox.showinfo("入口字段推导明细", detail_text)
-                    return
-                new_fields = inferred if answer else self.unique_keep_order(current + inferred)
-            else:
-                new_fields = inferred
-
-            old_mapping = dict(config.get("input_mapping", {}) or {})
-            old_defaults = dict(config.get("input_defaults", {}) or {})
-            source_headers = get_source_headers_for_mapping()
-            lower_source = {str(h).lower(): h for h in source_headers}
-
-            config["input_fields"] = list(new_fields)
-            new_mapping = {}
-            for f in new_fields:
-                if old_mapping.get(f):
-                    new_mapping[f] = old_mapping.get(f)
-                elif f in source_headers:
-                    new_mapping[f] = f
-                else:
-                    new_mapping[f] = lower_source.get(str(f).lower(), "")
-            config["input_mapping"] = new_mapping
-            config["input_defaults"] = {f: old_defaults.get(f, "") for f in new_fields}
-            input_fields_var.set(",".join(new_fields))
-            refresh_mapping_tree()
-            messagebox.showinfo("入口字段推导完成", detail_text)
-
-        ttk.Button(map_edit, text="应用映射", command=apply_mapping_one).pack(side=tk.LEFT, padx=2)
-        ttk.Button(map_edit, text="同名自动映射", command=auto_mapping_by_name).pack(side=tk.LEFT, padx=2)
-        ttk.Button(map_edit, text="用来源字段作为入口", command=use_current_headers_as_inputs).pack(side=tk.LEFT, padx=2)
-        ttk.Button(map_edit, text="从组内节点推导入口字段", command=infer_inputs_from_inner_nodes).pack(side=tk.LEFT, padx=2)
-        for v in (source_type_var, sqlite_var, transit_var):
-            v.trace_add("write", lambda *_: refresh_source_field_combo())
-        refresh_mapping_tree()
+        self.build_group_input_mapping_section(frame, config, headers, transit_context=transit_context, row=2)
 
         # -------------------------
         # 2. 输出设置
         # -------------------------
-        output_frame = ttk.LabelFrame(frame, text="输出设置", padding=6)
-        output_frame.grid(row=3, column=0, columnspan=8, sticky="ew", padx=4, pady=6)
-
-        main_out_var = self.add_labeled_combo(output_frame, "主输出：", config.get("main_output_mode", "输出为当前工作表"), ["输出为当前工作表", "透传原当前表"], 0, 0, 18)
-        self.sync_var_to_config(main_out_var, config, "main_output_mode")
-        scope_var = self.add_labeled_combo(output_frame, "组内中转：", config.get("transit_scope", "组内中转私有"), ["组内中转私有", "允许输出到外部"], 0, 2, 18)
-        self.sync_var_to_config(scope_var, config, "transit_scope")
-
-        save_transit_var = tk.BooleanVar(value=bool(config.get("save_to_transit", False)))
-        ttk.Checkbutton(output_frame, text="同时保存到中转副表", variable=save_transit_var).grid(row=1, column=0, sticky=tk.W, padx=4, pady=4)
-        self.sync_bool_to_config(save_transit_var, config, "save_to_transit")
-        transit_name_var = self.add_labeled_entry(output_frame, "中转表名：", config.get("output_transit_name") or config.get("group_name", "节点组结果"), 1, 1, 24)
-        self.sync_var_to_config(transit_name_var, config, "output_transit_name")
-        transit_conflict_var = self.add_labeled_combo(output_frame, "同名处理：", config.get("output_transit_conflict_mode", "覆盖整表"), ["覆盖整表", "追加行", "自动加时间戳新建"], 1, 3, 18)
-        self.sync_var_to_config(transit_conflict_var, config, "output_transit_conflict_mode")
-
-        save_sqlite_var = tk.BooleanVar(value=bool(config.get("save_to_sqlite", False)))
-        ttk.Checkbutton(output_frame, text="执行计划时保存到 SQLite", variable=save_sqlite_var).grid(row=2, column=0, sticky=tk.W, padx=4, pady=4)
-        self.sync_bool_to_config(save_sqlite_var, config, "save_to_sqlite")
-        sqlite_name_var = self.add_labeled_entry(output_frame, "SQLite表名：", config.get("output_sqlite_table") or config.get("group_name", "节点组结果"), 2, 1, 24)
-        self.sync_var_to_config(sqlite_name_var, config, "output_sqlite_table")
-        sqlite_mode_var = self.add_labeled_combo(output_frame, "写入模式：", config.get("output_sqlite_mode", "自动加时间戳新表"), ["覆盖表", "追加到已有表", "自动加时间戳新表", "不覆盖，存在则报错"], 2, 3, 20)
-        self.sync_var_to_config(sqlite_mode_var, config, "output_sqlite_mode")
-        sqlite_preview_var = tk.BooleanVar(value=bool(config.get("sqlite_save_in_preview", False)))
-        ttk.Checkbutton(output_frame, text="预览也允许写 SQLite（慎用）", variable=sqlite_preview_var).grid(row=3, column=0, columnspan=3, sticky=tk.W, padx=4, pady=4)
-        self.sync_bool_to_config(sqlite_preview_var, config, "sqlite_save_in_preview")
-        ttk.Label(output_frame, text="建议：中转副表可用于后续节点预览；SQLite 默认只在【执行计划】时保存，避免刷新配置界面误写库。", foreground="gray").grid(row=3, column=3, columnspan=3, sticky=tk.W, padx=4, pady=4)
+        self.build_group_output_section(frame, config, row=3)
 
         # -------------------------
         # 3. 组内节点
         # -------------------------
-        inner_frame = ttk.LabelFrame(frame, text="组内节点", padding=6)
-        inner_frame.grid(row=4, column=0, columnspan=8, sticky="nsew", padx=4, pady=6)
-        inner_frame.columnconfigure(0, weight=1)
-        inner_frame.rowconfigure(1, weight=1)
-
-        add_row = ttk.Frame(inner_frame)
-        add_row.grid(row=0, column=0, sticky="ew", pady=(0, 4))
-        inner_type_var = tk.StringVar(value="批量替换")
-        inner_values = [v for v in self.get_node_type_values() if v not in ("循环执行起点", "循环判断回跳")]
-        ttk.Combobox(add_row, textvariable=inner_type_var, values=inner_values, width=26, state="readonly").pack(side=tk.LEFT, padx=(0, 4))
-
-        list_wrap = ttk.Frame(inner_frame)
-        list_wrap.grid(row=1, column=0, sticky="nsew")
-        list_wrap.columnconfigure(0, weight=1)
-        list_wrap.rowconfigure(0, weight=1)
-        group_list = tk.Listbox(list_wrap, height=9, exportselection=False)
-        yscroll = ttk.Scrollbar(list_wrap, orient=tk.VERTICAL, command=group_list.yview)
-        group_list.configure(yscrollcommand=yscroll.set)
-        group_list.grid(row=0, column=0, sticky="nsew")
-        yscroll.grid(row=0, column=1, sticky="ns")
-
-        def node_label(i, n):
-            mark = "✓" if n.get("enabled", True) else "×"
-            return f"{i+1:02d}. [{mark}] {n.get('type','')} - {n.get('name','')}"
-
-        def refresh_group_list(select_idx=None):
-            group_list.delete(0, tk.END)
-            for i, n in enumerate(config.setdefault("nodes", [])):
-                group_list.insert(tk.END, node_label(i, n))
-            if select_idx is not None and 0 <= select_idx < len(config.get("nodes", [])):
-                group_list.selection_set(select_idx)
-                group_list.activate(select_idx)
-
-        def get_group_selected_index():
-            sel = group_list.curselection()
-            return int(sel[0]) if sel else None
-
-        def make_inner_node(node_type):
-            if node_type in getattr(self, "plugin_display_map", {}):
-                plugin_id = self.plugin_display_map[node_type]
-                plugin_info = self.plugin_registry.get(plugin_id, {}).get("info", {})
-                return {
-                    "enabled": True,
-                    "type": "插件节点",
-                    "name": plugin_info.get("name", plugin_id),
-                    "config": self.default_config_for_plugin(plugin_id),
-                }
-            if node_type in ("循环执行起点", "循环判断回跳"):
-                raise ValueError("第一版节点组不支持组内循环执行起点 / 循环判断回跳。")
-            return {
-                "enabled": True,
-                "type": node_type,
-                "name": self.default_name_for_node(node_type),
-                "config": self.default_config_for_type(node_type),
-            }
-
-        def add_inner_node():
-            try:
-                n = make_inner_node(inner_type_var.get())
-                config.setdefault("nodes", []).append(n)
-                refresh_group_list(len(config["nodes"]) - 1)
-            except Exception as e:
-                messagebox.showerror("添加失败", str(e))
-
-        def delete_inner_node():
-            i = get_group_selected_index()
-            if i is None:
-                return
-            del config.setdefault("nodes", [])[i]
-            refresh_group_list(min(i, len(config.get("nodes", [])) - 1))
-
-        def move_inner(delta):
-            i = get_group_selected_index()
-            nodes = config.setdefault("nodes", [])
-            if i is None:
-                return
-            j = i + delta
-            if j < 0 or j >= len(nodes):
-                return
-            nodes[i], nodes[j] = nodes[j], nodes[i]
-            refresh_group_list(j)
-
-        def copy_inner_node():
-            i = get_group_selected_index()
-            nodes = config.setdefault("nodes", [])
-            if i is None:
-                return
-            new_n = copy.deepcopy(nodes[i])
-            new_n["name"] = f"{new_n.get('name', new_n.get('type'))}_复制"
-            nodes.insert(i + 1, new_n)
-            refresh_group_list(i + 1)
-
-        def toggle_inner_node():
-            i = get_group_selected_index()
-            nodes = config.setdefault("nodes", [])
-            if i is None:
-                return
-            nodes[i]["enabled"] = not nodes[i].get("enabled", True)
-            refresh_group_list(i)
-
-        def edit_inner_json():
-            i = get_group_selected_index()
-            nodes = config.setdefault("nodes", [])
-            if i is None:
-                messagebox.showwarning("提示", "请先选择一个组内节点。")
-                return
-            win = tk.Toplevel(self.window)
-            win.title("编辑组内节点 JSON")
-            win.geometry("760x560")
-            txt = tk.Text(win, wrap="none")
-            txt.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
-            txt.insert("1.0", json.dumps(nodes[i], ensure_ascii=False, indent=2))
-            btns = ttk.Frame(win)
-            btns.pack(fill=tk.X, padx=8, pady=(0, 8))
-            def save_json():
-                try:
-                    data = json.loads(txt.get("1.0", tk.END))
-                    if not isinstance(data, dict) or "type" not in data:
-                        raise ValueError("节点 JSON 必须是包含 type 的对象。")
-                    if data.get("type") in ("循环执行起点", "循环判断回跳"):
-                        raise ValueError("第一版节点组不支持组内循环节点。")
-                    nodes[i] = data
-                    refresh_group_list(i)
-                    win.destroy()
-                except Exception as e:
-                    messagebox.showerror("JSON错误", str(e))
-            ttk.Button(btns, text="保存", command=save_json).pack(side=tk.LEFT, padx=4)
-            ttk.Button(btns, text="取消", command=win.destroy).pack(side=tk.LEFT, padx=4)
-
-        def save_group_template():
-            self.save_group_template_from_config(config)
-
-        def load_group_template():
-            data = self.load_group_template_dialog()
-            if data is None:
-                return
-            config.clear()
-            config.update(self.group_config_from_template_data(data))
-            self.rebuild_current_config()
-
-        def open_groups_dir():
-            self.open_group_dir()
-
-        ttk.Button(add_row, text="添加内部节点", command=add_inner_node).pack(side=tk.LEFT, padx=2)
-        ttk.Button(add_row, text="保存组模板", command=save_group_template).pack(side=tk.LEFT, padx=2)
-        ttk.Button(add_row, text="载入组模板", command=load_group_template).pack(side=tk.LEFT, padx=2)
-        ttk.Button(add_row, text="打开groups目录", command=open_groups_dir).pack(side=tk.LEFT, padx=2)
-
-        btn_row = ttk.Frame(inner_frame)
-        btn_row.grid(row=2, column=0, sticky=tk.W, pady=(4, 0))
-        for text_, cmd in [
-            ("删除", delete_inner_node),
-            ("上移", lambda: move_inner(-1)),
-            ("下移", lambda: move_inner(1)),
-            ("复制", copy_inner_node),
-            ("启用/禁用", toggle_inner_node),
-            ("编辑JSON", edit_inner_json),
-        ]:
-            ttk.Button(btn_row, text=text_, command=cmd).pack(side=tk.LEFT, padx=2)
+        self.build_group_inner_nodes_section(frame, config, row=4)
 
         ttk.Label(frame, text="提示：推荐组内节点只使用上方定义的标准入口字段；若入口字段留空，则兼容旧版，组内直接处理入口数据源整表。", foreground="gray", wraplength=1120).grid(row=5, column=0, columnspan=8, sticky=tk.W, padx=4, pady=6)
-        refresh_group_list()
 
     def merge_selected_nodes_to_group(self):
         sels = sorted(int(i) for i in self.node_listbox.curselection())
@@ -7785,10 +10173,7 @@ class PlanWorkflowWindow:
         for i in reversed(sels):
             del self.nodes[i]
         self.nodes.insert(insert_at, group_node)
-        self.refresh_node_list()
-        self.node_listbox.selection_clear(0, tk.END)
-        self.node_listbox.selection_set(insert_at)
-        self.node_listbox.activate(insert_at)
+        self.refresh_node_list(select_index=insert_at, reveal=True)
         self.build_node_config(insert_at)
         self.status_var.set(f"已合并 {len(selected_nodes)} 个节点为组：{name}")
 
@@ -7807,10 +10192,7 @@ class PlanWorkflowWindow:
         if not messagebox.askyesno("确认展开", f"是否将节点组【{node.get('name','节点组')}】展开为 {len(inner_nodes)} 个普通节点？"):
             return
         self.nodes[idx:idx + 1] = inner_nodes
-        self.refresh_node_list()
-        self.node_listbox.selection_clear(0, tk.END)
-        self.node_listbox.selection_set(idx)
-        self.node_listbox.activate(idx)
+        self.refresh_node_list(select_index=idx, reveal=True)
         self.rebuild_current_config()
         self.status_var.set(f"已展开节点组：{node.get('name','节点组')}")
 
@@ -7900,8 +10282,7 @@ class PlanWorkflowWindow:
         group_name = os.path.splitext(os.path.basename(path))[0].replace(".group", "").strip() or config.get("group_name") or "节点组"
         data = self.build_group_template_data(config, group_name=group_name)
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            atomic_write_json(path, data)
             config["group_name"] = data.get("group_name", group_name)
             self.status_var.set(f"节点组模板已保存：{path}")
         except Exception as e:
@@ -7917,8 +10298,7 @@ class PlanWorkflowWindow:
         if not path:
             return None
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = load_json_file_with_recovery(path, parent=self.window)
             ok, reason = self.validate_group_template_data(data)
             if not ok:
                 raise ValueError(reason)
@@ -7939,133 +10319,31 @@ class PlanWorkflowWindow:
             messagebox.showerror("打开失败", f"无法打开 groups 目录：\n{self.group_dir}\n\n{e}")
 
     def build_loop_start_config(self, config, headers, transit_context=None):
-        frame = ttk.LabelFrame(self.config_frame, text="循环执行起点节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        ttk.Label(frame, text="从循环队列表中取第一条标志为 0 的数据，写入当前循环项表，并把标志改为 1。配合【循环判断回跳】可按行循环执行后续节点。", foreground="gray", wraplength=1050).grid(row=0, column=0, columnspan=6, sticky=tk.W, padx=4, pady=(0, 6))
-
-        loop_var = self.add_labeled_entry(frame, "循环名称/ID：", config.get("loop_id", "loop"), 1, 0, 24)
-        source_type_var = self.add_labeled_combo(frame, "来源类型：", config.get("source_type", "当前表"), ["当前表", "SQLite表", "中转副表"], 1, 2, 16)
-        self.sync_var_to_config(loop_var, config, "loop_id")
-        self.sync_var_to_config(source_type_var, config, "source_type")
-
-        table_names = self.get_sqlite_table_names()
-        source_table_var = self.add_labeled_combo(frame, "SQLite来源表：", config.get("source_table", table_names[0] if table_names else ""), table_names, 2, 0, 28, readonly=False)
-        transit_names = sorted((transit_context or {}).get("transit_tables", {}).keys())
-        transit_var = self.add_labeled_combo(frame, "中转副表：", config.get("transit_table", transit_names[0] if transit_names else ""), transit_names, 2, 2, 28, readonly=False)
-        self.sync_var_to_config(source_table_var, config, "source_table")
-        self.sync_var_to_config(transit_var, config, "transit_table")
-
-        def get_loop_source_headers_for_config():
-            source_type = source_type_var.get() or config.get("source_type", "当前表")
-            if source_type == "SQLite表":
-                table = source_table_var.get().strip() or config.get("source_table", "")
-                try:
-                    return self.app.get_table_columns(table), f"SQLite:{table}" if table else "SQLite"
-                except Exception:
-                    return [], f"SQLite:{table}" if table else "SQLite"
-            if source_type == "中转副表":
-                name = transit_var.get().strip() or config.get("transit_table", "")
-                item = (transit_context or {}).get("transit_tables", {}).get(name, {})
-                return list(item.get("headers", []) or []), f"中转:{name}" if name else "中转"
-            return list(headers), "当前表"
-
-        loop_source_headers, loop_source_name = get_loop_source_headers_for_config()
-
-        flag_var = self.add_labeled_entry(frame, "执行标志字段：", config.get("flag_field", "执行标志"), 3, 0, 18)
-        init_var = self.add_labeled_combo(frame, "标志初始化：", config.get("init_flag_mode", "空值填0，非0不执行"), ["空值填0，非0不执行", "强制重置全部为0", "保留已有标志位"], 3, 2, 22)
-        self.sync_var_to_config(flag_var, config, "flag_field")
-        self.sync_var_to_config(init_var, config, "init_flag_mode")
-
-        boundary_var = self.add_labeled_combo(frame, "数据边界：", config.get("boundary_mode", "整体表格数据边界"), ["整体表格数据边界", "指定参考列数据边界", "手动指定行数"], 4, 0, 22)
-        reference_var, reference_combo = self.add_labeled_combo_control(frame, "参考列：", config.get("reference_field", loop_source_headers[0] if loop_source_headers else ""), loop_source_headers, 4, 2, 22, readonly=False)
-        count_var = self.add_labeled_entry(frame, "手动行数：", config.get("manual_count", "1"), 4, 4, 10)
-        self.sync_var_to_config(boundary_var, config, "boundary_mode")
-        self.sync_var_to_config(reference_var, config, "reference_field")
-        self.sync_var_to_config(count_var, config, "manual_count")
-
-        out_var = self.add_labeled_entry(frame, "当前循环项中转名：", config.get("current_table_name", "当前循环项"), 5, 0, 24)
-        max_var = self.add_labeled_entry(frame, "最大循环次数：", config.get("max_loop_count", "10000"), 5, 2, 12)
-        running_var = self.add_labeled_combo(frame, "发现执行中1：", config.get("running_flag_policy", "执行中1标记失败3"), ["执行中1标记失败3", "执行中1重置为0", "保持不动"], 5, 4, 18)
-        self.sync_var_to_config(out_var, config, "current_table_name")
-        self.sync_var_to_config(max_var, config, "max_loop_count")
-        self.sync_var_to_config(running_var, config, "running_flag_policy")
-
-        output_current_var = tk.BooleanVar(value=bool(config.get("output_current_as_table", True)))
-        ttk.Checkbutton(frame, text="把当前循环项作为当前表传给后续节点", variable=output_current_var).grid(row=6, column=0, columnspan=3, sticky=tk.W, padx=4, pady=4)
-        self.sync_bool_to_config(output_current_var, config, "output_current_as_table")
-        ttk.Label(frame, text="提示：一般应保持勾选。若关闭，循环体每轮会继续处理完整当前表，可能出现 4 行任务被执行成 4×4 行的效果。", foreground="gray", wraplength=900).grid(row=6, column=3, columnspan=3, sticky=tk.W, padx=4, pady=4)
-
-        field_label = ttk.Label(frame, text=f"读取字段（来源：{loop_source_name}）：", foreground="gray")
-        field_label.grid(row=7, column=0, sticky=tk.W, padx=4, pady=(8, 2))
-        lb_frame = ttk.Frame(frame)
-        lb_frame.grid(row=8, column=0, columnspan=6, sticky=tk.W, padx=4, pady=4)
-        lb = tk.Listbox(lb_frame, selectmode=tk.MULTIPLE, height=min(10, max(4, len(loop_source_headers))), width=56, exportselection=False)
-        scr = ttk.Scrollbar(lb_frame, orient=tk.VERTICAL, command=lb.yview)
-        lb.configure(yscrollcommand=scr.set)
-        selected = config.get("fields") or list(loop_source_headers[:3])
-        for i, h in enumerate(loop_source_headers):
-            lb.insert(tk.END, h)
-            if h in selected:
-                lb.selection_set(i)
-        lb.pack(side=tk.LEFT, fill=tk.BOTH)
-        scr.pack(side=tk.LEFT, fill=tk.Y)
-        def update_fields(event=None):
-            config["fields"] = [lb.get(i) for i in lb.curselection()]
-        lb.bind("<<ListboxSelect>>", update_fields)
-        def refresh_loop_source_fields(*_):
-            config["source_type"] = source_type_var.get()
-            config["source_table"] = source_table_var.get()
-            config["transit_table"] = transit_var.get()
-            source_headers, source_name = get_loop_source_headers_for_config()
-            field_label.configure(text=f"读取字段（来源：{source_name}）：")
-            self.refresh_combo_values(reference_combo, reference_var, source_headers, keep_custom=True, fallback=source_headers[0] if source_headers else "")
-            selected_fields = config.get("fields") or list(source_headers[:3])
-            selected_indices = self.refresh_listbox_values(lb, source_headers, selected_fields)
-            if not selected_indices and source_headers:
-                for i in range(min(3, len(source_headers))):
-                    lb.selection_set(i)
-            update_fields()
-        source_type_var.trace_add("write", refresh_loop_source_fields)
-        source_table_var.trace_add("write", refresh_loop_source_fields)
-        transit_var.trace_add("write", refresh_loop_source_fields)
-        ttk.Button(lb_frame, text="全选", command=lambda: (lb.selection_set(0, tk.END), update_fields())).pack(side=tk.LEFT, padx=6)
-        ttk.Button(lb_frame, text="全不选", command=lambda: (lb.selection_clear(0, tk.END), update_fields())).pack(side=tk.LEFT, padx=2)
+        return workflow_build_loop_start_config_ui(self, config, headers, transit_context=transit_context)
 
     def build_loop_judge_config(self, config, headers):
-        frame = ttk.LabelFrame(self.config_frame, text="循环判断回跳节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        ttk.Label(frame, text="判断当前循环项处理结果，更新循环队列表标志；如果还有 0，则跳回对应的循环执行起点。", foreground="gray", wraplength=1050).grid(row=0, column=0, columnspan=6, sticky=tk.W, padx=4, pady=(0, 6))
+        return workflow_build_loop_judge_config_ui(self, config, headers)
 
-        loop_ids = []
-        for n in self.nodes:
-            if n.get("type") == "循环执行起点":
-                lid = n.get("config", {}).get("loop_id", "")
-                if lid and lid not in loop_ids:
-                    loop_ids.append(lid)
-        loop_var = self.add_labeled_combo(frame, "对应循环起点：", config.get("loop_id", loop_ids[0] if loop_ids else ""), loop_ids, 1, 0, 24, readonly=False)
-        self.sync_var_to_config(loop_var, config, "loop_id")
+    def jump_anchor_choices(self):
+        return workflow_jump_anchor_choices_ui(self.nodes)
 
-        source_var = self.add_labeled_combo(frame, "判断数据来源：", config.get("condition_source", "当前表"), ["当前表", "当前循环项表"], 1, 2, 18)
-        mode_var = self.add_labeled_combo(frame, "判断方式：", config.get("condition_mode", "始终成功"), ["始终成功", "字段等于", "字段不等于", "字段包含", "字段不为空", "结果表行数>0", "正则匹配"], 2, 0, 18)
-        field_var = self.add_labeled_combo(frame, "判断字段：", config.get("condition_field", headers[0] if headers else ""), headers, 2, 2, 22, readonly=False)
-        value_var = self.add_labeled_entry(frame, "判断值：", config.get("condition_value", "成功"), 3, 0, 24)
-        self.sync_var_to_config(source_var, config, "condition_source")
-        self.sync_var_to_config(mode_var, config, "condition_mode")
-        self.sync_var_to_config(field_var, config, "condition_field")
-        self.sync_var_to_config(value_var, config, "condition_value")
+    def anchor_id_from_choice(self, value):
+        return workflow_anchor_id_from_choice_ui(value)
 
-        success_var = self.add_labeled_combo(frame, "满足条件：", config.get("on_success", "标记完成2并继续循环"), ["标记完成2并继续循环"], 4, 0, 24)
-        fail_var = self.add_labeled_combo(frame, "不满足条件：", config.get("on_fail", "标记失败3并继续下一条"), ["标记失败3并继续下一条", "标记失败3并停止工作流", "重置为0稍后重试", "标记跳过4并继续下一条"], 4, 2, 24)
-        end_var = self.add_labeled_combo(frame, "循环结束输出：", config.get("end_output_mode", "循环队列表"), ["循环队列表", "循环结果表", "保持当前表"], 5, 0, 18)
-        result_name_var = self.add_labeled_entry(frame, "结果中转名：", config.get("result_table_name", "循环结果"), 5, 2, 18)
-        for var, key in [(success_var, "on_success"), (fail_var, "on_fail"), (end_var, "end_output_mode"), (result_name_var, "result_table_name")]:
-            self.sync_var_to_config(var, config, key)
+    def set_anchor_var_to_config(self, var, config, key):
+        return workflow_set_anchor_var_to_config_ui(var, config, key)
 
-        action_frame = ttk.Frame(frame)
-        action_frame.grid(row=6, column=0, columnspan=6, sticky=tk.W, padx=4, pady=(10, 4))
-        ttk.Button(action_frame, text="执行循环一次", command=self.execute_loop_once_from_selected_judge).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(action_frame, text="重置单步循环缓存", command=self.reset_manual_loop_context).pack(side=tk.LEFT, padx=4)
-        ttk.Label(action_frame, text="用于调试循环：每点一次只跑当前循环一轮，后续预览节点会优先接着该缓存继续执行。", foreground="gray").pack(side=tk.LEFT, padx=10)
+    def build_jump_anchor_config(self, config):
+        return workflow_build_jump_anchor_config_ui(self, config)
+
+    def build_unconditional_jump_config(self, config):
+        return workflow_build_unconditional_jump_config_ui(self, config)
+
+    def build_condition_check_config(self, config, headers):
+        return workflow_build_condition_check_config_ui(self, config, headers)
+
+    def build_conditional_jump_config(self, config):
+        return workflow_build_conditional_jump_config_ui(self, config)
 
     def get_loop_source_table_data(self, headers, rows, config, context=None):
         source_type = config.get("source_type", "当前表")
@@ -8075,77 +10353,35 @@ class PlanWorkflowWindow:
             table_name = config.get("source_table", "")
             if not table_name:
                 raise ValueError("循环执行起点未选择 SQLite 来源表。")
-            db = PluginDatabaseAPI(self.get_workflow_db_path(context if 'context' in locals() else None))
+            db = self.get_table_manager(context if isinstance(context, dict) else None, node_type="循环执行起点")
             data = db.read_table(table_name)
             return list(data.get("headers", [])), [list(r) for r in data.get("rows", [])], f"SQLite:{table_name}"
         if source_type == "中转副表":
             name = config.get("transit_table", "")
+            manager = self.check_transit_table_permission(
+                context,
+                name,
+                ["read_table"],
+                operation="read_transit_table",
+                field_action="read",
+                node_type="循环执行起点",
+            )
             tables = (context or {}).get("transit_tables", {})
             if name not in tables:
                 raise ValueError(f"未找到中转副表：{name}")
             data = tables[name]
-            return list(data.get("headers", [])), [list(r) for r in data.get("rows", [])], f"中转:{name}"
+            source_headers = list(data.get("headers", []))
+            source_rows = [list(r) for r in data.get("rows", [])]
+            self.log_transit_table_event(manager, "read_transit_table", name, source_headers, source_rows, message=f"循环执行起点读取中转副表 {name}：{len(source_rows)} 行 × {len(source_headers)} 列")
+            return source_headers, source_rows, f"中转:{name}"
         return list(headers), [list(r) for r in rows], "当前表"
 
     def loop_last_non_empty_row_index(self, headers, rows, field):
-        if field not in headers:
-            return len(rows) - 1
-        idx = headers.index(field)
-        for i in range(len(rows) - 1, -1, -1):
-            if self.safe_cell(rows[i], idx).strip() != "":
-                return i
-        return -1
+        return workflow_loop_last_non_empty_row_index(headers, rows, field)
 
     def init_loop_state(self, headers, rows, config, context=None):
-        loop_id = config.get("loop_id", "loop") or "loop"
         source_headers, source_rows, source_name = self.get_loop_source_table_data(headers, rows, config, context=context)
-        normalized = self.normalize_rows(source_rows, len(source_headers))
-        boundary_mode = config.get("boundary_mode", "整体表格数据边界")
-        if boundary_mode == "指定参考列数据边界":
-            last_idx = self.loop_last_non_empty_row_index(source_headers, normalized, config.get("reference_field", ""))
-            source_rows_use = normalized[:last_idx + 1] if last_idx >= 0 else []
-        elif boundary_mode == "手动指定行数":
-            try:
-                n = max(0, int(str(config.get("manual_count", "0")).strip()))
-            except Exception:
-                n = len(normalized)
-            source_rows_use = normalized[:n]
-        else:
-            source_rows_use = normalized
-
-        selected_fields = [f for f in (config.get("fields") or source_headers) if f in source_headers]
-        if not selected_fields:
-            selected_fields = list(source_headers)
-        flag_field = config.get("flag_field", "执行标志") or "执行标志"
-        flag_idx = source_headers.index(flag_field) if flag_field in source_headers else None
-        init_mode = config.get("init_flag_mode", "空值填0，非0不执行")
-        running_policy = config.get("running_flag_policy", "执行中1标记失败3")
-        queue_headers = [flag_field, "原始行号"] + selected_fields
-        queue_rows = []
-        for i, row in enumerate(source_rows_use):
-            if init_mode == "强制重置全部为0" or flag_idx is None:
-                flag = "0"
-            else:
-                flag = self.safe_cell(row, flag_idx).strip()
-                if flag == "" and init_mode == "空值填0，非0不执行":
-                    flag = "0"
-                if flag == "1":
-                    if running_policy == "执行中1标记失败3":
-                        flag = "3"
-                    elif running_policy == "执行中1重置为0":
-                        flag = "0"
-            queue_rows.append([flag, str(i + 1)] + [self.safe_cell(row, source_headers.index(f)) for f in selected_fields])
-        return {
-            "loop_id": loop_id,
-            "queue_headers": queue_headers,
-            "queue_rows": queue_rows,
-            "selected_fields": selected_fields,
-            "current_index": None,
-            "iterations": 0,
-            "source_name": source_name,
-            "current_table_name": config.get("current_table_name", "当前循环项") or "当前循环项",
-            "max_loop_count": int(str(config.get("max_loop_count", "10000") or "10000")),
-        }
+        return workflow_init_loop_state_from_source(source_headers, source_rows, source_name, config)
 
     def apply_loop_start_node(self, headers, rows, config, context=None):
         context = context if context is not None else {}
@@ -8155,82 +10391,41 @@ class PlanWorkflowWindow:
         if state is None:
             state = self.init_loop_state(headers, rows, config, context=context)
             states[loop_id] = state
-        if state.get("iterations", 0) > state.get("max_loop_count", 10000):
-            raise ValueError(f"循环 {loop_id} 超过最大循环次数，疑似死循环。")
-
-        flag_idx = 0
-        pending_idx = None
-        for i, row in enumerate(state["queue_rows"]):
-            if str(row[flag_idx]).strip() == "0":
-                pending_idx = i
-                break
-        if pending_idx is None:
-            context.setdefault("transit_tables", {})[state["current_table_name"]] = {"headers": state["queue_headers"][2:], "rows": [], "source": f"循环:{loop_id}:无待执行"}
-            return headers, rows, f"循环 {loop_id} 无待执行项", {"no_pending": True}
-
-        state["queue_rows"][pending_idx][flag_idx] = "1"
-        state["current_index"] = pending_idx
-        state["iterations"] = state.get("iterations", 0) + 1
-        current_headers = state["queue_headers"][2:]
-        current_row = state["queue_rows"][pending_idx][2:]
-        context.setdefault("transit_tables", {})[state["current_table_name"]] = {
+        start_result = workflow_take_next_loop_item(state)
+        table_name = start_result["table_name"]
+        current_headers = start_result["current_headers"]
+        transit_rows = start_result["transit_rows"]
+        transit_tables = context.setdefault("transit_tables", {})
+        manager = self.check_transit_table_write_permission(
+            context,
+            table_name,
+            exists=table_name in transit_tables,
+            write_mode="覆盖当前循环项",
+            fields=current_headers,
+            node_type="循环执行起点",
+        )
+        transit_tables[table_name] = {
             "headers": list(current_headers),
-            "rows": [list(current_row)],
-            "source": f"循环:{loop_id}:当前项",
+            "rows": [list(r) for r in transit_rows],
+            "source": start_result["transit_source"],
         }
-        if config.get("output_current_as_table", True):
-            return list(current_headers), [list(current_row)], f"循环 {loop_id} 取第 {pending_idx + 1} 条，标志 0→1", {"no_pending": False}
-        return headers, rows, f"循环 {loop_id} 取第 {pending_idx + 1} 条，标志 0→1，当前表保持不变", {"no_pending": False}
+        if start_result.get("no_pending"):
+            message = f"循环执行起点写入空当前项中转副表 {table_name}"
+        else:
+            message = f"循环执行起点写入当前项中转副表 {table_name}：1 行 × {len(current_headers)} 列"
+        self.log_transit_table_event(manager, "write_transit_table", table_name, current_headers, transit_rows, write_mode="覆盖当前循环项", message=message)
+        return workflow_build_loop_start_output(headers, rows, start_result, output_current_as_table=config.get("output_current_as_table", True))
 
     def evaluate_loop_condition(self, headers, rows, config, context=None, loop_state=None):
-        mode = config.get("condition_mode", "始终成功")
-        if mode == "始终成功":
-            return True, "始终成功"
-        if mode == "结果表行数>0":
-            return len(rows) > 0, f"当前结果行数={len(rows)}"
-        check_headers, check_rows = headers, rows
-        if config.get("condition_source") == "当前循环项表" and loop_state is not None:
-            check_headers = loop_state.get("queue_headers", [])[2:]
-            ci = loop_state.get("current_index")
-            check_rows = [loop_state.get("queue_rows", [])[ci][2:]] if ci is not None else []
-        field = config.get("condition_field", "")
-        if field not in check_headers:
-            return False, f"判断字段不存在：{field}"
-        idx = check_headers.index(field)
-        value = config.get("condition_value", "")
-        if not check_rows:
-            return False, "判断数据为空"
-        text = self.safe_cell(check_rows[0], idx)
-        if mode == "字段等于":
-            return text == value, f"{field}={text}"
-        if mode == "字段不等于":
-            return text != value, f"{field}={text}"
-        if mode == "字段包含":
-            return str(value) in text, f"{field}={text}"
-        if mode == "字段不为空":
-            return text.strip() != "", f"{field}={text}"
-        if mode == "正则匹配":
-            try:
-                return re.search(str(value), text) is not None, f"{field}={text}"
-            except Exception as e:
-                return False, f"正则错误：{e}"
-        return True, "默认成功"
+        return workflow_evaluate_loop_condition(headers, rows, config, loop_state=loop_state)
 
     def find_loop_start_index(self, loop_id, current_idx, nodes=None):
         node_list = nodes if nodes is not None else self.nodes
-        for i in range(current_idx - 1, -1, -1):
-            node = node_list[i]
-            if node.get("enabled", True) and node.get("type") == "循环执行起点" and node.get("config", {}).get("loop_id") == loop_id:
-                return i
-        return None
+        return workflow_find_loop_start_index(loop_id, current_idx, node_list)
 
     def find_loop_judge_index(self, loop_id, start_idx, end_idx, nodes=None):
         node_list = nodes if nodes is not None else self.nodes
-        for i in range(start_idx + 1, min(len(node_list), end_idx + 1)):
-            node = node_list[i]
-            if node.get("enabled", True) and node.get("type") == "循环判断回跳" and node.get("config", {}).get("loop_id") == loop_id:
-                return i
-        return None
+        return workflow_find_loop_judge_index(loop_id, start_idx, end_idx, node_list)
 
     def apply_loop_judge_node(self, headers, rows, config, context=None):
         context = context if context is not None else {}
@@ -8240,1339 +10435,101 @@ class PlanWorkflowWindow:
         state = context.setdefault("loop_states", {}).get(loop_id)
         if not state:
             raise ValueError(f"未找到循环状态：{loop_id}。请确认循环执行起点在本节点之前。")
-        current_index = state.get("current_index")
-        if current_index is None:
-            return headers, rows, f"循环 {loop_id} 当前无执行项", {"jump_to": None}
-        ok, detail = self.evaluate_loop_condition(headers, rows, config, context=context, loop_state=state)
-        if ok:
-            state["queue_rows"][current_index][0] = "2"
-            status_text = "完成2"
-        else:
-            fail_policy = config.get("on_fail", "标记失败3并继续下一条")
-            if fail_policy == "重置为0稍后重试":
-                state["queue_rows"][current_index][0] = "0"
-                status_text = "重置0"
-            elif fail_policy == "标记跳过4并继续下一条":
-                state["queue_rows"][current_index][0] = "4"
-                status_text = "跳过4"
-            else:
-                state["queue_rows"][current_index][0] = "3"
-                status_text = "失败3"
-                if fail_policy == "标记失败3并停止工作流":
-                    raise ValueError(f"循环 {loop_id} 条件不满足，已标记失败：{detail}")
-        result_headers = ["循环名称", "循环序号", "队列行号", "判断结果", "标记状态", "说明", "时间"]
-        result_row = [loop_id, str(state.get("iterations", 0)), str(current_index + 1), "满足" if ok else "不满足", status_text, detail, datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
+        judge_result = workflow_apply_loop_judge_to_state(headers, rows, config, state)
+        if judge_result.get("no_current"):
+            return headers, rows, judge_result["stat"], judge_result["ctrl"]
+        result_headers = judge_result["result_headers"]
+        result_row = judge_result["result_row"]
         results = context.setdefault("loop_results", {}).setdefault(loop_id, {"headers": result_headers, "rows": []})
         results["rows"].append(result_row)
         result_name = config.get("result_table_name", "循环结果") or "循环结果"
-        context.setdefault("transit_tables", {})[result_name] = {"headers": result_headers, "rows": [list(r) for r in results["rows"]], "source": f"循环:{loop_id}:结果"}
-        context.setdefault("transit_tables", {})[f"循环队列_{loop_id}"] = {"headers": list(state["queue_headers"]), "rows": [list(r) for r in state["queue_rows"]], "source": f"循环:{loop_id}:队列"}
-        state["current_index"] = None
-
-        has_pending = any(str(r[0]).strip() == "0" for r in state["queue_rows"])
-        if has_pending:
-            start_idx = self.find_loop_start_index(loop_id, len(self.nodes))
-            # 上面按最后一个同名循环起点找；运行时会由 run_plan 用当前节点反向查找更稳。
-            return headers, rows, f"循环 {loop_id} {status_text}，仍有待执行项，准备回跳", {"jump_to": "__LOOP_START__"}
-
-        mode = config.get("end_output_mode", "循环队列表")
-        if mode == "循环队列表":
-            return list(state["queue_headers"]), [list(r) for r in state["queue_rows"]], f"循环 {loop_id} 已全部结束，输出循环队列表", {"jump_to": None}
-        if mode == "循环结果表":
-            return result_headers, [list(r) for r in results["rows"]], f"循环 {loop_id} 已全部结束，输出循环结果表", {"jump_to": None}
-        return headers, rows, f"循环 {loop_id} 已全部结束，保持当前表", {"jump_to": None}
+        transit_tables = context.setdefault("transit_tables", {})
+        result_rows = [list(r) for r in results["rows"]]
+        result_manager = self.check_transit_table_write_permission(
+            context,
+            result_name,
+            exists=result_name in transit_tables,
+            write_mode="覆盖循环结果",
+            fields=result_headers,
+            node_type="循环判断回跳",
+        )
+        transit_tables[result_name] = {"headers": result_headers, "rows": result_rows, "source": f"循环:{loop_id}:结果"}
+        self.log_transit_table_event(result_manager, "write_transit_table", result_name, result_headers, result_rows, write_mode="覆盖循环结果", message=f"循环判断回跳写入结果中转副表 {result_name}：{len(result_rows)} 行 × {len(result_headers)} 列")
+        queue_name = judge_result["queue_name"]
+        queue_rows = judge_result["queue_rows"]
+        queue_headers = judge_result["queue_headers"]
+        queue_manager = self.check_transit_table_write_permission(
+            context,
+            queue_name,
+            exists=queue_name in transit_tables,
+            write_mode="覆盖循环队列",
+            fields=queue_headers,
+            node_type="循环判断回跳",
+        )
+        transit_tables[queue_name] = {"headers": list(queue_headers), "rows": queue_rows, "source": f"循环:{loop_id}:队列"}
+        self.log_transit_table_event(queue_manager, "write_transit_table", queue_name, queue_headers, queue_rows, write_mode="覆盖循环队列", message=f"循环判断回跳写入队列中转副表 {queue_name}：{len(queue_rows)} 行 × {len(queue_headers)} 列")
+        return workflow_build_loop_judge_output(headers, rows, config, state, judge_result, results["rows"])
 
     def build_file_list_config(self, config):
-        frame = ttk.LabelFrame(self.config_frame, text="获取文件列表节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        ttk.Label(
-            frame,
-            text="把指定目录中的文件/文件夹读取成表格。后续可用数据提取、批量替换、合并列生成新文件名，再用批量重命名节点执行。",
-            foreground="gray",
-            wraplength=1050
-        ).grid(row=0, column=0, columnspan=6, sticky=tk.W, padx=4, pady=(0, 6))
-
-        dir_var = tk.StringVar(value=config.get("directory", getattr(self.app, "app_dir", get_app_dir())))
-        ttk.Label(frame, text="目录：").grid(row=1, column=0, sticky=tk.W, padx=4, pady=4)
-        ttk.Entry(frame, textvariable=dir_var, width=78).grid(row=1, column=1, columnspan=3, sticky=tk.W, padx=4, pady=4)
-
-        def choose_dir():
-            path = filedialog.askdirectory(title="选择要扫描的目录", initialdir=dir_var.get() or getattr(self.app, "app_dir", get_app_dir()))
-            if path:
-                dir_var.set(path)
-                config["directory"] = path
-
-        ttk.Button(frame, text="选择目录", command=choose_dir).grid(row=1, column=4, sticky=tk.W, padx=4, pady=4)
-        self.sync_var_to_config(dir_var, config, "directory")
-
-        recursive_var = tk.BooleanVar(value=bool(config.get("recursive", True)))
-        include_files_var = tk.BooleanVar(value=bool(config.get("include_files", True)))
-        include_dirs_var = tk.BooleanVar(value=bool(config.get("include_dirs", False)))
-        include_hidden_var = tk.BooleanVar(value=bool(config.get("include_hidden", False)))
-        for i, (text_, var, key) in enumerate([
-            ("递归包含子目录", recursive_var, "recursive"),
-            ("包含文件", include_files_var, "include_files"),
-            ("包含文件夹", include_dirs_var, "include_dirs"),
-            ("包含隐藏项", include_hidden_var, "include_hidden"),
-        ]):
-            ttk.Checkbutton(frame, text=text_, variable=var).grid(row=2, column=i, sticky=tk.W, padx=4, pady=4)
-            self.sync_bool_to_config(var, config, key)
-
-        ext_var = self.add_labeled_entry(frame, "扩展名过滤：", config.get("extensions", ""), 3, 0, 28)
-        ttk.Label(frame, text="示例：.pdf;.xlsx;.docx，留空表示不过滤", foreground="gray").grid(row=3, column=2, columnspan=3, sticky=tk.W, padx=4)
-        self.sync_var_to_config(ext_var, config, "extensions")
-
-        contains_var = self.add_labeled_entry(frame, "文件名包含：", config.get("name_contains", ""), 4, 0, 28)
-        glob_var = self.add_labeled_entry(frame, "通配符：", config.get("glob_pattern", "*"), 4, 2, 18)
-        ttk.Label(frame, text="示例：*.pdf、*报告*，默认 *", foreground="gray").grid(row=4, column=4, sticky=tk.W, padx=4)
-        self.sync_var_to_config(contains_var, config, "name_contains")
-        self.sync_var_to_config(glob_var, config, "glob_pattern")
-
-        max_var = self.add_labeled_entry(frame, "最大读取数量：", config.get("max_files", "20000"), 5, 0, 12)
-        self.sync_var_to_config(max_var, config, "max_files")
-
-        ttk.Label(
-            frame,
-            text="输出字段包括：文件名、完整路径、所在目录、扩展名、文件大小、修改时间、创建时间、是否文件夹、新文件名、新完整路径、重命名状态。",
-            foreground="gray",
-            wraplength=1050
-        ).grid(row=6, column=0, columnspan=6, sticky=tk.W, padx=4, pady=6)
+        return workflow_build_file_list_config_ui(self, config)
 
     def build_batch_rename_config(self, config, headers):
-        frame = ttk.LabelFrame(self.config_frame, text="批量重命名节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        ttk.Label(
-            frame,
-            text="根据当前表格中的【完整路径】和【新文件名/新路径】字段生成重命名结果。默认仅预览，不会实际改文件；需要执行时请勾选实际执行。",
-            foreground="gray",
-            wraplength=1050
-        ).grid(row=0, column=0, columnspan=6, sticky=tk.W, padx=4, pady=(0, 6))
-
-        if not headers:
-            headers = []
-        path_default = config.get("path_field") if config.get("path_field") in headers else ("完整路径" if "完整路径" in headers else (headers[0] if headers else ""))
-        new_default = config.get("new_name_field") if config.get("new_name_field") in headers else ("新文件名" if "新文件名" in headers else (headers[0] if headers else ""))
-        path_var = self.add_labeled_combo(frame, "原路径字段：", path_default, headers, 1, 0, 24, readonly=False)
-        new_name_var = self.add_labeled_combo(frame, "新名称字段：", new_default, headers, 1, 2, 24, readonly=False)
-        self.sync_var_to_config(path_var, config, "path_field")
-        self.sync_var_to_config(new_name_var, config, "new_name_field")
-
-        type_var = self.add_labeled_combo(frame, "新名称类型：", config.get("name_value_type", "仅文件名"), ["仅文件名", "完整路径"], 2, 0, 14)
-        conflict_var = self.add_labeled_combo(frame, "冲突处理：", config.get("conflict_mode", "跳过目标已存在"), ["跳过目标已存在", "自动加编号", "覆盖目标（危险）"], 2, 2, 18)
-        self.sync_var_to_config(type_var, config, "name_value_type")
-        self.sync_var_to_config(conflict_var, config, "conflict_mode")
-
-        new_path_var = self.add_labeled_entry(frame, "输出新路径字段：", config.get("new_path_field", "新完整路径"), 3, 0, 18)
-        status_var = self.add_labeled_entry(frame, "输出状态字段：", config.get("status_field", "重命名状态"), 3, 2, 18)
-        self.sync_var_to_config(new_path_var, config, "new_path_field")
-        self.sync_var_to_config(status_var, config, "status_field")
-
-        auto_ext_var = tk.BooleanVar(value=bool(config.get("auto_append_ext", False)))
-        allow_dirs_var = tk.BooleanVar(value=bool(config.get("allow_dirs", False)))
-        create_target_dirs_var = tk.BooleanVar(value=bool(config.get("create_target_dirs", False)))
-        actual_var = tk.BooleanVar(value=bool(config.get("actual_rename", False)))
-        log_var = tk.BooleanVar(value=bool(config.get("write_log", True)))
-        for i, (text_, var, key) in enumerate([
-            ("新名称无扩展名时自动补原扩展名", auto_ext_var, "auto_append_ext"),
-            ("允许重命名文件夹", allow_dirs_var, "allow_dirs"),
-            ("目标目录不存在时自动创建", create_target_dirs_var, "create_target_dirs"),
-            ("实际执行重命名", actual_var, "actual_rename"),
-            ("写入CSV日志", log_var, "write_log"),
-        ]):
-            ttk.Checkbutton(frame, text=text_, variable=var).grid(row=4 + i // 2, column=(i % 2) * 2, columnspan=2, sticky=tk.W, padx=4, pady=4)
-            self.sync_bool_to_config(var, config, key)
-
-        log_path_var = tk.StringVar(value=config.get("log_path", os.path.abspath("rename_log.csv")))
-        ttk.Label(frame, text="日志路径：").grid(row=7, column=0, sticky=tk.W, padx=4, pady=4)
-        ttk.Entry(frame, textvariable=log_path_var, width=70).grid(row=7, column=1, columnspan=3, sticky=tk.W, padx=4, pady=4)
-        def choose_log():
-            path = filedialog.asksaveasfilename(title="选择重命名日志", defaultextension=".csv", filetypes=[("CSV文件", "*.csv"), ("所有文件", "*.*")])
-            if path:
-                log_path_var.set(path)
-                config["log_path"] = path
-        ttk.Button(frame, text="选择", command=choose_log).grid(row=7, column=4, sticky=tk.W, padx=4, pady=4)
-        self.sync_var_to_config(log_path_var, config, "log_path")
-
-        ttk.Label(
-            frame,
-            text="推荐流程：获取文件列表 → 数据提取/替换/合并列生成【新文件名】 → 批量重命名预览 → 确认无误后勾选实际执行。完整路径目标目录不存在时，可勾选自动创建目录。",
-            foreground="gray",
-            wraplength=1050
-        ).grid(row=8, column=0, columnspan=6, sticky=tk.W, padx=4, pady=6)
+        return workflow_build_batch_rename_config_ui(self, config, headers)
 
     def build_replace_config(self, config, headers):
-        frame = ttk.LabelFrame(self.config_frame, text="批量替换节点", padding=8)
-        frame.pack(fill=tk.X, pady=8)
-        target_var = self.add_labeled_combo(frame, "目标字段：", config.get("target_field", ""), headers, 0, 0, 24, readonly=False)
-        mode_var = self.add_labeled_combo(frame, "匹配方式：", config.get("match_mode", "包含"), self.REPLACE_MATCH_MODES, 0, 2, 16)
-        match_var = self.add_labeled_entry(frame, "匹配值：", config.get("match_value", ""), 1, 0, 30)
-        repl_var = self.add_labeled_entry(frame, "替换值：", config.get("replace_value", ""), 1, 2, 30)
-        replace_mode_var = self.add_labeled_combo(frame, "替换方式：", config.get("replace_mode", "局部替换匹配字符串"), self.REPLACE_MODES, 2, 0, 22)
-        case_var = tk.BooleanVar(value=config.get("case_sensitive", True))
-        ttk.Checkbutton(frame, text="区分大小写", variable=case_var).grid(row=2, column=2, sticky=tk.W, padx=4, pady=4)
-
-        value_source_var = self.add_labeled_combo(
-            frame,
-            "替换值来源：",
-            config.get("value_source", "手动输入"),
-            ["手动输入", "列字段"],
-            3,
-            0,
-            14
-        )
-        match_field_default = config.get("match_value_field", "") if config.get("match_value_field", "") in headers else (headers[0] if headers else "")
-        repl_field_default = config.get("replace_value_field", "") if config.get("replace_value_field", "") in headers else (headers[0] if headers else "")
-        match_field_var = self.add_labeled_combo(frame, "匹配值字段：", match_field_default, headers, 3, 2, 24, readonly=False)
-        repl_field_var = self.add_labeled_combo(frame, "替换值字段：", repl_field_default, headers, 4, 0, 24, readonly=False)
-        skip_empty_var = tk.BooleanVar(value=bool(config.get("skip_empty_match_value", True)))
-        ttk.Checkbutton(frame, text="列匹配值为空时跳过", variable=skip_empty_var).grid(row=4, column=2, columnspan=2, sticky=tk.W, padx=4, pady=4)
-        ttk.Label(
-            frame,
-            text="说明：选择【列字段】后，每行使用本行的【匹配值字段】作为旧值、【替换值字段】作为新值；适合 A列文本中按 B列→C列逐行替换。",
-            foreground="gray",
-            wraplength=980
-        ).grid(row=5, column=0, columnspan=4, sticky=tk.W, padx=4, pady=(2, 4))
-
-        for var, key in [
-            (target_var, "target_field"), (mode_var, "match_mode"), (match_var, "match_value"),
-            (repl_var, "replace_value"), (replace_mode_var, "replace_mode"), (value_source_var, "value_source"),
-            (match_field_var, "match_value_field"), (repl_field_var, "replace_value_field")
-        ]:
-            self.sync_var_to_config(var, config, key)
-        self.sync_bool_to_config(case_var, config, "case_sensitive")
-        self.sync_bool_to_config(skip_empty_var, config, "skip_empty_match_value")
+        return workflow_build_replace_config_ui(self, config, headers)
 
     def build_extract_config(self, config, headers):
-        top = ttk.LabelFrame(self.config_frame, text="数据提取节点", padding=8)
-        top.pack(fill=tk.X, pady=8)
-        source_var = self.add_labeled_combo(top, "源字段：", config.get("source_field", ""), headers, 0, 0, 24, readonly=False)
-        method_var = self.add_labeled_combo(top, "提取方式：", config.get("method", "正则提取"), self.EXTRACT_METHODS, 0, 2, 18)
-        output_var = self.add_labeled_combo(top, "输出方式：", config.get("output_mode", "生成新字段"), self.OUTPUT_MODES, 1, 0, 14)
-        new_field_var = self.add_labeled_entry(top, "新字段名：", config.get("new_field", "提取结果"), 1, 2, 24)
-        unmatched_var = self.add_labeled_combo(top, "未匹配时：", config.get("unmatched_mode", "留空"), self.UNMATCHED_MODES, 2, 0, 14)
-        unmatched_fixed_var = self.add_labeled_entry(top, "固定值：", config.get("unmatched_fixed", "未匹配"), 2, 2, 20)
-        case_var = tk.BooleanVar(value=config.get("case_sensitive", True))
-        strip_var = tk.BooleanVar(value=config.get("strip_result", True))
-        ttk.Checkbutton(top, text="区分大小写", variable=case_var).grid(row=3, column=0, sticky=tk.W, padx=4, pady=4)
-        ttk.Checkbutton(top, text="结果去除首尾空格", variable=strip_var).grid(row=3, column=1, sticky=tk.W, padx=4, pady=4)
-        for var, key in [(source_var, "source_field"), (method_var, "method"), (output_var, "output_mode"), (new_field_var, "new_field"), (unmatched_var, "unmatched_mode"), (unmatched_fixed_var, "unmatched_fixed")]:
-            self.sync_var_to_config(var, config, key)
-        self.sync_bool_to_config(case_var, config, "case_sensitive")
-        self.sync_bool_to_config(strip_var, config, "strip_result")
-
-        params = ttk.LabelFrame(self.config_frame, text="提取参数：填写当前方式需要的参数即可", padding=8)
-        params.pack(fill=tk.X)
-        regex_var = self.add_labeled_entry(params, "Python正则：", config.get("regex_pattern", ""), 0, 0, 48)
-        group_var = self.add_labeled_entry(params, "分组：", config.get("regex_group", "0"), 0, 2, 8)
-        find_all_var = tk.BooleanVar(value=config.get("regex_find_all", False))
-        ttk.Checkbutton(params, text="正则提取全部匹配", variable=find_all_var).grid(row=0, column=4, sticky=tk.W, padx=4, pady=4)
-        joiner_var = self.add_labeled_entry(params, "全部连接符：", config.get("regex_joiner", ";"), 1, 0, 10)
-        start_var = self.add_labeled_entry(params, "起始位置：", config.get("start_pos", "1"), 1, 2, 8)
-        len_var = self.add_labeled_entry(params, "提取长度：", config.get("extract_len", "1"), 1, 4, 8)
-        base_var = self.add_labeled_combo(params, "位置规则：", config.get("position_base", "从1开始"), ["从1开始", "从0开始"], 2, 0, 10)
-        n_var = self.add_labeled_entry(params, "N位：", config.get("n_chars", "1"), 2, 2, 8)
-        delimiter_var = self.add_labeled_entry(params, "分隔符：", config.get("delimiter", "-"), 2, 4, 10)
-        part_var = self.add_labeled_entry(params, "第几段：", config.get("part_index", "1"), 3, 0, 8)
-        ignore_empty_var = tk.BooleanVar(value=config.get("ignore_empty_part", False))
-        ttk.Checkbutton(params, text="忽略空段", variable=ignore_empty_var).grid(row=3, column=2, sticky=tk.W, padx=4, pady=4)
-        before_var = self.add_labeled_entry(params, "开始关键字：", config.get("before_key", ""), 3, 4, 18)
-        after_var = self.add_labeled_entry(params, "结束关键字：", config.get("after_key", ""), 4, 0, 18)
-        occ_var = self.add_labeled_entry(params, "第几个匹配：", config.get("between_occurrence", "1"), 4, 2, 8)
-        marker_var = self.add_labeled_entry(params, "指定字符：", config.get("marker", "-"), 4, 4, 12)
-        find_mode_var = self.add_labeled_combo(params, "查找位置：", config.get("find_mode", "第一次出现"), ["第一次出现", "最后一次出现"], 5, 0, 12)
-        prefix_var = self.add_labeled_entry(params, "删除前缀：", config.get("prefix", ""), 5, 2, 16)
-        suffix_var = self.add_labeled_entry(params, "删除后缀：", config.get("suffix", ""), 5, 4, 16)
-        for var, key in [
-            (regex_var, "regex_pattern"), (group_var, "regex_group"), (joiner_var, "regex_joiner"),
-            (start_var, "start_pos"), (len_var, "extract_len"), (base_var, "position_base"),
-            (n_var, "n_chars"), (delimiter_var, "delimiter"), (part_var, "part_index"),
-            (before_var, "before_key"), (after_var, "after_key"), (occ_var, "between_occurrence"),
-            (marker_var, "marker"), (find_mode_var, "find_mode"), (prefix_var, "prefix"), (suffix_var, "suffix")
-        ]:
-            self.sync_var_to_config(var, config, key)
-        self.sync_bool_to_config(find_all_var, config, "regex_find_all")
-        self.sync_bool_to_config(ignore_empty_var, config, "ignore_empty_part")
+        return workflow_build_extract_config_ui(self, config, headers)
 
     def build_format_datetime_config(self, config, headers):
-        frame = ttk.LabelFrame(self.config_frame, text="格式规范化 / 日期时间解析节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        ttk.Label(
-            frame,
-            text="把固定位置、分隔符或常见写法的日期/时间统一成标准格式。例如：260603 → 2026-06-03，20：09 → 20:09。",
-            foreground="gray",
-            wraplength=1180
-        ).grid(row=0, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
-
-        source_var = self.add_labeled_combo(frame, "源字段：", config.get("source_field", headers[0] if headers else ""), headers, 1, 0, 24, readonly=False)
-        parse_type_var = self.add_labeled_combo(frame, "解析为：", config.get("parse_type", "日期"), self.FORMAT_PARSE_TYPES, 1, 2, 14)
-        structure_var = self.add_labeled_combo(frame, "输入结构：", config.get("input_structure", "固定位置"), self.FORMAT_INPUT_STRUCTURES, 1, 4, 18)
-        strip_var = tk.BooleanVar(value=bool(config.get("strip_value", True)))
-        ttk.Checkbutton(frame, text="去除首尾空格", variable=strip_var).grid(row=1, column=6, sticky=tk.W, padx=4, pady=4)
-
-        separate_time_var = tk.BooleanVar(value=bool(config.get("use_separate_time_field", False)))
-        ttk.Checkbutton(frame, text="日期时间使用单独时间字段", variable=separate_time_var).grid(row=2, column=0, columnspan=2, sticky=tk.W, padx=4, pady=4)
-        time_source_var = self.add_labeled_combo(frame, "时间字段：", config.get("time_source_field", headers[1] if len(headers) > 1 else (headers[0] if headers else "")), headers, 2, 2, 24, readonly=False)
-
-        pos_frame = ttk.LabelFrame(frame, text="固定位置规则（位置从1开始时：260603 = 年1-2、月3-4、日5-6；2009 = 时1-2、分3-4）", padding=6)
-        pos_frame.grid(row=3, column=0, columnspan=8, sticky="ew", padx=4, pady=(8, 4))
-        base_var = self.add_labeled_combo(pos_frame, "位置规则：", config.get("position_base", "从1开始"), ["从1开始", "从0开始"], 0, 0, 10)
-        y_start_var = self.add_labeled_entry(pos_frame, "年起始：", config.get("year_start", "1"), 0, 2, 6)
-        y_len_var = self.add_labeled_entry(pos_frame, "年长度：", config.get("year_len", "2"), 0, 4, 6)
-        m_start_var = self.add_labeled_entry(pos_frame, "月起始：", config.get("month_start", "3"), 1, 0, 6)
-        m_len_var = self.add_labeled_entry(pos_frame, "月长度：", config.get("month_len", "2"), 1, 2, 6)
-        d_start_var = self.add_labeled_entry(pos_frame, "日起始：", config.get("day_start", "5"), 1, 4, 6)
-        d_len_var = self.add_labeled_entry(pos_frame, "日长度：", config.get("day_len", "2"), 1, 6, 6)
-        h_start_var = self.add_labeled_entry(pos_frame, "时起始：", config.get("hour_start", "1"), 2, 0, 6)
-        h_len_var = self.add_labeled_entry(pos_frame, "时长度：", config.get("hour_len", "2"), 2, 2, 6)
-        min_start_var = self.add_labeled_entry(pos_frame, "分起始：", config.get("minute_start", "3"), 2, 4, 6)
-        min_len_var = self.add_labeled_entry(pos_frame, "分长度：", config.get("minute_len", "2"), 2, 6, 6)
-        sec_start_var = self.add_labeled_entry(pos_frame, "秒起始：", config.get("second_start", "5"), 3, 0, 6)
-        sec_len_var = self.add_labeled_entry(pos_frame, "秒长度：", config.get("second_len", "0"), 3, 2, 6)
-
-        sep_frame = ttk.LabelFrame(frame, text="分隔符 / 自动识别规则", padding=6)
-        sep_frame.grid(row=4, column=0, columnspan=8, sticky="ew", padx=4, pady=4)
-        date_delim_var = self.add_labeled_combo(sep_frame, "日期分隔符：", config.get("date_delimiter", "自动识别"), ["自动识别", "-", "/", ".", "年/月/日", "自定义"], 0, 0, 12)
-        custom_date_var = self.add_labeled_entry(sep_frame, "自定义日期分隔符：", config.get("custom_date_delimiter", "-"), 0, 2, 10)
-        time_delim_var = self.add_labeled_combo(sep_frame, "时间分隔符：", config.get("time_delimiter", "自动识别"), ["自动识别", ":", "：", "-", ".", "时/分/秒", "自定义"], 1, 0, 12)
-        custom_time_var = self.add_labeled_entry(sep_frame, "自定义时间分隔符：", config.get("custom_time_delimiter", ":"), 1, 2, 10)
-        order_var = self.add_labeled_combo(sep_frame, "日期顺序：", config.get("date_order", "年-月-日"), self.FORMAT_DATE_ORDERS, 2, 0, 12)
-        year_rule_var = self.add_labeled_combo(sep_frame, "两位年份：", config.get("year_rule", "20xx"), self.FORMAT_YEAR_RULES, 2, 2, 12)
-        pivot_var = self.add_labeled_entry(sep_frame, "自动窗口分界：", config.get("auto_window_pivot", "80"), 2, 4, 8)
-        ttk.Label(sep_frame, text="自动窗口示例：00-79→2000-2079，80-99→1980-1999。", foreground="gray").grid(row=3, column=0, columnspan=6, sticky=tk.W, padx=4, pady=(2, 4))
-
-        out_frame = ttk.LabelFrame(frame, text="输出设置", padding=6)
-        out_frame.grid(row=5, column=0, columnspan=8, sticky="ew", padx=4, pady=(8, 4))
-        output_mode_var = self.add_labeled_combo(out_frame, "输出方式：", config.get("output_mode", "生成新字段"), self.FORMAT_OUTPUT_MODES, 0, 0, 14)
-        new_field_var = self.add_labeled_entry(out_frame, "新字段名：", config.get("new_field", "标准日期"), 0, 2, 22)
-        date_tpl_var = self.add_labeled_entry(out_frame, "日期模板：", config.get("output_template", "{YYYY}-{MM}-{DD}"), 1, 0, 26)
-        time_tpl_var = self.add_labeled_entry(out_frame, "时间模板：", config.get("time_output_template", "{HH}:{mm}"), 1, 2, 22)
-        dt_tpl_var = self.add_labeled_entry(out_frame, "日期时间模板：", config.get("datetime_output_template", "{YYYY}-{MM}-{DD} {HH}:{mm}"), 1, 4, 30)
-        component_prefix_var = self.add_labeled_entry(out_frame, "多字段前缀：", config.get("component_prefix", "解析"), 2, 0, 12)
-        unmatched_var = self.add_labeled_combo(out_frame, "解析失败：", config.get("unmatched_mode", "留空"), self.UNMATCHED_MODES, 2, 2, 12)
-        unmatched_fixed_var = self.add_labeled_entry(out_frame, "失败固定值：", config.get("unmatched_fixed", "未匹配"), 2, 4, 14)
-        status_var = tk.BooleanVar(value=bool(config.get("output_status", True)))
-        ttk.Checkbutton(out_frame, text="生成解析状态字段", variable=status_var).grid(row=3, column=0, sticky=tk.W, padx=4, pady=4)
-        status_field_var = self.add_labeled_entry(out_frame, "状态字段名：", config.get("status_field", "格式解析状态"), 3, 2, 20)
-        ttk.Label(
-            out_frame,
-            text="模板可用：{YYYY} {YY} {MM} {M} {DD} {D} {HH} {H} {mm} {m} {ss} {s}。生成多个字段会输出标准值和年/月/日/时/分/秒组件。",
-            foreground="gray",
-            wraplength=1180
-        ).grid(row=4, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(2, 4))
-
-        for var, key in [
-            (source_var, "source_field"), (time_source_var, "time_source_field"),
-            (parse_type_var, "parse_type"), (structure_var, "input_structure"), (base_var, "position_base"),
-            (y_start_var, "year_start"), (y_len_var, "year_len"), (m_start_var, "month_start"), (m_len_var, "month_len"),
-            (d_start_var, "day_start"), (d_len_var, "day_len"), (h_start_var, "hour_start"), (h_len_var, "hour_len"),
-            (min_start_var, "minute_start"), (min_len_var, "minute_len"), (sec_start_var, "second_start"), (sec_len_var, "second_len"),
-            (date_delim_var, "date_delimiter"), (time_delim_var, "time_delimiter"), (custom_date_var, "custom_date_delimiter"), (custom_time_var, "custom_time_delimiter"),
-            (order_var, "date_order"), (year_rule_var, "year_rule"), (pivot_var, "auto_window_pivot"),
-            (output_mode_var, "output_mode"), (new_field_var, "new_field"), (date_tpl_var, "output_template"),
-            (time_tpl_var, "time_output_template"), (dt_tpl_var, "datetime_output_template"), (component_prefix_var, "component_prefix"),
-            (unmatched_var, "unmatched_mode"), (unmatched_fixed_var, "unmatched_fixed"), (status_field_var, "status_field")
-        ]:
-            self.sync_var_to_config(var, config, key)
-        self.sync_bool_to_config(strip_var, config, "strip_value")
-        self.sync_bool_to_config(separate_time_var, config, "use_separate_time_field")
-        self.sync_bool_to_config(status_var, config, "output_status")
+        return workflow_build_format_datetime_config_ui(self, config, headers)
 
     def build_current_datetime_column_config(self, config, headers):
-        frame = ttk.LabelFrame(self.config_frame, text="新建日期时间列 / 获取计算机时间节点", padding=8)
-        frame.pack(fill=tk.X, pady=8)
-        ttk.Label(
-            frame,
-            text="从当前计算机获取运行时日期时间，并按自定义格式写入新字段或覆盖已有字段。适合生成执行时间、导出时间、处理时间戳。",
-            foreground="gray",
-            wraplength=1180
-        ).grid(row=0, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
-
-        output_mode_var = self.add_labeled_combo(
-            frame, "输出方式：", config.get("output_mode", "生成新字段"),
-            self.CURRENT_DATETIME_OUTPUT_MODES, 1, 0, 14
-        )
-        new_field_var = self.add_labeled_entry(frame, "新字段名：", config.get("new_field", "当前日期时间"), 1, 2, 24)
-        target_default = config.get("target_field", headers[0] if headers else "")
-        target_var = self.add_labeled_combo(frame, "覆盖字段：", target_default, headers, 1, 4, 24, readonly=False)
-
-        time_mode_var = self.add_labeled_combo(
-            frame, "取时方式：", config.get("time_mode", "整次运行固定同一时间"),
-            self.CURRENT_DATETIME_TIME_MODES, 2, 0, 20
-        )
-        format_mode_var = self.add_labeled_combo(
-            frame, "格式模式：", config.get("format_mode", "占位符模板"),
-            self.CURRENT_DATETIME_FORMAT_MODES, 2, 2, 16
-        )
-        template_var = self.add_labeled_entry(frame, "占位符模板：", config.get("template", "{YYYY}-{MM}-{DD} {HH}:{mm}:{ss}"), 3, 0, 42)
-        strftime_var = self.add_labeled_entry(frame, "strftime格式：", config.get("strftime_template", "%Y-%m-%d %H:%M:%S"), 3, 2, 32)
-
-        preset_frame = ttk.LabelFrame(frame, text="常用格式参考", padding=6)
-        preset_frame.grid(row=4, column=0, columnspan=8, sticky="ew", padx=4, pady=(8, 4))
-        ttk.Label(
-            preset_frame,
-            text="占位符：{YYYY} {YY} {MM} {M} {DD} {D} {HH} {H} {mm} {m} {ss} {s} {fff} {ffffff} {timestamp} {unix_ms}。",
-            foreground="gray",
-            wraplength=1180
-        ).grid(row=0, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 4))
-
-        presets = [
-            ("日期时间", "{YYYY}-{MM}-{DD} {HH}:{mm}:{ss}"),
-            ("日期", "{YYYY}-{MM}-{DD}"),
-            ("时间", "{HH}:{mm}:{ss}"),
-            ("紧凑日期时间", "{YYYY}{MM}{DD}_{HH}{mm}{ss}"),
-            ("中文日期时间", "{YYYY}年{M}月{D}日 {HH}:{mm}:{ss}"),
-            ("Unix秒", "{timestamp}"),
-        ]
-        def set_template(value):
-            template_var.set(value)
-            config["template"] = value
-        for i, (label, value) in enumerate(presets):
-            ttk.Button(preset_frame, text=label, command=lambda v=value: set_template(v)).grid(row=1 + i // 4, column=i % 4, sticky=tk.W, padx=4, pady=3)
-
-        ttk.Label(
-            frame,
-            text="说明：整次运行固定同一时间 = 所有行写入同一个运行开始时间；逐行实时获取 = 每行写入时重新读取当前时间。Python strftime 使用 %Y-%m-%d %H:%M:%S 这类格式。",
-            foreground="gray",
-            wraplength=1180
-        ).grid(row=5, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(4, 0))
-
-        for var, key in [
-            (output_mode_var, "output_mode"), (new_field_var, "new_field"), (target_var, "target_field"),
-            (time_mode_var, "time_mode"), (format_mode_var, "format_mode"),
-            (template_var, "template"), (strftime_var, "strftime_template")
-        ]:
-            self.sync_var_to_config(var, config, key)
+        return workflow_build_current_datetime_column_config_ui(self, config, headers)
 
     def build_new_columns_config(self, config, headers):
-        frame = ttk.LabelFrame(self.config_frame, text="新建列节点（可一次新建多个字段）", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        ttk.Label(
-            frame,
-            text="一次性给当前工作表新增多个字段。每行填写一个字段名；也可写成 字段名=默认值，用于给不同字段设置不同默认值。",
-            foreground="gray",
-            wraplength=1180
-        ).grid(row=0, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
-
-        help_text = (
-            "示例：字段A  /  字段B=默认值B  /  字段C=0    "
-            "说明：每行一个字段；选择【按列配置值】时，等号右侧作为该列默认值；未填写等号则使用统一默认值或空值。"
-        )
-        ttk.Label(
-            frame,
-            text=help_text,
-            foreground="gray",
-            justify=tk.LEFT,
-            wraplength=1300
-        ).grid(row=1, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
-
-        ttk.Label(frame, text="新建字段列表：").grid(row=2, column=0, sticky=tk.NW, padx=4, pady=4)
-        text_wrap = ttk.Frame(frame)
-        text_wrap.grid(row=2, column=1, columnspan=7, sticky="nsew", padx=4, pady=4)
-        columns_text_widget = tk.Text(text_wrap, width=90, height=10, wrap="none")
-        y_scroll = ttk.Scrollbar(text_wrap, orient=tk.VERTICAL, command=columns_text_widget.yview)
-        columns_text_widget.configure(yscrollcommand=y_scroll.set)
-        columns_text_widget.grid(row=0, column=0, sticky="nsew")
-        y_scroll.grid(row=0, column=1, sticky="ns")
-        text_wrap.rowconfigure(0, weight=1)
-        text_wrap.columnconfigure(0, weight=1)
-        columns_text_widget.insert("1.0", str(config.get("columns_text", "新字段1\n新字段2") or ""))
-
-        def sync_columns_text(event=None):
-            config["columns_text"] = columns_text_widget.get("1.0", "end-1c")
-        columns_text_widget.bind("<KeyRelease>", sync_columns_text)
-        columns_text_widget.bind("<FocusOut>", sync_columns_text)
-
-        value_mode_var = self.add_labeled_combo(
-            frame, "填充值模式：", config.get("value_mode", "统一默认值"),
-            self.NEW_COLUMNS_VALUE_MODES, 3, 0, 16
-        )
-        default_value_var = self.add_labeled_entry(frame, "统一默认值：", config.get("default_value", ""), 3, 2, 28)
-        conflict_var = self.add_labeled_combo(
-            frame, "同名字段处理：", config.get("conflict_mode", "自动改名"),
-            self.NEW_COLUMNS_CONFLICT_MODES, 3, 4, 16
-        )
-
-        strip_var = tk.BooleanVar(value=bool(config.get("strip_column_name", True)))
-        allow_empty_var = tk.BooleanVar(value=bool(config.get("allow_empty_name", False)))
-        ttk.Checkbutton(frame, text="字段名前后去空格", variable=strip_var).grid(row=4, column=0, columnspan=2, sticky=tk.W, padx=4, pady=4)
-        ttk.Checkbutton(frame, text="允许空字段名自动命名", variable=allow_empty_var).grid(row=4, column=2, columnspan=3, sticky=tk.W, padx=4, pady=4)
-
-        ttk.Label(
-            frame,
-            text="同名字段处理：自动改名会生成 字段_2；跳过已有字段不会新增；覆盖已有字段会把该列整列写成默认值；存在则报错用于防止误覆盖。",
-            foreground="gray",
-            wraplength=1300
-        ).grid(row=5, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(8, 4))
-
-        preview_frame = ttk.LabelFrame(frame, text="字段解析预览", padding=6)
-        preview_frame.grid(row=6, column=0, columnspan=8, sticky="nsew", padx=4, pady=(8, 4))
-        preview_tree = ttk.Treeview(preview_frame, columns=("序号", "字段名", "默认值", "状态"), show="headings", height=7)
-        for col, width in [("序号", 70), ("字段名", 260), ("默认值", 320), ("状态", 360)]:
-            preview_tree.heading(col, text=col)
-            preview_tree.column(col, width=width, anchor=tk.W, stretch=False)
-        preview_y = ttk.Scrollbar(preview_frame, orient=tk.VERTICAL, command=preview_tree.yview)
-        preview_tree.configure(yscrollcommand=preview_y.set)
-        preview_tree.grid(row=0, column=0, sticky="nsew")
-        preview_y.grid(row=0, column=1, sticky="ns")
-        preview_frame.rowconfigure(0, weight=1)
-        preview_frame.columnconfigure(0, weight=1)
-
-        def refresh_preview():
-            sync_columns_text()
-            preview_tree.delete(*preview_tree.get_children())
-            try:
-                specs = self.parse_new_columns_specs(config)
-                existing = set(headers)
-                temp_headers = list(headers)
-                for i, (name, value) in enumerate(specs, start=1):
-                    status = "将新建"
-                    final_name = name
-                    if name in existing or name in temp_headers:
-                        mode = config.get("conflict_mode", "自动改名")
-                        if mode == "自动改名":
-                            final_name = self.get_unique_header(name, temp_headers)
-                            status = f"同名，自动改名为 {final_name}"
-                        elif mode == "跳过已有字段":
-                            status = "同名，将跳过"
-                        elif mode == "覆盖已有字段":
-                            status = "同名，将覆盖整列默认值"
-                        elif mode == "存在则报错":
-                            status = "同名，执行时报错"
-                    if status.startswith("将新建") or "自动改名" in status:
-                        temp_headers.append(final_name)
-                    preview_tree.insert("", tk.END, values=(i, final_name, value, status))
-            except Exception as e:
-                preview_tree.insert("", tk.END, values=("错误", "", "", str(e)))
-
-        btns = ttk.Frame(frame)
-        btns.grid(row=7, column=0, columnspan=8, sticky=tk.W, padx=4, pady=6)
-        ttk.Button(btns, text="刷新字段预览", command=refresh_preview).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btns, text="示例：3个空列", command=lambda: (columns_text_widget.delete("1.0", tk.END), columns_text_widget.insert("1.0", "字段A\n字段B\n字段C"), sync_columns_text(), refresh_preview())).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btns, text="示例：带默认值", command=lambda: (columns_text_widget.delete("1.0", tk.END), columns_text_widget.insert("1.0", "处理状态=未处理\n备注=\n数量=0"), sync_columns_text(), refresh_preview())).pack(side=tk.LEFT, padx=4)
-
-        for var, key in [
-            (value_mode_var, "value_mode"),
-            (default_value_var, "default_value"),
-            (conflict_var, "conflict_mode"),
-        ]:
-            self.sync_var_to_config(var, config, key)
-        self.sync_bool_to_config(strip_var, config, "strip_column_name")
-        self.sync_bool_to_config(allow_empty_var, config, "allow_empty_name")
-        frame.rowconfigure(5, weight=1)
-        frame.columnconfigure(1, weight=1)
-        refresh_preview()
+        return workflow_build_new_columns_config_ui(self, config, headers)
 
     def build_merge_config(self, config, headers):
-        frame = ttk.LabelFrame(self.config_frame, text="合并列节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-
-        top = ttk.Frame(frame)
-        top.pack(fill=tk.X)
-        out_var = self.add_labeled_entry(top, "新字段名：", config.get("output_field", "合并结果"), 0, 0, 24)
-        skip_var = tk.BooleanVar(value=config.get("skip_empty", True))
-        trim_var = tk.BooleanVar(value=config.get("trim_value", True))
-        ttk.Checkbutton(top, text="跳过空值", variable=skip_var).grid(row=0, column=2, sticky=tk.W, padx=4, pady=4)
-        ttk.Checkbutton(top, text="去除首尾空格", variable=trim_var).grid(row=0, column=3, sticky=tk.W, padx=4, pady=4)
-        placeholder_var = self.add_labeled_entry(top, "空值占位符：", config.get("empty_placeholder", ""), 0, 4, 12)
-        for var, key in [(out_var, "output_field"), (placeholder_var, "empty_placeholder")]:
-            self.sync_var_to_config(var, config, key)
-        self.sync_bool_to_config(skip_var, config, "skip_empty")
-        self.sync_bool_to_config(trim_var, config, "trim_value")
-
-        body = ttk.Frame(frame)
-        body.pack(fill=tk.BOTH, expand=True, pady=6)
-        left = ttk.LabelFrame(body, text="可选字段", padding=6)
-        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 6))
-        right = ttk.LabelFrame(body, text="合并顺序", padding=6)
-        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        available_wrap = ttk.Frame(left)
-        available_wrap.pack(fill=tk.BOTH, expand=True)
-        available_list = tk.Listbox(available_wrap, height=10, exportselection=False)
-        available_scroll = ttk.Scrollbar(available_wrap, orient=tk.VERTICAL, command=available_list.yview)
-        available_list.configure(yscrollcommand=available_scroll.set)
-        available_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        available_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        for h in headers:
-            available_list.insert(tk.END, h)
-
-        order_wrap = ttk.Frame(right)
-        order_wrap.pack(fill=tk.BOTH, expand=True)
-        order_list = tk.Listbox(order_wrap, height=10, exportselection=False)
-        order_scroll = ttk.Scrollbar(order_wrap, orient=tk.VERTICAL, command=order_list.yview)
-        order_list.configure(yscrollcommand=order_scroll.set)
-        order_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        order_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        for f in config.get("fields", []):
-            order_list.insert(tk.END, f)
-        self.field_listbox = order_list
-
-        btns = ttk.Frame(body)
-        btns.pack(side=tk.LEFT, fill=tk.Y, padx=6)
-
-        def sync_fields():
-            config["fields"] = list(order_list.get(0, tk.END))
-            self.ensure_separator_count(config)
-            self.refresh_merge_separator_ui(sep_frame, config)
-
-        def add_field():
-            sel = available_list.curselection()
-            if not sel:
-                return
-            order_list.insert(tk.END, available_list.get(sel[0]))
-            sync_fields()
-        def remove_field():
-            sel = order_list.curselection()
-            if not sel:
-                return
-            order_list.delete(sel[0])
-            sync_fields()
-        def move_up():
-            sel = order_list.curselection()
-            if not sel or sel[0] <= 0:
-                return
-            i = sel[0]
-            val = order_list.get(i)
-            order_list.delete(i)
-            order_list.insert(i-1, val)
-            order_list.selection_set(i-1)
-            sync_fields()
-        def move_down():
-            sel = order_list.curselection()
-            if not sel or sel[0] >= order_list.size()-1:
-                return
-            i = sel[0]
-            val = order_list.get(i)
-            order_list.delete(i)
-            order_list.insert(i+1, val)
-            order_list.selection_set(i+1)
-            sync_fields()
-        def clear_fields():
-            order_list.delete(0, tk.END)
-            sync_fields()
-        for text_, cmd in [("添加 →", add_field), ("删除", remove_field), ("上移", move_up), ("下移", move_down), ("清空", clear_fields)]:
-            ttk.Button(btns, text=text_, command=cmd).pack(fill=tk.X, pady=2)
-
-        sep_frame = ttk.LabelFrame(frame, text="每两列之间的连接符", padding=6)
-        sep_frame.pack(fill=tk.X)
-        self.ensure_separator_count(config)
-        self.refresh_merge_separator_ui(sep_frame, config)
+        return workflow_build_merge_config_ui(self, config, headers)
 
     def build_match_value_output_field_name_config(self, config, headers, transit_context=None):
-        """配置：用当前表字段值匹配指定表或中转副表的多个字段，输出匹配到的字段名。"""
-        frame = ttk.LabelFrame(self.config_frame, text="匹配值输出列名节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        ttk.Label(
-            frame,
-            text="用当前表指定字段的值，去 SQLite 表或中转副表的多个字段列中匹配；匹配到哪个字段，就把该字段名输出到当前表的新列。",
-            foreground="gray",
-            wraplength=1050
-        ).grid(row=0, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
-
-        tables = []
-        try:
-            tables = self.app.get_table_names()
-        except Exception:
-            tables = []
-        transit_context = transit_context or {"transit_tables": {}}
-        transit_names = list((transit_context.get("transit_tables") or {}).keys())
-        if not headers:
-            headers = []
-
-        source_default = config.get("source_field") if config.get("source_field") in headers else (headers[0] if headers else "")
-        source_var = self.add_labeled_combo(frame, "当前表匹配字段：", source_default, headers, 1, 0, 24, readonly=False)
-        source_type_values = ["SQLite表", "中转副表"]
-        source_type_default = config.get("lookup_source_type", "SQLite表")
-        if source_type_default not in source_type_values:
-            source_type_default = "SQLite表"
-        source_type_var = self.add_labeled_combo(frame, "匹配来源：", source_type_default, source_type_values, 1, 2, 16)
-        initial_values = transit_names if source_type_default == "中转副表" else tables
-        table_label = "中转副表：" if source_type_default == "中转副表" else "SQLite匹配表："
-        table_default = config.get("lookup_table") if config.get("lookup_table") in initial_values else (initial_values[0] if initial_values else config.get("lookup_table", ""))
-        ttk.Label(frame, text=table_label).grid(row=1, column=4, sticky=tk.W, padx=4, pady=4)
-        table_var = tk.StringVar(value=table_default)
-        table_combo = ttk.Combobox(frame, textvariable=table_var, values=initial_values, width=28, state="normal")
-        table_combo.grid(row=1, column=5, sticky=tk.W, padx=4, pady=4)
-        match_modes = ["完全相等", "当前值包含匹配值", "匹配值包含当前值", "忽略大小写完全相等", "忽略大小写当前值包含匹配值", "忽略大小写匹配值包含当前值", "正则匹配"]
-        mode_var = self.add_labeled_combo(frame, "匹配方式：", config.get("match_mode", "完全相等"), match_modes, 2, 0, 26)
-        self.sync_var_to_config(source_var, config, "source_field")
-        self.sync_var_to_config(source_type_var, config, "lookup_source_type")
-        self.sync_var_to_config(table_var, config, "lookup_table")
-        self.sync_var_to_config(mode_var, config, "match_mode")
-
-        out_frame = ttk.LabelFrame(frame, text="输出设置", padding=6)
-        out_frame.grid(row=3, column=0, columnspan=8, sticky="ew", padx=4, pady=6)
-        output_field_var = self.add_labeled_entry(out_frame, "输出字段名：", config.get("output_field", "匹配字段名"), 0, 0, 18)
-        no_match_var = self.add_labeled_entry(out_frame, "未匹配写入：", config.get("no_match_value", "未匹配"), 0, 2, 18)
-        sep_var = self.add_labeled_entry(out_frame, "多匹配分隔符：", config.get("multi_match_separator", ";"), 0, 4, 10)
-        multi_var = self.add_labeled_combo(out_frame, "多匹配处理：", config.get("multi_match_policy", "合并所有字段名"), ["合并所有字段名", "取第一个匹配字段名", "标记为多匹配"], 1, 0, 18)
-        self.sync_var_to_config(output_field_var, config, "output_field")
-        self.sync_var_to_config(no_match_var, config, "no_match_value")
-        self.sync_var_to_config(sep_var, config, "multi_match_separator")
-        self.sync_var_to_config(multi_var, config, "multi_match_policy")
-
-        match_value_bool = tk.BooleanVar(value=bool(config.get("output_match_value", True)))
-        match_row_bool = tk.BooleanVar(value=bool(config.get("output_match_row", True)))
-        status_bool = tk.BooleanVar(value=bool(config.get("output_status", True)))
-        skip_empty_bool = tk.BooleanVar(value=bool(config.get("skip_empty_lookup_value", True)))
-        ttk.Checkbutton(out_frame, text="输出匹配值", variable=match_value_bool).grid(row=2, column=0, sticky=tk.W, padx=4, pady=4)
-        match_value_field_var = self.add_labeled_entry(out_frame, "匹配值字段：", config.get("match_value_field", "匹配值"), 2, 1, 16)
-        ttk.Checkbutton(out_frame, text="输出匹配行号", variable=match_row_bool).grid(row=2, column=3, sticky=tk.W, padx=4, pady=4)
-        match_row_field_var = self.add_labeled_entry(out_frame, "行号字段：", config.get("match_row_field", "匹配行号"), 2, 4, 16)
-        ttk.Checkbutton(out_frame, text="输出匹配状态", variable=status_bool).grid(row=3, column=0, sticky=tk.W, padx=4, pady=4)
-        status_field_var = self.add_labeled_entry(out_frame, "状态字段：", config.get("status_field", "匹配状态"), 3, 1, 16)
-        ttk.Checkbutton(out_frame, text="跳过匹配表空值", variable=skip_empty_bool).grid(row=3, column=3, sticky=tk.W, padx=4, pady=4)
-        for var, key in [
-            (match_value_bool, "output_match_value"),
-            (match_row_bool, "output_match_row"),
-            (status_bool, "output_status"),
-            (skip_empty_bool, "skip_empty_lookup_value"),
-        ]:
-            self.sync_bool_to_config(var, config, key)
-        for var, key in [
-            (match_value_field_var, "match_value_field"),
-            (match_row_field_var, "match_row_field"),
-            (status_field_var, "status_field"),
-        ]:
-            self.sync_var_to_config(var, config, key)
-
-        fields_frame = ttk.LabelFrame(frame, text="参与匹配的目标表字段", padding=6)
-        fields_frame.grid(row=4, column=0, columnspan=8, sticky="nsew", padx=4, pady=6)
-        fields_wrap = ttk.Frame(fields_frame)
-        fields_wrap.pack(fill=tk.BOTH, expand=True)
-        lb = tk.Listbox(fields_wrap, selectmode=tk.MULTIPLE, height=10, exportselection=False)
-        yscroll = ttk.Scrollbar(fields_wrap, orient=tk.VERTICAL, command=lb.yview)
-        lb.configure(yscrollcommand=yscroll.set)
-        lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        yscroll.pack(side=tk.RIGHT, fill=tk.Y)
-
-        def get_current_lookup_values():
-            return transit_names if source_type_var.get() == "中转副表" else tables
-
-        def load_lookup_columns():
-            lookup_table = table_var.get().strip()
-            lookup_source_type = source_type_var.get().strip() or "SQLite表"
-            cols = []
-            if lookup_table:
-                try:
-                    if lookup_source_type == "中转副表":
-                        item = (transit_context.get("transit_tables") or {}).get(lookup_table, {})
-                        cols = list(item.get("headers", []))
-                    else:
-                        cols = self.app.get_table_columns(lookup_table)
-                except Exception:
-                    cols = []
-            lb.delete(0, tk.END)
-            selected = set(config.get("lookup_fields", []))
-            for i, col in enumerate(cols):
-                lb.insert(tk.END, col)
-                if col in selected:
-                    lb.selection_set(i)
-            if not selected and cols:
-                for i in range(min(3, len(cols))):
-                    lb.selection_set(i)
-                sync_lookup_fields()
-
-        def sync_lookup_fields(*_):
-            cols = [lb.get(i) for i in lb.curselection()]
-            config["lookup_fields"] = cols
-
-        lb.bind("<<ListboxSelect>>", sync_lookup_fields)
-
-        btn_frame = ttk.Frame(fields_frame)
-        btn_frame.pack(fill=tk.X, pady=4)
-        def select_all_fields():
-            lb.selection_set(0, tk.END)
-            sync_lookup_fields()
-        def clear_fields():
-            lb.selection_clear(0, tk.END)
-            sync_lookup_fields()
-        def refresh_fields():
-            config["lookup_source_type"] = source_type_var.get().strip() or "SQLite表"
-            config["lookup_table"] = table_var.get().strip()
-            load_lookup_columns()
-        ttk.Button(btn_frame, text="刷新字段", command=refresh_fields).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btn_frame, text="全选", command=select_all_fields).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btn_frame, text="全不选", command=clear_fields).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btn_frame, text="反选", command=lambda: [lb.selection_clear(i) if lb.selection_includes(i) else lb.selection_set(i) for i in range(lb.size())] or sync_lookup_fields()).pack(side=tk.LEFT, padx=4)
-        ttk.Label(fields_frame, text="说明：会逐行扫描这些字段的单元格；匹配成功后输出该单元格所在的字段名。", foreground="gray").pack(anchor=tk.W, padx=4, pady=(2, 0))
-
-        def on_source_type_change(*_):
-            config["lookup_source_type"] = source_type_var.get().strip() or "SQLite表"
-            values = get_current_lookup_values()
-            table_combo.configure(values=values)
-            if table_var.get().strip() not in values:
-                table_var.set(values[0] if values else "")
-            config["lookup_table"] = table_var.get().strip()
-            load_lookup_columns()
-
-        def on_table_change(*_):
-            config["lookup_table"] = table_var.get().strip()
-            load_lookup_columns()
-        source_type_var.trace_add("write", on_source_type_change)
-        table_var.trace_add("write", on_table_change)
-        load_lookup_columns()
+        return workflow_build_match_value_output_field_name_config_ui(self, config, headers, transit_context)
 
     def build_numeric_column_config(self, config, headers):
-        frame = ttk.LabelFrame(self.config_frame, text="列数字运算节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        ttk.Label(
-            frame,
-            text="对指定列的数字批量加、减、乘、除。结果可生成新字段、覆盖原字段或写入已有字段；运算值可来自固定值、行号、序号或另一列同行值。",
-            foreground="gray",
-            wraplength=1050
-        ).grid(row=0, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
-
-        headers = list(headers)
-        first = headers[0] if headers else ""
-        second = headers[1] if len(headers) > 1 else first
-        target_default = config.get("target_field") if config.get("target_field") in headers else (config.get("target_field") or first)
-        operand_field_default = config.get("operand_field") if config.get("operand_field") in headers else (config.get("operand_field") or second)
-        ref_default = config.get("reference_field") if config.get("reference_field") in headers else (config.get("reference_field") or first)
-
-        target_var = self.add_labeled_combo(frame, "目标字段：", target_default, headers, 1, 0, 24, readonly=False)
-        op_var = self.add_labeled_combo(frame, "运算方式：", config.get("operation", "加"), ["加", "减", "乘", "除"], 1, 2, 12)
-        operand_source_var = self.add_labeled_combo(
-            frame,
-            "运算值来源：",
-            config.get("operand_source", "固定值"),
-            ["固定值", "行号", "行号+N", "序号", "另一列同行数值"],
-            1, 4, 18
-        )
-        self.sync_var_to_config(target_var, config, "target_field")
-        self.sync_var_to_config(op_var, config, "operation")
-        self.sync_var_to_config(operand_source_var, config, "operand_source")
-
-        operand_value_var = self.add_labeled_entry(frame, "固定值：", config.get("operand_value", "1"), 2, 0, 12)
-        operand_field_var = self.add_labeled_combo(frame, "同行来源字段：", operand_field_default, headers, 2, 2, 24, readonly=False)
-        row_offset_var = self.add_labeled_entry(frame, "N值：", config.get("row_offset", "0"), 2, 4, 10)
-        seq_start_var = self.add_labeled_entry(frame, "序号起始：", config.get("sequence_start", "1"), 3, 0, 12)
-        seq_step_var = self.add_labeled_entry(frame, "序号步长：", config.get("sequence_step", "1"), 3, 2, 12)
-        self.sync_var_to_config(operand_value_var, config, "operand_value")
-        self.sync_var_to_config(operand_field_var, config, "operand_field")
-        self.sync_var_to_config(row_offset_var, config, "row_offset")
-        self.sync_var_to_config(seq_start_var, config, "sequence_start")
-        self.sync_var_to_config(seq_step_var, config, "sequence_step")
-
-        output_mode_var = self.add_labeled_combo(frame, "输出方式：", config.get("output_mode", "生成新字段"), ["生成新字段", "覆盖原字段", "写入已有字段"], 4, 0, 16)
-        output_field_default = config.get("output_field", f"{target_default}_计算结果" if target_default else "计算结果")
-        output_field_var = self.add_labeled_combo(frame, "输出字段：", output_field_default, headers, 4, 2, 24, readonly=False)
-        decimal_var = self.add_labeled_combo(frame, "小数位：", config.get("decimal_places", "自动"), ["自动", "0", "1", "2", "3", "4", "5", "6"], 4, 4, 10)
-        self.sync_var_to_config(output_mode_var, config, "output_mode")
-        self.sync_var_to_config(output_field_var, config, "output_field")
-        self.sync_var_to_config(decimal_var, config, "decimal_places")
-
-        non_number_var = self.add_labeled_combo(frame, "非数字处理：", config.get("non_number_policy", "留空"), ["留空", "保留原值", "填写固定值", "标记为计算失败"], 5, 0, 16)
-        non_number_fixed_var = self.add_labeled_entry(frame, "非数字固定值：", config.get("non_number_fixed", ""), 5, 2, 18)
-        div_zero_var = self.add_labeled_combo(frame, "除零处理：", config.get("divide_zero_policy", "留空"), ["留空", "保留原值", "填写固定值", "标记为除零错误"], 5, 4, 16)
-        div_zero_fixed_var = self.add_labeled_entry(frame, "除零固定值：", config.get("divide_zero_fixed", ""), 5, 6, 18)
-        self.sync_var_to_config(non_number_var, config, "non_number_policy")
-        self.sync_var_to_config(non_number_fixed_var, config, "non_number_fixed")
-        self.sync_var_to_config(div_zero_var, config, "divide_zero_policy")
-        self.sync_var_to_config(div_zero_fixed_var, config, "divide_zero_fixed")
-
-        range_var = self.add_labeled_combo(frame, "处理范围：", config.get("range_mode", "全部行"), ["全部行", "指定起止行", "填充到参考列数据边界"], 6, 0, 18)
-        start_row_var = self.add_labeled_entry(frame, "起始行号：", config.get("start_row", "1"), 6, 2, 10)
-        end_row_var = self.add_labeled_entry(frame, "结束行号：", config.get("end_row", "1"), 6, 4, 10)
-        ref_var = self.add_labeled_combo(frame, "参考边界列：", ref_default, headers, 6, 6, 24, readonly=False)
-        self.sync_var_to_config(range_var, config, "range_mode")
-        self.sync_var_to_config(start_row_var, config, "start_row")
-        self.sync_var_to_config(end_row_var, config, "end_row")
-        self.sync_var_to_config(ref_var, config, "reference_field")
-
-        ttk.Label(
-            frame,
-            text="提示：行号按 1、2、3 计算；序号可自定义起始值和步长；除法遇到 0 会按除零处理规则输出。",
-            foreground="gray",
-            wraplength=1050
-        ).grid(row=7, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(6, 0))
+        return workflow_build_numeric_column_config_ui(self, config, headers)
 
     def build_rename_columns_config(self, config, headers):
-        frame = ttk.LabelFrame(self.config_frame, text="批量更改列名节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        ttk.Label(
-            frame,
-            text="只修改当前工作流表的字段名，不修改数据内容。适合在工作流开头统一字段名，或在输出前整理字段名。",
-            foreground="gray",
-            wraplength=1050
-        ).grid(row=0, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
-
-        mode_values = ["手动映射改名", "批量添加前缀", "批量添加后缀", "批量替换字段名字符"]
-        mode_var = self.add_labeled_combo(frame, "改名模式：", config.get("mode", "手动映射改名"), mode_values, 1, 0, 18)
-        duplicate_var = self.add_labeled_combo(frame, "重复字段处理：", config.get("duplicate_policy", "自动追加编号"), ["自动追加编号", "报错并停止"], 1, 2, 18)
-        missing_var = self.add_labeled_combo(frame, "字段不存在时：", config.get("missing_policy", "跳过并记录警告"), ["跳过并记录警告", "报错并停止"], 1, 4, 18)
-        trim_var = tk.BooleanVar(value=bool(config.get("trim_names", True)))
-        ttk.Checkbutton(frame, text="去除新字段名首尾空格", variable=trim_var).grid(row=1, column=6, sticky=tk.W, padx=4, pady=4)
-        self.sync_var_to_config(mode_var, config, "mode")
-        self.sync_var_to_config(duplicate_var, config, "duplicate_policy")
-        self.sync_var_to_config(missing_var, config, "missing_policy")
-        self.sync_bool_to_config(trim_var, config, "trim_names")
-
-        manual_frame = ttk.LabelFrame(frame, text="手动映射改名", padding=6)
-        manual_frame.grid(row=2, column=0, columnspan=8, sticky="nsew", padx=4, pady=6)
-        old_field_var = tk.StringVar(value=headers[0] if headers else "")
-        new_field_var = tk.StringVar(value="")
-        ttk.Label(manual_frame, text="原字段名：").grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
-        ttk.Combobox(manual_frame, textvariable=old_field_var, values=headers, width=28, state="normal").grid(row=0, column=1, sticky=tk.W, padx=4, pady=4)
-        ttk.Label(manual_frame, text="新字段名：").grid(row=0, column=2, sticky=tk.W, padx=4, pady=4)
-        ttk.Entry(manual_frame, textvariable=new_field_var, width=30).grid(row=0, column=3, sticky=tk.W, padx=4, pady=4)
-
-        map_wrap = ttk.Frame(manual_frame)
-        map_wrap.grid(row=1, column=0, columnspan=6, sticky="nsew", padx=4, pady=4)
-        mapping_tree = ttk.Treeview(map_wrap, columns=("old", "new"), show="headings", height=8)
-        mapping_tree.heading("old", text="原字段名")
-        mapping_tree.heading("new", text="新字段名")
-        mapping_tree.column("old", width=260, anchor=tk.W)
-        mapping_tree.column("new", width=260, anchor=tk.W)
-        map_y = ttk.Scrollbar(map_wrap, orient=tk.VERTICAL, command=mapping_tree.yview)
-        mapping_tree.configure(yscrollcommand=map_y.set)
-        mapping_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        map_y.pack(side=tk.RIGHT, fill=tk.Y)
-        manual_frame.rowconfigure(1, weight=1)
-        manual_frame.columnconfigure(5, weight=1)
-
-        def refresh_mapping_tree():
-            mapping_tree.delete(*mapping_tree.get_children())
-            for item in config.get("mappings", []):
-                mapping_tree.insert("", tk.END, values=(item.get("old", ""), item.get("new", "")))
-
-        def save_tree_to_config():
-            items = []
-            for iid in mapping_tree.get_children():
-                old, new = mapping_tree.item(iid, "values")[:2]
-                if str(old).strip():
-                    items.append({"old": str(old), "new": str(new)})
-            config["mappings"] = items
-
-        def add_mapping():
-            old = old_field_var.get().strip()
-            new = new_field_var.get().strip()
-            if not old:
-                messagebox.showwarning("提示", "请先填写原字段名。")
-                return
-            mapping_tree.insert("", tk.END, values=(old, new))
-            save_tree_to_config()
-
-        def delete_mapping():
-            for iid in mapping_tree.selection():
-                mapping_tree.delete(iid)
-            save_tree_to_config()
-
-        def clear_mapping():
-            mapping_tree.delete(*mapping_tree.get_children())
-            save_tree_to_config()
-
-        def load_all_headers():
-            mapping_tree.delete(*mapping_tree.get_children())
-            for h in headers:
-                mapping_tree.insert("", tk.END, values=(h, h))
-            save_tree_to_config()
-
-        def load_selected_header():
-            old = old_field_var.get().strip()
-            if old:
-                new_field_var.set(old)
-
-        btns = ttk.Frame(manual_frame)
-        btns.grid(row=0, column=4, rowspan=2, sticky="ns", padx=4, pady=4)
-        for text_, cmd in [
-            ("添加映射", add_mapping),
-            ("删除选中", delete_mapping),
-            ("清空映射", clear_mapping),
-            ("载入全部字段", load_all_headers),
-            ("新名=原名", load_selected_header),
-            ("保存映射", save_tree_to_config),
-        ]:
-            ttk.Button(btns, text=text_, command=cmd).pack(fill=tk.X, pady=2)
-
-        def edit_mapping_cell(event):
-            region = mapping_tree.identify("region", event.x, event.y)
-            if region != "cell":
-                return
-            row_id = mapping_tree.identify_row(event.y)
-            col_id = mapping_tree.identify_column(event.x)
-            if not row_id or not col_id:
-                return
-            col_index = int(col_id.replace("#", "")) - 1
-            bbox = mapping_tree.bbox(row_id, col_id)
-            if not bbox:
-                return
-            x, y, w, h = bbox
-            values = list(mapping_tree.item(row_id, "values"))
-            entry = ttk.Entry(mapping_tree)
-            entry.place(x=x, y=y, width=w, height=h)
-            entry.insert(0, values[col_index] if col_index < len(values) else "")
-            entry.select_range(0, tk.END)
-            entry.focus()
-            def close(save=True):
-                if save:
-                    while len(values) < 2:
-                        values.append("")
-                    values[col_index] = entry.get()
-                    mapping_tree.item(row_id, values=values)
-                    save_tree_to_config()
-                entry.destroy()
-            entry.bind("<Return>", lambda e: close(True))
-            entry.bind("<Escape>", lambda e: close(False))
-            entry.bind("<FocusOut>", lambda e: close(True))
-        mapping_tree.bind("<Double-1>", edit_mapping_cell)
-        refresh_mapping_tree()
-
-        rule_frame = ttk.LabelFrame(frame, text="批量规则", padding=6)
-        rule_frame.grid(row=3, column=0, columnspan=8, sticky="ew", padx=4, pady=6)
-        prefix_var = self.add_labeled_entry(rule_frame, "前缀：", config.get("prefix", ""), 0, 0, 18)
-        suffix_var = self.add_labeled_entry(rule_frame, "后缀：", config.get("suffix", ""), 0, 2, 18)
-        match_var = self.add_labeled_entry(rule_frame, "匹配值：", config.get("replace_match", ""), 1, 0, 18)
-        repl_var = self.add_labeled_entry(rule_frame, "替换值：", config.get("replace_value", ""), 1, 2, 18)
-        scope_var = self.add_labeled_combo(rule_frame, "作用范围：", config.get("scope", "全部字段"), ["全部字段", "选中字段"], 2, 0, 16)
-        for var, key in [(prefix_var, "prefix"), (suffix_var, "suffix"), (match_var, "replace_match"), (repl_var, "replace_value"), (scope_var, "scope")]:
-            self.sync_var_to_config(var, config, key)
-
-        field_frame = ttk.LabelFrame(frame, text="选中字段范围（作用范围为“选中字段”时使用）", padding=6)
-        field_frame.grid(row=4, column=0, columnspan=8, sticky="nsew", padx=4, pady=6)
-        lb = tk.Listbox(field_frame, selectmode=tk.MULTIPLE, height=8, exportselection=False)
-        yscroll = ttk.Scrollbar(field_frame, orient=tk.VERTICAL, command=lb.yview)
-        lb.configure(yscrollcommand=yscroll.set)
-        lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        yscroll.pack(side=tk.RIGHT, fill=tk.Y)
-        selected = set(config.get("scope_fields", []))
-        for i, h in enumerate(headers):
-            lb.insert(tk.END, h)
-            if h in selected:
-                lb.selection_set(i)
-        def sync_scope_fields(*_):
-            config["scope_fields"] = [lb.get(i) for i in lb.curselection()]
-        lb.bind("<<ListboxSelect>>", sync_scope_fields)
-        scope_btns = ttk.Frame(field_frame)
-        scope_btns.pack(side=tk.LEFT, fill=tk.Y, padx=6)
-        ttk.Button(scope_btns, text="保存勾选", command=sync_scope_fields).pack(fill=tk.X, pady=2)
-        ttk.Button(scope_btns, text="全选", command=lambda: (lb.selection_set(0, tk.END), sync_scope_fields())).pack(fill=tk.X, pady=2)
-        ttk.Button(scope_btns, text="全不选", command=lambda: (lb.selection_clear(0, tk.END), sync_scope_fields())).pack(fill=tk.X, pady=2)
-
-        ttk.Label(
-            frame,
-            text="说明：手动映射模式只修改映射中列出的字段；批量模式可对全部字段或选中字段添加前缀/后缀/替换字符。执行前请先预览计划，确认字段名无误。",
-            foreground="gray",
-            wraplength=1050
-        ).grid(row=5, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(6, 2))
+        return workflow_build_rename_columns_config_ui(self, config, headers)
 
     def ensure_separator_count(self, config):
-        fields = config.get("fields", [])
-        need = max(len(fields) - 1, 0)
-        seps = list(config.get("separators", []))
-        if len(seps) < need:
-            seps += ["-"] * (need - len(seps))
-        if len(seps) > need:
-            seps = seps[:need]
-        config["separators"] = seps
+        return workflow_ensure_separator_count_ui(config)
 
     def parse_separator_text(self, text):
-        """把用户输入的 {换行符}、\n 等写法转换成真实分隔符。"""
-        value = "" if text is None else str(text)
-        replacements = [
-            ("{Windows换行}", "\r\n"),
-            ("{windows换行}", "\r\n"),
-            ("{换行符}", "\n"),
-            ("{换行}", "\n"),
-            ("{newline}", "\n"),
-            ("{NEWLINE}", "\n"),
-            ("{制表符}", "\t"),
-            ("{tab}", "\t"),
-            ("{TAB}", "\t"),
-            ("{空格}", " "),
-            ("{space}", " "),
-            ("{SPACE}", " "),
-            ("{空字符}", ""),
-            ("{empty}", ""),
-            ("{EMPTY}", ""),
-        ]
-        for key, real in replacements:
-            value = value.replace(key, real)
-        value = value.replace("\\r\\n", "\r\n")
-        value = value.replace("\\n", "\n")
-        value = value.replace("\\t", "\t")
-        return value
+        return workflow_parse_separator_text(text)
 
     def separator_to_input_text(self, text):
-        value = "" if text is None else str(text)
-        value = value.replace("\r\n", "{Windows换行}")
-        value = value.replace("\n", "{换行符}")
-        value = value.replace("\t", "{制表符}")
-        return value
+        return workflow_separator_to_input_text(text)
 
     def sep_value_to_display(self, sep):
-        mapping = {"": "空字符", " ": "空格", "\n": "换行", "\r\n": "Windows换行", "\t": "制表符"}
-        return mapping.get(sep, sep if sep in self.SEPARATOR_OPTIONS else "自定义")
+        return workflow_sep_value_to_display(sep, self.SEPARATOR_OPTIONS)
 
     def display_to_sep_value(self, display, custom):
-        if display == "空字符":
-            return ""
-        if display == "空格":
-            return " "
-        if display == "换行":
-            return "\n"
-        if display == "Windows换行":
-            return "\r\n"
-        if display == "制表符":
-            return "\t"
-        if display == "自定义":
-            return self.parse_separator_text(custom)
-        return display
+        return workflow_display_to_sep_value(display, custom)
 
     def preview_plan_separator(self, parent, left_name, right_name, combo_var, custom_var):
-        display = combo_var.get()
-        raw_text = custom_var.get() if display == "自定义" else display
-        sep = self.display_to_sep_value(display, custom_var.get())
-
-        win = tk.Toplevel(self.window)
-        win.title("连接符效果预览")
-        win.geometry("520x360")
-        win.transient(self.window)
-
-        frame = ttk.Frame(win, padding=10)
-        frame.pack(fill=tk.BOTH, expand=True)
-        ttk.Label(frame, text=f"模拟列数据：{left_name}=A，{right_name}=B").pack(anchor=tk.W, pady=(0, 6))
-        ttk.Label(frame, text="用户输入：").pack(anchor=tk.W)
-        raw_box = tk.Text(frame, height=4, wrap=tk.WORD)
-        raw_box.pack(fill=tk.X, pady=4)
-        raw_box.insert("1.0", raw_text)
-        raw_box.configure(state="disabled")
-        ttk.Label(frame, text="实际合并效果：").pack(anchor=tk.W, pady=(8, 0))
-        effect_box = tk.Text(frame, height=7, wrap=tk.WORD)
-        effect_box.pack(fill=tk.BOTH, expand=True, pady=4)
-        effect_box.insert("1.0", "A" + sep + "B")
-        effect_box.configure(state="disabled")
-        ttk.Label(frame, text="支持：{换行符}、{制表符}、{空格}、{空字符}，也兼容 \\n、\\t。", foreground="gray").pack(anchor=tk.W, pady=(4, 0))
-        ttk.Button(frame, text="关闭", command=win.destroy).pack(anchor=tk.E, pady=(8, 0))
+        return workflow_preview_plan_separator_ui(self, left_name, right_name, combo_var, custom_var)
 
     def refresh_merge_separator_ui(self, parent, config):
-        for child in parent.winfo_children():
-            child.destroy()
-        fields = config.get("fields", [])
-        seps = config.get("separators", [])
-        ttk.Label(
-            parent,
-            text="提示：自定义连接符支持 {换行符}、{制表符}、{空格}、{空字符}，也兼容 \\n、\\t，可组合普通文字，如 {换行符}客码:",
-            foreground="gray",
-            wraplength=1050
-        ).pack(anchor=tk.W, pady=(0, 4))
-        if len(fields) < 2:
-            ttk.Label(parent, text="至少选择两列后才需要设置连接符。", foreground="gray").pack(anchor=tk.W)
-            return
-        for i in range(len(fields)-1):
-            row = ttk.Frame(parent)
-            row.pack(fill=tk.X, pady=2)
-            ttk.Label(row, text=f"{fields[i]} 和 {fields[i+1]} 之间：", width=34).pack(side=tk.LEFT)
-            current = seps[i] if i < len(seps) else "-"
-            display_value = self.sep_value_to_display(current)
-            combo_var = tk.StringVar(value=display_value)
-            custom_var = tk.StringVar(value=self.separator_to_input_text(current) if display_value == "自定义" else "")
-            combo = ttk.Combobox(row, textvariable=combo_var, values=self.SEPARATOR_OPTIONS, width=12, state="readonly")
-            combo.pack(side=tk.LEFT, padx=4)
-            ttk.Label(row, text="自定义：").pack(side=tk.LEFT)
-            entry = ttk.Entry(row, textvariable=custom_var, width=24)
-            entry.pack(side=tk.LEFT, padx=4)
-            ttk.Button(
-                row,
-                text="预览",
-                command=lambda l=fields[i], r=fields[i+1], cv=combo_var, uv=custom_var: self.preview_plan_separator(parent, l, r, cv, uv)
-            ).pack(side=tk.LEFT, padx=4)
-            def update_sep(*_, idx=i, cv=combo_var, uv=custom_var):
-                config["separators"][idx] = self.display_to_sep_value(cv.get(), uv.get())
-            combo_var.trace_add("write", update_sep)
-            custom_var.trace_add("write", update_sep)
+        return workflow_refresh_merge_separator_ui(self, parent, config)
 
 
     def build_row_data_mapping_config(self, config, headers):
-        """构建“行数据映射填充 / 按行取值展开”节点配置。"""
-        frame = ttk.LabelFrame(self.config_frame, text="行数据映射填充节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        ttk.Label(
-            frame,
-            text="按行向下处理：处理第 N 行时，就取第 N 行指定字段的值，并展开成多行输出。适合“一行对应一个文件，多列是多个修改项”的数据结构。",
-            foreground="gray",
-            wraplength=1050
-        ).grid(row=0, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
-
-        headers = list(headers)
-        mode_var = self.add_labeled_combo(frame, "处理模式：", config.get("mode", "按行取值展开"), ["按行取值展开"], 1, 0, 18)
-        start_row_var = self.add_labeled_entry(frame, "起始行号：", config.get("start_row", "1"), 1, 2, 10)
-        end_mode_var = self.add_labeled_combo(
-            frame,
-            "结束条件：",
-            config.get("end_mode", "填充到数据边界"),
-            ["填充到数据边界", "固定行数", "填充到指定行", "遇到空行停止"],
-            2, 0, 18
-        )
-        count_var = self.add_labeled_entry(frame, "固定行数：", config.get("count", "1"), 2, 2, 10)
-        end_row_var = self.add_labeled_entry(frame, "结束行号：", config.get("end_row", "1"), 2, 4, 10)
-
-        ttk.Label(frame, text="取值字段：").grid(row=3, column=0, sticky=tk.NW, padx=4, pady=4)
-        value_wrap = ttk.Frame(frame)
-        value_wrap.grid(row=3, column=1, columnspan=2, sticky="nsew", padx=4, pady=4)
-        value_list = tk.Listbox(value_wrap, selectmode=tk.MULTIPLE, height=8, exportselection=False)
-        value_scroll = ttk.Scrollbar(value_wrap, orient=tk.VERTICAL, command=value_list.yview)
-        value_list.configure(yscrollcommand=value_scroll.set)
-        value_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        value_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        selected_values = set(config.get("value_fields", []))
-        for i, h in enumerate(headers):
-            value_list.insert(tk.END, h)
-            if h in selected_values:
-                value_list.selection_set(i)
-
-        ttk.Label(frame, text="保留字段：").grid(row=3, column=3, sticky=tk.NW, padx=4, pady=4)
-        keep_wrap = ttk.Frame(frame)
-        keep_wrap.grid(row=3, column=4, columnspan=2, sticky="nsew", padx=4, pady=4)
-        keep_list = tk.Listbox(keep_wrap, selectmode=tk.MULTIPLE, height=8, exportselection=False)
-        keep_scroll = ttk.Scrollbar(keep_wrap, orient=tk.VERTICAL, command=keep_list.yview)
-        keep_list.configure(yscrollcommand=keep_scroll.set)
-        keep_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        keep_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        selected_keep = set(config.get("keep_fields", []))
-        for i, h in enumerate(headers):
-            keep_list.insert(tk.END, h)
-            if h in selected_keep:
-                keep_list.selection_set(i)
-
-        def sync_value_fields(event=None):
-            config["value_fields"] = [value_list.get(i) for i in value_list.curselection()]
-
-        def sync_keep_fields(event=None):
-            config["keep_fields"] = [keep_list.get(i) for i in keep_list.curselection()]
-
-        value_list.bind("<<ListboxSelect>>", sync_value_fields)
-        keep_list.bind("<<ListboxSelect>>", sync_keep_fields)
-
-        btn_row = ttk.Frame(frame)
-        btn_row.grid(row=4, column=1, columnspan=5, sticky=tk.W, padx=4, pady=2)
-        def select_all_values():
-            value_list.selection_set(0, tk.END)
-            sync_value_fields()
-        def clear_values():
-            value_list.selection_clear(0, tk.END)
-            sync_value_fields()
-        def select_all_keep():
-            keep_list.selection_set(0, tk.END)
-            sync_keep_fields()
-        def clear_keep():
-            keep_list.selection_clear(0, tk.END)
-            sync_keep_fields()
-        ttk.Button(btn_row, text="取值字段全选", command=select_all_values).pack(side=tk.LEFT, padx=2)
-        ttk.Button(btn_row, text="清空取值字段", command=clear_values).pack(side=tk.LEFT, padx=2)
-        ttk.Button(btn_row, text="保留字段全选", command=select_all_keep).pack(side=tk.LEFT, padx=12)
-        ttk.Button(btn_row, text="清空保留字段", command=clear_keep).pack(side=tk.LEFT, padx=2)
-
-        output_frame = ttk.LabelFrame(frame, text="输出字段设置", padding=6)
-        output_frame.grid(row=5, column=0, columnspan=8, sticky="ew", padx=4, pady=8)
-        value_name_var = self.add_labeled_entry(output_frame, "目标值字段名：", config.get("output_value_field", "输出内容"), 0, 0, 18)
-        source_name_var = self.add_labeled_entry(output_frame, "来源字段名列：", config.get("source_field_name", "来源字段"), 0, 2, 18)
-        row_name_var = self.add_labeled_entry(output_frame, "原始行号列：", config.get("original_row_field", "原始行号"), 1, 0, 18)
-        status_name_var = self.add_labeled_entry(output_frame, "状态列：", config.get("status_field", "状态"), 1, 2, 18)
-
-        output_source_var = tk.BooleanVar(value=bool(config.get("output_source_field", True)))
-        output_row_var = tk.BooleanVar(value=bool(config.get("output_original_row", True)))
-        output_status_var = tk.BooleanVar(value=bool(config.get("output_status", True)))
-        ttk.Checkbutton(output_frame, text="输出来源字段名", variable=output_source_var).grid(row=2, column=0, sticky=tk.W, padx=4, pady=4)
-        ttk.Checkbutton(output_frame, text="输出原始行号", variable=output_row_var).grid(row=2, column=1, sticky=tk.W, padx=4, pady=4)
-        ttk.Checkbutton(output_frame, text="输出状态", variable=output_status_var).grid(row=2, column=2, sticky=tk.W, padx=4, pady=4)
-
-        empty_frame = ttk.LabelFrame(frame, text="空值处理", padding=6)
-        empty_frame.grid(row=6, column=0, columnspan=8, sticky="ew", padx=4, pady=4)
-        empty_mode_var = self.add_labeled_combo(empty_frame, "空值处理：", config.get("empty_mode", "跳过空值"), ["跳过空值", "保留空值", "填写固定值"], 0, 0, 16)
-        empty_fixed_var = self.add_labeled_entry(empty_frame, "固定值：", config.get("empty_fixed", "未填写"), 0, 2, 18)
-        trim_var = tk.BooleanVar(value=bool(config.get("trim_value", True)))
-        ttk.Checkbutton(empty_frame, text="取值前去除首尾空格", variable=trim_var).grid(row=1, column=0, columnspan=2, sticky=tk.W, padx=4, pady=4)
-
-        ttk.Label(
-            frame,
-            text="输出逻辑：外层按行处理，内层按取值字段处理。例如第1行输出本行的编码/客码/PCB，第2行再输出第2行对应字段。",
-            foreground="gray",
-            wraplength=1050
-        ).grid(row=7, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(8, 4))
-
-        self.sync_var_to_config(mode_var, config, "mode")
-        self.sync_var_to_config(start_row_var, config, "start_row")
-        self.sync_var_to_config(end_mode_var, config, "end_mode")
-        self.sync_var_to_config(count_var, config, "count")
-        self.sync_var_to_config(end_row_var, config, "end_row")
-        self.sync_var_to_config(value_name_var, config, "output_value_field")
-        self.sync_var_to_config(source_name_var, config, "source_field_name")
-        self.sync_var_to_config(row_name_var, config, "original_row_field")
-        self.sync_var_to_config(status_name_var, config, "status_field")
-        self.sync_bool_to_config(output_source_var, config, "output_source_field")
-        self.sync_bool_to_config(output_row_var, config, "output_original_row")
-        self.sync_bool_to_config(output_status_var, config, "output_status")
-        self.sync_var_to_config(empty_mode_var, config, "empty_mode")
-        self.sync_var_to_config(empty_fixed_var, config, "empty_fixed")
-        self.sync_bool_to_config(trim_var, config, "trim_value")
+        return workflow_build_row_data_mapping_config_ui(self, config, headers)
 
     def build_save_transit_config(self, config, headers):
-        """构建“保存中转数据”节点配置。"""
-        frame = ttk.LabelFrame(self.config_frame, text="保存中转数据节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        ttk.Label(
-            frame,
-            text="把当前工作流执行到这里的数据保存一份。默认保存为内存副表，后续高级筛选节点可把它作为副表引用；也可以在正式执行时保存到 SQLite 或导出 xlsx。",
-            foreground="gray",
-            wraplength=1050
-        ).grid(row=0, column=0, columnspan=6, sticky=tk.W, padx=4, pady=(0, 6))
-
-        name_var = self.add_labeled_entry(frame, "中转名称：", config.get("transit_name", "中转数据"), 1, 0, 28)
-        self.sync_var_to_config(name_var, config, "transit_name")
-
-        save_memory_var = tk.BooleanVar(value=bool(config.get("save_memory", True)))
-        append_memory_var = tk.BooleanVar(value=bool(config.get("append_memory", False)))
-        save_sqlite_var = tk.BooleanVar(value=bool(config.get("save_sqlite", False)))
-        save_xlsx_var = tk.BooleanVar(value=bool(config.get("save_xlsx", False)))
-        stop_var = tk.BooleanVar(value=bool(config.get("stop_after_save", False)))
-
-        ttk.Checkbutton(frame, text="保存为内存副表（供后续高级筛选引用）", variable=save_memory_var).grid(row=2, column=0, columnspan=3, sticky=tk.W, padx=4, pady=4)
-        ttk.Checkbutton(frame, text="同名内存副表已有数据时追加写入（循环汇总用）", variable=append_memory_var).grid(row=2, column=3, columnspan=3, sticky=tk.W, padx=4, pady=4)
-        ttk.Checkbutton(frame, text="正式执行时保存到 SQLite 表", variable=save_sqlite_var).grid(row=3, column=0, columnspan=3, sticky=tk.W, padx=4, pady=4)
-        ttk.Checkbutton(frame, text="正式执行时导出为 xlsx", variable=save_xlsx_var).grid(row=3, column=3, columnspan=3, sticky=tk.W, padx=4, pady=4)
-        ttk.Checkbutton(frame, text="保存后停止工作流", variable=stop_var).grid(row=4, column=0, columnspan=3, sticky=tk.W, padx=4, pady=4)
-
-        self.sync_bool_to_config(save_memory_var, config, "save_memory")
-        self.sync_bool_to_config(append_memory_var, config, "append_memory")
-        self.sync_bool_to_config(save_sqlite_var, config, "save_sqlite")
-        self.sync_bool_to_config(save_xlsx_var, config, "save_xlsx")
-        self.sync_bool_to_config(stop_var, config, "stop_after_save")
-
-        sqlite_frame = ttk.LabelFrame(frame, text="SQLite 保存设置", padding=6)
-        sqlite_frame.grid(row=5, column=0, columnspan=6, sticky="ew", padx=4, pady=6)
-        table_var = self.add_labeled_entry(sqlite_frame, "SQLite表名：", config.get("sqlite_table", config.get("transit_name", "中转数据")), 0, 0, 28)
-        mode_var = self.add_labeled_combo(sqlite_frame, "同名处理：", config.get("sqlite_mode", "自动加时间戳"), ["覆盖同名表", "自动加时间戳", "追加写入", "报错停止"], 0, 2, 16)
-        self.sync_var_to_config(table_var, config, "sqlite_table")
-        self.sync_var_to_config(mode_var, config, "sqlite_mode")
-
-        xlsx_frame = ttk.LabelFrame(frame, text="xlsx 导出设置", padding=6)
-        xlsx_frame.grid(row=6, column=0, columnspan=6, sticky="ew", padx=4, pady=6)
-        path_var = tk.StringVar(value=config.get("xlsx_path", os.path.join(getattr(self.app, "app_dir", get_app_dir()), "export", "中转数据.xlsx")))
-        ttk.Label(xlsx_frame, text="xlsx路径：").grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
-        ttk.Entry(xlsx_frame, textvariable=path_var, width=72).grid(row=0, column=1, columnspan=3, sticky=tk.W, padx=4, pady=4)
-        def choose_xlsx_path():
-            initial_dir = os.path.dirname(path_var.get()) if path_var.get() else os.path.join(getattr(self.app, "app_dir", get_app_dir()), "export")
-            os.makedirs(initial_dir, exist_ok=True)
-            path = filedialog.asksaveasfilename(
-                title="选择中转数据 xlsx 导出路径",
-                initialdir=initial_dir,
-                initialfile=os.path.basename(path_var.get()) or "中转数据.xlsx",
-                defaultextension=".xlsx",
-                filetypes=[("Excel 工作簿", "*.xlsx"), ("所有文件", "*.*")]
-            )
-            if path:
-                path_var.set(path)
-                config["xlsx_path"] = path
-        ttk.Button(xlsx_frame, text="选择", command=choose_xlsx_path).grid(row=0, column=4, sticky=tk.W, padx=4, pady=4)
-        self.sync_var_to_config(path_var, config, "xlsx_path")
-
-        ttk.Label(
-            frame,
-            text="说明：预览计划时只会保存内存副表，不会写 SQLite/xlsx；点击【执行计划】时才会执行外部保存。该节点默认不改变当前数据，继续向后传递。",
-            foreground="gray",
-            wraplength=1050
-        ).grid(row=7, column=0, columnspan=6, sticky=tk.W, padx=4, pady=(8, 4))
+        return workflow_build_save_transit_config_ui(self, config, headers)
 
 
 
@@ -9580,339 +10537,13 @@ class PlanWorkflowWindow:
     # 选定列写入指定表
     # ------------------------------
     def build_selected_columns_write_config(self, config, headers, idx=None, transit_context=None):
-        """构建“选定列写入指定表”节点配置。写入预览只在节点内显示，不影响结果预览区。"""
-        config.setdefault("source_type", "当前工作流表")
-        config.setdefault("source_sqlite_table", "")
-        config.setdefault("source_transit_table", "")
-        config.setdefault("selected_fields", [])
-        config.setdefault("target_type", "SQLite表")
-        config.setdefault("target_table", "选定列结果")
-        config.setdefault("target_transit_table", "选定列结果")
-        config.setdefault("write_mode", "复制列到目标表新建字段")
-        config.setdefault("field_name_mode", "使用原字段名")
-        config.setdefault("target_prefix", "")
-        config.setdefault("target_suffix", "")
-        config.setdefault("field_mappings", [])
-        config.setdefault("overwrite_rule", "只写入空单元格")
-        config.setdefault("enable_write", False)
-        config.setdefault("backup_before_write", True)
-        config["write_mode"] = self.normalize_selected_columns_write_mode(config.get("write_mode"))
-
-        transit_context = transit_context or {"transit_tables": {}}
-        transit_tables = transit_context.get("transit_tables", {}) or {}
-        transit_names = sorted(transit_tables.keys())
-
-        try:
-            sqlite_tables = self.app.get_table_names()
-        except Exception:
-            sqlite_tables = []
-
-        frame = ttk.LabelFrame(self.config_frame, text="选定列写入指定表节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        ttk.Label(
-            frame,
-            text=(
-                "说明：从当前表 / SQLite表 / 中转副表选择若干列，复制到当前工作表 / SQLite表 / 中转副表的新建/已有字段。"
-                "节点内的“生成写入预览”只显示写入动作；勾选允许写入后，预览完整计划/预览到当前节点/执行计划均可触发本节点写入。"
-            ),
-            foreground="gray",
-            wraplength=760
-        ).grid(row=0, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
-
-        source_type_values = ["当前工作流表", "SQLite表", "中转副表"]
-        target_type_values = ["当前工作表", "SQLite表", "中转副表"]
-        write_modes = [
-            "局部覆盖，保留目标原行数",
-            "清空目标字段后覆盖，保留目标原行数",
-            "按来源完整结构覆盖",
-            "覆盖重建目标表"
-        ]
-        name_modes = ["使用原字段名", "添加前缀", "添加后缀", "手动字段映射"]
-        overwrite_values = ["覆盖全部", "只写入空单元格", "目标已有值则跳过", "目标已有值且不同才覆盖"]
-
-        source_type_var, source_type_combo = self.add_labeled_combo_control(frame, "来源类型：", config.get("source_type", "当前工作流表"), source_type_values, 1, 0, 12)
-        sqlite_source_var, sqlite_source_combo = self.add_labeled_combo_control(frame, "SQLite来源表：", config.get("source_sqlite_table", ""), sqlite_tables, 1, 2, 18, readonly=False)
-        transit_source_var, transit_source_combo = self.add_labeled_combo_control(frame, "中转来源表：", config.get("source_transit_table", ""), transit_names, 2, 0, 18, readonly=False)
-        ttk.Button(frame, text="刷新表/字段", command=lambda: refresh_selected_write_sources(True)).grid(row=2, column=2, sticky=tk.W, padx=4, pady=4)
-
-        target_type_var, target_type_combo = self.add_labeled_combo_control(frame, "目标类型：", config.get("target_type", "SQLite表"), target_type_values, 3, 0, 12)
-        sqlite_target_var, sqlite_target_combo = self.add_labeled_combo_control(frame, "SQLite目标表：", config.get("target_table", "选定列结果"), sqlite_tables, 3, 2, 18, readonly=False)
-        transit_target_var, transit_target_combo = self.add_labeled_combo_control(frame, "中转目标表：", config.get("target_transit_table", "选定列结果"), transit_names, 4, 0, 18, readonly=False)
-
-        write_mode_var = self.add_labeled_combo(frame, "写入范围：", config.get("write_mode", "局部覆盖，保留目标原行数"), write_modes, 5, 0, 28)
-        name_mode_var, name_mode_combo = self.add_labeled_combo_control(frame, "字段命名：", config.get("field_name_mode", "使用原字段名"), name_modes, 5, 2, 14)
-        overwrite_var = self.add_labeled_combo(frame, "覆盖策略：", config.get("overwrite_rule", "只写入空单元格"), overwrite_values, 6, 0, 18)
-
-        prefix_var = self.add_labeled_entry(frame, "前缀：", config.get("target_prefix", ""), 6, 2, 12)
-        suffix_var = self.add_labeled_entry(frame, "后缀：", config.get("target_suffix", ""), 6, 4, 12)
-        enable_write_var = tk.BooleanVar(value=bool(config.get("enable_write", False)))
-        backup_var = tk.BooleanVar(value=bool(config.get("backup_before_write", True)))
-        ttk.Checkbutton(frame, text="执行/预览计划时写入目标表", variable=enable_write_var).grid(row=7, column=0, columnspan=3, sticky=tk.W, padx=4, pady=4)
-        ttk.Checkbutton(frame, text="写入SQLite前备份", variable=backup_var).grid(row=7, column=3, columnspan=2, sticky=tk.W, padx=4, pady=4)
-
-        self.sync_var_to_config(source_type_var, config, "source_type")
-        self.sync_var_to_config(sqlite_source_var, config, "source_sqlite_table")
-        self.sync_var_to_config(transit_source_var, config, "source_transit_table")
-        self.sync_var_to_config(target_type_var, config, "target_type")
-        self.sync_var_to_config(sqlite_target_var, config, "target_table")
-        self.sync_var_to_config(transit_target_var, config, "target_transit_table")
-        self.sync_var_to_config(write_mode_var, config, "write_mode")
-        self.sync_var_to_config(name_mode_var, config, "field_name_mode")
-        self.sync_var_to_config(overwrite_var, config, "overwrite_rule")
-        self.sync_var_to_config(prefix_var, config, "target_prefix")
-        self.sync_var_to_config(suffix_var, config, "target_suffix")
-        self.sync_bool_to_config(enable_write_var, config, "enable_write")
-        self.sync_bool_to_config(backup_var, config, "backup_before_write")
-
-        # 获取当前配置下的来源字段，仅用于字段选择区。
-        try:
-            current_headers, current_rows = self.get_headers_rows_before(idx) if idx is not None else (headers, [])
-        except Exception:
-            current_headers, current_rows = headers, []
-        try:
-            source_headers, source_rows, source_name = self.read_selected_columns_source_table(
-                config, current_headers, current_rows, transit_context
-            )
-        except Exception as e:
-            source_headers, source_rows, source_name = [], [], f"来源读取失败：{e}"
-        source_state = {"headers": list(source_headers), "rows": list(source_rows), "name": source_name}
-
-        fields_frame = ttk.LabelFrame(frame, text=f"1. 选择来源字段（来源：{source_name}，{len(source_rows)} 行 × {len(source_headers)} 列）", padding=6)
-        fields_frame.grid(row=8, column=0, columnspan=8, sticky="ew", padx=4, pady=6)
-
-        field_list = tk.Listbox(fields_frame, selectmode=tk.MULTIPLE, width=46, height=6, exportselection=False)
-        field_y = ttk.Scrollbar(fields_frame, orient=tk.VERTICAL, command=field_list.yview)
-        field_list.configure(yscrollcommand=field_y.set)
-        field_list.grid(row=0, column=0, rowspan=4, sticky="nsew", padx=4, pady=4)
-        field_y.grid(row=0, column=1, rowspan=4, sticky="ns", pady=4)
-        fields_frame.rowconfigure(0, weight=1)
-        fields_frame.columnconfigure(0, weight=1)
-
-        selected_set = set(config.get("selected_fields", []) or [])
-        for i, h in enumerate(source_headers):
-            field_list.insert(tk.END, h)
-            if (h in selected_set) or (not selected_set and i < 3):
-                field_list.selection_set(i)
-
-        def sync_selected_fields(event=None):
-            config["selected_fields"] = [field_list.get(i) for i in field_list.curselection()]
-        field_list.bind("<<ListboxSelect>>", sync_selected_fields)
-
-        def select_all_fields():
-            field_list.selection_set(0, tk.END)
-            sync_selected_fields()
-        def clear_selected_fields():
-            field_list.selection_clear(0, tk.END)
-            sync_selected_fields()
-
-        ttk.Button(fields_frame, text="全选字段", command=select_all_fields).grid(row=0, column=2, sticky=tk.W, padx=4, pady=4)
-        ttk.Button(fields_frame, text="清空选择", command=clear_selected_fields).grid(row=1, column=2, sticky=tk.W, padx=4, pady=4)
-        ttk.Button(fields_frame, text="保存当前选择", command=sync_selected_fields).grid(row=2, column=2, sticky=tk.W, padx=4, pady=4)
-
-        # 手动字段映射：来源字段 -> 目标字段。非手动模式下仍保留配置但不强制使用。
-        mapping_frame = ttk.LabelFrame(frame, text="2. 手动字段映射（仅字段命名=手动字段映射时生效）", padding=6)
-        mapping_frame.grid(row=9, column=0, columnspan=8, sticky="ew", padx=4, pady=6)
-        map_src_var = tk.StringVar(value=source_headers[0] if source_headers else "")
-        map_tgt_var = tk.StringVar(value="")
-        ttk.Label(mapping_frame, text="来源字段：").grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
-        map_src_combo = ttk.Combobox(mapping_frame, textvariable=map_src_var, values=source_headers, width=20, state="normal")
-        map_src_combo.grid(row=0, column=1, sticky=tk.W, padx=4, pady=4)
-        ttk.Label(mapping_frame, text="目标字段名：").grid(row=0, column=2, sticky=tk.W, padx=4, pady=4)
-        ttk.Entry(mapping_frame, textvariable=map_tgt_var, width=22).grid(row=0, column=3, sticky=tk.W, padx=4, pady=4)
-
-        map_tree = ttk.Treeview(mapping_frame, columns=("来源字段", "目标字段"), show="headings", height=3)
-        for col, width in [("来源字段", 170), ("目标字段", 170)]:
-            map_tree.heading(col, text=col)
-            map_tree.column(col, width=width, anchor=tk.W, stretch=False)
-        map_tree.grid(row=1, column=0, columnspan=4, sticky="nsew", padx=4, pady=4)
-        map_y = ttk.Scrollbar(mapping_frame, orient=tk.VERTICAL, command=map_tree.yview)
-        map_tree.configure(yscrollcommand=map_y.set)
-        map_y.grid(row=1, column=4, sticky="ns", pady=4)
-
-        for item in config.get("field_mappings", []) or []:
-            map_tree.insert("", tk.END, values=(item.get("source_field", ""), item.get("target_field", "")))
-
-        def sync_field_mappings():
-            config["field_mappings"] = []
-            for iid in map_tree.get_children():
-                s, t = map_tree.item(iid, "values")
-                if s:
-                    config["field_mappings"].append({"source_field": str(s), "target_field": str(t or s)})
-        refreshing_selected_write = {"active": False}
-
-        def refresh_selected_write_sources(refresh_table_choices=False):
-            if refreshing_selected_write["active"]:
-                return
-            refreshing_selected_write["active"] = True
-            try:
-                sync_selected_fields()
-                sync_field_mappings()
-                config["source_type"] = source_type_var.get()
-                config["source_sqlite_table"] = sqlite_source_var.get()
-                config["source_transit_table"] = transit_source_var.get()
-                config["target_type"] = target_type_var.get()
-                config["target_table"] = sqlite_target_var.get()
-                config["target_transit_table"] = transit_target_var.get()
-                config["field_name_mode"] = name_mode_var.get()
-
-                live_transit_context = transit_context
-                if refresh_table_choices:
-                    try:
-                        sqlite_tables[:] = self.app.get_table_names()
-                    except Exception:
-                        sqlite_tables[:] = self.get_sqlite_table_names()
-                    try:
-                        live_transit_context = self.get_transit_context_before(idx) if idx is not None else transit_context
-                    except Exception:
-                        live_transit_context = transit_context
-                    live_names = sorted((live_transit_context or {}).get("transit_tables", {}).keys())
-                    transit_names[:] = live_names
-                    for combo, var in [
-                        (sqlite_source_combo, sqlite_source_var),
-                        (sqlite_target_combo, sqlite_target_var),
-                    ]:
-                        self.refresh_combo_values(combo, var, sqlite_tables, keep_custom=True, fallback=sqlite_tables[0] if sqlite_tables else "")
-                    for combo, var in [
-                        (transit_source_combo, transit_source_var),
-                        (transit_target_combo, transit_target_var),
-                    ]:
-                        self.refresh_combo_values(combo, var, transit_names, keep_custom=True, fallback=transit_names[0] if transit_names else "")
-
-                try:
-                    current_h, current_r = self.get_headers_rows_before(idx) if idx is not None else (headers, [])
-                except Exception:
-                    current_h, current_r = headers, []
-                try:
-                    source_h, source_r, source_label = self.read_selected_columns_source_table(
-                        config, current_h, current_r, live_transit_context
-                    )
-                except Exception as exc:
-                    source_h, source_r, source_label = [], [], f"来源读取失败：{exc}"
-                source_state.update({"headers": list(source_h), "rows": list(source_r), "name": source_label})
-                fields_frame.configure(text=f"1. 选择来源字段（来源：{source_label}，{len(source_r)} 行 × {len(source_h)} 列）")
-                field_list.configure(height=min(10, max(4, len(source_h))))
-                selected = config.get("selected_fields", []) or list(source_h[:3])
-                selected_indices = self.refresh_listbox_values(field_list, source_h, selected)
-                if not selected_indices and source_h:
-                    for i in range(min(3, len(source_h))):
-                        field_list.selection_set(i)
-                sync_selected_fields()
-                self.refresh_combo_values(map_src_combo, map_src_var, source_h, keep_custom=False, fallback=source_h[0] if source_h else "")
-                self.status_var.set(f"选定列写入字段已局部刷新：来源 {source_label}，{len(source_h)} 个字段。")
-            finally:
-                refreshing_selected_write["active"] = False
-
-        def schedule_selected_write_refresh(*_):
-            self.window.after_idle(lambda: refresh_selected_write_sources(False))
-
-        source_type_var.trace_add("write", schedule_selected_write_refresh)
-        sqlite_source_var.trace_add("write", schedule_selected_write_refresh)
-        transit_source_var.trace_add("write", schedule_selected_write_refresh)
-
-        def add_field_mapping():
-            s = map_src_var.get().strip()
-            t = map_tgt_var.get().strip() or s
-            if not s:
-                return
-            # 同一来源字段只保留最后一条映射。
-            for iid in list(map_tree.get_children()):
-                old_s, _old_t = map_tree.item(iid, "values")
-                if old_s == s:
-                    map_tree.delete(iid)
-            map_tree.insert("", tk.END, values=(s, t))
-            sync_field_mappings()
-        def delete_field_mapping():
-            for iid in map_tree.selection():
-                map_tree.delete(iid)
-            sync_field_mappings()
-        ttk.Button(mapping_frame, text="添加/更新映射", command=add_field_mapping).grid(row=0, column=4, sticky=tk.W, padx=4, pady=4)
-        ttk.Button(mapping_frame, text="删除选中映射", command=delete_field_mapping).grid(row=0, column=5, sticky=tk.W, padx=4, pady=4)
-
-        preview_frame = ttk.LabelFrame(frame, text="3. 写入预览（仅本节点内部显示，不影响结果预览区）", padding=6)
-        preview_frame.grid(row=10, column=0, columnspan=8, sticky="ew", padx=4, pady=6)
-        preview_frame.configure(width=820, height=190)
-        preview_frame.grid_propagate(False)
-        preview_cols = ("来源表", "来源行", "来源字段", "来源值", "目标表", "目标行", "目标字段", "原值", "动作")
-        preview_tree = ttk.Treeview(preview_frame, columns=preview_cols, show="headings", height=6)
-        widths = {
-            "来源表": 120, "来源行": 60, "来源字段": 110, "来源值": 150,
-            "目标表": 120, "目标行": 60, "目标字段": 110, "原值": 130, "动作": 170
-        }
-        for col in preview_cols:
-            preview_tree.heading(col, text=col)
-            preview_tree.column(col, width=widths.get(col, 120), anchor=tk.W, stretch=False)
-        py = ttk.Scrollbar(preview_frame, orient=tk.VERTICAL, command=preview_tree.yview)
-        px = ttk.Scrollbar(preview_frame, orient=tk.HORIZONTAL, command=preview_tree.xview)
-        preview_tree.configure(yscrollcommand=py.set, xscrollcommand=px.set)
-        preview_tree.grid(row=0, column=0, sticky="nsew")
-        py.grid(row=0, column=1, sticky="ns")
-        px.grid(row=1, column=0, sticky="ew")
-        preview_frame.rowconfigure(0, weight=1)
-        preview_frame.columnconfigure(0, weight=1)
-
-        def generate_node_write_preview():
-            sync_selected_fields()
-            sync_field_mappings()
-            for iid in preview_tree.get_children():
-                preview_tree.delete(iid)
-            try:
-                current_h, current_r = self.get_headers_rows_before(idx) if idx is not None else (headers, [])
-                ctx = self.get_transit_context_before(idx) if idx is not None else transit_context
-                preview_headers, preview_rows = self.build_selected_columns_write_preview(
-                    config, current_h, current_r, ctx
-                )
-                for row in preview_rows[:2000]:
-                    preview_tree.insert("", tk.END, values=row)
-                self.status_var.set(f"已生成选定列写入预览：{len(preview_rows)} 条动作（最多显示 2000 条）。")
-            except Exception as e:
-                messagebox.showerror("生成写入预览失败", str(e))
-
-        btn_frame = ttk.Frame(frame)
-        btn_frame.grid(row=11, column=0, columnspan=8, sticky=tk.W, padx=4, pady=4)
-        ttk.Button(btn_frame, text="生成写入预览", command=generate_node_write_preview).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btn_frame, text="刷新字段", command=lambda: refresh_selected_write_sources(True)).pack(side=tk.LEFT, padx=4)
-        ttk.Label(
-            btn_frame,
-            text="提示：不勾选写入时只透传数据；目标选“当前工作表”会把写入结果作为后续节点输入。",
-            foreground="gray",
-            wraplength=620
-        ).pack(side=tk.LEFT, padx=12)
+        return workflow_build_selected_columns_write_config_ui(self, config, headers, idx, transit_context)
 
     def get_selected_columns_write_selected_fields(self, config, source_headers):
-        fields = [f for f in (config.get("selected_fields", []) or []) if f in source_headers]
-        if not fields:
-            fields = list(source_headers)
-        return fields
+        return workflow_get_selected_columns_write_selected_fields(config, source_headers)
 
     def make_selected_columns_target_fields(self, config, selected_fields):
-        mode = config.get("field_name_mode", "使用原字段名")
-        mapping = {
-            item.get("source_field", ""): (item.get("target_field", "") or item.get("source_field", ""))
-            for item in (config.get("field_mappings", []) or [])
-        }
-        result = []
-        used = {}
-        for field in selected_fields:
-            if mode == "添加前缀":
-                name = f"{config.get('target_prefix', '')}{field}"
-            elif mode == "添加后缀":
-                name = f"{field}{config.get('target_suffix', '')}"
-            elif mode == "手动字段映射":
-                name = mapping.get(field, field)
-            else:
-                name = field
-            name = str(name or field).strip() or field
-            base = name
-            if base in used:
-                used[base] += 1
-                name = f"{base}_{used[base]}"
-            else:
-                used[base] = 1
-            while name in result:
-                used[base] = used.get(base, 1) + 1
-                name = f"{base}_{used[base]}"
-            result.append(name)
-        return result
+        return workflow_make_selected_columns_target_fields(config, selected_fields)
 
     def read_selected_columns_source_table(self, config, current_headers, current_rows, context=None):
         """读取选定列写入节点的来源表。"""
@@ -9924,23 +10555,28 @@ class PlanWorkflowWindow:
             table = str(config.get("source_sqlite_table", "")).strip()
             if not table:
                 raise ValueError("请选择 SQLite 来源表。")
-            headers = self.get_workflow_sqlite_columns(table, context)
-            db_path = self.get_workflow_db_path(context)
-            with sqlite3.connect(db_path) as conn:
-                cur = conn.cursor()
-                cols = ", ".join(self.app.quote_ident(h) for h in headers)
-                cur.execute(f"SELECT {cols} FROM {self.app.quote_ident(table)} ORDER BY rowid")
-                rows = [["" if v is None else str(v) for v in row] for row in cur.fetchall()]
+            data = self.get_table_manager(context, node_type="选定列写入指定表").read_table(table)
+            headers = list(data.get("headers", []))
+            rows = [list(row) for row in data.get("rows", [])]
             return headers, rows, f"SQLite:{table}"
         if source_type == "中转副表":
             name = str(config.get("source_transit_table", "")).strip()
             if not name:
                 raise ValueError("请选择中转来源表。")
+            manager = self.check_transit_table_permission(
+                context,
+                name,
+                ["read_table"],
+                operation="read_transit_table",
+                field_action="read",
+                node_type="选定列写入指定表",
+            )
             item = (context.get("transit_tables", {}) or {}).get(name)
             if not item:
                 raise ValueError(f"未找到中转来源表：{name}")
             headers = list(item.get("headers", []) or [])
             rows = [list(r) for r in (item.get("rows", []) or [])]
+            self.log_transit_table_event(manager, "read_transit_table", name, headers, rows, message=f"读取中转来源表 {name}：{len(rows)} 行 × {len(headers)} 列")
             return headers, rows, f"中转:{name}"
         raise ValueError(f"未知来源类型：{source_type}")
 
@@ -9960,177 +10596,132 @@ class PlanWorkflowWindow:
                 if not self.sqlite_table_exists_by_name(self.app.sanitize_sql_name(table, "选定列结果"), context=context):
                     return [], [], f"SQLite:{table}"
                 real_table = self.app.sanitize_sql_name(table, "选定列结果")
-                headers = self.get_workflow_sqlite_columns(real_table, context)
-                db_path = self.get_workflow_db_path(context)
-                with sqlite3.connect(db_path) as conn:
-                    cur = conn.cursor()
-                    cols = ", ".join(self.app.quote_ident(h) for h in headers)
-                    cur.execute(f"SELECT {cols} FROM {self.app.quote_ident(real_table)} ORDER BY rowid")
-                    rows = [["" if v is None else str(v) for v in row] for row in cur.fetchall()]
+                data = self.get_table_manager(context, node_type="选定列写入指定表").read_table(real_table)
+                headers = list(data.get("headers", []))
+                rows = [list(row) for row in data.get("rows", [])]
                 return headers, rows, f"SQLite:{real_table}"
             except Exception:
                 return [], [], f"SQLite:{table}"
         if target_type == "中转副表":
             name = str(config.get("target_transit_table", "")).strip() or "选定列结果"
+            manager = self.check_transit_table_permission(
+                context,
+                name,
+                ["read_table"],
+                operation="read_transit_table",
+                field_action="read",
+                node_type="选定列写入指定表",
+            )
             item = (context.get("transit_tables", {}) or {}).get(name)
             if not item:
+                self.log_transit_table_event(manager, "read_transit_table", name, [], [], message=f"读取中转目标表 {name}：目标尚不存在")
                 return [], [], f"中转:{name}"
-            return list(item.get("headers", []) or []), [list(r) for r in (item.get("rows", []) or [])], f"中转:{name}"
+            headers = list(item.get("headers", []) or [])
+            rows = [list(r) for r in (item.get("rows", []) or [])]
+            self.log_transit_table_event(manager, "read_transit_table", name, headers, rows, message=f"读取中转目标表 {name}：{len(rows)} 行 × {len(headers)} 列")
+            return headers, rows, f"中转:{name}"
         raise ValueError(f"未知目标类型：{target_type}")
 
     def selected_columns_should_write(self, old_value, new_value, overwrite_rule):
-        old = "" if old_value is None else str(old_value)
-        new = "" if new_value is None else str(new_value)
-        if overwrite_rule == "覆盖全部":
-            return True
-        if overwrite_rule == "只写入空单元格":
-            return old == ""
-        if overwrite_rule == "目标已有值则跳过":
-            return old == ""
-        if overwrite_rule == "目标已有值且不同才覆盖":
-            return old != new
-        return old == ""
+        return workflow_selected_columns_should_write(old_value, new_value, overwrite_rule)
 
     def normalize_selected_columns_write_mode(self, write_mode):
-        """统一“选定列写入指定表”的写入范围。
-
-        兼容旧模板：
-        - “复制列到目标表新建字段” -> “局部覆盖，保留目标原行数”
-        - “按来源完整结构写入” -> “按来源完整结构覆盖”
-        - “追加到目标表末尾” -> “局部覆盖，保留目标原行数”
-        """
-        mode = str(write_mode or "局部覆盖，保留目标原行数").strip()
-        legacy_map = {
-            "复制列到目标表新建字段": "局部覆盖，保留目标原行数",
-            "追加到目标表末尾": "局部覆盖，保留目标原行数",
-            "按来源完整结构写入": "按来源完整结构覆盖",
-        }
-        mode = legacy_map.get(mode, mode)
-        valid = [
-            "局部覆盖，保留目标原行数",
-            "清空目标字段后覆盖，保留目标原行数",
-            "按来源完整结构覆盖",
-            "覆盖重建目标表",
-        ]
-        if mode not in valid:
-            return "局部覆盖，保留目标原行数"
-        return mode
+        return workflow_normalize_selected_columns_write_mode(write_mode)
 
     def build_selected_columns_write_preview(self, config, current_headers, current_rows, context=None):
         source_headers, source_rows, source_name = self.read_selected_columns_source_table(config, current_headers, current_rows, context)
         target_headers, target_rows, target_name = self.read_selected_columns_target_table(config, context, current_headers, current_rows)
-        selected_fields = self.get_selected_columns_write_selected_fields(config, source_headers)
-        target_fields = self.make_selected_columns_target_fields(config, selected_fields)
-        src_indexes = [source_headers.index(f) for f in selected_fields]
-        target_index = {h: i for i, h in enumerate(target_headers)}
-        write_mode = self.normalize_selected_columns_write_mode(config.get("write_mode", "复制列到目标表新建字段"))
-        overwrite_rule = config.get("overwrite_rule", "只写入空单元格")
-
-        preview_headers = ["来源表", "来源行", "来源字段", "来源值", "目标表", "目标行", "目标字段", "原值", "动作"]
-        preview_rows = []
-
-        for r_idx, src_row in enumerate(self.normalize_rows(source_rows, len(source_headers)), start=1):
-            # 复制列到目标表新建字段：按来源行号对应目标行号，不再把来源列追加成新行。
-            target_row_no = r_idx
-            for source_field, target_field, src_col in zip(selected_fields, target_fields, src_indexes):
-                new_value = src_row[src_col] if src_col < len(src_row) else ""
-                old_value = ""
-                field_exists = target_field in target_index
-                row_exists = target_row_no <= len(target_rows)
-                if field_exists and row_exists:
-                    t_col = target_index[target_field]
-                    old_row = target_rows[target_row_no - 1]
-                    if t_col < len(old_row):
-                        old_value = old_row[t_col]
-                if write_mode == "覆盖重建目标表":
-                    action = "重建目标表后写入"
-                elif write_mode == "按来源完整结构覆盖":
-                    action = "按来源完整结构覆盖：目标多余旧行将被丢弃"
-                elif write_mode == "清空目标字段后覆盖，保留目标原行数":
-                    action = "先清空目标字段整列，再按来源行写入"
-                else:
-                    parts = []
-                    if not field_exists:
-                        parts.append("新建字段")
-                    if not row_exists:
-                        parts.append("新增目标行")
-                    if self.selected_columns_should_write(old_value, new_value, overwrite_rule):
-                        parts.append("写入/覆盖")
-                    else:
-                        parts.append("按覆盖策略跳过")
-                    action = "；".join(parts)
-                preview_rows.append([
-                    source_name,
-                    str(r_idx),
-                    source_field,
-                    new_value,
-                    target_name,
-                    str(target_row_no),
-                    target_field,
-                    old_value,
-                    action
-                ])
-        return preview_headers, preview_rows
+        return workflow_build_selected_columns_write_preview_rows(
+            config,
+            source_headers,
+            source_rows,
+            source_name,
+            target_headers,
+            target_rows,
+            target_name,
+        )
 
     def apply_selected_columns_to_memory_table(self, target_headers, target_rows, selected_target_headers, selected_rows, config):
-        """把选定列数据写入内存表，返回新的 headers/rows。
-
-        写入范围：
-        - 局部覆盖，保留目标原行数：旧行为，目标多余行保留。
-        - 清空目标字段后覆盖，保留目标原行数：先清空映射字段整列，再写入来源行。
-        - 按来源完整结构覆盖：输出行数等于来源行数，目标旧的多余行被丢弃；未写入字段为空。
-        - 覆盖重建目标表：只保留本次选定字段。
-        """
-        target_headers = list(target_headers or [])
-        target_rows = [list(r) for r in (target_rows or [])]
-        write_mode = self.normalize_selected_columns_write_mode(config.get("write_mode", "局部覆盖，保留目标原行数"))
-        overwrite_rule = config.get("overwrite_rule", "只写入空单元格")
-
-        if write_mode == "覆盖重建目标表":
-            return list(selected_target_headers), [list(r) for r in selected_rows]
-
-        headers_out = list(target_headers)
-        for h in selected_target_headers:
-            if h not in headers_out:
-                headers_out.append(h)
-
-        if write_mode == "按来源完整结构覆盖":
-            # 以来源完整数据结构为边界：行数跟来源走，未映射字段不带入旧值，避免旧行/旧值污染后续生成。
-            rows_out = [[""] * len(headers_out) for _ in selected_rows]
-        else:
-            rows_out = self.normalize_rows(target_rows, len(headers_out))
-            while len(rows_out) < len(selected_rows):
-                rows_out.append([""] * len(headers_out))
-            if write_mode == "清空目标字段后覆盖，保留目标原行数":
-                for row in rows_out:
-                    while len(row) < len(headers_out):
-                        row.append("")
-                    for h in selected_target_headers:
-                        row[headers_out.index(h)] = ""
-
-        selected_idx = {h: i for i, h in enumerate(selected_target_headers)}
-        for r_idx, selected_row in enumerate(selected_rows):
-            if r_idx >= len(rows_out):
-                break
-            while len(rows_out[r_idx]) < len(headers_out):
-                rows_out[r_idx].append("")
-            for h in selected_target_headers:
-                t_col = headers_out.index(h)
-                new_value = selected_row[selected_idx[h]] if selected_idx[h] < len(selected_row) else ""
-                old_value = rows_out[r_idx][t_col] if t_col < len(rows_out[r_idx]) else ""
-                if self.selected_columns_should_write(old_value, new_value, overwrite_rule):
-                    rows_out[r_idx][t_col] = new_value
-        return headers_out, rows_out
+        return workflow_apply_selected_columns_to_memory_table(
+            target_headers,
+            target_rows,
+            selected_target_headers,
+            selected_rows,
+            config,
+        )
 
     def get_selected_columns_write_payload(self, config, current_headers, current_rows, context=None):
         source_headers, source_rows, source_name = self.read_selected_columns_source_table(config, current_headers, current_rows, context)
-        selected_fields = self.get_selected_columns_write_selected_fields(config, source_headers)
-        target_fields = self.make_selected_columns_target_fields(config, selected_fields)
-        src_indexes = [source_headers.index(f) for f in selected_fields]
-        selected_rows = []
-        for row in self.normalize_rows(source_rows, len(source_headers)):
-            selected_rows.append([row[i] if i < len(row) else "" for i in src_indexes])
+        selected_fields, target_fields, selected_rows = workflow_build_selected_columns_write_payload(
+            config,
+            source_headers,
+            source_rows,
+        )
         return selected_fields, target_fields, selected_rows, source_name
+
+    def apply_selected_columns_write_current_table(self, headers, rows, config, target_fields, selected_rows):
+        new_headers, new_rows = self.apply_selected_columns_to_memory_table(headers, rows, target_fields, selected_rows, config)
+        return new_headers, new_rows, f"已写入当前工作表：{len(new_rows)} 行 × {len(new_headers)} 列，结果继续传给后续节点"
+
+    def apply_selected_columns_write_transit_table(self, headers, rows, config, context, target_name, target_fields, selected_rows):
+        mode = self.normalize_selected_columns_write_mode(config.get("write_mode", "局部覆盖，保留目标原行数"))
+        exists_before = target_name in context["transit_tables"]
+        manager = self.check_transit_table_write_permission(
+            context,
+            target_name,
+            exists=exists_before,
+            write_mode=mode,
+            fields=target_fields,
+            partial=mode in ("局部覆盖，保留目标原行数", "清空目标字段后覆盖，保留目标原行数"),
+            node_type="选定列写入指定表",
+        )
+        old = context["transit_tables"].get(target_name, {}) or {}
+        old_headers = list(old.get("headers", []) or [])
+        old_rows = [list(r) for r in (old.get("rows", []) or [])]
+        new_headers, new_rows = self.apply_selected_columns_to_memory_table(old_headers, old_rows, target_fields, selected_rows, config)
+        context["transit_tables"][target_name] = {
+            "headers": new_headers,
+            "rows": [list(r) for r in new_rows],
+            "source": "选定列写入指定表"
+        }
+        self.log_transit_table_event(
+            manager,
+            "write_transit_table",
+            target_name,
+            new_headers,
+            new_rows,
+            write_mode=mode,
+            message=f"写入中转副表 {target_name}：{len(new_rows)} 行 × {len(new_headers)} 列，模式 {mode}",
+        )
+        return headers, rows, f"已写入中转副表：{target_name}（{len(new_rows)} 行 × {len(new_headers)} 列），主流程数据透传"
+
+    def apply_selected_columns_write_sqlite_table(self, headers, rows, config, context, target_name, target_fields, selected_rows):
+        sqlite_name = self.app.sanitize_sql_name(target_name, "选定列结果")
+        mode = self.normalize_selected_columns_write_mode(config.get("write_mode", "复制列到目标表新建字段"))
+        if mode == "覆盖重建目标表":
+            saved = self.save_result_to_sqlite(
+                target_fields,
+                selected_rows,
+                sqlite_name,
+                overwrite=True,
+                backup=bool(config.get("backup_before_write", True)),
+                context=context,
+            )
+            return headers, rows, f"已覆盖重建 SQLite 表：{saved}（{len(selected_rows)} 行 × {len(target_fields)} 列），主流程数据透传"
+        target_headers, target_rows, _target_label = self.read_selected_columns_target_table(
+            {**config, "target_type": "SQLite表", "target_table": sqlite_name},
+            context,
+        )
+        new_headers, new_rows = self.apply_selected_columns_to_memory_table(target_headers, target_rows, target_fields, selected_rows, config)
+        saved = self.save_result_to_sqlite(
+            new_headers,
+            new_rows,
+            sqlite_name,
+            overwrite=True,
+            backup=bool(config.get("backup_before_write", True)),
+            context=context,
+        )
+        return headers, rows, f"已复制选定列到 SQLite 表字段：{saved}（{len(new_rows)} 行 × {len(new_headers)} 列），主流程数据透传"
 
     def apply_selected_columns_write_node(self, headers, rows, config, context=None, execute_actions=False):
         """执行“选定列写入指定表”。
@@ -10143,437 +10734,72 @@ class PlanWorkflowWindow:
         context = context if context is not None else {"transit_tables": {}}
         context.setdefault("transit_tables", {})
         selected_fields, target_fields, selected_rows, source_name = self.get_selected_columns_write_payload(config, headers, rows, context)
-        target_type = config.get("target_type", "SQLite表")
-        if target_type == "SQLite表":
-            target_name = str(config.get("target_table", "选定列结果")).strip() or "选定列结果"
-        elif target_type == "中转副表":
-            target_name = str(config.get("target_transit_table", "选定列结果")).strip() or "选定列结果"
-        elif target_type == "当前工作表":
-            target_name = "当前工作表"
-        else:
-            target_name = str(config.get("target_table", "选定列结果")).strip() or "选定列结果"
-
-        if not bool(config.get("enable_write", False)):
-            return headers, rows, f"选定列写入预览模式：未勾选实际写入，透传数据；来源 {source_name}，准备复制 {len(selected_fields)} 列 × {len(selected_rows)} 行到目标字段"
-
+        target_type, target_name = workflow_resolve_selected_columns_write_target(config)
         allow_preview_write = bool(context.get("allow_selected_columns_write_in_preview", False))
-        do_write = bool(execute_actions or allow_preview_write)
-        if not do_write:
-            return headers, rows, f"预览计划：不会实际写入目标表；来源 {source_name}，选定 {len(selected_fields)} 列 × {len(selected_rows)} 行"
-
         # 配置界面刷新/切换节点时也会临时运行前置节点。
         # 这个场景只允许生成当前工作表字段和内存中转副表，严禁写真实 SQLite，避免误改数据库。
         config_preview_only = bool(context.get("selected_columns_config_preview_only", False))
-        if target_type == "SQLite表" and config_preview_only:
-            return headers, rows, (
-                f"配置界面预运行：跳过 SQLite 写入，避免刷新配置时误改数据库；"
-                f"来源 {source_name}，选定 {len(selected_fields)} 列 × {len(selected_rows)} 行"
-            )
+        skip_stat = workflow_get_selected_columns_write_skip_stat(
+            config,
+            source_name,
+            selected_fields,
+            selected_rows,
+            execute_actions=execute_actions,
+            allow_preview_write=allow_preview_write,
+            config_preview_only=config_preview_only,
+        )
+        if skip_stat:
+            return headers, rows, skip_stat
 
         if target_type == "当前工作表":
-            new_headers, new_rows = self.apply_selected_columns_to_memory_table(headers, rows, target_fields, selected_rows, config)
-            return new_headers, new_rows, f"已写入当前工作表：{len(new_rows)} 行 × {len(new_headers)} 列，结果继续传给后续节点"
+            return self.apply_selected_columns_write_current_table(headers, rows, config, target_fields, selected_rows)
 
         if target_type == "中转副表":
-            old = context["transit_tables"].get(target_name, {}) or {}
-            old_headers = list(old.get("headers", []) or [])
-            old_rows = [list(r) for r in (old.get("rows", []) or [])]
-            new_headers, new_rows = self.apply_selected_columns_to_memory_table(old_headers, old_rows, target_fields, selected_rows, config)
-            context["transit_tables"][target_name] = {
-                "headers": new_headers,
-                "rows": [list(r) for r in new_rows],
-                "source": "选定列写入指定表"
-            }
-            return headers, rows, f"已写入中转副表：{target_name}（{len(new_rows)} 行 × {len(new_headers)} 列），主流程数据透传"
+            return self.apply_selected_columns_write_transit_table(
+                headers,
+                rows,
+                config,
+                context,
+                target_name,
+                target_fields,
+                selected_rows,
+            )
 
         if target_type == "SQLite表":
-            sqlite_name = self.app.sanitize_sql_name(target_name, "选定列结果")
-            mode = self.normalize_selected_columns_write_mode(config.get("write_mode", "复制列到目标表新建字段"))
-            if mode == "覆盖重建目标表":
-                saved = self.save_result_to_sqlite(target_fields, selected_rows, sqlite_name, overwrite=True, backup=bool(config.get("backup_before_write", True)), context=context)
-                return headers, rows, f"已覆盖重建 SQLite 表：{saved}（{len(selected_rows)} 行 × {len(target_fields)} 列），主流程数据透传"
-            # 复制列到目标表新建字段 / 按来源完整结构写入：读取目标表，内存更新后覆盖回写。目标表不存在则等价新建。
-            target_headers, target_rows, _target_label = self.read_selected_columns_target_table(
-                {**config, "target_type": "SQLite表", "target_table": sqlite_name}, context
+            return self.apply_selected_columns_write_sqlite_table(
+                headers,
+                rows,
+                config,
+                context,
+                target_name,
+                target_fields,
+                selected_rows,
             )
-            new_headers, new_rows = self.apply_selected_columns_to_memory_table(target_headers, target_rows, target_fields, selected_rows, config)
-            saved = self.save_result_to_sqlite(new_headers, new_rows, sqlite_name, overwrite=True, backup=bool(config.get("backup_before_write", True)), context=context)
-            return headers, rows, f"已复制选定列到 SQLite 表字段：{saved}（{len(new_rows)} 行 × {len(new_headers)} 列），主流程数据透传"
 
         raise ValueError(f"未知目标类型：{target_type}")
 
     def build_writeback_config(self, config, headers):
-        """构建“字段映射写入表”节点配置。支持两种方向：当前表写入SQLite目标表 / 其他表写入当前表。"""
-        direction_values = ["当前表写入SQLite目标表", "其他表写入当前表"]
-        config.setdefault("writeback_direction", direction_values[0])
-        if config.get("writeback_direction") not in direction_values:
-            config["writeback_direction"] = direction_values[0]
-        config.setdefault("target_table", "")
-        config.setdefault("source_table", config.get("target_table", ""))
-        config.setdefault("use_match_rules", True)
-        config.setdefault("match_rules", [])
-        config.setdefault("field_mappings", [])
-        config.setdefault("overwrite_policy", "目标已有值且不同才覆盖")
-        config.setdefault("source_empty_policy", "跳过")
-        config.setdefault("source_empty_fixed", "")
-        config.setdefault("no_match_policy", "跳过并记录")
-        config.setdefault("multi_match_policy", "跳过并记录")
-        config.setdefault("duplicate_target_policy", "跳过重复并记录异常")
-        config.setdefault("enable_write", False)
-        config.setdefault("backup_before_write", True)
-        config.setdefault("output_preview_table", True)
-        config.setdefault("sequential_insert_missing_rows", True)
-        config.setdefault("write_range_mode", "局部覆盖，保留目标原行数")
+        return workflow_build_writeback_config_ui(self, config, headers)
 
-        frame = ttk.LabelFrame(self.config_frame, text="字段映射写入表节点（写回 / 写入当前表）", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-
-        ttk.Label(
-            frame,
-            text=(
-                "说明：本节点支持两个方向。1）当前表写入 SQLite 目标表：按匹配/行号把当前工作流数据写入指定数据库表；"
-                "2）其他表写入当前表：读取 SQLite 其他表数据，按匹配/行号写入当前工作流表，可覆盖已有字段，也可输入新字段名生成新列。"
-            ),
-            foreground="gray",
-            wraplength=1080
-        ).grid(row=0, column=0, columnspan=10, sticky=tk.W, padx=4, pady=(0, 6))
-
-        try:
-            table_names = self.app.get_table_names()
-        except Exception:
-            table_names = []
-        if config.get("target_table") not in table_names and table_names:
-            config["target_table"] = table_names[0]
-        if config.get("source_table") not in table_names and table_names:
-            config["source_table"] = config.get("target_table") or table_names[0]
-
-        direction_var, direction_combo = self.add_labeled_combo_control(frame, "写入方向：", config.get("writeback_direction", direction_values[0]), direction_values, 1, 0, 24)
-        self.sync_var_to_config(direction_var, config, "writeback_direction")
-
-        direction = direction_var.get()
-        external_key = "target_table" if direction == "当前表写入SQLite目标表" else "source_table"
-        external_label = "目标表：" if direction == "当前表写入SQLite目标表" else "来源表："
-        external_label_widget = ttk.Label(frame, text=external_label)
-        external_label_widget.grid(row=1, column=2, sticky=tk.W, padx=4, pady=4)
-        external_table_var = tk.StringVar(value=config.get(external_key, ""))
-        external_table_combo = ttk.Combobox(frame, textvariable=external_table_var, values=table_names, width=32, state="readonly")
-        external_table_combo.grid(row=1, column=3, sticky=tk.W, padx=4, pady=4)
-
-        external_columns = []
-        try:
-            if external_table_var.get():
-                external_columns = self.app.get_table_columns(external_table_var.get())
-        except Exception:
-            external_columns = []
-
-        ttk.Button(frame, text="刷新表/字段", command=lambda: refresh_writeback_fields(True)).grid(row=1, column=4, sticky=tk.W, padx=4, pady=4)
-        if direction == "当前表写入SQLite目标表":
-            count_text = f"当前来源字段：{len(headers)} 个；SQLite目标字段：{len(external_columns)} 个"
-        else:
-            count_text = f"SQLite来源字段：{len(external_columns)} 个；当前目标字段：{len(headers)} 个（目标字段可手动输入新字段名）"
-        count_label = ttk.Label(frame, text=count_text, foreground="gray")
-        count_label.grid(row=1, column=5, columnspan=4, sticky=tk.W, padx=4, pady=4)
-
-        use_match_var = tk.BooleanVar(value=bool(config.get("use_match_rules", True)))
-        ttk.Checkbutton(frame, text="启用匹配规则定位对应行", variable=use_match_var).grid(row=2, column=0, columnspan=2, sticky=tk.W, padx=4, pady=4)
-        self.sync_bool_to_config(use_match_var, config, "use_match_rules")
-
-        insert_missing_var = tk.BooleanVar(value=bool(config.get("sequential_insert_missing_rows", True)))
-        if direction == "当前表写入SQLite目标表":
-            insert_text = "关闭匹配时：目标行不足则按来源完整结构新增行"
-        else:
-            insert_text = "关闭匹配时：来源行多于当前表时自动新增当前行"
-        insert_missing_cb = ttk.Checkbutton(frame, text=insert_text, variable=insert_missing_var)
-        insert_missing_cb.grid(row=2, column=2, columnspan=4, sticky=tk.W, padx=4, pady=4)
-        self.sync_bool_to_config(insert_missing_var, config, "sequential_insert_missing_rows")
-
-        write_range_values = ["局部覆盖，保留目标原行数", "清空目标字段后覆盖，保留目标原行数", "按来源完整结构覆盖"]
-        if config.get("write_range_mode") not in write_range_values:
-            config["write_range_mode"] = "局部覆盖，保留目标原行数"
-        write_range_var = self.add_labeled_combo(frame, "写入范围：", config.get("write_range_mode", "局部覆盖，保留目标原行数"), write_range_values, 2, 6, 30)
-        self.sync_var_to_config(write_range_var, config, "write_range_mode")
-
-        # 匹配规则：始终以“当前表字段”匹配“外部表字段”。方向不同，只是外部表角色不同。
-        match_frame_title = "1. 匹配规则（当前表字段 ↔ 外部表字段；可关闭后按行号顺序对应）"
-        match_frame = ttk.LabelFrame(frame, text=match_frame_title, padding=6)
-        match_frame.grid(row=3, column=0, columnspan=10, sticky="nsew", padx=4, pady=6)
-        src_match_var = tk.StringVar(value=headers[0] if headers else "")
-        op_var = tk.StringVar(value="等于")
-        tgt_match_var = tk.StringVar(value=external_columns[0] if external_columns else "")
-        ttk.Label(match_frame, text="当前表字段：").grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
-        src_match_combo = ttk.Combobox(match_frame, textvariable=src_match_var, values=headers, width=24, state="normal")
-        src_match_combo.grid(row=0, column=1, sticky=tk.W, padx=4, pady=4)
-        ttk.Label(match_frame, text="匹配方式：").grid(row=0, column=2, sticky=tk.W, padx=4, pady=4)
-        ttk.Combobox(match_frame, textvariable=op_var, values=["等于", "不等于", "当前包含外部", "外部包含当前", "双向包含"], width=14, state="readonly").grid(row=0, column=3, sticky=tk.W, padx=4, pady=4)
-        ttk.Label(match_frame, text="外部表字段：").grid(row=0, column=4, sticky=tk.W, padx=4, pady=4)
-        tgt_match_combo = ttk.Combobox(match_frame, textvariable=tgt_match_var, values=external_columns, width=24, state="normal")
-        tgt_match_combo.grid(row=0, column=5, sticky=tk.W, padx=4, pady=4)
-
-        match_tree = ttk.Treeview(match_frame, columns=("当前表字段", "匹配方式", "外部表字段"), show="headings", height=4)
-        for col, width in [("当前表字段", 220), ("匹配方式", 120), ("外部表字段", 220)]:
-            match_tree.heading(col, text=col)
-            match_tree.column(col, width=width, anchor=tk.W)
-        match_y = ttk.Scrollbar(match_frame, orient=tk.VERTICAL, command=match_tree.yview)
-        match_x = ttk.Scrollbar(match_frame, orient=tk.HORIZONTAL, command=match_tree.xview)
-        match_tree.configure(yscrollcommand=match_y.set, xscrollcommand=match_x.set)
-        match_tree.grid(row=1, column=0, columnspan=6, sticky="nsew", padx=4, pady=4)
-        match_y.grid(row=1, column=6, sticky="ns", pady=4)
-        match_x.grid(row=2, column=0, columnspan=6, sticky="ew", padx=4)
-        for rule in config.get("match_rules", []):
-            match_tree.insert("", tk.END, values=(rule.get("source_field", ""), rule.get("operator", "等于"), rule.get("target_field", "")))
-
-        def sync_match_rules():
-            config["match_rules"] = []
-            for iid in match_tree.get_children():
-                source_field, operator, target_field = match_tree.item(iid, "values")
-                # 旧模板中可能保存“当前包含目标/目标包含当前”，这里统一映射为“当前包含外部/外部包含当前”也能执行。
-                config["match_rules"].append({"source_field": source_field, "operator": operator, "target_field": target_field})
-
-        def add_match_rule():
-            if not src_match_var.get() or not tgt_match_var.get():
-                messagebox.showwarning("提示", "请选择当前表字段和外部表字段。")
-                return
-            match_tree.insert("", tk.END, values=(src_match_var.get(), op_var.get(), tgt_match_var.get()))
-            sync_match_rules()
-
-        def del_match_rule():
-            for iid in match_tree.selection():
-                match_tree.delete(iid)
-            sync_match_rules()
-
-        ttk.Button(match_frame, text="添加匹配规则", command=add_match_rule).grid(row=0, column=7, sticky=tk.W, padx=4, pady=4)
-        ttk.Button(match_frame, text="删除选中规则", command=del_match_rule).grid(row=1, column=7, sticky=tk.NW, padx=4, pady=4)
-
-        # 字段映射：方向不同，映射左右含义不同。
-        if direction == "当前表写入SQLite目标表":
-            mapping_title = "2. 字段映射规则（当前表字段 → SQLite目标表字段）"
-            left_label, right_label = "当前表字段：", "写入目标字段："
-            left_values, right_values = headers, external_columns
-            left_default = headers[0] if headers else ""
-            right_default = external_columns[0] if external_columns else ""
-        else:
-            mapping_title = "2. 字段映射规则（SQLite来源表字段 → 当前表字段 / 新字段名）"
-            left_label, right_label = "来源表字段：", "写入当前字段："
-            left_values, right_values = external_columns, headers
-            left_default = external_columns[0] if external_columns else ""
-            right_default = headers[0] if headers else "新字段"
-
-        mapping_frame = ttk.LabelFrame(frame, text=mapping_title, padding=6)
-        mapping_frame.grid(row=4, column=0, columnspan=10, sticky="nsew", padx=4, pady=6)
-        src_map_var = tk.StringVar(value=left_default)
-        tgt_map_var = tk.StringVar(value=right_default)
-        src_map_label = ttk.Label(mapping_frame, text=left_label)
-        src_map_label.grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
-        src_map_combo = ttk.Combobox(mapping_frame, textvariable=src_map_var, values=left_values, width=24, state="normal")
-        src_map_combo.grid(row=0, column=1, sticky=tk.W, padx=4, pady=4)
-        tgt_map_label = ttk.Label(mapping_frame, text=right_label)
-        tgt_map_label.grid(row=0, column=2, sticky=tk.W, padx=4, pady=4)
-        tgt_map_combo = ttk.Combobox(mapping_frame, textvariable=tgt_map_var, values=right_values, width=24, state="normal")
-        tgt_map_combo.grid(row=0, column=3, sticky=tk.W, padx=4, pady=4)
-        ttk.Label(mapping_frame, text="提示：右侧字段可手动输入新字段名。", foreground="gray").grid(row=0, column=4, sticky=tk.W, padx=4, pady=4)
-
-        mapping_tree = ttk.Treeview(mapping_frame, columns=("来源字段", "写入字段"), show="headings", height=5)
-        for col, width in [("来源字段", 260), ("写入字段", 260)]:
-            mapping_tree.heading(col, text=col)
-            mapping_tree.column(col, width=width, anchor=tk.W)
-        mapping_y = ttk.Scrollbar(mapping_frame, orient=tk.VERTICAL, command=mapping_tree.yview)
-        mapping_x = ttk.Scrollbar(mapping_frame, orient=tk.HORIZONTAL, command=mapping_tree.xview)
-        mapping_tree.configure(yscrollcommand=mapping_y.set, xscrollcommand=mapping_x.set)
-        mapping_tree.grid(row=1, column=0, columnspan=4, sticky="nsew", padx=4, pady=4)
-        mapping_y.grid(row=1, column=4, sticky="ns", pady=4)
-        mapping_x.grid(row=2, column=0, columnspan=4, sticky="ew", padx=4)
-        for item in config.get("field_mappings", []):
-            mapping_tree.insert("", tk.END, values=(item.get("source_field", ""), item.get("target_field", "")))
-        writeback_field_state = {
-            "external_columns": list(external_columns),
-            "left_values": list(left_values),
-            "right_values": list(right_values),
-        }
-
-        def sync_mappings():
-            config["field_mappings"] = []
-            for iid in mapping_tree.get_children():
-                source_field, target_field = mapping_tree.item(iid, "values")
-                config["field_mappings"].append({"source_field": source_field, "target_field": target_field})
-
-        def add_mapping():
-            if not src_map_var.get() or not tgt_map_var.get():
-                messagebox.showwarning("提示", "请选择/填写映射字段。")
-                return
-            mapping_tree.insert("", tk.END, values=(src_map_var.get(), tgt_map_var.get()))
-            sync_mappings()
-
-        def del_mapping():
-            for iid in mapping_tree.selection():
-                mapping_tree.delete(iid)
-            sync_mappings()
-
-        def auto_same_name_mapping():
-            for iid in mapping_tree.get_children():
-                mapping_tree.delete(iid)
-            common = [h for h in writeback_field_state.get("left_values", []) if h in writeback_field_state.get("right_values", [])]
-            for h in common:
-                mapping_tree.insert("", tk.END, values=(h, h))
-            sync_mappings()
-
-        ttk.Button(mapping_frame, text="添加映射", command=add_mapping).grid(row=0, column=5, sticky=tk.W, padx=4, pady=4)
-        ttk.Button(mapping_frame, text="删除映射", command=del_mapping).grid(row=1, column=5, sticky=tk.NW, padx=4, pady=4)
-        ttk.Button(mapping_frame, text="同名字段自动映射", command=auto_same_name_mapping).grid(row=1, column=6, sticky=tk.NW, padx=4, pady=4)
-
-        # 策略设置
-        policy_frame = ttk.LabelFrame(frame, text="3. 写入策略与安全设置", padding=6)
-        policy_frame.grid(row=5, column=0, columnspan=10, sticky="nsew", padx=4, pady=6)
-        overwrite_var = self.add_labeled_combo(policy_frame, "覆盖策略：", config.get("overwrite_policy", "目标已有值且不同才覆盖"), ["覆盖全部", "只覆盖目标为空的字段", "目标已有值则跳过", "目标已有值且不同才覆盖"], 0, 0, 22)
-        empty_var = self.add_labeled_combo(policy_frame, "来源为空：", config.get("source_empty_policy", "跳过"), ["跳过", "写入空值", "写入固定值"], 0, 2, 16)
-        empty_fixed_var = self.add_labeled_entry(policy_frame, "固定值：", config.get("source_empty_fixed", ""), 0, 4, 18)
-        no_match_var = self.add_labeled_combo(policy_frame, "未匹配：", config.get("no_match_policy", "跳过并记录"), ["跳过并记录"], 1, 0, 16)
-        multi_match_var = self.add_labeled_combo(policy_frame, "多匹配：", config.get("multi_match_policy", "跳过并记录"), ["跳过并记录", "只更新第一行", "全部更新"], 1, 2, 16)
-        duplicate_var = self.add_labeled_combo(policy_frame, "重复目标：", config.get("duplicate_target_policy", "跳过重复并记录异常"), ["跳过重复并记录异常", "第一个有效", "后面的覆盖前面的"], 1, 4, 20)
-        self.sync_var_to_config(overwrite_var, config, "overwrite_policy")
-        self.sync_var_to_config(empty_var, config, "source_empty_policy")
-        self.sync_var_to_config(empty_fixed_var, config, "source_empty_fixed")
-        self.sync_var_to_config(no_match_var, config, "no_match_policy")
-        self.sync_var_to_config(multi_match_var, config, "multi_match_policy")
-        self.sync_var_to_config(duplicate_var, config, "duplicate_target_policy")
-
-        enable_write_var = tk.BooleanVar(value=bool(config.get("enable_write", False)))
-        backup_var = tk.BooleanVar(value=bool(config.get("backup_before_write", True)))
-        output_preview_var = tk.BooleanVar(value=bool(config.get("output_preview_table", True)))
-        enable_write_cb = ttk.Checkbutton(policy_frame, text="允许正式执行时写入 SQLite 目标表", variable=enable_write_var)
-        backup_cb = ttk.Checkbutton(policy_frame, text="写入前自动备份目标表", variable=backup_var)
-        output_preview_cb = ttk.Checkbutton(policy_frame, text="节点输出写入预览表", variable=output_preview_var)
-        policy_note_label = ttk.Label(policy_frame, text="", foreground="gray")
-
-        def refresh_writeback_policy_widgets():
-            if direction_var.get() == "当前表写入SQLite目标表":
-                enable_write_cb.grid(row=2, column=0, columnspan=2, sticky=tk.W, padx=4, pady=4)
-                backup_cb.grid(row=2, column=2, columnspan=2, sticky=tk.W, padx=4, pady=4)
-                output_preview_cb.grid(row=2, column=4, columnspan=2, sticky=tk.W, padx=4, pady=4)
-                policy_note_label.configure(text="安全提示：预览计划不会写库；正式执行时也必须勾选允许写入才会 UPDATE/INSERT。")
-                policy_note_label.grid(row=3, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(6, 0))
-            else:
-                enable_write_cb.grid_remove()
-                backup_cb.grid_remove()
-                output_preview_cb.grid_remove()
-                policy_note_label.configure(text="当前模式会把来源表数据写入工作流当前表，只修改内存中的当前结果；不会直接修改 SQLite。右侧映射字段可输入新字段名。")
-                policy_note_label.grid(row=2, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(6, 0))
-
-        refresh_writeback_policy_widgets()
-        self.sync_bool_to_config(enable_write_var, config, "enable_write")
-        self.sync_bool_to_config(backup_var, config, "backup_before_write")
-        self.sync_bool_to_config(output_preview_var, config, "output_preview_table")
-
-        refreshing_writeback = {"active": False}
-        last_writeback_direction = {"value": direction_var.get()}
-
-        def writeback_external_key(cur_direction=None):
-            cur_direction = cur_direction or direction_var.get()
-            return "target_table" if cur_direction == "当前表写入SQLite目标表" else "source_table"
-
-        def refresh_writeback_fields(refresh_tables=False):
-            if refreshing_writeback["active"]:
-                return
-            refreshing_writeback["active"] = True
-            try:
-                if refresh_tables:
-                    try:
-                        table_names[:] = self.app.get_table_names()
-                    except Exception:
-                        table_names[:] = self.get_sqlite_table_names()
-                    self.refresh_combo_values(external_table_combo, external_table_var, table_names, keep_custom=False, fallback=table_names[0] if table_names else "")
-
-                cur_direction = direction_var.get() or direction_values[0]
-                direction_changed = cur_direction != last_writeback_direction["value"]
-                cur_external_key = writeback_external_key(cur_direction)
-                if direction_changed:
-                    desired_table = config.get(cur_external_key, "") or (table_names[0] if table_names else "")
-                    if desired_table not in table_names and table_names:
-                        desired_table = table_names[0]
-                    external_table_var.set(desired_table)
-
-                config["writeback_direction"] = cur_direction
-                config[cur_external_key] = external_table_var.get()
-                external_label_widget.configure(text="目标表：" if cur_direction == "当前表写入SQLite目标表" else "来源表：")
-
-                try:
-                    ext_columns = self.app.get_table_columns(external_table_var.get()) if external_table_var.get() else []
-                except Exception:
-                    ext_columns = []
-                writeback_field_state["external_columns"] = list(ext_columns)
-
-                if cur_direction == "当前表写入SQLite目标表":
-                    count_label.configure(text=f"当前来源字段：{len(headers)} 个；SQLite目标字段：{len(ext_columns)} 个")
-                    insert_missing_cb.configure(text="关闭匹配时：目标行不足则按来源完整结构新增行")
-                    mapping_frame.configure(text="2. 字段映射规则（当前表字段 → SQLite目标表字段）")
-                    src_map_label.configure(text="当前表字段：")
-                    tgt_map_label.configure(text="写入目标字段：")
-                    left_values = list(headers)
-                    right_values = list(ext_columns)
-                    src_fallback = headers[0] if headers else ""
-                    tgt_fallback = ext_columns[0] if ext_columns else ""
-                else:
-                    count_label.configure(text=f"SQLite来源字段：{len(ext_columns)} 个；当前目标字段：{len(headers)} 个（目标字段可手动输入新字段名）")
-                    insert_missing_cb.configure(text="关闭匹配时：来源行多于当前表时自动新增当前行")
-                    mapping_frame.configure(text="2. 字段映射规则（SQLite来源表字段 → 当前表字段 / 新字段名）")
-                    src_map_label.configure(text="来源表字段：")
-                    tgt_map_label.configure(text="写入当前字段：")
-                    left_values = list(ext_columns)
-                    right_values = list(headers)
-                    src_fallback = ext_columns[0] if ext_columns else ""
-                    tgt_fallback = headers[0] if headers else "新字段"
-
-                writeback_field_state["left_values"] = list(left_values)
-                writeback_field_state["right_values"] = list(right_values)
-                self.refresh_combo_values(src_match_combo, src_match_var, headers, keep_custom=True, fallback=headers[0] if headers else "")
-                self.refresh_combo_values(tgt_match_combo, tgt_match_var, ext_columns, keep_custom=True, fallback=ext_columns[0] if ext_columns else "")
-                self.refresh_combo_values(src_map_combo, src_map_var, left_values, keep_custom=True, fallback=src_fallback)
-                self.refresh_combo_values(tgt_map_combo, tgt_map_var, right_values, keep_custom=True, fallback=tgt_fallback)
-                refresh_writeback_policy_widgets()
-                last_writeback_direction["value"] = cur_direction
-                self.status_var.set(f"字段映射写入表字段已局部刷新：外部表 {external_table_var.get()}，{len(ext_columns)} 个字段。")
-            finally:
-                refreshing_writeback["active"] = False
-
-        def schedule_writeback_refresh(*_):
-            self.window.after_idle(lambda: refresh_writeback_fields(False))
-
-        direction_var.trace_add("write", schedule_writeback_refresh)
-        external_table_var.trace_add("write", schedule_writeback_refresh)
-
-    def build_filter_config(self, config, headers, transit_context=None):
-        """
-        计划节点内的高级筛选配置。
-        主输入固定为“上一步结果”，在字段列表中显示为“当前表.字段”。
-        可额外勾选 SQLite 数据库中的表，并通过匹配规则把当前表和副表关联起来。
-        """
-        config.setdefault("logic", "AND")
-        config.setdefault("join_logic", "AND")
-        config.setdefault("conditions", [])
-        config.setdefault("join_rules", [])
-        config.setdefault("extra_tables", [])
-        config.setdefault("output_fields", [])
-        config.setdefault("result_limit", "5000")
-        config.setdefault("max_intermediate", "200000")
-        config.setdefault("remove_duplicates", False)
-
-        frame = ttk.LabelFrame(self.config_frame, text="高级筛选节点（支持：上一步结果 + 多表匹配）", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-
+    def build_filter_header_risk_section(self, frame, start_row=0):
         note = (
             "说明：上一步结果会作为【当前表】参与匹配。"
             "需要多表匹配时，在左侧勾选副表，再添加匹配规则，例如 当前表.编码 等于 物料表.编码。"
         )
-        ttk.Label(frame, text=note, foreground="gray", wraplength=1050).grid(row=0, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
+        ttk.Label(frame, text=note, foreground="gray", wraplength=1050).grid(row=start_row, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
 
-        selected_tables = list(config.get("extra_tables", []))
-        transit_context = transit_context or {"transit_tables": {}}
-        all_fields = self.get_plan_filter_available_fields(headers, selected_tables, transit_context)
-        current_fields = [f"当前表.{h}" for h in headers]
-        field_state = {"all": list(all_fields), "current": list(current_fields)}
+        risk_var = tk.StringVar()
+        risk_label = ttk.Label(frame, textvariable=risk_var, wraplength=1050)
+        risk_label.grid(row=start_row + 1, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
+        return {
+            "risk_var": risk_var,
+            "risk_label": risk_label,
+            "next_row": start_row + 2,
+        }
 
-        # 1. 副表选择区
+    def build_filter_source_table_section(self, frame, config, headers, selected_tables, transit_context, sync_extra_tables, start_row=2):
         source_frame = ttk.LabelFrame(frame, text="1. 副表选择（主输入固定为：上一步结果 / 当前表）", padding=6)
-        source_frame.grid(row=1, column=0, columnspan=8, sticky="nsew", pady=6)
+        source_frame.grid(row=start_row, column=0, columnspan=8, sticky="nsew", pady=6)
         ttk.Label(source_frame, text=f"当前表字段数：{len(headers)}").grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
         ttk.Label(source_frame, text="可选数据库表：").grid(row=1, column=0, sticky=tk.NW, padx=4, pady=4)
         table_list = tk.Listbox(source_frame, selectmode=tk.MULTIPLE, height=5, exportselection=False, width=36)
@@ -10581,12 +10807,13 @@ class PlanWorkflowWindow:
         table_scroll = ttk.Scrollbar(source_frame, orient=tk.VERTICAL, command=table_list.yview)
         table_scroll.grid(row=1, column=2, sticky="ns")
         table_list.configure(yscrollcommand=table_scroll.set)
+
         try:
             db_tables = self.app.get_table_names()
         except Exception:
             db_tables = []
         transit_names = sorted((transit_context or {}).get("transit_tables", {}).keys())
-        selectable_tables = list(db_tables) + [f"中转:{name}" for name in transit_names]
+        selectable_tables = workflow_build_filter_selectable_tables(db_tables, transit_names)
         for i, table in enumerate(selectable_tables):
             table_list.insert(tk.END, table)
             if table in selected_tables:
@@ -10597,29 +10824,38 @@ class PlanWorkflowWindow:
         self.sync_var_to_config(limit_var, config, "result_limit")
         self.sync_var_to_config(max_var, config, "max_intermediate")
 
-        def sync_extra_tables(rebuild=False):
-            config["extra_tables"] = [table_list.get(i) for i in table_list.curselection()]
-            if rebuild:
-                refresh_filter_field_sources()
-
         ttk.Button(source_frame, text="保存表选择 / 刷新字段", command=lambda: sync_extra_tables(True)).grid(row=1, column=3, sticky=tk.W, padx=4, pady=4)
         ttk.Button(source_frame, text="清空副表", command=lambda: (table_list.selection_clear(0, tk.END), sync_extra_tables(True))).grid(row=1, column=4, sticky=tk.W, padx=4, pady=4)
+        return {
+            "frame": source_frame,
+            "table_list": table_list,
+            "selectable_tables": selectable_tables,
+            "limit_var": limit_var,
+            "max_var": max_var,
+        }
 
-        # 2. 筛选条件区
-        condition_frame = ttk.LabelFrame(frame, text="2. 筛选条件（可筛选当前表字段或副表字段）", padding=6)
-        condition_frame.grid(row=2, column=0, columnspan=8, sticky="nsew", pady=6)
+    def build_filter_condition_section(self, frame, config, all_fields, start_row=3):
+        condition_frame = ttk.LabelFrame(frame, text="2. 筛选条件（可筛选字段，并支持固定值或字段值匹配）", padding=6)
+        condition_frame.grid(row=start_row, column=0, columnspan=8, sticky="nsew", pady=6)
         logic_var = self.add_labeled_combo(condition_frame, "条件关系：", config.get("logic", "AND"), self.LOGIC_TYPES, 0, 0, 8)
         self.sync_var_to_config(logic_var, config, "logic")
-        field_var = tk.StringVar(value=all_fields[0] if all_fields else "")
+        condition_input_state = workflow_build_filter_condition_input_state(all_fields)
+        field_var = tk.StringVar(value=condition_input_state["field_default"])
         op_var = tk.StringVar(value="包含")
-        value_var = tk.StringVar()
+        value_source_var = tk.StringVar(value=condition_input_state["value_source"])
+        value_var = tk.StringVar(value=condition_input_state["value_default"])
+
         ttk.Label(condition_frame, text="字段：").grid(row=1, column=0, padx=4, pady=4)
         field_combo = ttk.Combobox(condition_frame, textvariable=field_var, values=all_fields, width=28, state="normal")
         field_combo.grid(row=1, column=1, padx=4, pady=4)
         ttk.Label(condition_frame, text="操作：").grid(row=1, column=2, padx=4, pady=4)
         ttk.Combobox(condition_frame, textvariable=op_var, values=self.FILTER_OPS, width=14, state="readonly").grid(row=1, column=3, padx=4, pady=4)
-        ttk.Label(condition_frame, text="值：").grid(row=1, column=4, padx=4, pady=4)
-        ttk.Entry(condition_frame, textvariable=value_var, width=24).grid(row=1, column=5, padx=4, pady=4)
+        ttk.Label(condition_frame, text="值来源：").grid(row=1, column=4, padx=4, pady=4)
+        value_source_combo = ttk.Combobox(condition_frame, textvariable=value_source_var, values=self.FILTER_VALUE_SOURCES, width=10, state="readonly")
+        value_source_combo.grid(row=1, column=5, padx=4, pady=4)
+        ttk.Label(condition_frame, text="匹配值：").grid(row=1, column=6, padx=4, pady=4)
+        value_combo = ttk.Combobox(condition_frame, textvariable=value_var, values=[], width=28, state="normal")
+        value_combo.grid(row=1, column=7, padx=4, pady=4)
 
         cond_toolbar = ttk.Frame(condition_frame)
         cond_toolbar.grid(row=2, column=0, columnspan=7, sticky="w", padx=4, pady=(2, 0))
@@ -10631,105 +10867,47 @@ class PlanWorkflowWindow:
             cond_edit_text.set("修改模式:开" if cond_edit_mode.get() else "修改模式:关")
 
         ttk.Button(cond_toolbar, textvariable=cond_edit_text, command=toggle_cond_edit_mode).pack(side=tk.LEFT, padx=2)
-        ttk.Label(cond_toolbar, text="开启后双击下方条件列表，可直接修改字段/操作/值。", foreground="gray").pack(side=tk.LEFT, padx=8)
+        ttk.Label(cond_toolbar, text="开启修改模式后可双击列表编辑；值来源=字段值时，匹配值请选择 当前表.字段 或 副表.字段。", foreground="gray").pack(side=tk.LEFT, padx=8)
 
-        cond_tree = ttk.Treeview(condition_frame, columns=("字段", "操作", "值"), show="headings", height=6)
-        for c, w in [("字段", 260), ("操作", 120), ("值", 260)]:
+        cond_tree = ttk.Treeview(condition_frame, columns=("字段", "操作", "值来源", "匹配值"), show="headings", height=6)
+        for c, w in [("字段", 250), ("操作", 110), ("值来源", 90), ("匹配值", 250)]:
             cond_tree.heading(c, text=c)
             cond_tree.column(c, width=w, anchor=tk.W)
         cond_y_scroll = ttk.Scrollbar(condition_frame, orient=tk.VERTICAL, command=cond_tree.yview)
         cond_x_scroll = ttk.Scrollbar(condition_frame, orient=tk.HORIZONTAL, command=cond_tree.xview)
         cond_tree.configure(yscrollcommand=cond_y_scroll.set, xscrollcommand=cond_x_scroll.set)
-        cond_tree.grid(row=3, column=0, columnspan=6, sticky="nsew", padx=4, pady=4)
-        cond_y_scroll.grid(row=3, column=6, sticky="ns", pady=4)
-        cond_x_scroll.grid(row=4, column=0, columnspan=6, sticky="ew", padx=4)
+        cond_tree.grid(row=3, column=0, columnspan=8, sticky="nsew", padx=4, pady=4)
+        cond_y_scroll.grid(row=3, column=8, sticky="ns", pady=4)
+        cond_x_scroll.grid(row=4, column=0, columnspan=8, sticky="ew", padx=4)
         condition_frame.rowconfigure(3, weight=1)
-        condition_frame.columnconfigure(5, weight=1)
-        for cond in config.get("conditions", []):
-            cond_tree.insert("", tk.END, values=(cond.get("field", ""), cond.get("op", ""), cond.get("value", "")))
+        condition_frame.columnconfigure(7, weight=1)
+        for row_values in workflow_filter_conditions_to_rows(config.get("conditions", [])):
+            cond_tree.insert("", tk.END, values=row_values)
 
-        def sync_conditions_from_tree():
-            result = []
-            for iid in cond_tree.get_children():
-                f, o, v = cond_tree.item(iid, "values")
-                result.append({"field": f, "op": o, "value": v})
-            config["conditions"] = result
+        return {
+            "frame": condition_frame,
+            "logic_var": logic_var,
+            "field_var": field_var,
+            "field_combo": field_combo,
+            "op_var": op_var,
+            "value_source_var": value_source_var,
+            "value_source_combo": value_source_combo,
+            "value_var": value_var,
+            "value_combo": value_combo,
+            "cond_edit_mode": cond_edit_mode,
+            "cond_tree": cond_tree,
+            "button_row": 5,
+        }
 
-        def add_cond():
-            if not field_var.get().strip():
-                messagebox.showwarning("提示", "请选择条件字段。")
-                return
-            cond_tree.insert("", tk.END, values=(field_var.get(), op_var.get(), value_var.get()))
-            sync_conditions_from_tree()
-
-        def del_cond():
-            for iid in cond_tree.selection():
-                cond_tree.delete(iid)
-            sync_conditions_from_tree()
-
-        def edit_cond_cell(event):
-            if not cond_edit_mode.get():
-                return
-            region = cond_tree.identify("region", event.x, event.y)
-            if region != "cell":
-                return
-            row_id = cond_tree.identify_row(event.y)
-            col_id = cond_tree.identify_column(event.x)
-            if not row_id or not col_id:
-                return
-            try:
-                col_index = int(col_id.replace("#", "")) - 1
-            except Exception:
-                return
-            bbox = cond_tree.bbox(row_id, col_id)
-            if not bbox:
-                return
-            x, y, width, height = bbox
-            values = list(cond_tree.item(row_id, "values"))
-            while len(values) < 3:
-                values.append("")
-            entry = ttk.Entry(cond_tree)
-            entry.place(x=x, y=y, width=width, height=height)
-            entry.insert(0, values[col_index])
-            entry.select_range(0, tk.END)
-            entry.focus()
-            closed = {"done": False}
-
-            def close_editor(save=True):
-                if closed["done"]:
-                    return
-                closed["done"] = True
-                if save:
-                    values[col_index] = entry.get()
-                    cond_tree.item(row_id, values=values)
-                    sync_conditions_from_tree()
-                entry.destroy()
-
-            entry.bind("<Return>", lambda e: close_editor(True))
-            entry.bind("<Escape>", lambda e: close_editor(False))
-            entry.bind("<FocusOut>", lambda e: close_editor(True))
-
-        cond_tree.bind("<Double-1>", edit_cond_cell)
-
-        ttk.Button(condition_frame, text="添加条件", command=add_cond).grid(row=5, column=1, padx=4, pady=4)
-        ttk.Button(condition_frame, text="删除条件", command=del_cond).grid(row=5, column=2, padx=4, pady=4)
-
-        # 3. 多表匹配规则区
+    def build_filter_join_section(self, frame, config, all_fields, current_fields, start_row=4):
         join_frame = ttk.LabelFrame(frame, text="3. 多表匹配规则（没有副表时可不填；有副表时建议至少添加一条匹配规则）", padding=6)
-        join_frame.grid(row=3, column=0, columnspan=8, sticky="nsew", pady=6)
-        left_var = tk.StringVar(value=current_fields[0] if current_fields else (all_fields[0] if all_fields else ""))
+        join_frame.grid(row=start_row, column=0, columnspan=8, sticky="nsew", pady=6)
+        join_input_state = workflow_build_filter_join_input_state(current_fields, all_fields)
+        left_var = tk.StringVar(value=join_input_state["left_default"])
         join_op_var = tk.StringVar(value="等于")
-        right_default = ""
-        for f in all_fields:
-            if not f.startswith("当前表."):
-                right_default = f
-                break
-        if not right_default and all_fields:
-            right_default = all_fields[0]
-        right_var = tk.StringVar(value=right_default)
+        right_var = tk.StringVar(value=join_input_state["right_default"])
         join_ops = ["等于", "不等于", "左包含右", "右包含左", "双向包含"]
 
-        # 匹配关系放在“左字段”上方，同一组录入控件从左到右排列
         ttk.Label(join_frame, text="匹配关系：").grid(row=0, column=0, padx=4, pady=(4, 0), sticky=tk.W)
         ttk.Label(join_frame, text="左字段：").grid(row=0, column=1, padx=4, pady=(4, 0), sticky=tk.W)
         ttk.Label(join_frame, text="匹配：").grid(row=0, column=2, padx=4, pady=(4, 0), sticky=tk.W)
@@ -10757,34 +10935,24 @@ class PlanWorkflowWindow:
         join_x_scroll.grid(row=3, column=0, columnspan=6, sticky="ew", padx=4)
         join_frame.rowconfigure(2, weight=1)
         join_frame.columnconfigure(5, weight=1)
-        for rule in config.get("join_rules", []):
-            join_tree.insert("", tk.END, values=(rule.get("left", ""), rule.get("op", "等于"), rule.get("right", "")))
+        for row_values in workflow_filter_join_rules_to_rows(config.get("join_rules", [])):
+            join_tree.insert("", tk.END, values=row_values)
 
-        def sync_join_rules_from_tree():
-            rules = []
-            for iid in join_tree.get_children():
-                left, op, right = join_tree.item(iid, "values")
-                rules.append({"left": left, "op": op, "right": right})
-            config["join_rules"] = rules
+        return {
+            "frame": join_frame,
+            "join_logic_var": join_logic_var,
+            "left_var": left_var,
+            "left_combo": left_combo,
+            "join_op_var": join_op_var,
+            "right_var": right_var,
+            "right_combo": right_combo,
+            "join_tree": join_tree,
+            "button_row": 4,
+        }
 
-        def add_join():
-            if not left_var.get().strip() or not right_var.get().strip():
-                messagebox.showwarning("提示", "请选择左右匹配字段。")
-                return
-            join_tree.insert("", tk.END, values=(left_var.get(), join_op_var.get(), right_var.get()))
-            sync_join_rules_from_tree()
-
-        def del_join():
-            for iid in join_tree.selection():
-                join_tree.delete(iid)
-            sync_join_rules_from_tree()
-
-        ttk.Button(join_frame, text="添加匹配规则", command=add_join).grid(row=4, column=1, padx=4, pady=4)
-        ttk.Button(join_frame, text="删除匹配规则", command=del_join).grid(row=4, column=2, padx=4, pady=4)
-
-        # 4. 输出字段区
+    def build_filter_output_section(self, frame, config, all_fields, start_row=5):
         output_frame = ttk.LabelFrame(frame, text="4. 输出字段（不选择则输出全部可用字段）", padding=6)
-        output_frame.grid(row=4, column=0, columnspan=8, sticky="nsew", pady=6)
+        output_frame.grid(row=start_row, column=0, columnspan=8, sticky="nsew", pady=6)
         out_wrap = ttk.Frame(output_frame)
         out_wrap.pack(fill=tk.BOTH, expand=True)
         out_list = tk.Listbox(out_wrap, selectmode=tk.MULTIPLE, height=9, exportselection=False)
@@ -10797,541 +10965,333 @@ class PlanWorkflowWindow:
             out_list.insert(tk.END, h)
             if h in selected:
                 out_list.selection_set(i)
-
-        def sync_output_fields():
-            config["output_fields"] = [out_list.get(i) for i in out_list.curselection()]
-
-        def refresh_filter_field_sources():
-            config["extra_tables"] = [table_list.get(i) for i in table_list.curselection()]
-            field_state["all"] = self.get_plan_filter_available_fields(headers, config.get("extra_tables", []), transit_context)
-            field_state["current"] = [f"当前表.{h}" for h in headers]
-            all_values = field_state["all"]
-            current_values = field_state["current"]
-            first_any = all_values[0] if all_values else ""
-            first_current = current_values[0] if current_values else first_any
-            first_external = next((f for f in all_values if not str(f).startswith("当前表.")), first_any)
-            self.refresh_combo_values(field_combo, field_var, all_values, keep_custom=True, fallback=first_any)
-            self.refresh_combo_values(left_combo, left_var, all_values, keep_custom=True, fallback=first_current)
-            self.refresh_combo_values(right_combo, right_var, all_values, keep_custom=True, fallback=first_external)
-            selected_output = set(config.get("output_fields", []))
-            self.refresh_listbox_values(out_list, all_values, selected_output)
-            sync_output_fields()
-            self.status_var.set(f"高级筛选字段已局部刷新：{len(config.get('extra_tables', []))} 个副表，{len(all_values)} 个可用字段。")
-
-        out_list.bind("<<ListboxSelect>>", lambda e: sync_output_fields())
+        actual_output_var = tk.StringVar(value="")
+        ttk.Label(
+            output_frame,
+            textvariable=actual_output_var,
+            foreground="gray",
+            wraplength=1000,
+        ).pack(fill=tk.X, pady=(4, 0))
         btns = ttk.Frame(output_frame)
         btns.pack(fill=tk.X, pady=4)
-        ttk.Button(btns, text="选择全部输出字段", command=lambda: self.select_all_output_fields(out_list, config)).pack(side=tk.LEFT, padx=2)
-        ttk.Button(btns, text="反选", command=lambda: self.invert_output_fields(out_list, config)).pack(side=tk.LEFT, padx=2)
-        ttk.Button(btns, text="只选当前表字段", command=lambda: self.select_current_table_output_fields(out_list, config)).pack(side=tk.LEFT, padx=2)
+        return {
+            "frame": output_frame,
+            "out_list": out_list,
+            "actual_output_var": actual_output_var,
+            "button_frame": btns,
+        }
+
+    def refresh_filter_risk_text(self, headers, config, risk_var, risk_label):
+        warnings = self.get_plan_filter_config_warnings(
+            headers,
+            config.get("extra_tables", []),
+            config.get("conditions", []),
+            config.get("join_rules", []),
+            config.get("join_logic", "AND"),
+        )
+        display = workflow_build_filter_risk_display_state(warnings)
+        risk_var.set(display["text"])
+        risk_label.configure(foreground=display["foreground"])
+
+    def refresh_filter_condition_value_input(self, field_state, value_source_var, value_var, value_combo):
+        state = workflow_build_filter_condition_input_state(
+            field_state["all_values"],
+            value_source=value_source_var.get(),
+            current_value=value_var.get(),
+        )
+        if value_source_var.get() != state["value_source"]:
+            value_source_var.set(state["value_source"])
+            return
+        value_combo.configure(values=state["value_choices"])
+        if value_var.get() != state["value_default"]:
+            value_var.set(state["value_default"])
+
+    def filter_tree_rows(self, tree):
+        return [tree.item(iid, "values") for iid in tree.get_children()]
+
+    def replace_filter_tree_rows(self, tree, rows):
+        tree.delete(*tree.get_children())
+        for row_values in rows:
+            tree.insert("", tk.END, values=row_values)
+
+    def edit_filter_condition_cell(self, event, cond_tree, cond_edit_mode, sync_conditions_from_tree):
+        if not cond_edit_mode.get():
+            return
+        region = cond_tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return
+        row_id = cond_tree.identify_row(event.y)
+        col_id = cond_tree.identify_column(event.x)
+        if not row_id or not col_id:
+            return
+        bbox = cond_tree.bbox(row_id, col_id)
+        if not bbox:
+            return
+        x, y, width, height = bbox
+        edit_state = workflow_build_treeview_cell_edit_state(cond_tree.item(row_id, "values"), col_id, 4)
+        if edit_state is None:
+            return
+        col_index = edit_state["column_index"]
+        values = edit_state["values"]
+        entry = ttk.Entry(cond_tree)
+        entry.place(x=x, y=y, width=width, height=height)
+        entry.insert(0, edit_state["text"])
+        entry.select_range(0, tk.END)
+        entry.focus()
+        closed = {"done": False}
+
+        def close_editor(save=True):
+            if closed["done"]:
+                return
+            closed["done"] = True
+            if save:
+                new_values = workflow_apply_treeview_cell_edit(values, col_index, entry.get(), 4)
+                if new_values is not None:
+                    cond_tree.item(row_id, values=new_values)
+                    sync_conditions_from_tree()
+            entry.destroy()
+
+        entry.bind("<Return>", lambda e: close_editor(True))
+        entry.bind("<Escape>", lambda e: close_editor(False))
+        entry.bind("<FocusOut>", lambda e: close_editor(True))
+
+    def build_filter_condition_action_buttons(self, condition_section, config, refresh_filter_risk_text):
+        condition_frame = condition_section["frame"]
+        cond_tree = condition_section["cond_tree"]
+        cond_edit_mode = condition_section["cond_edit_mode"]
+        field_var = condition_section["field_var"]
+        op_var = condition_section["op_var"]
+        value_source_var = condition_section["value_source_var"]
+        value_var = condition_section["value_var"]
+
+        def sync_conditions_from_tree():
+            config["conditions"] = workflow_filter_conditions_from_rows(self.filter_tree_rows(cond_tree))
+            refresh_filter_risk_text()
+
+        def add_cond():
+            if not field_var.get().strip():
+                messagebox.showwarning("提示", "请选择条件字段。")
+                return
+            rows = workflow_append_filter_condition_row(
+                self.filter_tree_rows(cond_tree),
+                field_var.get(),
+                op_var.get(),
+                value_source_var.get(),
+                value_var.get(),
+            )
+            self.replace_filter_tree_rows(cond_tree, rows)
+            sync_conditions_from_tree()
+
+        def del_cond():
+            selected = [cond_tree.index(iid) for iid in cond_tree.selection()]
+            rows = workflow_delete_filter_rows_by_indexes(self.filter_tree_rows(cond_tree), selected)
+            self.replace_filter_tree_rows(cond_tree, rows)
+            sync_conditions_from_tree()
+
+        cond_tree.bind(
+            "<Double-1>",
+            lambda event: self.edit_filter_condition_cell(event, cond_tree, cond_edit_mode, sync_conditions_from_tree),
+        )
+        ttk.Button(condition_frame, text="添加条件", command=add_cond).grid(row=condition_section["button_row"], column=1, padx=4, pady=4)
+        ttk.Button(condition_frame, text="删除条件", command=del_cond).grid(row=condition_section["button_row"], column=2, padx=4, pady=4)
+        return {
+            "sync_conditions_from_tree": sync_conditions_from_tree,
+        }
+
+    def build_filter_join_action_buttons(self, join_section, config, refresh_filter_risk_text):
+        join_frame = join_section["frame"]
+        left_var = join_section["left_var"]
+        join_op_var = join_section["join_op_var"]
+        right_var = join_section["right_var"]
+        join_tree = join_section["join_tree"]
+
+        def sync_join_rules_from_tree():
+            config["join_rules"] = workflow_filter_join_rules_from_rows(self.filter_tree_rows(join_tree))
+            refresh_filter_risk_text()
+
+        def add_join():
+            if not left_var.get().strip() or not right_var.get().strip():
+                messagebox.showwarning("提示", "请选择左右匹配字段。")
+                return
+            rows = workflow_append_filter_join_rule_row(
+                self.filter_tree_rows(join_tree),
+                left_var.get(),
+                join_op_var.get(),
+                right_var.get(),
+            )
+            self.replace_filter_tree_rows(join_tree, rows)
+            sync_join_rules_from_tree()
+
+        def del_join():
+            selected = [join_tree.index(iid) for iid in join_tree.selection()]
+            rows = workflow_delete_filter_rows_by_indexes(self.filter_tree_rows(join_tree), selected)
+            self.replace_filter_tree_rows(join_tree, rows)
+            sync_join_rules_from_tree()
+
+        ttk.Button(join_frame, text="添加匹配规则", command=add_join).grid(row=join_section["button_row"], column=1, padx=4, pady=4)
+        ttk.Button(join_frame, text="删除匹配规则", command=del_join).grid(row=join_section["button_row"], column=2, padx=4, pady=4)
+        return {
+            "sync_join_rules_from_tree": sync_join_rules_from_tree,
+        }
+
+    def refresh_filter_actual_output_text(self, out_list, actual_output_var, headers, field_state, config):
+        selected_fields = [out_list.get(i) for i in out_list.curselection()]
+        actual_output_var.set(workflow_build_filter_actual_output_text(
+            selected_fields,
+            headers,
+            field_state["all_values"],
+            config.get("extra_tables", []),
+        ))
+
+    def sync_filter_output_fields(self, out_list, actual_output_var, headers, field_state, config):
+        config["output_fields"] = [out_list.get(i) for i in out_list.curselection()]
+        self.refresh_filter_actual_output_text(out_list, actual_output_var, headers, field_state, config)
+
+    def build_filter_output_action_buttons(self, output_section, config, headers, field_state):
+        out_list = output_section["out_list"]
+        actual_output_var = output_section["actual_output_var"]
+
+        def refresh_actual_output_text():
+            self.refresh_filter_actual_output_text(out_list, actual_output_var, headers, field_state, config)
+
+        def sync_output_fields():
+            self.sync_filter_output_fields(out_list, actual_output_var, headers, field_state, config)
+
+        out_list.bind("<<ListboxSelect>>", lambda e: sync_output_fields())
+        btns = output_section["button_frame"]
+        ttk.Button(
+            btns,
+            text="选择全部输出字段",
+            command=lambda: (self.select_all_output_fields(out_list, config), refresh_actual_output_text()),
+        ).pack(side=tk.LEFT, padx=2)
+        ttk.Button(
+            btns,
+            text="反选",
+            command=lambda: (self.invert_output_fields(out_list, config), refresh_actual_output_text()),
+        ).pack(side=tk.LEFT, padx=2)
+        ttk.Button(
+            btns,
+            text="只选当前表字段",
+            command=lambda: (self.select_current_table_output_fields(out_list, config), refresh_actual_output_text()),
+        ).pack(side=tk.LEFT, padx=2)
         ttk.Button(btns, text="清空输出选择", command=lambda: (out_list.selection_clear(0, tk.END), sync_output_fields())).pack(side=tk.LEFT, padx=2)
 
-        dedupe_text = tk.StringVar(value="去除重复内容:开" if bool(config.get("remove_duplicates", False)) else "去除重复内容:关")
+        dedupe_text = tk.StringVar(value=workflow_filter_dedupe_button_text(config.get("remove_duplicates", False)))
 
         def toggle_filter_dedupe():
-            config["remove_duplicates"] = not bool(config.get("remove_duplicates", False))
-            dedupe_text.set("去除重复内容:开" if config["remove_duplicates"] else "去除重复内容:关")
+            enabled = workflow_toggle_filter_dedupe_config(config)
+            dedupe_text.set(workflow_filter_dedupe_button_text(enabled))
 
         ttk.Button(btns, textvariable=dedupe_text, command=toggle_filter_dedupe).pack(side=tk.LEFT, padx=(12, 2))
         ttk.Label(btns, text="按最终输出整行去重，保留第一条。", foreground="gray").pack(side=tk.LEFT, padx=4)
+        return {
+            "refresh_actual_output_text": refresh_actual_output_text,
+            "sync_output_fields": sync_output_fields,
+        }
+
+    def refresh_filter_field_sources(
+        self,
+        headers,
+        config,
+        transit_context,
+        field_state,
+        source_section,
+        condition_section,
+        join_section,
+        output_section,
+        sync_output_fields,
+        refresh_condition_value_input,
+        refresh_filter_risk_text,
+    ):
+        table_list = source_section["table_list"]
+        value_source_var = condition_section["value_source_var"]
+        config["extra_tables"] = [table_list.get(i) for i in table_list.curselection()]
+        available_fields = self.get_plan_filter_available_fields(headers, config.get("extra_tables", []), transit_context)
+        state = workflow_build_filter_field_refresh_state(
+            headers,
+            available_fields,
+            value_source_var.get(),
+            config.get("output_fields", []),
+        )
+        field_state.clear()
+        field_state.update(state)
+        self.refresh_combo_values(
+            condition_section["field_combo"],
+            condition_section["field_var"],
+            state["all_values"],
+            keep_custom=False,
+            fallback=state["first_any"],
+        )
+        self.refresh_combo_values(
+            condition_section["value_combo"],
+            condition_section["value_var"],
+            state["value_choices"],
+            keep_custom=state["value_source"] != "字段值",
+            fallback=state["value_fallback"],
+        )
+        self.refresh_combo_values(
+            join_section["left_combo"],
+            join_section["left_var"],
+            state["all_values"],
+            keep_custom=False,
+            fallback=state["first_current"],
+        )
+        self.refresh_combo_values(
+            join_section["right_combo"],
+            join_section["right_var"],
+            state["all_values"],
+            keep_custom=False,
+            fallback=state["first_external"],
+        )
+        self.refresh_listbox_values(
+            output_section["out_list"],
+            state["all_values"],
+            state["selected_output"],
+        )
+        sync_output_fields()
+        refresh_condition_value_input()
+        refresh_filter_risk_text()
+        self.status_var.set(workflow_build_filter_field_refresh_status(len(config.get("extra_tables", [])), len(state["all_values"])))
+
+    def build_filter_config(self, config, headers, transit_context=None):
+        return workflow_build_filter_config_ui(self, config, headers, transit_context=transit_context)
 
     def select_all_output_fields(self, listbox, config):
-        listbox.selection_set(0, tk.END)
-        config["output_fields"] = list(listbox.get(0, tk.END))
+        return workflow_select_all_output_fields_ui(listbox, config)
 
     def invert_output_fields(self, listbox, config):
-        selected = set(listbox.curselection())
-        listbox.selection_clear(0, tk.END)
-        result = []
-        for i, field in enumerate(listbox.get(0, tk.END)):
-            if i not in selected:
-                listbox.selection_set(i)
-                result.append(field)
-        config["output_fields"] = result
+        return workflow_invert_output_fields_ui(listbox, config)
 
     def select_current_table_output_fields(self, listbox, config):
-        listbox.selection_clear(0, tk.END)
-        selected = []
-        for i, field in enumerate(listbox.get(0, tk.END)):
-            if str(field).startswith("当前表."):
-                listbox.selection_set(i)
-                selected.append(field)
-        config["output_fields"] = selected
+        return workflow_select_current_table_output_fields_ui(listbox, config)
 
     def build_copy_column_config(self, config, headers):
-        frame = ttk.LabelFrame(self.config_frame, text="复制列节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        ttk.Label(frame, text="把一个字段复制为新字段，或覆盖到已有字段。适合在批量替换前备份原列。", foreground="gray").grid(row=0, column=0, columnspan=6, sticky=tk.W, padx=4, pady=(0, 6))
-        headers = list(headers)
-        source_default = config.get("source_field") if config.get("source_field") in headers else (headers[0] if headers else "")
-        target_default = config.get("target_field") if config.get("target_field") in headers else source_default
-        source_var = self.add_labeled_combo(frame, "源字段：", source_default, headers, 1, 0, 24, readonly=False)
-        mode_var = self.add_labeled_combo(frame, "输出方式：", config.get("output_mode", "生成新字段"), ["生成新字段", "覆盖已有字段"], 1, 2, 16)
-        self.sync_var_to_config(source_var, config, "source_field")
-        self.sync_var_to_config(mode_var, config, "output_mode")
-        new_field_var = self.add_labeled_entry(frame, "新字段名：", config.get("new_field", "复制列"), 2, 0, 24)
-        target_var = self.add_labeled_combo(frame, "覆盖目标字段：", target_default, headers, 2, 2, 24, readonly=False)
-        self.sync_var_to_config(new_field_var, config, "new_field")
-        self.sync_var_to_config(target_var, config, "target_field")
-        trim_var = tk.BooleanVar(value=bool(config.get("trim_value", False)))
-        ttk.Checkbutton(frame, text="复制前去除首尾空格", variable=trim_var).grid(row=3, column=0, columnspan=2, sticky=tk.W, padx=4, pady=4)
-        self.sync_bool_to_config(trim_var, config, "trim_value")
-        empty_var = self.add_labeled_entry(frame, "空值默认值：", config.get("empty_default", ""), 3, 2, 20)
-        self.sync_var_to_config(empty_var, config, "empty_default")
+        return workflow_build_copy_column_config_ui(self, config, headers)
 
     def build_copy_row_config(self, config, headers):
-        frame = ttk.LabelFrame(self.config_frame, text="复制行节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        ttk.Label(frame, text="复制指定行 N 次，并插入到表尾、原行下方或指定行前后。行号从 1 开始。", foreground="gray").grid(row=0, column=0, columnspan=6, sticky=tk.W, padx=4, pady=(0, 6))
-        source_row_var = self.add_labeled_entry(frame, "源行号：", config.get("source_row", "1"), 1, 0, 10)
-        count_var = self.add_labeled_entry(frame, "复制次数：", config.get("copy_count", "1"), 1, 2, 10)
-        mode_var = self.add_labeled_combo(frame, "插入位置：", config.get("insert_mode", "表尾"), ["表尾", "原行下方", "指定行前", "指定行后"], 2, 0, 14)
-        insert_row_var = self.add_labeled_entry(frame, "指定行号：", config.get("insert_row", "1"), 2, 2, 10)
-        self.sync_var_to_config(source_row_var, config, "source_row")
-        self.sync_var_to_config(count_var, config, "copy_count")
-        self.sync_var_to_config(mode_var, config, "insert_mode")
-        self.sync_var_to_config(insert_row_var, config, "insert_row")
+        return workflow_build_copy_row_config_ui(self, config, headers)
 
     def build_delete_rows_config(self, config, headers):
-        frame = ttk.LabelFrame(self.config_frame, text="删除行节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        ttk.Label(
-            frame,
-            text="按行号、行号范围、条件或空行规则删除数据行。行号从 1 开始，执行前建议先预览完整计划。",
-            foreground="gray",
-            wraplength=1050
-        ).grid(row=0, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
-
-        headers = list(headers)
-        first = headers[0] if headers else ""
-        mode_var = self.add_labeled_combo(
-            frame,
-            "删除方式：",
-            config.get("delete_mode", "按行号列表"),
-            ["按行号列表", "按行号范围", "按条件删除", "删除空行"],
-            1, 0, 18
-        )
-        row_spec_var = self.add_labeled_entry(frame, "行号列表：", config.get("row_spec", "1"), 1, 2, 28)
-        ttk.Label(frame, text="示例：1,3,5-8", foreground="gray").grid(row=1, column=4, columnspan=2, sticky=tk.W, padx=4)
-
-        start_var = self.add_labeled_entry(frame, "起始行：", config.get("start_row", "1"), 2, 0, 10)
-        end_var = self.add_labeled_entry(frame, "结束行：", config.get("end_row", "1"), 2, 2, 10)
-
-        cond_field_default = config.get("condition_field") if config.get("condition_field") in headers else (config.get("condition_field") or first)
-        cond_field_var = self.add_labeled_combo(frame, "条件字段：", cond_field_default, headers, 3, 0, 24, readonly=False)
-        cond_op_var = self.add_labeled_combo(frame, "条件操作：", config.get("condition_op", "包含"), self.FILTER_OPS, 3, 2, 14)
-        cond_value_var = self.add_labeled_entry(frame, "条件值：", config.get("condition_value", ""), 3, 4, 24)
-
-        case_var = tk.BooleanVar(value=bool(config.get("case_sensitive", True)))
-        ttk.Checkbutton(frame, text="条件判断区分大小写", variable=case_var).grid(row=4, column=0, columnspan=2, sticky=tk.W, padx=4, pady=4)
-
-        empty_mode_var = self.add_labeled_combo(frame, "空行判断：", config.get("empty_mode", "整行为空"), ["整行为空", "指定字段为空"], 5, 0, 16)
-        empty_field_default = config.get("empty_field") if config.get("empty_field") in headers else (config.get("empty_field") or first)
-        empty_field_var = self.add_labeled_combo(frame, "空字段：", empty_field_default, headers, 5, 2, 24, readonly=False)
-
-        ttk.Label(
-            frame,
-            text="说明：按条件删除会删除满足条件的整行；删除空行可按整行为空或指定字段为空判断。",
-            foreground="gray",
-            wraplength=1050
-        ).grid(row=6, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(8, 4))
-
-        self.sync_var_to_config(mode_var, config, "delete_mode")
-        self.sync_var_to_config(row_spec_var, config, "row_spec")
-        self.sync_var_to_config(start_var, config, "start_row")
-        self.sync_var_to_config(end_var, config, "end_row")
-        self.sync_var_to_config(cond_field_var, config, "condition_field")
-        self.sync_var_to_config(cond_op_var, config, "condition_op")
-        self.sync_var_to_config(cond_value_var, config, "condition_value")
-        self.sync_bool_to_config(case_var, config, "case_sensitive")
-        self.sync_var_to_config(empty_mode_var, config, "empty_mode")
-        self.sync_var_to_config(empty_field_var, config, "empty_field")
+        return workflow_build_delete_rows_config_ui(self, config, headers)
 
     def build_fill_value_config(self, config, headers):
-        frame = ttk.LabelFrame(self.config_frame, text="填充值节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        ttk.Label(frame, text="从指定字段/行开始，把手动值、指定单元格值或同行来源字段值按方向填充。支持整体数据边界和参考列数据边界。", foreground="gray", wraplength=1050).grid(row=0, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
-        headers = list(headers)
-        first = headers[0] if headers else ""
-        target_default = config.get("target_field") if config.get("target_field") in headers else (config.get("target_field") or first)
-        target_var = self.add_labeled_combo(frame, "目标字段：", target_default, headers, 1, 0, 24, readonly=False)
-        start_row_mode_var = self.add_labeled_combo(frame, "起始位置：", config.get("start_row_mode", "手动指定起始行"), ["手动指定起始行", "目标列最后数据行之后", "参考列最后数据行之后", "整体表格最后行之后"], 1, 2, 20)
-        start_row_var = self.add_labeled_entry(frame, "起始行号：", config.get("start_row", "1"), 1, 4, 10)
-        direction_var = self.add_labeled_combo(frame, "填充方向：", config.get("direction", "向下"), ["向下", "向上", "向右", "向左"], 1, 6, 10)
-        self.sync_var_to_config(target_var, config, "target_field")
-        self.sync_var_to_config(start_row_mode_var, config, "start_row_mode")
-        self.sync_var_to_config(start_row_var, config, "start_row")
-        self.sync_var_to_config(direction_var, config, "direction")
-
-        source_var = self.add_labeled_combo(frame, "填充值来源：", config.get("value_source", "手动输入值"), ["手动输入值", "指定单元格值", "同行来源字段", "来源列完整结构", "循环源列填充"], 2, 0, 18)
-        manual_var = self.add_labeled_entry(frame, "手动输入值：", config.get("manual_value", ""), 2, 2, 24)
-        src_field_default = config.get("source_field") if config.get("source_field") in headers else first
-        src_field_var = self.add_labeled_combo(frame, "取值/来源字段：", src_field_default, headers, 3, 0, 24, readonly=False)
-        src_row_var = self.add_labeled_entry(frame, "取值行号：", config.get("source_row", "1"), 3, 2, 10)
-        source_range_var = self.add_labeled_combo(frame, "来源范围：", config.get("source_range_mode", "来源列数据边界"), ["来源列数据边界", "整体表格数据边界", "手动指定范围"], 3, 4, 18)
-        source_start_var = self.add_labeled_entry(frame, "来源起始行：", config.get("source_start_row", "1"), 4, 0, 10)
-        source_end_var = self.add_labeled_entry(frame, "来源结束行：", config.get("source_end_row", "1"), 4, 2, 10)
-        self.sync_var_to_config(source_var, config, "value_source")
-        self.sync_var_to_config(manual_var, config, "manual_value")
-        self.sync_var_to_config(src_field_var, config, "source_field")
-        self.sync_var_to_config(src_row_var, config, "source_row")
-        self.sync_var_to_config(source_range_var, config, "source_range_mode")
-        self.sync_var_to_config(source_start_var, config, "source_start_row")
-        self.sync_var_to_config(source_end_var, config, "source_end_row")
-
-        cycle_mode_var = self.add_labeled_combo(frame, "循环方式：", config.get("cycle_mode", "从头循环"), ["从头循环"], 5, 0, 14)
-        source_empty_mode_var = self.add_labeled_combo(frame, "来源空值：", config.get("source_empty_mode", "跳过空值"), ["跳过空值", "保留空值参与循环", "替换为空值占位符"], 5, 2, 18)
-        source_empty_placeholder_var = self.add_labeled_entry(frame, "空值占位符：", config.get("source_empty_placeholder", ""), 5, 4, 16)
-        self.sync_var_to_config(cycle_mode_var, config, "cycle_mode")
-        self.sync_var_to_config(source_empty_mode_var, config, "source_empty_mode")
-        self.sync_var_to_config(source_empty_placeholder_var, config, "source_empty_placeholder")
-
-        end_var = self.add_labeled_combo(frame, "结束条件：", config.get("end_mode", "填充到数据边界"), ["固定数量", "遇到已有数据停止", "填充到数据边界", "填充到参考列数据边界", "填充到指定行", "填充到指定列", "填充到空行前"], 6, 0, 20)
-        count_var = self.add_labeled_entry(frame, "固定数量：", config.get("count", "1"), 6, 2, 10)
-        end_row_var = self.add_labeled_entry(frame, "结束行号：", config.get("end_row", "1"), 6, 4, 10)
-        end_field_default = config.get("end_field") if config.get("end_field") in headers else target_default
-        end_field_var = self.add_labeled_combo(frame, "结束字段：", end_field_default, headers, 7, 0, 24, readonly=False)
-        ref_field_default = config.get("reference_field") if config.get("reference_field") in headers else (first or target_default)
-        ref_field_var = self.add_labeled_combo(frame, "参考边界列：", ref_field_default, headers, 7, 2, 24, readonly=False)
-        overwrite_var = self.add_labeled_combo(frame, "覆盖规则：", config.get("overwrite_rule", "只填充空单元格"), ["覆盖所有目标单元格", "只填充空单元格", "遇到已有数据停止", "不覆盖已有数据，只跳过"], 8, 0, 20)
-        ttk.Label(frame, text="提示：选择“来源列完整结构”时，会把来源字段的一整段数据按顺序追加/填充到目标字段；选择“循环源列填充”时，会把来源字段的有效值作为循环周期，重复填充到参考列或表格边界。", foreground="gray", wraplength=1050).grid(row=9, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(8, 2))
-        self.sync_var_to_config(end_var, config, "end_mode")
-        self.sync_var_to_config(count_var, config, "count")
-        self.sync_var_to_config(end_row_var, config, "end_row")
-        self.sync_var_to_config(end_field_var, config, "end_field")
-        self.sync_var_to_config(ref_field_var, config, "reference_field")
-        self.sync_var_to_config(overwrite_var, config, "overwrite_rule")
+        return workflow_build_fill_value_config_ui(self, config, headers)
 
     def build_sequence_fill_config(self, config, headers):
-        frame = ttk.LabelFrame(self.config_frame, text="序列填充节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        ttk.Label(frame, text="类似 Excel 下拉填充数字序列。步长为正数递增，负数递减；可按参考列/来源列数量生成。", foreground="gray", wraplength=1050).grid(row=0, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
-        headers = list(headers)
-        first = headers[0] if headers else ""
-        target_default = config.get("target_field") if config.get("target_field") in headers else (config.get("target_field") or first)
-        target_var = self.add_labeled_combo(frame, "目标字段：", target_default, headers, 1, 0, 24, readonly=False)
-        start_row_mode_var = self.add_labeled_combo(frame, "起始位置：", config.get("start_row_mode", "手动指定起始行"), ["手动指定起始行", "目标列最后数据行之后", "参考列最后数据行之后", "整体表格最后行之后"], 1, 2, 20)
-        start_row_var = self.add_labeled_entry(frame, "起始行号：", config.get("start_row", "1"), 1, 4, 10)
-        direction_var = self.add_labeled_combo(frame, "填充方向：", config.get("direction", "向下"), ["向下", "向上", "向右", "向左"], 1, 6, 10)
-        self.sync_var_to_config(target_var, config, "target_field")
-        self.sync_var_to_config(start_row_mode_var, config, "start_row_mode")
-        self.sync_var_to_config(start_row_var, config, "start_row")
-        self.sync_var_to_config(direction_var, config, "direction")
-        start_var = self.add_labeled_entry(frame, "起始值：", config.get("start_value", "1"), 2, 0, 12)
-        step_var = self.add_labeled_entry(frame, "步长：", config.get("step", "1"), 2, 2, 12)
-        zero_var = self.add_labeled_entry(frame, "补零位数：", config.get("zero_pad", "0"), 2, 4, 10)
-        prefix_var = self.add_labeled_entry(frame, "前缀：", config.get("prefix", ""), 3, 0, 18)
-        suffix_var = self.add_labeled_entry(frame, "后缀：", config.get("suffix", ""), 3, 2, 18)
-        self.sync_var_to_config(start_var, config, "start_value")
-        self.sync_var_to_config(step_var, config, "step")
-        self.sync_var_to_config(zero_var, config, "zero_pad")
-        self.sync_var_to_config(prefix_var, config, "prefix")
-        self.sync_var_to_config(suffix_var, config, "suffix")
-        count_source_var = self.add_labeled_combo(frame, "数量来源：", config.get("count_source_mode", "使用结束条件"), ["使用结束条件", "整体表格数据行数", "指定参考列数据数量", "来源列数据数量"], 4, 0, 18)
-        self.sync_var_to_config(count_source_var, config, "count_source_mode")
-        end_var = self.add_labeled_combo(frame, "结束条件：", config.get("end_mode", "填充到数据边界"), ["固定数量", "遇到已有数据停止", "填充到数据边界", "填充到参考列数据边界", "填充到指定行", "填充到指定列", "填充到空行前"], 5, 0, 20)
-        count_var = self.add_labeled_entry(frame, "固定数量：", config.get("count", "1"), 5, 2, 10)
-        end_row_var = self.add_labeled_entry(frame, "结束行号：", config.get("end_row", "1"), 5, 4, 10)
-        end_field_default = config.get("end_field") if config.get("end_field") in headers else target_default
-        end_field_var = self.add_labeled_combo(frame, "结束字段：", end_field_default, headers, 6, 0, 24, readonly=False)
-        ref_field_default = config.get("reference_field") if config.get("reference_field") in headers else (first or target_default)
-        ref_field_var = self.add_labeled_combo(frame, "参考边界列：", ref_field_default, headers, 6, 2, 24, readonly=False)
-        src_field_default = config.get("source_field") if config.get("source_field") in headers else first
-        src_field_var = self.add_labeled_combo(frame, "来源列：", src_field_default, headers, 6, 4, 24, readonly=False)
-        overwrite_var = self.add_labeled_combo(frame, "覆盖规则：", config.get("overwrite_rule", "覆盖所有目标单元格"), ["覆盖所有目标单元格", "只填充空单元格", "遇到已有数据停止", "不覆盖已有数据，只跳过"], 7, 0, 20)
-        self.sync_var_to_config(src_field_var, config, "source_field")
-        self.sync_var_to_config(end_var, config, "end_mode")
-        self.sync_var_to_config(count_var, config, "count")
-        self.sync_var_to_config(end_row_var, config, "end_row")
-        self.sync_var_to_config(end_field_var, config, "end_field")
-        self.sync_var_to_config(ref_field_var, config, "reference_field")
-        self.sync_var_to_config(overwrite_var, config, "overwrite_rule")
+        return workflow_build_sequence_fill_config_ui(self, config, headers)
 
     def build_area_fill_config(self, config, headers):
-        frame = ttk.LabelFrame(self.config_frame, text="区域填充节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        ttk.Label(frame, text="对矩形区域批量填充固定值、指定单元格值或同行来源字段值。结束行可手动指定，也可跟随整体表格或参考列数据边界。", foreground="gray", wraplength=1050).grid(row=0, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
-        headers = list(headers)
-        first = headers[0] if headers else ""
-        second = headers[1] if len(headers) > 1 else first
-        start_field_default = config.get("start_field") if config.get("start_field") in headers else first
-        end_field_default = config.get("end_field") if config.get("end_field") in headers else second
-        sf_var = self.add_labeled_combo(frame, "起始字段：", start_field_default, headers, 1, 0, 24, readonly=False)
-        ef_var = self.add_labeled_combo(frame, "结束字段：", end_field_default, headers, 1, 2, 24, readonly=False)
-        start_row_mode_var = self.add_labeled_combo(frame, "起始位置：", config.get("start_row_mode", "手动指定起始行"), ["手动指定起始行", "目标列最后数据行之后", "参考列最后数据行之后", "整体表格最后行之后"], 2, 0, 20)
-        sr_var = self.add_labeled_entry(frame, "起始行号：", config.get("start_row", "1"), 2, 2, 10)
-        er_var = self.add_labeled_entry(frame, "结束行号：", config.get("end_row", "1"), 2, 4, 10)
-        self.sync_var_to_config(sf_var, config, "start_field")
-        self.sync_var_to_config(ef_var, config, "end_field")
-        self.sync_var_to_config(start_row_mode_var, config, "start_row_mode")
-        self.sync_var_to_config(sr_var, config, "start_row")
-        self.sync_var_to_config(er_var, config, "end_row")
-        end_mode_var = self.add_labeled_combo(frame, "结束行来源：", config.get("end_row_mode", "手动指定结束行"), ["手动指定结束行", "整体表格数据边界", "指定参考列数据边界"], 3, 0, 18)
-        ref_field_default = config.get("reference_field") if config.get("reference_field") in headers else first
-        ref_field_var = self.add_labeled_combo(frame, "参考边界列：", ref_field_default, headers, 3, 2, 24, readonly=False)
-        source_var = self.add_labeled_combo(frame, "填充值来源：", config.get("value_source", "手动输入值"), ["手动输入值", "指定单元格值", "同行来源字段", "来源列完整结构", "循环源列填充", "指定行多字段取值", "来源区域完整复制"], 4, 0, 20)
-        manual_var = self.add_labeled_entry(frame, "手动输入值：", config.get("manual_value", ""), 4, 2, 24)
-        src_field_default = config.get("source_field") if config.get("source_field") in headers else first
-        source_end_default = config.get("source_end_field") if config.get("source_end_field") in headers else end_field_default
-        src_field_var = self.add_labeled_combo(frame, "取值/来源字段：", src_field_default, headers, 5, 0, 20, readonly=False)
-        src_end_label = ttk.Label(frame, text="取值/结束字段：")
-        src_end_var = tk.StringVar(value=source_end_default)
-        src_end_combo = ttk.Combobox(frame, textvariable=src_end_var, values=headers, width=20, state="normal")
-        src_end_label.grid(row=5, column=2, sticky=tk.W, padx=4, pady=4)
-        src_end_combo.grid(row=5, column=3, sticky=tk.W, padx=4, pady=4)
-        src_row_var = self.add_labeled_entry(frame, "取值行号：", config.get("source_row", "1"), 5, 4, 10)
-        multi_dir_label = ttk.Label(frame, text="多字段填充方向：")
-        multi_dir_var = tk.StringVar(value=config.get("multi_field_fill_direction", "横向填充"))
-        multi_dir_combo = ttk.Combobox(frame, textvariable=multi_dir_var, values=["横向填充", "纵向填充"], width=14, state="readonly")
-        multi_dir_label.grid(row=5, column=6, sticky=tk.W, padx=4, pady=4)
-        multi_dir_combo.grid(row=5, column=7, sticky=tk.W, padx=4, pady=4)
-
-        def update_area_source_widgets(*_):
-            current_source = source_var.get()
-            if current_source in ["循环源列填充", "指定行多字段取值", "来源区域完整复制"]:
-                src_end_label.grid()
-                src_end_combo.grid()
-            else:
-                src_end_label.grid_remove()
-                src_end_combo.grid_remove()
-
-            if current_source == "指定行多字段取值":
-                multi_dir_label.grid()
-                multi_dir_combo.grid()
-            else:
-                multi_dir_label.grid_remove()
-                multi_dir_combo.grid_remove()
-
-        source_var.trace_add("write", update_area_source_widgets)
-        update_area_source_widgets()
-
-        source_range_var = self.add_labeled_combo(frame, "来源范围：", config.get("source_range_mode", "来源列数据边界"), ["来源列数据边界", "整体表格数据边界", "手动指定范围"], 6, 0, 18)
-        source_start_var = self.add_labeled_entry(frame, "来源起始行：", config.get("source_start_row", "1"), 6, 2, 10)
-        source_end_var = self.add_labeled_entry(frame, "来源结束行：", config.get("source_end_row", "1"), 6, 4, 10)
-        cycle_mode_var = self.add_labeled_combo(frame, "循环方式：", config.get("cycle_mode", "从头循环"), ["从头循环"], 7, 0, 14)
-        source_empty_mode_var = self.add_labeled_combo(frame, "来源空值：", config.get("source_empty_mode", "跳过空值"), ["跳过空值", "保留空值参与循环", "替换为空值占位符"], 7, 2, 18)
-        source_empty_placeholder_var = self.add_labeled_entry(frame, "空值占位符：", config.get("source_empty_placeholder", ""), 7, 4, 16)
-        overwrite_var = self.add_labeled_combo(frame, "覆盖规则：", config.get("overwrite_rule", "只填充空单元格"), ["覆盖所有目标单元格", "只填充空单元格", "遇到已有数据停止", "不覆盖已有数据，只跳过"], 8, 0, 20)
-        ttk.Label(frame, text="提示：选择“来源列完整结构”时，会把来源字段的一整段数据顺序填入目标区域；选择“循环源列填充”时，默认使用“取值/来源字段”到“取值/结束字段”的多个源字段作为循环周期，按行优先重复填充到目标区域边界；选择“指定行多字段取值”时，会取指定行中“取值/来源字段”到“取值/结束字段”的多个值；选择“来源区域完整复制”时，会按统一左上角锚点完整复制源区域。", foreground="gray", wraplength=1050).grid(row=9, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(8, 2))
-        self.sync_var_to_config(end_mode_var, config, "end_row_mode")
-        self.sync_var_to_config(ref_field_var, config, "reference_field")
-        self.sync_var_to_config(source_var, config, "value_source")
-        self.sync_var_to_config(manual_var, config, "manual_value")
-        self.sync_var_to_config(src_field_var, config, "source_field")
-        self.sync_var_to_config(src_end_var, config, "source_end_field")
-        self.sync_var_to_config(src_row_var, config, "source_row")
-        self.sync_var_to_config(multi_dir_var, config, "multi_field_fill_direction")
-        self.sync_var_to_config(source_range_var, config, "source_range_mode")
-        self.sync_var_to_config(source_start_var, config, "source_start_row")
-        self.sync_var_to_config(source_end_var, config, "source_end_row")
-        self.sync_var_to_config(cycle_mode_var, config, "cycle_mode")
-        self.sync_var_to_config(source_empty_mode_var, config, "source_empty_mode")
-        self.sync_var_to_config(source_empty_placeholder_var, config, "source_empty_placeholder")
-        self.sync_var_to_config(overwrite_var, config, "overwrite_rule")
+        return workflow_build_area_fill_config_ui(self, config, headers)
 
 
     def build_dedupe_config(self, config, headers):
-        frame = ttk.LabelFrame(self.config_frame, text="去重 / 重复数据处理节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        headers = list(headers)
-        ttk.Label(
-            frame,
-            text="按整行、指定字段或组合字段识别重复数据；可输出去重结果、重复项、唯一项、统计表，或给原表增加重复标记列。",
-            foreground="gray",
-            wraplength=1100
-        ).grid(row=0, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(0, 6))
-
-        mode_var = self.add_labeled_combo(
-            frame,
-            "去重方式：",
-            config.get("dedupe_mode", "指定字段/组合字段去重"),
-            ["整行去重", "指定字段/组合字段去重"],
-            1,
-            0,
-            22,
-        )
-        keep_var = self.add_labeled_combo(
-            frame,
-            "保留策略：",
-            config.get("keep_policy", "保留第一条"),
-            ["保留第一条", "保留最后一条", "保留非空字段最多", "不删除，仅标记"],
-            1,
-            2,
-            18,
-        )
-        output_var = self.add_labeled_combo(
-            frame,
-            "输出模式：",
-            config.get("output_mode", "输出去重后的数据"),
-            ["输出去重后的数据", "输出重复项数据", "输出唯一项数据", "输出重复统计表", "原表增加重复标记列"],
-            1,
-            4,
-            22,
-        )
-        empty_key_var = self.add_labeled_combo(
-            frame,
-            "空键处理：",
-            config.get("empty_key_policy", "空键参与去重"),
-            ["空键参与去重", "空键跳过去重"],
-            2,
-            0,
-            18,
-        )
-        trim_var = tk.BooleanVar(value=bool(config.get("trim", True)))
-        ignore_case_var = tk.BooleanVar(value=bool(config.get("ignore_case", False)))
-        marker_var = tk.BooleanVar(value=bool(config.get("add_marker_columns", True)))
-        ttk.Checkbutton(frame, text="去除首尾空格", variable=trim_var).grid(row=2, column=2, sticky=tk.W, padx=4, pady=4)
-        ttk.Checkbutton(frame, text="忽略大小写", variable=ignore_case_var).grid(row=2, column=3, sticky=tk.W, padx=4, pady=4)
-        ttk.Checkbutton(frame, text="输出时增加重复标记列", variable=marker_var).grid(row=2, column=4, columnspan=2, sticky=tk.W, padx=4, pady=4)
-        for var, key in [
-            (mode_var, "dedupe_mode"),
-            (keep_var, "keep_policy"),
-            (output_var, "output_mode"),
-            (empty_key_var, "empty_key_policy"),
-        ]:
-            self.sync_var_to_config(var, config, key)
-        self.sync_bool_to_config(trim_var, config, "trim")
-        self.sync_bool_to_config(ignore_case_var, config, "ignore_case")
-        self.sync_bool_to_config(marker_var, config, "add_marker_columns")
-
-        field_frame = ttk.LabelFrame(frame, text="去重字段（选择“指定字段/组合字段去重”时使用，可多选）", padding=6)
-        field_frame.grid(row=3, column=0, columnspan=8, sticky="nsew", padx=4, pady=6)
-        field_frame.rowconfigure(0, weight=1)
-        field_frame.columnconfigure(0, weight=1)
-        lb = tk.Listbox(field_frame, selectmode=tk.MULTIPLE, height=10, exportselection=False)
-        yscroll = ttk.Scrollbar(field_frame, orient=tk.VERTICAL, command=lb.yview)
-        xscroll = ttk.Scrollbar(field_frame, orient=tk.HORIZONTAL, command=lb.xview)
-        lb.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
-        lb.grid(row=0, column=0, sticky="nsew")
-        yscroll.grid(row=0, column=1, sticky="ns")
-        xscroll.grid(row=1, column=0, sticky="ew")
-        selected = set(config.get("key_fields", []))
-        for i, h in enumerate(headers):
-            lb.insert(tk.END, h)
-            if h in selected:
-                lb.selection_set(i)
-
-        def sync_key_fields(event=None):
-            config["key_fields"] = [headers[i] for i in lb.curselection() if 0 <= i < len(headers)]
-
-        def select_all():
-            lb.selection_set(0, tk.END)
-            sync_key_fields()
-
-        def select_none():
-            lb.selection_clear(0, tk.END)
-            sync_key_fields()
-
-        def invert_selection():
-            current = set(lb.curselection())
-            lb.selection_clear(0, tk.END)
-            for i in range(len(headers)):
-                if i not in current:
-                    lb.selection_set(i)
-            sync_key_fields()
-
-        lb.bind("<<ListboxSelect>>", sync_key_fields)
-        btns = ttk.Frame(field_frame)
-        btns.grid(row=0, column=2, sticky="ns", padx=6)
-        ttk.Button(btns, text="全选", command=select_all).pack(fill=tk.X, pady=2)
-        ttk.Button(btns, text="全不选", command=select_none).pack(fill=tk.X, pady=2)
-        ttk.Button(btns, text="反选", command=invert_selection).pack(fill=tk.X, pady=2)
-
-        marker_frame = ttk.LabelFrame(frame, text="重复标记字段名", padding=6)
-        marker_frame.grid(row=4, column=0, columnspan=8, sticky="ew", padx=4, pady=6)
-        group_var = self.add_labeled_entry(marker_frame, "重复组编号：", config.get("duplicate_group_field", "重复组编号"), 0, 0, 18)
-        status_var = self.add_labeled_entry(marker_frame, "重复状态：", config.get("duplicate_status_field", "重复状态"), 0, 2, 18)
-        index_var = self.add_labeled_entry(marker_frame, "组内序号：", config.get("duplicate_index_field", "组内序号"), 0, 4, 18)
-        count_var = self.add_labeled_entry(marker_frame, "重复次数：", config.get("duplicate_count_field", "重复次数"), 1, 0, 18)
-        keep_flag_var = self.add_labeled_entry(marker_frame, "是否保留：", config.get("keep_flag_field", "是否保留"), 1, 2, 18)
-        for var, key in [
-            (group_var, "duplicate_group_field"),
-            (status_var, "duplicate_status_field"),
-            (index_var, "duplicate_index_field"),
-            (count_var, "duplicate_count_field"),
-            (keep_flag_var, "keep_flag_field"),
-        ]:
-            self.sync_var_to_config(var, config, key)
-
-        ttk.Label(
-            frame,
-            text="说明：第一版支持整行、单字段或多字段组合去重；可选择保留首条、末条、非空字段最多，或不删除仅标记。预览完整计划时可先检查重复组和保留结果。",
-            foreground="gray",
-            wraplength=1100,
-        ).grid(row=5, column=0, columnspan=8, sticky=tk.W, padx=4, pady=(6, 0))
+        return workflow_build_dedupe_config_ui(self, config, headers)
 
     def build_delete_columns_config(self, config, headers):
-        frame = ttk.LabelFrame(self.config_frame, text="删除列节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        ttk.Label(frame, text="勾选要删除的字段。建议只删除中间临时字段，执行前先预览。", foreground="gray").pack(anchor=tk.W)
-        lb = tk.Listbox(frame, selectmode=tk.MULTIPLE, height=12, exportselection=False)
-        lb.pack(fill=tk.BOTH, expand=True, pady=6)
-        selected = set(config.get("fields", []))
-        for i, h in enumerate(headers):
-            lb.insert(tk.END, h)
-            if h in selected:
-                lb.selection_set(i)
-        def sync(*_):
-            config["fields"] = [lb.get(i) for i in lb.curselection()]
-        lb.bind("<<ListboxSelect>>", sync)
-        ttk.Button(frame, text="保存当前勾选", command=sync).pack(anchor=tk.W)
+        return workflow_build_delete_columns_config_ui(self, config, headers)
 
     def build_move_columns_config(self, config, headers):
-        frame = ttk.LabelFrame(self.config_frame, text="移动列节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        ttk.Label(frame, text="调整字段顺序。执行时会按这里的顺序输出，未出现在列表中的字段会自动追加到最后。", foreground="gray").pack(anchor=tk.W)
-        order = list(config.get("order", []))
-        for h in headers:
-            if h not in order:
-                order.append(h)
-        order = [h for h in order if h in headers]
-        config["order"] = order
-        body = ttk.Frame(frame)
-        body.pack(fill=tk.BOTH, expand=True, pady=6)
-        lb = tk.Listbox(body, height=14, exportselection=False)
-        lb_scroll = ttk.Scrollbar(body, orient=tk.VERTICAL, command=lb.yview)
-        lb.configure(yscrollcommand=lb_scroll.set)
-        lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        lb_scroll.pack(side=tk.LEFT, fill=tk.Y)
-        for h in order:
-            lb.insert(tk.END, h)
-        btns = ttk.Frame(body)
-        btns.pack(side=tk.LEFT, fill=tk.Y, padx=6)
-        def sync():
-            config["order"] = list(lb.get(0, tk.END))
-        def move(delta):
-            sel = lb.curselection()
-            if not sel:
-                return
-            i = sel[0]
-            ni = i + delta
-            if ni < 0 or ni >= lb.size():
-                return
-            val = lb.get(i)
-            lb.delete(i)
-            lb.insert(ni, val)
-            lb.selection_set(ni)
-            sync()
-        def top():
-            sel = lb.curselection()
-            if not sel or sel[0] == 0:
-                return
-            val = lb.get(sel[0])
-            lb.delete(sel[0])
-            lb.insert(0, val)
-            lb.selection_set(0)
-            sync()
-        def bottom():
-            sel = lb.curselection()
-            if not sel or sel[0] == lb.size()-1:
-                return
-            val = lb.get(sel[0])
-            lb.delete(sel[0])
-            lb.insert(tk.END, val)
-            lb.selection_set(lb.size()-1)
-            sync()
-        for text_, cmd in [("上移", lambda: move(-1)), ("下移", lambda: move(1)), ("置顶", top), ("置底", bottom)]:
-            ttk.Button(btns, text=text_, command=cmd).pack(fill=tk.X, pady=2)
+        return workflow_build_move_columns_config_ui(self, config, headers)
 
     def toggle_preview_edit_mode(self):
         self.preview_edit_mode = not self.preview_edit_mode
@@ -11412,12 +11372,16 @@ class PlanWorkflowWindow:
         if self.preview_edit_entry is not None:
             self.preview_edit_entry.destroy()
             self.preview_edit_entry = None
+        self.preview_search_matches = []
+        self.preview_search_index = -1
         self.preview_dirty = False
         self.preview_tree.delete(*self.preview_tree.get_children())
         self.preview_tree["columns"] = headers
         for h in headers:
             self.preview_tree.heading(h, text=h)
             self.preview_tree.column(h, width=140, minwidth=80, anchor=tk.W, stretch=False)
+        self.preview_tree.tag_configure("search_match", background="#fff7cc")
+        self.preview_tree.tag_configure("search_current", background="#ffd580")
         for row in rows[:limit]:
             fixed = list(row)
             if len(fixed) < len(headers):
@@ -11429,6 +11393,63 @@ class PlanWorkflowWindow:
             self.refresh_preview_table_choices(show_status=False)
         except Exception:
             pass
+
+    def clear_preview_search_marks(self):
+        for iid in self.preview_tree.get_children():
+            self.preview_tree.item(iid, tags=())
+        self.preview_search_matches = []
+        self.preview_search_index = -1
+
+    def search_preview_table(self, reset=True):
+        keyword = self.preview_search_var.get().strip()
+        if not keyword:
+            messagebox.showwarning("提示", "请输入搜索关键词。")
+            return
+
+        keyword_lower = keyword.lower()
+        self.clear_preview_search_marks()
+
+        for iid in self.preview_tree.get_children():
+            values = self.preview_tree.item(iid, "values")
+            row_text = "\t".join(str(v) for v in values)
+            if keyword_lower in row_text.lower():
+                self.preview_search_matches.append(iid)
+                self.preview_tree.item(iid, tags=("search_match",))
+
+        if not self.preview_search_matches:
+            self.status_var.set(f"搜索完成：未找到包含『{keyword}』的结果预览行。")
+            return
+
+        self.preview_search_index = 0 if reset else max(self.preview_search_index, 0)
+        self.goto_preview_search_result()
+        self.status_var.set(f"搜索完成：找到 {len(self.preview_search_matches)} 行匹配『{keyword}』。")
+
+    def goto_preview_search_result(self):
+        if not self.preview_search_matches:
+            return
+        self.preview_search_index %= len(self.preview_search_matches)
+        current_iid = self.preview_search_matches[self.preview_search_index]
+        for iid in self.preview_search_matches:
+            self.preview_tree.item(iid, tags=("search_match",))
+        self.preview_tree.item(current_iid, tags=("search_current",))
+        self.preview_tree.selection_set(current_iid)
+        self.preview_tree.focus(current_iid)
+        self.preview_tree.see(current_iid)
+        self.status_var.set(f"当前搜索结果：{self.preview_search_index + 1}/{len(self.preview_search_matches)}")
+
+    def search_preview_next(self):
+        if not self.preview_search_matches:
+            self.search_preview_table(reset=True)
+            return
+        self.preview_search_index += 1
+        self.goto_preview_search_result()
+
+    def search_preview_prev(self):
+        if not self.preview_search_matches:
+            self.search_preview_table(reset=True)
+            return
+        self.preview_search_index -= 1
+        self.goto_preview_search_result()
 
     def refresh_preview_table_choices(self, show_status=False):
         """刷新结果预览区的表格下拉菜单。
@@ -11474,19 +11495,11 @@ class PlanWorkflowWindow:
 
     def read_sqlite_table_for_preview(self, table_name):
         """读取 SQLite 表为 headers/rows，用于结果预览区快速查看。"""
-        db_path = self.get_workflow_db_path(context)
+        db_path = self.get_workflow_db_path(None)
         if not db_path or not os.path.exists(db_path):
             raise ValueError("当前 SQLite 数据库路径不存在。")
-        columns = self.get_workflow_sqlite_columns(table_name, context)
-        conn = sqlite3.connect(db_path)
-        cur = conn.cursor()
-        cur.execute(f"SELECT * FROM {self.app.quote_ident(table_name)} ORDER BY rowid")
-        db_rows = cur.fetchall()
-        conn.close()
-        rows = []
-        for row in db_rows:
-            rows.append([self.app.format_db_value(row[i]) if i < len(row) else "" for i in range(len(columns))])
-        return columns, rows
+        data = TableAccessManager(db_path, node_type="结果预览").read_table(table_name)
+        return list(data.get("headers", [])), [list(row) for row in data.get("rows", [])]
 
     def load_selected_preview_table(self):
         """把下拉菜单选中的表加载到计划窗口结果预览区。"""
@@ -11529,53 +11542,20 @@ class PlanWorkflowWindow:
         except Exception as e:
             messagebox.showerror("载入表失败", str(e))
 
-    def preview_to_selected_node(self):
-        idx = self.get_selected_node_index()
-        if idx is None:
-            messagebox.showwarning("提示", "请先选择一个节点。")
+    def export_preview_to_xlsx(self):
+        """导出结果预览区当前显示的数据，复用主界面的 xlsx 导出流程。"""
+        headers = list(self.preview_headers or [])
+        rows = [list(row) for row in (self.preview_rows or [])]
+        if not headers:
+            messagebox.showwarning("提示", "当前结果预览没有可导出的表格字段。")
             return
-        try:
-            # 如果用户已经在循环判断节点点过“执行循环一次”，且当前预览目标在该判断节点之后，
-            # 则从单步循环缓存继续往后预览，避免重新从头跑完整循环。
-            if self.manual_loop_context is not None and self.manual_loop_after_index is not None and idx >= self.manual_loop_after_index:
-                headers, rows, logs = self.run_plan(
-                    start_index=self.manual_loop_after_index,
-                    stop_index=idx,
-                    raise_error=True,
-                    initial_headers=self.manual_loop_headers,
-                    initial_rows=self.manual_loop_rows,
-                    initial_context=copy.deepcopy(self.manual_loop_context),
-                )
-                prefix = f"已基于单步循环缓存预览到节点 {idx + 1}"
-            else:
-                headers, rows, logs = self.run_plan(stop_index=idx, raise_error=True)
-                prefix = f"已预览到节点 {idx + 1}"
-            self.set_plan_preview_result(headers, rows, display=True)
-            self.status_var.set(f"{prefix}：{len(rows)} 行 × {len(headers)} 列。" + self.format_logs(logs))
-        except Exception as e:
-            messagebox.showerror("预览失败", str(e))
-
-    def preview_full_plan(self):
-        try:
-            # 有单步循环缓存时，完整预览默认从循环判断节点之后继续执行，
-            # 这样可以手动循环 N 次后，再预览后续汇总/保存/筛选节点。
-            if self.manual_loop_context is not None and self.manual_loop_after_index is not None:
-                headers, rows, logs = self.run_plan(
-                    start_index=self.manual_loop_after_index,
-                    stop_index=None,
-                    raise_error=True,
-                    initial_headers=self.manual_loop_headers,
-                    initial_rows=self.manual_loop_rows,
-                    initial_context=copy.deepcopy(self.manual_loop_context),
-                )
-                prefix = "已基于单步循环缓存完成后续计划预览"
-            else:
-                headers, rows, logs = self.run_plan(stop_index=None, raise_error=True)
-                prefix = "完整计划预览完成"
-            self.set_plan_preview_result(headers, rows, display=True)
-            self.status_var.set(f"{prefix}：{len(rows)} 行 × {len(headers)} 列。" + self.format_logs(logs))
-        except Exception as e:
-            messagebox.showerror("预览失败", str(e))
+        table_name = self.preview_table_var.get().strip() or "计划预览结果"
+        self.app.export_current_preview_to_xlsx(
+            headers=headers,
+            rows=rows,
+            table_name=table_name,
+            title="导出为 xlsx",
+        )
 
     def format_logs(self, logs):
         if not logs:
@@ -11697,6 +11677,12 @@ class PlanWorkflowWindow:
         context.setdefault("transit_tables", {})
         context.setdefault("loop_states", {})
         context.setdefault("loop_results", {})
+        context.setdefault("condition_flags", {})
+        context.setdefault("jump_logs", [])
+        if isinstance(snapshot, dict) and snapshot.get("table_access_policy") is not None:
+            context["table_access_policy"] = TableAccessManager.normalize_permission_policy(snapshot.get("table_access_policy"))
+        else:
+            context.setdefault("table_access_policy", self.normalize_table_access_policy())
         if snapshot:
             context["workflow_snapshot"] = snapshot
         if progress_callback is not None:
@@ -11707,6 +11693,7 @@ class PlanWorkflowWindow:
         pc = int(start_index or 0)
         steps = 0
         max_steps = max(1000, len(node_list) * 2000)
+        anchors_info = self.collect_jump_anchors(nodes=node_list)
 
         while pc < len(node_list) and pc <= end:
             if cancel_event is not None and cancel_event.is_set():
@@ -11718,6 +11705,8 @@ class PlanWorkflowWindow:
 
             idx = pc
             node = node_list[idx]
+            self.ensure_node_identity(node)
+            self.refresh_node_table_access(node)
             if not node.get("enabled", True):
                 logs.append(f"跳过 {idx+1}.{node.get('type')}")
                 pc += 1
@@ -11725,6 +11714,13 @@ class PlanWorkflowWindow:
 
             node_type = node.get("type")
             config = node.get("config", {})
+            context["current_node_info"] = {
+                "node_id": node.get("node_id", ""),
+                "node_name": node.get("name", ""),
+                "node_type": node_type,
+                "node_index": idx,
+                "table_access": copy.deepcopy(node.get("table_access", {})),
+            }
             if progress_callback is not None:
                 progress_callback({
                     "type": "node_start",
@@ -11737,6 +11733,22 @@ class PlanWorkflowWindow:
             try:
                 before_shape = (len(rows), len(headers))
                 jump_to = None
+                if node_type in ("跳转锚点节点", "无条件跳转节点", "条件跳转节点"):
+                    current_table_manager = self.get_table_manager(context, node_type=node_type)
+                else:
+                    current_table_manager = self.check_current_table_permission(
+                        context,
+                        headers,
+                        write=False,
+                        operation="read_current_table",
+                    )
+                    if node_type != "条件判断节点":
+                        current_table_manager = self.check_current_table_permission(
+                            context,
+                            headers,
+                            write=True,
+                            operation="write_current_table",
+                        )
 
                 if node_type == "循环执行起点":
                     headers, rows, stat, ctrl = self.apply_loop_start_node(headers, rows, config, context=context)
@@ -11754,9 +11766,42 @@ class PlanWorkflowWindow:
                                 raise RuntimeError(f"未找到循环起点：{config.get('loop_id', '')}")
                         else:
                             jump_to = int(ctrl["jump_to"])
+                elif node_type == "跳转锚点节点":
+                    headers, rows, stat = self.apply_jump_anchor_node(headers, rows, config, context=context)
+                elif node_type == "无条件跳转节点":
+                    headers, rows, stat, ctrl = self.apply_unconditional_jump_node(
+                        headers,
+                        rows,
+                        config,
+                        context=context,
+                        anchors_info=anchors_info,
+                        nodes=node_list,
+                    )
+                    if ctrl.get("jump_to") is not None:
+                        jump_to = int(ctrl["jump_to"])
+                elif node_type == "条件判断节点":
+                    headers, rows, stat = self.apply_condition_check_node(headers, rows, config, context=context)
+                elif node_type == "条件跳转节点":
+                    headers, rows, stat, ctrl = self.apply_conditional_jump_node(
+                        headers,
+                        rows,
+                        config,
+                        context=context,
+                        anchors_info=anchors_info,
+                        nodes=node_list,
+                    )
+                    if ctrl.get("jump_to") is not None:
+                        jump_to = int(ctrl["jump_to"])
                 else:
                     headers, rows, stat = self.apply_node(headers, rows, node, execute_actions=execute_actions, context=context)
 
+                self.log_current_table_transform(
+                    current_table_manager,
+                    before_shape,
+                    headers,
+                    rows,
+                    node_type=node_type,
+                )
                 after_shape = (len(rows), len(headers))
                 logs.append(f"{idx+1}.{node_type} {before_shape[0]}×{before_shape[1]}→{after_shape[0]}×{after_shape[1]} {stat}")
                 if progress_callback is not None:
@@ -11808,27 +11853,10 @@ class PlanWorkflowWindow:
 
 
     def unique_keep_order(self, values):
-        """按原顺序去重，保留第一个非空字符串。"""
-        result = []
-        seen = set()
-        for v in values or []:
-            text = str(v).strip()
-            if not text or text in seen:
-                continue
-            seen.add(text)
-            result.append(text)
-        return result
+        return workflow_unique_keep_order(values)
 
     def parse_group_input_fields(self, config):
-        """解析节点组入口字段。为空时表示兼容旧版：直接传入来源整表。"""
-        raw = config.get("input_fields", [])
-        if isinstance(raw, str):
-            fields = [x.strip() for x in re.split(r"[,，;；\n]+", raw) if x.strip()]
-        elif isinstance(raw, (list, tuple)):
-            fields = [str(x).strip() for x in raw if str(x).strip()]
-        else:
-            fields = []
-        return self.unique_keep_order(fields)
+        return workflow_parse_group_input_fields(config)
 
 
     def parse_new_column_names_for_group_analysis(self, text, strip_name=True, allow_empty=False):
@@ -11878,7 +11906,109 @@ class PlanWorkflowWindow:
             for key in keys:
                 self.add_group_field_ref(target, item.get(key))
 
-    def analyze_group_inner_node_field_io(self, node):
+    def classify_group_filter_field_reference(self, field, extra_tables=None):
+        """
+        将高级筛选字段引用转换为节点组静态分析使用的字段名。
+
+        当前表限定名去掉本轮“当前表.”前缀；副表字段保留限定名，但标记为
+        external，表示它由高级筛选节点自行读取，不属于节点组入口。
+        """
+        text = str(field or "").strip()
+        if not text:
+            return "", ""
+        for table in extra_tables or []:
+            table_name = str(table or "").strip()
+            if table_name and text.startswith(f"{table_name}."):
+                return "external", text
+        if text.startswith("当前表."):
+            return "current", text[len("当前表."):]
+        return "current", text
+
+    def get_group_filter_external_output_fields(self, config, context=None):
+        """读取无显式投影时高级筛选会输出的副表字段。"""
+        fields = []
+        unresolved = []
+        transit_tables = (context or {}).get("transit_tables", {})
+        for table in list((config or {}).get("extra_tables", []) or []):
+            table_name = str(table or "").strip()
+            if not table_name:
+                continue
+            try:
+                if table_name.startswith("中转:"):
+                    transit_name = table_name.split(":", 1)[1]
+                    item = transit_tables.get(transit_name)
+                    if not isinstance(item, dict):
+                        raise ValueError("中转副表尚未生成")
+                    columns = list(item.get("headers", []) or [])
+                else:
+                    columns = list(self.get_workflow_sqlite_columns(table_name, context))
+                fields.extend(f"{table_name}.{column}" for column in columns)
+            except Exception as exc:
+                unresolved.append(f"{table_name}（{exc}）")
+        return self.unique_keep_order(fields), unresolved
+
+    def analyze_group_filter_field_io(self, config, context=None):
+        """专门分析节点组内高级筛选的条件、匹配规则和投影字段。"""
+        cfg = config or {}
+        extra_tables = list(cfg.get("extra_tables", []) or [])
+        reads = []
+        writes = []
+        write_prefixes = []
+
+        def add_current_read(field):
+            owner, name = self.classify_group_filter_field_reference(field, extra_tables)
+            if owner == "current":
+                self.add_group_field_ref(reads, name)
+
+        def add_output(field):
+            owner, name = self.classify_group_filter_field_reference(field, extra_tables)
+            if not name:
+                return
+            if owner == "current":
+                self.add_group_field_ref(reads, name)
+            self.add_group_field_ref(writes, name)
+
+        for cond in cfg.get("conditions", []) or []:
+            if not isinstance(cond, dict):
+                continue
+            add_current_read(cond.get("field"))
+            if self.normalize_filter_condition_value_source(cond) == "字段值":
+                add_current_read(cond.get("value"))
+
+        for rule in cfg.get("join_rules", []) or []:
+            if not isinstance(rule, dict):
+                continue
+            add_current_read(rule.get("left"))
+            add_current_read(rule.get("right"))
+
+        for field in cfg.get("output_fields", []) or []:
+            add_output(field)
+
+        note = "当前表字段作为组内输入；副表字段由高级筛选自行读取"
+        if cfg.get("output_fields"):
+            note += "；显式输出字段参与后续节点推导"
+        else:
+            external_fields, unresolved = self.get_group_filter_external_output_fields(
+                cfg,
+                context=context,
+            )
+            writes.extend(external_fields)
+            write_prefixes.extend(
+                f"{str(table).strip()}."
+                for table in extra_tables
+                if str(table).strip()
+            )
+            note += f"；未指定输出字段，已推导副表输出 {len(external_fields)} 个字段"
+            if unresolved:
+                note += "；结构未解析：" + "、".join(unresolved)
+        return {
+            "read_fields": self.unique_keep_order(reads),
+            "write_fields": self.unique_keep_order(writes),
+            "write_field_prefixes": self.unique_keep_order(write_prefixes),
+            "note": note,
+        }
+
+    def analyze_group_inner_node_field_io(self, node, context=None):
         """
         分析组内单个节点的字段输入/输出。
 
@@ -11901,8 +12031,15 @@ class PlanWorkflowWindow:
 
         if node_type == "批量替换":
             self.add_group_field_ref(reads, cfg.get("target_field"))
+            legacy_source = cfg.get("value_source", "手动输入")
+            match_source = cfg.get("match_value_source") or legacy_source
+            replace_source = cfg.get("replace_value_source") or legacy_source
+            if match_source == "列字段":
+                self.add_group_field_ref(reads, cfg.get("match_value_field"))
+            if replace_source == "列字段":
+                self.add_group_field_ref(reads, cfg.get("replace_value_field"))
             self.add_group_field_ref(writes, cfg.get("target_field"))
-            note = "读取并覆盖目标字段"
+            note = "读取目标字段及匹配/替换来源字段，覆盖目标字段"
 
         elif node_type == "数据提取":
             src = cfg.get("source_field")
@@ -12048,14 +12185,7 @@ class PlanWorkflowWindow:
             note = "匹配规则/字段映射中的当前表字段为输入"
 
         elif node_type == "高级筛选":
-            # 高级筛选规则结构较灵活，递归扫描常见字段键。
-            for key in ["conditions", "join_rules", "output_fields"]:
-                self.collect_group_fields_from_nested_config(
-                    reads,
-                    cfg.get(key),
-                    field_keys={"field", "left_field", "right_field", "source_field", "output_field", "字段", "字段名"},
-                )
-            note = "筛选条件/输出字段为输入"
+            return self.analyze_group_filter_field_io(cfg, context=context)
 
         elif node_type == "删除列":
             self.add_group_field_ref(reads, cfg.get("fields"))
@@ -12120,7 +12250,7 @@ class PlanWorkflowWindow:
             for item in value:
                 self.collect_group_fields_from_nested_config(target, item, field_keys=field_keys)
 
-    def infer_group_input_fields_from_nodes(self, nodes):
+    def infer_group_input_fields_from_nodes(self, nodes, context=None):
         """
         从组内节点顺序自动推导“真正需要从组外传入”的入口字段。
 
@@ -12131,6 +12261,7 @@ class PlanWorkflowWindow:
         """
         required = []
         produced = set()
+        produced_prefixes = []
         details = []
         for idx, node in enumerate(nodes or [], start=1):
             if not node.get("enabled", True):
@@ -12139,25 +12270,33 @@ class PlanWorkflowWindow:
                     "type": node.get("type", ""),
                     "reads": [],
                     "writes": [],
+                    "write_prefixes": [],
                     "required": [],
                     "note": "节点已禁用，跳过推导",
                 })
                 continue
-            info = self.analyze_group_inner_node_field_io(node)
+            info = self.analyze_group_inner_node_field_io(node, context=context)
             reads = info.get("read_fields", [])
             writes = info.get("write_fields", [])
+            write_prefixes = info.get("write_field_prefixes", [])
             req_this = []
             for f in reads:
-                if f not in produced:
+                if f not in produced and not any(str(f).startswith(prefix) for prefix in produced_prefixes):
                     req_this.append(f)
                     required.append(f)
             for f in writes:
                 produced.add(f)
+            produced_prefixes.extend(
+                prefix
+                for prefix in write_prefixes
+                if prefix and prefix not in produced_prefixes
+            )
             details.append({
                 "index": idx,
                 "type": node.get("type", ""),
                 "reads": reads,
                 "writes": writes,
+                "write_prefixes": write_prefixes,
                 "required": self.unique_keep_order(req_this),
                 "note": info.get("note", ""),
             })
@@ -12170,6 +12309,8 @@ class PlanWorkflowWindow:
             lines.append(f"{item.get('index')}. {item.get('type')}")
             lines.append(f"  读取：{', '.join(item.get('reads') or []) or '-'}")
             lines.append(f"  输出：{', '.join(item.get('writes') or []) or '-'}")
+            if item.get("write_prefixes"):
+                lines.append(f"  动态输出前缀：{', '.join(item.get('write_prefixes') or [])}")
             lines.append(f"  需要入口：{', '.join(item.get('required') or []) or '-'}")
             if item.get("note"):
                 lines.append(f"  说明：{item.get('note')}")
@@ -12178,22 +12319,10 @@ class PlanWorkflowWindow:
         return "\n".join(lines)
 
     def normalize_group_transit_conflict_mode(self, mode):
-        text = str(mode or "覆盖整表")
-        if "追加" in text:
-            return "追加"
-        if "时间戳" in text or "新建" in text:
-            return "自动加时间戳"
-        return "覆盖"
+        return workflow_normalize_group_transit_conflict_mode(mode)
 
     def normalize_group_sqlite_mode(self, mode):
-        text = str(mode or "自动加时间戳新表")
-        if "追加" in text:
-            return "append"
-        if "覆盖" in text:
-            return "replace"
-        if "报错" in text or "不覆盖" in text:
-            return "fail"
-        return "timestamp"
+        return workflow_normalize_group_sqlite_mode(mode)
 
     def get_group_source_table_data(self, headers, rows, config, context=None):
         """读取节点组入口数据源：当前工作表 / 中转副表 / SQLite表。"""
@@ -12204,88 +12333,36 @@ class PlanWorkflowWindow:
             name = str(config.get("input_transit_table", "")).strip()
             if not name:
                 raise ValueError("节点组入口选择了中转副表，但没有填写中转副表名。")
+            manager = self.check_transit_table_permission(
+                context,
+                name,
+                ["read_table"],
+                operation="read_transit_table",
+                field_action="read",
+                node_type="节点组 / 子工作流",
+            )
             tables = (context or {}).get("transit_tables", {})
             if name not in tables:
                 raise ValueError(f"节点组入口未找到中转副表：{name}")
             item = tables.get(name, {}) or {}
-            return list(item.get("headers", [])), [list(r) for r in item.get("rows", [])], f"中转副表:{name}"
+            source_headers = list(item.get("headers", []))
+            source_rows = [list(r) for r in item.get("rows", [])]
+            self.log_transit_table_event(manager, "read_transit_table", name, source_headers, source_rows, message=f"节点组入口读取中转副表 {name}：{len(source_rows)} 行 × {len(source_headers)} 列")
+            return source_headers, source_rows, f"中转副表:{name}"
         if source_type == "SQLite表":
             name = str(config.get("input_sqlite_table", "")).strip()
             if not name:
                 raise ValueError("节点组入口选择了 SQLite 表，但没有填写表名。")
-            db = PluginDatabaseAPI(self.get_workflow_db_path(context if 'context' in locals() else None))
+            db = self.get_table_manager(context if isinstance(context, dict) else None, node_type="节点组 / 子工作流")
             data = db.read_table(name)
             return list(data.get("headers", [])), [list(r) for r in data.get("rows", [])], f"SQLite:{name}"
         return list(headers), [list(r) for r in rows], "当前工作表"
 
     def build_group_input_table(self, source_headers, source_rows, config):
-        """
-        根据入口字段和映射生成组内标准表。
-        - input_fields 为空：兼容旧版，直接把来源整表传给组内。
-        - input_fields 非空：组内 headers 固定为 input_fields，rows 按 input_mapping 取值。
-        """
-        input_fields = self.parse_group_input_fields(config)
-        if not input_fields:
-            return list(source_headers), [list(r) for r in source_rows], "入口字段未设置，使用来源整表"
-
-        source_headers = list(source_headers or [])
-        source_rows = [list(r) for r in self.normalize_rows(source_rows, len(source_headers))]
-        mapping = config.get("input_mapping", {}) or {}
-        defaults = config.get("input_defaults", {}) or {}
-        missing_policy = config.get("missing_input_policy", "缺失填空")
-        src_index = {h: i for i, h in enumerate(source_headers)}
-
-        missing = []
-        result_rows = []
-        for row in source_rows:
-            out = []
-            for field in input_fields:
-                mapped = str(mapping.get(field, "")).strip()
-                if mapped and mapped in src_index:
-                    out.append(self.safe_cell(row, src_index[mapped]))
-                else:
-                    if mapped:
-                        missing.append(f"{field}->{mapped}")
-                    else:
-                        missing.append(field)
-                    out.append(str(defaults.get(field, "")))
-            result_rows.append(out)
-
-        if missing_policy == "缺失报错" and missing:
-            show = "、".join(self.unique_keep_order(missing)[:20])
-            raise ValueError(f"节点组入口映射缺失字段：{show}")
-
-        return input_fields, result_rows, f"入口字段映射 {len(input_fields)} 列"
+        return workflow_build_group_input_table(source_headers, source_rows, config)
 
     def make_group_child_context(self, parent_context, config):
-        """为子工作流创建上下文。默认隔离，避免组内保存的临时中转污染父级。"""
-        parent_context = parent_context if parent_context is not None else {"transit_tables": {}, "loop_states": {}, "loop_results": {}}
-        parent_context.setdefault("transit_tables", {})
-        parent_context.setdefault("loop_states", {})
-        parent_context.setdefault("loop_results", {})
-
-        if config.get("transit_scope", "组内中转私有") == "允许输出到外部":
-            # 兼容旧版“允许输出到外部”：组内保存中转数据可直接进入父级 context。
-            return parent_context
-
-        child = {
-            "transit_tables": copy.deepcopy(parent_context.get("transit_tables", {})),
-            "loop_states": {},
-            "loop_results": {},
-            "group_runtime": True,
-            "group_name": config.get("group_name", "节点组"),
-        }
-        # 继承预览写入控制、进度回调和取消事件，避免子工作流行为与外层不一致。
-        for key in [
-            "workflow_snapshot",
-            "allow_selected_columns_write_in_preview",
-            "selected_columns_config_preview_only",
-            "progress_callback",
-            "cancel_event",
-        ]:
-            if key in parent_context:
-                child[key] = parent_context[key]
-        return child
+        return workflow_make_group_child_context(parent_context, config)
 
     def write_group_outputs(self, result_headers, result_rows, config, parent_context, execute_actions=False):
         """根据节点组输出设置，把结果保存到中转副表或 SQLite。返回状态文本列表。"""
@@ -12307,7 +12384,7 @@ class PlanWorkflowWindow:
             if not table_name:
                 raise ValueError("节点组已启用 SQLite 输出，但未填写 SQLite 表名。")
             mode = self.normalize_group_sqlite_mode(config.get("output_sqlite_mode", "自动加时间戳新表"))
-            db = PluginDatabaseAPI(self.get_workflow_db_path(parent_context))
+            db = self.get_table_manager(parent_context, node_type="节点组 / 子工作流")
             info = db.write_table(table_name, result_headers, result_rows, mode=mode)
             parts.append(f"SQLite表：{info.get('table_name')}（{info.get('rows')}行）")
             # 后台线程中不能直接刷新 Tk 表名下拉框。这里只记录 UI 刷新请求，
@@ -12317,14 +12394,73 @@ class PlanWorkflowWindow:
                 requests.append("table_list")
         return parts
 
+    def prepare_group_inner_node_execution(self, child_context, node, node_type, node_index, cur_headers):
+        self.ensure_node_identity(node)
+        self.refresh_node_table_access(node)
+        child_context["current_node_info"] = {
+            "node_id": node.get("node_id", ""),
+            "node_name": node.get("name", ""),
+            "node_type": node_type,
+            "node_index": node_index,
+            "table_access": copy.deepcopy(node.get("table_access", {})),
+        }
+        if node_type in ("循环执行起点", "循环判断回跳"):
+            raise ValueError("第一版节点组暂不支持组内循环执行起点 / 循环判断回跳。")
+        if node_type in ("跳转锚点节点", "无条件跳转节点", "条件跳转节点"):
+            return self.get_table_manager(child_context, node_type=node_type)
+        manager = self.check_current_table_permission(
+            child_context,
+            cur_headers,
+            write=False,
+            operation="read_current_table",
+        )
+        if node_type != "条件判断节点":
+            manager = self.check_current_table_permission(
+                child_context,
+                cur_headers,
+                write=True,
+                operation="write_current_table",
+            )
+        return manager
+
+    def run_group_inner_nodes(self, cur_headers, cur_rows, nodes, child_context, execute_actions=False):
+        logs = []
+        for i, node in enumerate(nodes):
+            if not node.get("enabled", True):
+                logs.append(f"{i+1}.{node.get('type')} 已禁用")
+                continue
+            node_type = node.get("type")
+            before_shape = (len(cur_rows), len(cur_headers))
+            current_table_manager = self.prepare_group_inner_node_execution(
+                child_context,
+                node,
+                node_type,
+                i,
+                cur_headers,
+            )
+            cur_headers, cur_rows, stat = self.apply_node(
+                cur_headers,
+                cur_rows,
+                node,
+                execute_actions=execute_actions,
+                context=child_context,
+            )
+            self.log_current_table_transform(
+                current_table_manager,
+                before_shape,
+                cur_headers,
+                cur_rows,
+                node_type=node_type,
+            )
+            after_shape = (len(cur_rows), len(cur_headers))
+            logs.append(workflow_build_group_node_log(i + 1, node_type, before_shape, after_shape, stat))
+        return cur_headers, cur_rows, logs
+
     def apply_group_node(self, headers, rows, config, execute_actions=False, context=None):
         nodes = config.get("nodes", [])
         group_name = config.get("group_name") or "节点组"
 
-        context = context if context is not None else {"transit_tables": {}, "loop_states": {}, "loop_results": {}}
-        context.setdefault("transit_tables", {})
-        context.setdefault("loop_states", {})
-        context.setdefault("loop_results", {})
+        context = workflow_ensure_group_parent_context(context)
 
         # 1. 读取入口数据源，并映射为组内标准表。
         source_headers, source_rows, source_name = self.get_group_source_table_data(headers, rows, config, context=context)
@@ -12333,48 +12469,235 @@ class PlanWorkflowWindow:
         if not nodes:
             output_parts = self.write_group_outputs(cur_headers, cur_rows, config, context, execute_actions=execute_actions)
             if config.get("main_output_mode", "输出为当前工作表") == "透传原当前表":
-                return list(headers), [list(r) for r in rows], f"节点组【{group_name}】为空，透传原当前表；{input_stat}" + ("；" + "；".join(output_parts) if output_parts else "")
-            return cur_headers, cur_rows, f"节点组【{group_name}】为空，输出入口表；来源={source_name}；{input_stat}" + ("；" + "；".join(output_parts) if output_parts else "")
+                stat = workflow_build_empty_group_stat(group_name, source_name, input_stat, output_parts, passthrough_current=True)
+                return list(headers), [list(r) for r in rows], stat
+            stat = workflow_build_empty_group_stat(group_name, source_name, input_stat, output_parts)
+            return cur_headers, cur_rows, stat
 
         child_context = self.make_group_child_context(context, config)
-        logs = []
+        def merge_child_audit_logs():
+            workflow_merge_group_child_audit_logs(context, child_context)
+
         try:
-            for i, node in enumerate(nodes):
-                if not node.get("enabled", True):
-                    logs.append(f"{i+1}.{node.get('type')} 已禁用")
-                    continue
-                node_type = node.get("type")
-                if node_type in ("循环执行起点", "循环判断回跳"):
-                    raise ValueError("第一版节点组暂不支持组内循环执行起点 / 循环判断回跳。")
-                before_shape = (len(cur_rows), len(cur_headers))
-                cur_headers, cur_rows, stat = self.apply_node(cur_headers, cur_rows, node, execute_actions=execute_actions, context=child_context)
-                after_shape = (len(cur_rows), len(cur_headers))
-                logs.append(f"{i+1}.{node_type} {before_shape[0]}×{before_shape[1]}→{after_shape[0]}×{after_shape[1]} {stat}")
+            cur_headers, cur_rows, logs = self.run_group_inner_nodes(
+                cur_headers,
+                cur_rows,
+                nodes,
+                child_context,
+                execute_actions=execute_actions,
+            )
         except Exception:
+            merge_child_audit_logs()
             raise
+        merge_child_audit_logs()
 
         # 2. 按输出配置保存副作用结果。即使组内中转私有，这里也写入父级 context。
         output_parts = self.write_group_outputs(cur_headers, cur_rows, config, context, execute_actions=execute_actions)
 
         # 3. 主输出决定后续节点拿到什么表。
-        if config.get("main_output_mode", "输出为当前工作表") == "透传原当前表":
-            final_headers = list(headers)
-            final_rows = [list(r) for r in rows]
-            main_stat = "主输出=透传原当前表"
-        else:
-            final_headers = cur_headers
-            final_rows = cur_rows
-            main_stat = "主输出=组结果作为当前表"
+        final_headers, final_rows, main_stat = workflow_build_group_final_output(headers, rows, cur_headers, cur_rows, config)
+        stat = workflow_build_group_status_text(group_name, source_name, input_stat, main_stat, logs=logs, output_parts=output_parts)
+        return final_headers, final_rows, stat
 
-        short = "；".join(logs[:5])
-        if len(logs) > 5:
-            short += f"；... 共 {len(logs)} 个内部节点"
-        parts = [f"来源={source_name}", input_stat, main_stat]
-        if output_parts:
-            parts.extend(output_parts)
-        if short:
-            parts.append(short)
-        return final_headers, final_rows, f"节点组【{group_name}】完成：" + "；".join(parts)
+    def append_jump_runtime_log(self, context, event):
+        if not isinstance(context, dict):
+            return
+        payload = dict(event or {})
+        payload.setdefault("time", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        current = context.get("current_node_info", {}) if isinstance(context.get("current_node_info"), dict) else {}
+        payload.setdefault("node_id", current.get("node_id", ""))
+        payload.setdefault("node_name", current.get("node_name", ""))
+        payload.setdefault("node_type", current.get("node_type", ""))
+        payload.setdefault("node_index", current.get("node_index", ""))
+        context.setdefault("jump_logs", []).append(payload)
+
+    def apply_jump_anchor_node(self, headers, rows, config, context=None):
+        anchor_id = str(config.get("anchor_id", "") or "").strip()
+        anchor_name = str(config.get("anchor_name", "") or "").strip()
+        detail = f"定位锚点：{anchor_id or '未命名'}"
+        if anchor_name:
+            detail += f" / {anchor_name}"
+        self.append_jump_runtime_log(context, {
+            "event": "anchor",
+            "anchor_id": anchor_id,
+            "anchor_name": anchor_name,
+            "status": "ok",
+            "message": detail,
+        })
+        return list(headers), [list(r) for r in rows], detail
+
+    def resolve_jump_target_control(self, anchor_id, context=None, anchors_info=None, nodes=None, source="跳转"):
+        target_idx, message = self.resolve_jump_anchor_index(anchor_id, anchors_info=anchors_info, nodes=nodes)
+        if target_idx is None:
+            self.append_jump_runtime_log(context, {
+                "event": source,
+                "target_anchor_id": str(anchor_id or "").strip(),
+                "status": "warning",
+                "message": message + "，默认不跳转",
+            })
+            return {"jump_to": None, "message": message + "，默认不跳转", "status": "warning"}
+        self.append_jump_runtime_log(context, {
+            "event": source,
+            "target_anchor_id": str(anchor_id or "").strip(),
+            "target_index": target_idx,
+            "status": "ok",
+            "message": f"跳转到锚点 {anchor_id}（节点 {target_idx + 1}）",
+        })
+        return {"jump_to": target_idx, "message": f"跳转到锚点 {anchor_id}（节点 {target_idx + 1}）", "status": "ok"}
+
+    def apply_unconditional_jump_node(self, headers, rows, config, context=None, anchors_info=None, nodes=None):
+        target = str(config.get("target_anchor_id", "") or "").strip()
+        ctrl = self.resolve_jump_target_control(target, context=context, anchors_info=anchors_info, nodes=nodes, source="unconditional_jump")
+        return list(headers), [list(r) for r in rows], "无条件跳转：" + ctrl.get("message", ""), ctrl
+
+    def condition_count_empty_cells(self, headers, rows, field):
+        if field not in headers:
+            raise ValueError(f"字段不存在：{field}")
+        idx = headers.index(field)
+        return sum(1 for row in self.normalize_rows(rows, len(headers)) if self.safe_cell(row, idx).strip() == "")
+
+    def condition_count_contains_cells(self, headers, rows, field, value, case_sensitive=True):
+        if field not in headers:
+            raise ValueError(f"字段不存在：{field}")
+        idx = headers.index(field)
+        needle = str(value or "")
+        if not case_sensitive:
+            needle = needle.lower()
+        count = 0
+        for row in self.normalize_rows(rows, len(headers)):
+            text = self.safe_cell(row, idx)
+            haystack = text if case_sensitive else text.lower()
+            if needle in haystack:
+                count += 1
+        return count
+
+    def evaluate_condition_check_node(self, headers, rows, config, context=None):
+        condition_type = str(config.get("condition_type", "表行数") or "表行数").strip()
+        field = str(config.get("field", "") or "").strip()
+        op = str(config.get("op", "大于") or "大于").strip()
+        value = str(config.get("value", "") or "")
+        case_sensitive = bool(config.get("case_sensitive", True))
+        fixed_rows = self.normalize_rows(rows, len(headers))
+
+        if condition_type == "表行数":
+            actual = len(fixed_rows)
+            passed = self.compare_values(str(actual), op, value, case_sensitive=True)
+            return passed, actual, f"表行数 {actual} {op} {value}"
+
+        if condition_type == "字段是否存在":
+            exists = field in headers
+            if op in ("不等于", "不包含"):
+                passed = not exists
+            else:
+                passed = exists
+            return passed, "TRUE" if exists else "FALSE", f"字段 {field or '-'} {'存在' if exists else '不存在'}"
+
+        if condition_type == "字段值":
+            if field not in headers:
+                raise ValueError(f"字段不存在：{field}")
+            idx = headers.index(field)
+            matched = 0
+            for row in fixed_rows:
+                if self.compare_values(self.safe_cell(row, idx), op, value, case_sensitive=case_sensitive):
+                    matched += 1
+            passed = matched > 0
+            return passed, matched, f"字段值任意行满足：{field} {op} {value}，命中 {matched} 行"
+
+        if condition_type == "字段空值数量":
+            actual = self.condition_count_empty_cells(headers, fixed_rows, field)
+            passed = self.compare_values(str(actual), op, value, case_sensitive=True)
+            return passed, actual, f"字段空值数量：{field}={actual}，条件 {op} {value}"
+
+        if condition_type == "字段包含值数量":
+            actual = self.condition_count_contains_cells(headers, fixed_rows, field, value, case_sensitive=case_sensitive)
+            passed = self.compare_values(str(actual), op, value, case_sensitive=True)
+            return passed, actual, f"字段包含值数量：{field} 包含 {value} 的行数={actual}，条件 {op} {value}"
+
+        raise ValueError(f"未知条件判断类型：{condition_type}")
+
+    def apply_condition_check_node(self, headers, rows, config, context=None):
+        context = context if isinstance(context, dict) else {}
+        flag_name = str(config.get("flag_name", "") or "").strip()
+        if not flag_name:
+            raise ValueError("条件判断节点未填写输出标志。")
+        passed, actual_value, detail = self.evaluate_condition_check_node(headers, rows, config, context=context)
+        output_value = str(config.get("true_value", "TRUE") if passed else config.get("false_value", "FALSE"))
+        item = {
+            "value": output_value,
+            "passed": bool(passed),
+            "actual": actual_value,
+            "detail": detail,
+            "source_node": copy.deepcopy(context.get("current_node_info", {})) if isinstance(context, dict) else {},
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        context.setdefault("condition_flags", {})[flag_name] = item
+        self.append_jump_runtime_log(context, {
+            "event": "condition_check",
+            "flag_name": flag_name,
+            "value": output_value,
+            "passed": bool(passed),
+            "actual": actual_value,
+            "status": "ok",
+            "message": detail,
+        })
+        return list(headers), [list(r) for r in rows], f"条件判断：{flag_name}={output_value}；{detail}"
+
+    def find_conditional_jump_target(self, flag_value, config):
+        value_text = str(flag_value or "").strip()
+        rules = config.get("jump_rules", [])
+        if not isinstance(rules, list):
+            rules = []
+        for rule in rules:
+            if not isinstance(rule, dict):
+                continue
+            expected = str(rule.get("value", "") or "").strip()
+            if expected == value_text:
+                return str(rule.get("target_anchor_id", "") or "").strip(), f"命中条件值 {value_text}"
+        default_anchor = str(config.get("default_anchor_id", "") or "").strip()
+        if default_anchor:
+            return default_anchor, f"条件值 {value_text or '-'} 未映射，使用默认锚点"
+        return "", f"条件值 {value_text or '-'} 未映射"
+
+    def apply_conditional_jump_node(self, headers, rows, config, context=None, anchors_info=None, nodes=None):
+        context = context if isinstance(context, dict) else {}
+        flag_name = str(config.get("flag_name", "") or "").strip()
+        if not flag_name:
+            message = "条件跳转未填写读取标志，默认不跳转"
+            self.append_jump_runtime_log(context, {
+                "event": "conditional_jump",
+                "flag_name": flag_name,
+                "status": "warning",
+                "message": message,
+            })
+            return list(headers), [list(r) for r in rows], message, {"jump_to": None, "message": message, "status": "warning"}
+        flags = context.setdefault("condition_flags", {})
+        if flag_name not in flags:
+            message = f"条件标志未产生：{flag_name}，默认不跳转"
+            self.append_jump_runtime_log(context, {
+                "event": "conditional_jump",
+                "flag_name": flag_name,
+                "status": "warning",
+                "message": message,
+            })
+            return list(headers), [list(r) for r in rows], message, {"jump_to": None, "message": message, "status": "warning"}
+
+        flag_item = flags.get(flag_name, {}) or {}
+        flag_value = str(flag_item.get("value", "") or "").strip()
+        target, rule_message = self.find_conditional_jump_target(flag_value, config)
+        if not target:
+            message = f"条件跳转：{flag_name}={flag_value or '-'}；{rule_message}，默认不跳转"
+            self.append_jump_runtime_log(context, {
+                "event": "conditional_jump",
+                "flag_name": flag_name,
+                "flag_value": flag_value,
+                "status": "warning",
+                "message": message,
+            })
+            return list(headers), [list(r) for r in rows], message, {"jump_to": None, "message": message, "status": "warning"}
+
+        ctrl = self.resolve_jump_target_control(target, context=context, anchors_info=anchors_info, nodes=nodes, source="conditional_jump")
+        stat = f"条件跳转：{flag_name}={flag_value or '-'}；{rule_message}；{ctrl.get('message', '')}"
+        return list(headers), [list(r) for r in rows], stat, ctrl
 
     def apply_node(self, headers, rows, node, execute_actions=False, context=None):
         node_type = node.get("type")
@@ -12390,7 +12713,7 @@ class PlanWorkflowWindow:
         if node_type == "获取文件列表":
             return self.apply_file_list_node(headers, rows, config, context=context)
         if node_type == "批量替换":
-            return self.apply_replace_node(headers, rows, config)
+            return self.apply_replace_node(headers, rows, config, context=context)
         if node_type == "数据提取":
             return self.apply_extract_node(headers, rows, config)
         if node_type == "格式规范化 / 日期时间解析":
@@ -12400,13 +12723,13 @@ class PlanWorkflowWindow:
         if node_type == "新建列":
             return self.apply_new_columns_node(headers, rows, config)
         if node_type == "合并列":
-            return self.apply_merge_node(headers, rows, config)
+            return self.apply_merge_node(headers, rows, config, context=context)
         if node_type == "批量更改列名":
             return self.apply_rename_columns_node(headers, rows, config)
         if node_type == "去重 / 重复数据处理":
-            return self.apply_dedupe_node(headers, rows, config)
+            return self.apply_dedupe_node(headers, rows, config, context=context)
         if node_type == "列数字运算":
-            return self.apply_numeric_column_node(headers, rows, config)
+            return self.apply_numeric_column_node(headers, rows, config, context=context)
         if node_type == "匹配值输出列名":
             return self.apply_match_value_output_field_name_node(headers, rows, config, context=context)
         if node_type == "插件节点":
@@ -12418,11 +12741,11 @@ class PlanWorkflowWindow:
         if node_type == "删除行":
             return self.apply_delete_rows_node(headers, rows, config)
         if node_type == "填充值":
-            return self.apply_fill_value_node(headers, rows, config)
+            return self.apply_fill_value_node(headers, rows, config, context=context)
         if node_type == "序列填充":
-            return self.apply_sequence_fill_node(headers, rows, config)
+            return self.apply_sequence_fill_node(headers, rows, config, context=context)
         if node_type == "区域填充":
-            return self.apply_area_fill_node(headers, rows, config)
+            return self.apply_area_fill_node(headers, rows, config, context=context)
         if node_type == "行数据映射填充":
             return self.apply_row_data_mapping_node(headers, rows, config)
         if node_type == "保存中转数据":
@@ -12447,21 +12770,10 @@ class PlanWorkflowWindow:
         return headers.index(field)
 
     def safe_cell(self, row, idx):
-        if idx < 0 or idx >= len(row):
-            return ""
-        value = row[idx]
-        return "" if value is None else str(value)
+        return core_safe_cell(row, idx)
 
     def normalize_rows(self, rows, col_count):
-        result = []
-        for row in rows:
-            fixed = list(row)
-            if len(fixed) < col_count:
-                fixed += [""] * (col_count - len(fixed))
-            if len(fixed) > col_count:
-                fixed = fixed[:col_count]
-            result.append(fixed)
-        return result
+        return core_normalize_rows(rows, col_count)
 
     def compare_values(self, text, op, value, case_sensitive=True):
         text = "" if text is None else str(text)
@@ -12504,37 +12816,20 @@ class PlanWorkflowWindow:
         return False
 
     def parse_extensions_filter(self, text_value):
-        parts = re.split(r"[;,，；\s]+", str(text_value or ""))
-        result = set()
-        for part in parts:
-            part = part.strip().lower()
-            if not part:
-                continue
-            if not part.startswith("."):
-                part = "." + part
-            result.add(part)
-        return result
+        return workflow_parse_extensions_filter(text_value)
 
     def is_hidden_path(self, path):
-        name = os.path.basename(path)
-        if name.startswith("."):
-            return True
-        if os.name == "nt":
-            try:
-                import ctypes
-                attrs = ctypes.windll.kernel32.GetFileAttributesW(str(path))
-                if attrs == -1:
-                    return False
-                return bool(attrs & 2)
-            except Exception:
-                return False
-        return False
+        return workflow_is_hidden_path(path)
 
     def check_workflow_cancelled(self, context=None):
         """长循环节点内部调用：用户点击取消后，在安全检查点停止。"""
         cancel_event = (context or {}).get("cancel_event")
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("用户取消后台执行")
+
+    def check_workflow_cancelled_periodically(self, context, index, interval=500):
+        if index == 0 or index % max(1, int(interval)) == 0:
+            self.check_workflow_cancelled(context)
 
     def report_workflow_node_progress(self, context=None, current=None, total=None, message="", node_name=""):
         """长循环节点内部调用：通过后台 Queue 回传节点内行级/项目级进度。"""
@@ -12553,103 +12848,19 @@ class PlanWorkflowWindow:
             pass
 
     def apply_file_list_node(self, headers, rows, config, context=None):
-        directory = config.get("directory") or getattr(self.app, "app_dir", get_app_dir())
-        directory = os.path.abspath(os.path.expanduser(directory))
-        if not os.path.isdir(directory):
-            raise ValueError(f"目录不存在：{directory}")
-
-        recursive = bool(config.get("recursive", True))
-        include_files = bool(config.get("include_files", True))
-        include_dirs = bool(config.get("include_dirs", False))
-        include_hidden = bool(config.get("include_hidden", False))
-        name_contains = str(config.get("name_contains", "") or "")
-        name_contains_lower = name_contains.lower()
-        glob_pattern = str(config.get("glob_pattern", "*") or "*")
-        ext_filter = self.parse_extensions_filter(config.get("extensions", ""))
-        max_files = self.get_positive_int(config.get("max_files", "20000"), 20000)
-        context = context or {}
-        scanned_count = 0
-
-        out_headers = [
-            "文件名", "完整路径", "所在目录", "扩展名", "文件大小", "修改时间", "创建时间",
-            "是否文件夹", "新文件名", "新完整路径", "重命名状态"
-        ]
-        out_rows = []
-
-        def should_include(path, is_dir):
-            name = os.path.basename(path)
-            if not include_hidden and self.is_hidden_path(path):
-                return False
-            if is_dir and not include_dirs:
-                return False
-            if (not is_dir) and not include_files:
-                return False
-            if name_contains and name_contains_lower not in name.lower():
-                return False
-            if glob_pattern and glob_pattern != "*" and not fnmatch.fnmatch(name, glob_pattern):
-                return False
-            ext = os.path.splitext(name)[1].lower()
-            if (not is_dir) and ext_filter and ext not in ext_filter:
-                return False
-            return True
-
-        def add_path(path, is_dir):
-            try:
-                stat = os.stat(path)
-                size = "" if is_dir else str(stat.st_size)
-                mtime = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-                ctime = datetime.fromtimestamp(stat.st_ctime).strftime("%Y-%m-%d %H:%M:%S")
-            except Exception:
-                size, mtime, ctime = "", "", ""
-            name = os.path.basename(path)
-            folder = os.path.dirname(path)
-            ext = os.path.splitext(name)[1]
-            out_rows.append([
-                name, os.path.abspath(path), folder, ext, size, mtime, ctime,
-                "是" if is_dir else "否", name, os.path.abspath(path), "待处理"
-            ])
-
-        if recursive:
-            for root_dir, dirnames, filenames in os.walk(directory):
-                self.check_workflow_cancelled(context)
-                scanned_count += 1
-                if scanned_count % 50 == 0:
-                    self.report_workflow_node_progress(context, len(out_rows), max_files, f"正在扫描目录：{root_dir}", node_name="获取文件列表")
-                if not include_hidden:
-                    dirnames[:] = [d for d in dirnames if not self.is_hidden_path(os.path.join(root_dir, d))]
-                if include_dirs:
-                    for d in dirnames:
-                        path = os.path.join(root_dir, d)
-                        if should_include(path, True):
-                            add_path(path, True)
-                            if len(out_rows) >= max_files:
-                                break
-                if len(out_rows) >= max_files:
-                    break
-                if include_files:
-                    for f in filenames:
-                        path = os.path.join(root_dir, f)
-                        if should_include(path, False):
-                            add_path(path, False)
-                            if len(out_rows) >= max_files:
-                                break
-                if len(out_rows) >= max_files:
-                    break
-        else:
-            names = os.listdir(directory)
-            total_names = len(names)
-            for idx_name, name in enumerate(names, start=1):
-                if idx_name % 200 == 0:
-                    self.check_workflow_cancelled(context)
-                    self.report_workflow_node_progress(context, idx_name, total_names, f"正在扫描 {idx_name}/{total_names}", node_name="获取文件列表")
-                path = os.path.join(directory, name)
-                is_dir = os.path.isdir(path)
-                if should_include(path, is_dir):
-                    add_path(path, is_dir)
-                    if len(out_rows) >= max_files:
-                        break
-
-        return out_headers, out_rows, f"读取文件列表 {len(out_rows)} 项，目录：{directory}"
+        node_context = dict(context or {})
+        node_context.setdefault("default_directory", getattr(self.app, "app_dir", get_app_dir()))
+        node_context["check_cancelled"] = lambda index=None: self.check_workflow_cancelled(context)
+        node_context["report_progress"] = (
+            lambda current=None, total=None, message="", node_name="获取文件列表": self.report_workflow_node_progress(
+                context,
+                current=current,
+                total=total,
+                message=message,
+                node_name=node_name,
+            )
+        )
+        return workflow_apply_file_list_node(headers, rows, config, context=node_context)
 
     def get_or_add_column_index(self, headers, rows, column_name):
         column_name = str(column_name or "").strip()
@@ -12665,350 +12876,69 @@ class PlanWorkflowWindow:
         return len(headers) - 1, headers, rows
 
     def make_numbered_path(self, path):
-        folder = os.path.dirname(path)
-        name = os.path.basename(path)
-        stem, ext = os.path.splitext(name)
-        for i in range(1, 10000):
-            candidate = os.path.join(folder, f"{stem}_{i}{ext}")
-            if not os.path.exists(candidate):
-                return candidate
-        raise ValueError(f"无法自动生成不冲突文件名：{path}")
+        return workflow_make_numbered_path(path)
 
     def apply_batch_rename_node(self, headers, rows, config, execute_actions=False, context=None):
-        headers = list(headers)
-        rows = [list(row) for row in rows]
-        context = context or {}
-        path_field = config.get("path_field", "完整路径")
-        new_name_field = config.get("new_name_field", "新文件名")
-        if path_field not in headers:
-            raise ValueError(f"找不到原路径字段：{path_field}")
-        if new_name_field not in headers:
-            raise ValueError(f"找不到新名称字段：{new_name_field}")
+        node_context = dict(context or {})
+        node_context.update({
+            "check_cancelled": lambda index=None: self.check_workflow_cancelled(context),
+            "report_progress": lambda current=None, total=None, message="", node_name="批量重命名": self.report_workflow_node_progress(
+                context,
+                current=current,
+                total=total,
+                message=message,
+                node_name=node_name,
+            ),
+            "path_exists": os.path.exists,
+            "path_is_dir": os.path.isdir,
+            "make_dirs": lambda path: os.makedirs(path, exist_ok=True),
+            "rename_file": os.rename,
+            "replace_file": os.replace,
+            "make_numbered_path": self.make_numbered_path,
+        })
+        headers, rows, message = workflow_apply_batch_rename_node(
+            headers,
+            rows,
+            config,
+            execute_actions=execute_actions,
+            context=node_context,
+        )
 
-        path_idx = headers.index(path_field)
-        new_idx = headers.index(new_name_field)
-        new_path_idx, headers, rows = self.get_or_add_column_index(headers, rows, config.get("new_path_field", "新完整路径"))
-        status_idx, headers, rows = self.get_or_add_column_index(headers, rows, config.get("status_field", "重命名状态"))
-
-        name_value_type = config.get("name_value_type", "仅文件名")
-        conflict_mode = config.get("conflict_mode", "跳过目标已存在")
-        auto_append_ext = bool(config.get("auto_append_ext", False))
-        allow_dirs = bool(config.get("allow_dirs", False))
-        create_target_dirs = bool(config.get("create_target_dirs", False))
-        actual_rename = bool(config.get("actual_rename", False))
-        do_rename = execute_actions and actual_rename
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        changed = 0
-        preview_ok = 0
-        skipped = 0
-        log_rows = []
-
-        total_rename_rows = len(rows)
-        for row_num, row in enumerate(rows, start=1):
-            if row_num == 1 or row_num % 100 == 0:
-                self.check_workflow_cancelled(context)
-                self.report_workflow_node_progress(context, row_num, total_rename_rows, f"正在处理重命名 {row_num}/{total_rename_rows}", node_name="批量重命名")
-            while len(row) < len(headers):
-                row.append("")
-            src = str(row[path_idx] or "").strip()
-            new_value = str(row[new_idx] or "").strip()
-            status = ""
-            dst = ""
-            try:
-                if not src:
-                    status = "跳过：原路径为空"
-                    skipped += 1
-                elif not new_value:
-                    status = "跳过：新名称为空"
-                    skipped += 1
-                elif not os.path.exists(src):
-                    status = "跳过：原路径不存在"
-                    skipped += 1
-                elif os.path.isdir(src) and not allow_dirs:
-                    status = "跳过：不允许重命名文件夹"
-                    skipped += 1
-                else:
-                    if name_value_type == "完整路径":
-                        dst = os.path.abspath(os.path.expanduser(new_value))
-                    else:
-                        safe_name = os.path.basename(new_value)
-                        if not safe_name:
-                            status = "跳过：新文件名无效"
-                            skipped += 1
-                            row[new_path_idx] = ""
-                            row[status_idx] = status
-                            log_rows.append([row_num, src, "", status, timestamp])
-                            continue
-                        if auto_append_ext and not os.path.splitext(safe_name)[1]:
-                            safe_name += os.path.splitext(src)[1]
-                        dst = os.path.abspath(os.path.join(os.path.dirname(src), safe_name))
-
-                    target_dir = os.path.dirname(os.path.abspath(dst))
-                    target_dir_missing = bool(target_dir) and not os.path.isdir(target_dir)
-                    target_dir_created_note = ""
-                    if target_dir_missing:
-                        if create_target_dirs:
-                            if do_rename:
-                                os.makedirs(target_dir, exist_ok=True)
-                                target_dir_created_note = "，已创建目标目录"
-                            else:
-                                target_dir_created_note = "，将创建目标目录"
-                        else:
-                            status = f"跳过：目标目录不存在：{target_dir}"
-                            skipped += 1
-                            row[new_path_idx] = dst
-                            row[status_idx] = status
-                            log_rows.append([row_num, src, dst, status, timestamp])
-                            continue
-
-                    if os.path.abspath(src) == os.path.abspath(dst):
-                        status = "无需重命名：路径相同"
-                        preview_ok += 1
-                    elif os.path.exists(dst):
-                        if conflict_mode == "跳过目标已存在":
-                            status = "跳过：目标已存在"
-                            skipped += 1
-                        elif conflict_mode == "自动加编号":
-                            dst = self.make_numbered_path(dst)
-                            if do_rename:
-                                os.rename(src, dst)
-                                status = "已重命名：自动加编号" + target_dir_created_note
-                                changed += 1
-                            else:
-                                status = "预览可重命名：自动加编号" + target_dir_created_note
-                                preview_ok += 1
-                        elif conflict_mode == "覆盖目标（危险）":
-                            if do_rename:
-                                os.replace(src, dst)
-                                status = "已重命名：覆盖目标" + target_dir_created_note
-                                changed += 1
-                            else:
-                                status = "预览可重命名：将覆盖目标" + target_dir_created_note
-                                preview_ok += 1
-                        else:
-                            status = "跳过：未知冲突处理"
-                            skipped += 1
-                    else:
-                        if do_rename:
-                            os.rename(src, dst)
-                            status = "已重命名" + target_dir_created_note
-                            changed += 1
-                        else:
-                            status = ("预览可重命名" if actual_rename else "仅预览未执行") + target_dir_created_note
-                            preview_ok += 1
-            except Exception as e:
-                status = f"失败：{e}"
-                skipped += 1
-
-            row[new_path_idx] = dst
-            row[status_idx] = status
-            log_rows.append([row_num, src, dst, status, timestamp])
-
-        self.report_workflow_node_progress(context, total_rename_rows, total_rename_rows, "批量重命名节点处理完成", node_name="批量重命名")
-
-        if do_rename and bool(config.get("write_log", True)):
+        if node_context.get("batch_rename_do_rename") and bool(config.get("write_log", True)):
             log_path = config.get("log_path") or os.path.abspath("rename_log.csv")
             try:
                 os.makedirs(os.path.dirname(os.path.abspath(log_path)), exist_ok=True)
                 with open(log_path, "w", encoding="utf-8-sig", newline="") as f:
                     writer = csv.writer(f)
-                    writer.writerow(["行号", "原路径", "新路径", "状态", "时间"])
-                    writer.writerows(log_rows)
+                    writer.writerow(BATCH_RENAME_LOG_HEADERS)
+                    writer.writerows(node_context.get("batch_rename_log_rows", []))
             except Exception as e:
-                return headers, rows, f"重命名完成 {changed} 项，但日志写入失败：{e}"
+                return headers, rows, f"重命名完成 {node_context.get('batch_rename_changed', 0)} 项，但日志写入失败：{e}"
 
-        if do_rename:
-            return headers, rows, f"实际重命名 {changed} 项，跳过/失败 {skipped} 项"
-        return headers, rows, f"重命名预览：可处理 {preview_ok} 项，跳过/失败 {skipped} 项"
+        return headers, rows, message
 
-    def apply_replace_node(self, headers, rows, config):
-        idx = self.field_index(headers, config.get("target_field", ""))
-        match_mode = config.get("match_mode", "包含")
-        replace_mode = config.get("replace_mode", "局部替换匹配字符串")
-        case_sensitive = bool(config.get("case_sensitive", True))
-        value_source = config.get("value_source", "手动输入")
-        use_column_values = value_source == "列字段"
-        skip_empty_match_value = bool(config.get("skip_empty_match_value", True))
-
-        if use_column_values:
-            match_field_idx = self.field_index(headers, config.get("match_value_field", ""))
-            replace_field_idx = self.field_index(headers, config.get("replace_value_field", ""))
-        else:
-            match_field_idx = None
-            replace_field_idx = None
-            static_match_value = str(config.get("match_value", ""))
-            static_replace_value = str(config.get("replace_value", ""))
-
-        new_rows = self.normalize_rows(rows, len(headers))
-        changed = 0
-        skipped_empty = 0
-        for row in new_rows:
-            old = self.safe_cell(row, idx)
-            if use_column_values:
-                match_value = self.safe_cell(row, match_field_idx)
-                replace_value = self.safe_cell(row, replace_field_idx)
-                # 避免“包含空字符串”导致整列全部被替换。为空/不为空模式本身不依赖匹配值，所以不拦截。
-                if skip_empty_match_value and match_value == "" and match_mode not in ("为空", "不为空"):
-                    skipped_empty += 1
-                    continue
-            else:
-                match_value = static_match_value
-                replace_value = static_replace_value
-
-            if not self.compare_values(old, match_mode, match_value, case_sensitive):
-                continue
-            if replace_mode == "整格替换为新值":
-                new_value = replace_value
-            else:
-                if match_mode == "正则匹配":
-                    flags = 0 if case_sensitive else re.IGNORECASE
-                    new_value = re.sub(match_value, replace_value, old, flags=flags)
-                elif match_value == "":
-                    # 局部替换空字符串会在每个字符之间插入新值，通常不是用户想要的。
-                    # 此时保持原值，建议改用“整格替换为新值”或关闭“列匹配值为空时跳过”。
-                    new_value = old
-                elif case_sensitive:
-                    new_value = old.replace(match_value, replace_value)
-                else:
-                    new_value = re.sub(re.escape(match_value), replace_value, old, flags=re.IGNORECASE)
-            if new_value != old:
-                row[idx] = new_value
-                changed += 1
-        extra = f"，跳过空匹配值 {skipped_empty} 行" if use_column_values and skipped_empty else ""
-        return list(headers), new_rows, f"修改 {changed} 处{extra}"
+    def apply_replace_node(self, headers, rows, config, context=None):
+        node_context = dict(context or {})
+        node_context["check_cancelled"] = lambda index: self.check_workflow_cancelled_periodically(context, index)
+        return workflow_apply_replace_node(headers, rows, config, context=node_context)
 
     def parse_int(self, value, name):
+        return workflow_parse_int(value, name)
+
+    def safe_int(self, value, default=0):
         try:
             return int(str(value).strip())
         except Exception:
-            raise ValueError(f"{name} 必须是整数。")
+            return default
 
     def apply_unmatched_extract(self, text, status, config):
-        mode = config.get("unmatched_mode", "留空")
-        if mode == "留空":
-            return "", status
-        if mode == "保留原值":
-            return text, status
-        if mode == "填写固定值":
-            return str(config.get("unmatched_fixed", "未匹配")), status
-        if mode == "跳过该行":
-            return "", "跳过"
-        return "", status
+        return workflow_apply_unmatched_extract(text, status, config)
 
     def post_extract_result(self, result, config):
-        result = "" if result is None else str(result)
-        if config.get("strip_result", True):
-            result = result.strip()
-        return result
+        return workflow_post_extract_result(result, config)
 
     def extract_one_value(self, original, config):
-        text = "" if original is None else str(original)
-        method = config.get("method", "正则提取")
-        case_sensitive = bool(config.get("case_sensitive", True))
-        def norm(s):
-            return s if case_sensitive else s.lower()
-        try:
-            if method == "正则提取":
-                pattern = config.get("regex_pattern", "")
-                if not pattern:
-                    raise ValueError("正则表达式不能为空。")
-                flags = 0 if case_sensitive else re.IGNORECASE
-                group_index = self.parse_int(config.get("regex_group", "0"), "提取分组")
-                if config.get("regex_find_all", False):
-                    results = []
-                    for m in re.finditer(pattern, text, flags):
-                        try:
-                            results.append(m.group(group_index))
-                        except IndexError:
-                            return self.apply_unmatched_extract(text, "分组不存在", config)
-                    if not results:
-                        return self.apply_unmatched_extract(text, "未匹配", config)
-                    return self.post_extract_result(str(config.get("regex_joiner", ";")).join(results), config), "成功"
-                m = re.search(pattern, text, flags)
-                if not m:
-                    return self.apply_unmatched_extract(text, "未匹配", config)
-                try:
-                    return self.post_extract_result(m.group(group_index), config), "成功"
-                except IndexError:
-                    return self.apply_unmatched_extract(text, "分组不存在", config)
-            if method == "固定位置提取":
-                start = self.parse_int(config.get("start_pos", "1"), "起始位置")
-                length = self.parse_int(config.get("extract_len", "1"), "提取长度")
-                start_idx = start - 1 if config.get("position_base", "从1开始") == "从1开始" else start
-                if start_idx < 0 or start_idx >= len(text):
-                    return self.apply_unmatched_extract(text, "越界", config)
-                return self.post_extract_result(text[start_idx:start_idx+length], config), "成功"
-            if method == "从左取N位":
-                n = self.parse_int(config.get("n_chars", "1"), "N")
-                return self.post_extract_result(text[:max(n, 0)], config), "成功"
-            if method == "从右取N位":
-                n = self.parse_int(config.get("n_chars", "1"), "N")
-                return self.post_extract_result(text[-n:] if n > 0 else "", config), "成功"
-            if method == "按分隔符提取":
-                delimiter = str(config.get("delimiter", "-"))
-                if delimiter == "":
-                    raise ValueError("分隔符不能为空。")
-                parts = text.split(delimiter)
-                if config.get("ignore_empty_part", False):
-                    parts = [p for p in parts if p != ""]
-                part_index = self.parse_int(config.get("part_index", "1"), "取第几段")
-                if part_index == 0:
-                    raise ValueError("段序号不能为0。")
-                idx = part_index - 1 if part_index > 0 else part_index
-                if idx < -len(parts) or idx >= len(parts):
-                    return self.apply_unmatched_extract(text, "越界", config)
-                return self.post_extract_result(parts[idx], config), "成功"
-            if method == "前后关键字之间提取":
-                start_key = str(config.get("before_key", ""))
-                end_key = str(config.get("after_key", ""))
-                if not start_key or not end_key:
-                    raise ValueError("开始关键字和结束关键字不能为空。")
-                occurrence = self.parse_int(config.get("between_occurrence", "1"), "第几个匹配")
-                search_text = norm(text)
-                search_start = norm(start_key)
-                search_end = norm(end_key)
-                pos = 0
-                found = None
-                for _ in range(occurrence):
-                    s = search_text.find(search_start, pos)
-                    if s < 0:
-                        return self.apply_unmatched_extract(text, "未匹配", config)
-                    content_start = s + len(start_key)
-                    e = search_text.find(search_end, content_start)
-                    if e < 0:
-                        return self.apply_unmatched_extract(text, "未匹配", config)
-                    found = text[content_start:e]
-                    pos = e + len(end_key)
-                return self.post_extract_result(found, config), "成功"
-            if method in ["指定字符前提取", "指定字符后提取"]:
-                marker = str(config.get("marker", "-"))
-                if marker == "":
-                    raise ValueError("指定字符不能为空。")
-                search_text = norm(text)
-                search_marker = norm(marker)
-                idx = search_text.rfind(search_marker) if config.get("find_mode", "第一次出现") == "最后一次出现" else search_text.find(search_marker)
-                if idx < 0:
-                    return self.apply_unmatched_extract(text, "未匹配", config)
-                if method == "指定字符前提取":
-                    return self.post_extract_result(text[:idx], config), "成功"
-                return self.post_extract_result(text[idx + len(marker):], config), "成功"
-            if method == "删除前缀":
-                prefix = str(config.get("prefix", ""))
-                if prefix == "":
-                    raise ValueError("前缀不能为空。")
-                if norm(text).startswith(norm(prefix)):
-                    return self.post_extract_result(text[len(prefix):], config), "成功"
-                return self.apply_unmatched_extract(text, "未匹配", config)
-            if method == "删除后缀":
-                suffix = str(config.get("suffix", ""))
-                if suffix == "":
-                    raise ValueError("后缀不能为空。")
-                if norm(text).endswith(norm(suffix)):
-                    return self.post_extract_result(text[:-len(suffix)], config), "成功"
-                return self.apply_unmatched_extract(text, "未匹配", config)
-            raise ValueError(f"未知提取方式：{method}")
-        except re.error as e:
-            raise ValueError(f"正则错误：{e}")
+        return workflow_extract_one_value(original, config)
 
     def get_unique_header(self, base_name, headers):
         name = str(base_name or "新字段").strip() or "新字段"
@@ -13020,605 +12950,105 @@ class PlanWorkflowWindow:
         return f"{name}_{counter}"
 
     def normalize_datetime_source_text(self, value):
-        text = "" if value is None else str(value)
-        text = text.strip() if True else text
-        trans = str.maketrans({
-            "０": "0", "１": "1", "２": "2", "３": "3", "４": "4",
-            "５": "5", "６": "6", "７": "7", "８": "8", "９": "9",
-            "：": ":", "／": "/", "－": "-", "—": "-", "–": "-",
-            "．": ".", "。": ".", "　": " ",
-        })
-        return text.translate(trans)
+        return workflow_normalize_datetime_source_text(value)
 
     def parse_format_int(self, value, name, allow_zero=False):
-        try:
-            n = int(str(value).strip())
-        except Exception:
-            raise ValueError(f"{name} 必须是整数。")
-        if allow_zero:
-            if n < 0:
-                raise ValueError(f"{name} 不能小于 0。")
-        else:
-            if n <= 0:
-                raise ValueError(f"{name} 必须大于 0。")
-        return n
+        return workflow_parse_format_int(value, name, allow_zero=allow_zero)
 
     def slice_by_position(self, text, start, length, base, name):
-        length = self.parse_format_int(length, f"{name}长度", allow_zero=True)
-        if length == 0:
-            return ""
-        start = self.parse_format_int(start, f"{name}起始")
-        idx = start - 1 if base == "从1开始" else start
-        if idx < 0 or idx + length > len(text):
-            raise ValueError(f"{name}位置越界")
-        return text[idx:idx + length]
+        return workflow_slice_by_position(text, start, length, base, name)
 
     def complete_format_year(self, value, config):
-        s = str(value or "").strip()
-        if not s:
-            raise ValueError("年份为空")
-        if not re.fullmatch(r"\d{1,4}", s):
-            raise ValueError(f"年份不是数字：{s}")
-        n = int(s)
-        if len(s) >= 3:
-            return n
-        rule = config.get("year_rule", "20xx")
-        if rule == "20xx":
-            return 2000 + n
-        if rule == "19xx":
-            return 1900 + n
-        if rule == "不补全":
-            return n
-        try:
-            pivot = int(str(config.get("auto_window_pivot", "80")).strip())
-        except Exception:
-            pivot = 80
-        return 1900 + n if n >= pivot else 2000 + n
+        return workflow_complete_format_year(value, config)
 
     def build_date_parts(self, year, month, day, config):
-        y = self.complete_format_year(year, config)
-        try:
-            m = int(str(month).strip())
-            d = int(str(day).strip())
-        except Exception:
-            raise ValueError("月/日不是数字")
-        try:
-            datetime(y, m, d)  # 校验真实日期，例如 260631 会失败
-        except Exception:
-            raise ValueError(f"日期无效：{y:04d}-{m:02d}-{d:02d}")
-        return {"year": y, "month": m, "day": d}
+        return workflow_build_date_parts(year, month, day, config)
 
     def build_time_parts(self, hour, minute="0", second="0"):
-        try:
-            h = int(str(hour).strip())
-            mi = int(str(minute).strip()) if str(minute).strip() != "" else 0
-            sec = int(str(second).strip()) if str(second).strip() != "" else 0
-        except Exception:
-            raise ValueError("时/分/秒不是数字")
-        if not (0 <= h <= 23):
-            raise ValueError("小时超出范围 0-23")
-        if not (0 <= mi <= 59):
-            raise ValueError("分钟超出范围 0-59")
-        if not (0 <= sec <= 59):
-            raise ValueError("秒超出范围 0-59")
-        return {"hour": h, "minute": mi, "second": sec}
+        return workflow_build_time_parts(hour, minute, second)
 
     def parse_date_fixed(self, text, config):
-        base = config.get("position_base", "从1开始")
-        y = self.slice_by_position(text, config.get("year_start", "1"), config.get("year_len", "2"), base, "年")
-        m = self.slice_by_position(text, config.get("month_start", "3"), config.get("month_len", "2"), base, "月")
-        d = self.slice_by_position(text, config.get("day_start", "5"), config.get("day_len", "2"), base, "日")
-        return self.build_date_parts(y, m, d, config)
+        return workflow_parse_date_fixed(text, config)
 
     def parse_time_fixed(self, text, config):
-        base = config.get("position_base", "从1开始")
-        h = self.slice_by_position(text, config.get("hour_start", "1"), config.get("hour_len", "2"), base, "时")
-        mi = self.slice_by_position(text, config.get("minute_start", "3"), config.get("minute_len", "2"), base, "分")
-        sec = self.slice_by_position(text, config.get("second_start", "5"), config.get("second_len", "0"), base, "秒")
-        return self.build_time_parts(h, mi, sec or "0")
+        return workflow_parse_time_fixed(text, config)
 
     def split_by_config_delimiter(self, text, kind, config):
-        if kind == "date":
-            mode = config.get("date_delimiter", "自动识别")
-            custom = config.get("custom_date_delimiter", "-")
-            if mode == "年/月/日":
-                nums = re.findall(r"\d+", text)
-                return nums
-            if mode == "自定义":
-                if custom == "":
-                    raise ValueError("自定义日期分隔符不能为空")
-                return text.split(custom)
-            if mode == "自动识别":
-                nums = re.findall(r"\d+", text)
-                return nums
-            return text.split(mode)
-        mode = config.get("time_delimiter", "自动识别")
-        custom = config.get("custom_time_delimiter", ":")
-        if mode == "时/分/秒":
-            return re.findall(r"\d+", text)
-        if mode == "自定义":
-            if custom == "":
-                raise ValueError("自定义时间分隔符不能为空")
-            return text.split(custom)
-        if mode == "自动识别":
-            return re.findall(r"\d+", text)
-        return text.split(mode)
+        return workflow_split_by_config_delimiter(text, kind, config)
 
     def parse_date_delimited(self, text, config):
-        parts = [p.strip() for p in self.split_by_config_delimiter(text, "date", config) if str(p).strip() != ""]
-        if len(parts) < 3:
-            raise ValueError("日期分隔后不足 3 段")
-        order = config.get("date_order", "年-月-日")
-        if order == "月-日-年":
-            m, d, y = parts[0], parts[1], parts[2]
-        elif order == "日-月-年":
-            d, m, y = parts[0], parts[1], parts[2]
-        else:
-            y, m, d = parts[0], parts[1], parts[2]
-        return self.build_date_parts(y, m, d, config)
+        return workflow_parse_date_delimited(text, config)
 
     def parse_time_delimited(self, text, config):
-        parts = [p.strip() for p in self.split_by_config_delimiter(text, "time", config) if str(p).strip() != ""]
-        if len(parts) < 2:
-            raise ValueError("时间分隔后不足 2 段")
-        h = parts[0]
-        mi = parts[1]
-        sec = parts[2] if len(parts) >= 3 else "0"
-        return self.build_time_parts(h, mi, sec)
+        return workflow_parse_time_delimited(text, config)
 
     def parse_date_auto_common(self, text, config):
-        t = self.normalize_datetime_source_text(text)
-        # 优先匹配带分隔符 / 中文年月日 / 混合文本中的日期
-        patterns = [
-            r"(?<!\d)(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})(?:\s*日)?(?!\d)",
-            r"(?<!\d)(\d{2})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})(?:\s*日)?(?!\d)",
-        ]
-        for pat in patterns:
-            m = re.search(pat, t)
-            if m:
-                return self.build_date_parts(m.group(1), m.group(2), m.group(3), config)
-        # 再匹配纯数字日期：YYYYMMDD / YYMMDD
-        m = re.search(r"(?<!\d)(\d{8})(?!\d)", t)
-        if m:
-            s = m.group(1)
-            return self.build_date_parts(s[:4], s[4:6], s[6:8], config)
-        m = re.search(r"(?<!\d)(\d{6})(?!\d)", t)
-        if m:
-            s = m.group(1)
-            return self.build_date_parts(s[:2], s[2:4], s[4:6], config)
-        raise ValueError("未识别到常见日期格式")
+        return workflow_parse_date_auto_common(text, config)
 
     def parse_time_auto_common(self, text, config):
-        t = self.normalize_datetime_source_text(text)
-        # 带分隔符 / 中文时分秒
-        m = re.search(r"(?<!\d)(\d{1,2})\s*[:时]\s*(\d{1,2})(?:\s*[:分]\s*(\d{1,2}))?(?:\s*秒)?(?!\d)", t)
-        if m:
-            return self.build_time_parts(m.group(1), m.group(2), m.group(3) or "0")
-        # 纯数字 HHMMSS / HHMM，避免误把 260603 这种日期当时间；只在解析类型为时间时使用
-        m = re.search(r"(?<!\d)(\d{6})(?!\d)", t)
-        if m:
-            s = m.group(1)
-            return self.build_time_parts(s[:2], s[2:4], s[4:6])
-        m = re.search(r"(?<!\d)(\d{4})(?!\d)", t)
-        if m:
-            s = m.group(1)
-            return self.build_time_parts(s[:2], s[2:4], "0")
-        raise ValueError("未识别到常见时间格式")
+        return workflow_parse_time_auto_common(text, config)
 
     def parse_format_datetime_value(self, date_text, time_text, config):
-        date_text = self.normalize_datetime_source_text(date_text)
-        time_text = self.normalize_datetime_source_text(time_text)
-        if config.get("strip_value", True):
-            date_text = date_text.strip()
-            time_text = time_text.strip()
-        parse_type = config.get("parse_type", "日期")
-        structure = config.get("input_structure", "固定位置")
-        parts = {"year": None, "month": None, "day": None, "hour": None, "minute": None, "second": None}
-        if parse_type in ("日期", "日期时间"):
-            if structure == "固定位置":
-                date_parts = self.parse_date_fixed(date_text, config)
-            elif structure == "分隔符":
-                date_parts = self.parse_date_delimited(date_text, config)
-            else:
-                date_parts = self.parse_date_auto_common(date_text, config)
-            parts.update(date_parts)
-        if parse_type in ("时间", "日期时间"):
-            t_source = time_text if (parse_type == "日期时间" and config.get("use_separate_time_field", False)) else date_text
-            if structure == "固定位置":
-                time_parts = self.parse_time_fixed(t_source, config)
-            elif structure == "分隔符":
-                time_parts = self.parse_time_delimited(t_source, config)
-            else:
-                time_parts = self.parse_time_auto_common(t_source, config)
-            parts.update(time_parts)
-        return parts
+        return workflow_parse_format_datetime_value(date_text, time_text, config)
 
     def render_format_template(self, parts, template):
-        y = parts.get("year")
-        mo = parts.get("month")
-        d = parts.get("day")
-        h = parts.get("hour")
-        mi = parts.get("minute")
-        s = parts.get("second")
-        values = {
-            "YYYY": f"{y:04d}" if y is not None else "",
-            "YY": f"{y % 100:02d}" if y is not None else "",
-            "MM": f"{mo:02d}" if mo is not None else "",
-            "M": str(mo) if mo is not None else "",
-            "DD": f"{d:02d}" if d is not None else "",
-            "D": str(d) if d is not None else "",
-            "HH": f"{h:02d}" if h is not None else "",
-            "H": str(h) if h is not None else "",
-            "mm": f"{mi:02d}" if mi is not None else "",
-            "m": str(mi) if mi is not None else "",
-            "ss": f"{s:02d}" if s is not None else "",
-            "s": str(s) if s is not None else "",
-        }
-        text = str(template or "")
-        # 先替换长 token，避免 {m} 影响 {mm}
-        for key in sorted(values.keys(), key=len, reverse=True):
-            text = text.replace("{" + key + "}", values[key])
-        return text
+        return workflow_render_format_template(parts, template)
 
     def format_output_value(self, parts, config):
-        parse_type = config.get("parse_type", "日期")
-        if parse_type == "时间":
-            template = config.get("time_output_template", "{HH}:{mm}")
-        elif parse_type == "日期时间":
-            template = config.get("datetime_output_template", "{YYYY}-{MM}-{DD} {HH}:{mm}")
-        else:
-            template = config.get("output_template", "{YYYY}-{MM}-{DD}")
-        return self.render_format_template(parts, template)
+        return workflow_format_output_value(parts, config)
 
     def apply_unmatched_format_value(self, original, status, config):
-        mode = config.get("unmatched_mode", "留空")
-        if mode == "保留原值":
-            return original, status
-        if mode == "填写固定值":
-            return str(config.get("unmatched_fixed", "未匹配")), status
-        if mode == "跳过该行":
-            return "", "跳过"
-        return "", status
+        return workflow_apply_unmatched_format_value(original, status, config)
 
     def build_format_component_columns(self, parts, parse_type, prefix):
-        prefix = str(prefix or "解析").strip() or "解析"
-        values = []
-        if parse_type in ("日期", "日期时间"):
-            values.extend([
-                (f"{prefix}年", f"{parts.get('year'):04d}" if parts.get("year") is not None else ""),
-                (f"{prefix}月", f"{parts.get('month'):02d}" if parts.get("month") is not None else ""),
-                (f"{prefix}日", f"{parts.get('day'):02d}" if parts.get("day") is not None else ""),
-            ])
-        if parse_type in ("时间", "日期时间"):
-            values.extend([
-                (f"{prefix}时", f"{parts.get('hour'):02d}" if parts.get("hour") is not None else ""),
-                (f"{prefix}分", f"{parts.get('minute'):02d}" if parts.get("minute") is not None else ""),
-                (f"{prefix}秒", f"{parts.get('second'):02d}" if parts.get("second") is not None else ""),
-            ])
-        return values
+        return workflow_build_format_component_columns(parts, parse_type, prefix)
 
     def apply_format_datetime_node(self, headers, rows, config):
-        source_idx = self.field_index(headers, config.get("source_field", ""))
-        time_idx = None
-        if config.get("parse_type") == "日期时间" and config.get("use_separate_time_field", False):
-            time_idx = self.field_index(headers, config.get("time_source_field", ""))
-        headers = list(headers)
-        new_rows = self.normalize_rows(rows, len(headers))
-        output_mode = config.get("output_mode", "生成新字段")
-        parse_type = config.get("parse_type", "日期")
-        main_field = str(config.get("new_field", "标准日期")).strip() or "标准日期"
-        status_enabled = bool(config.get("output_status", True))
-        status_field = str(config.get("status_field", "格式解析状态")).strip() or "格式解析状态"
-        output_indexes = []
-        status_idx = None
+        return workflow_apply_format_datetime_node(headers, rows, config)
 
-        if output_mode == "生成新字段":
-            main_field = self.get_unique_header(main_field, headers)
-            headers.append(main_field)
-            output_indexes.append(("main", len(headers) - 1, main_field))
-            for row in new_rows:
-                row.append("")
-        elif output_mode == "生成多个字段":
-            main_field = self.get_unique_header(main_field, headers)
-            headers.append(main_field)
-            output_indexes.append(("main", len(headers) - 1, main_field))
-            for row in new_rows:
-                row.append("")
-            for base_name, _dummy in self.build_format_component_columns({}, parse_type, config.get("component_prefix", "解析")):
-                name = self.get_unique_header(base_name, headers)
-                headers.append(name)
-                output_indexes.append((base_name, len(headers) - 1, name))
-                for row in new_rows:
-                    row.append("")
-        else:
-            output_indexes.append(("main", source_idx, headers[source_idx]))
-
-        if status_enabled:
-            status_name = self.get_unique_header(status_field, headers)
-            headers.append(status_name)
-            status_idx = len(headers) - 1
-            for row in new_rows:
-                row.append("")
-
-        changed = 0
-        skipped = 0
-        failed = 0
-        for row in new_rows:
-            original = self.safe_cell(row, source_idx)
-            time_text = self.safe_cell(row, time_idx) if time_idx is not None else original
-            try:
-                parts = self.parse_format_datetime_value(original, time_text, config)
-                out_value = self.format_output_value(parts, config)
-                status = "成功"
-            except Exception as e:
-                failed += 1
-                out_value, status = self.apply_unmatched_format_value(original, str(e), config)
-                parts = {"year": None, "month": None, "day": None, "hour": None, "minute": None, "second": None}
-
-            if status == "跳过":
-                skipped += 1
-                if status_idx is not None:
-                    row[status_idx] = "跳过"
-                continue
-
-            component_values = dict(self.build_format_component_columns(parts, parse_type, config.get("component_prefix", "解析")))
-            for kind, idx, name in output_indexes:
-                if kind == "main":
-                    row[idx] = out_value
-                else:
-                    row[idx] = component_values.get(kind, "")
-            if status_idx is not None:
-                row[status_idx] = status
-            changed += 1
-
-        return headers, new_rows, f"格式规范化完成：写入 {changed} 行，失败 {failed} 行，跳过 {skipped} 行"
+    def get_datetime_parse_warning(self, original, config, parts):
+        return workflow_get_datetime_parse_warning(original, config, parts)
 
     def render_current_datetime_template(self, dt, config):
-        mode = config.get("format_mode", "占位符模板")
-        if mode == "Python strftime":
-            fmt = str(config.get("strftime_template", "%Y-%m-%d %H:%M:%S") or "%Y-%m-%d %H:%M:%S")
-            try:
-                return dt.strftime(fmt)
-            except Exception as e:
-                raise ValueError(f"strftime格式错误：{e}")
-
-        values = {
-            "YYYY": f"{dt.year:04d}",
-            "YY": f"{dt.year % 100:02d}",
-            "MM": f"{dt.month:02d}",
-            "M": str(dt.month),
-            "DD": f"{dt.day:02d}",
-            "D": str(dt.day),
-            "HH": f"{dt.hour:02d}",
-            "H": str(dt.hour),
-            "mm": f"{dt.minute:02d}",
-            "m": str(dt.minute),
-            "ss": f"{dt.second:02d}",
-            "s": str(dt.second),
-            "fff": f"{dt.microsecond // 1000:03d}",
-            "ffffff": f"{dt.microsecond:06d}",
-            "timestamp": str(int(dt.timestamp())),
-            "unix_ms": str(int(dt.timestamp() * 1000)),
-        }
-        text = str(config.get("template", "{YYYY}-{MM}-{DD} {HH}:{mm}:{ss}") or "")
-        for key in sorted(values.keys(), key=len, reverse=True):
-            text = text.replace("{" + key + "}", values[key])
-        return text
+        return workflow_render_current_datetime_template(dt, config)
 
     def parse_new_columns_specs(self, config):
-        text = str(config.get("columns_text", "") or "")
-        strip_name = bool(config.get("strip_column_name", True))
-        allow_empty = bool(config.get("allow_empty_name", False))
-        value_mode = config.get("value_mode", "统一默认值")
-        default_value = str(config.get("default_value", "") or "")
-        specs = []
-        auto_index = 1
-        for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-            line = raw_line.strip() if strip_name else raw_line
-            if line == "":
-                continue
-            if "=" in line:
-                name, value = line.split("=", 1)
-                name = name.strip() if strip_name else name
-                if value_mode == "按列配置值":
-                    fill_value = value
-                elif value_mode == "空值":
-                    fill_value = ""
-                else:
-                    fill_value = default_value
-            else:
-                name = line
-                fill_value = "" if value_mode == "空值" else default_value
-            if name == "":
-                if allow_empty:
-                    name = f"新字段{auto_index}"
-                    auto_index += 1
-                else:
-                    raise ValueError("新建列节点存在空字段名。可删除空行，或勾选允许空字段名自动命名。")
-            specs.append((name, "" if fill_value is None else str(fill_value)))
-        if not specs:
-            raise ValueError("新建列节点没有填写任何字段名。")
-        return specs
+        return workflow_parse_new_columns_specs(config)
 
     def apply_new_columns_node(self, headers, rows, config):
-        headers = list(headers)
-        new_rows = self.normalize_rows(rows, len(headers))
-        specs = self.parse_new_columns_specs(config)
-        conflict_mode = config.get("conflict_mode", "自动改名")
-        added = 0
-        overwritten = 0
-        skipped = 0
-        output_names = []
-
-        for name, fill_value in specs:
-            if name in headers:
-                if conflict_mode == "自动改名":
-                    final_name = self.get_unique_header(name, headers)
-                    headers.append(final_name)
-                    for row in new_rows:
-                        row.append(fill_value)
-                    added += 1
-                    output_names.append(final_name)
-                elif conflict_mode == "跳过已有字段":
-                    skipped += 1
-                    continue
-                elif conflict_mode == "覆盖已有字段":
-                    idx = headers.index(name)
-                    for row in new_rows:
-                        row[idx] = fill_value
-                    overwritten += 1
-                    output_names.append(name)
-                elif conflict_mode == "存在则报错":
-                    raise ValueError(f"新建列节点字段已存在：{name}")
-                else:
-                    raise ValueError(f"未知同名字段处理方式：{conflict_mode}")
-            else:
-                headers.append(name)
-                for row in new_rows:
-                    row.append(fill_value)
-                added += 1
-                output_names.append(name)
-
-        shown = ", ".join(output_names[:8])
-        if len(output_names) > 8:
-            shown += f" ... 共{len(output_names)}个"
-        return headers, new_rows, f"新建列完成：新增 {added} 列，覆盖 {overwritten} 列，跳过 {skipped} 列；字段：{shown}"
+        return workflow_apply_new_columns_node(headers, rows, config)
 
     def apply_current_datetime_column_node(self, headers, rows, config):
-        headers = list(headers)
-        new_rows = self.normalize_rows(rows, len(headers))
-        output_mode = config.get("output_mode", "生成新字段")
-        output_idx = None
-        output_name = ""
-
-        if output_mode == "覆盖已有字段":
-            target = str(config.get("target_field", "")).strip()
-            if not target:
-                raise ValueError("新建日期时间列节点选择了覆盖已有字段，但未选择覆盖字段。")
-            output_idx = self.field_index(headers, target)
-            output_name = headers[output_idx]
-        else:
-            output_name = self.get_unique_header(config.get("new_field", "当前日期时间"), headers)
-            headers.append(output_name)
-            output_idx = len(headers) - 1
-            for row in new_rows:
-                row.append("")
-
-        fixed_time = datetime.now()
-        same_time = config.get("time_mode", "整次运行固定同一时间") == "整次运行固定同一时间"
-        changed = 0
-        sample = ""
-        for row in new_rows:
-            dt = fixed_time if same_time else datetime.now()
-            value = self.render_current_datetime_template(dt, config)
-            row[output_idx] = value
-            if sample == "":
-                sample = value
-            changed += 1
-
-        if not new_rows:
-            sample = self.render_current_datetime_template(fixed_time, config)
-        return headers, new_rows, f"新建日期时间列完成：字段【{output_name}】，写入 {changed} 行，示例：{sample}"
+        return workflow_apply_current_datetime_column_node(headers, rows, config)
 
     def apply_extract_node(self, headers, rows, config):
-        idx = self.field_index(headers, config.get("source_field", ""))
-        headers = list(headers)
-        new_rows = self.normalize_rows(rows, len(headers))
-        changed = 0
-        skipped = 0
-        if config.get("output_mode", "生成新字段") == "生成新字段":
-            new_header = self.get_unique_header(config.get("new_field", "提取结果"), headers)
-            headers.append(new_header)
-            for row in new_rows:
-                extracted, status = self.extract_one_value(self.safe_cell(row, idx), config)
-                if status == "跳过":
-                    skipped += 1
-                    row.append("")
-                else:
-                    row.append(extracted)
-                    changed += 1
-        else:
-            for row in new_rows:
-                extracted, status = self.extract_one_value(self.safe_cell(row, idx), config)
-                if status == "跳过":
-                    skipped += 1
-                    continue
-                row[idx] = extracted
-                changed += 1
-        return headers, new_rows, f"写入 {changed} 行，跳过 {skipped} 行"
+        return workflow_apply_extract_node(headers, rows, config)
 
-    def apply_merge_node(self, headers, rows, config):
-        fields = list(config.get("fields", []))
-        if not fields:
-            raise ValueError("合并字段不能为空。")
-        indexes = [self.field_index(headers, f) for f in fields]
-        seps = [self.parse_separator_text(sep) for sep in list(config.get("separators", []))]
-        if len(seps) < max(len(fields)-1, 0):
-            seps += [""] * (len(fields)-1-len(seps))
-        output_field = self.get_unique_header(config.get("output_field", "合并结果"), headers)
-        new_headers = list(headers) + [output_field]
-        new_rows = self.normalize_rows(rows, len(headers))
-        skip_empty = bool(config.get("skip_empty", True))
-        trim_value = bool(config.get("trim_value", True))
-        placeholder = str(config.get("empty_placeholder", ""))
-        for row in new_rows:
-            pieces = []
-            active_indexes = []
-            for i, idx in enumerate(indexes):
-                value = self.safe_cell(row, idx)
-                if trim_value:
-                    value = value.strip()
-                if value == "" and placeholder:
-                    value = placeholder
-                if skip_empty and value == "":
-                    continue
-                active_indexes.append(i)
-                pieces.append(value)
-            if not pieces:
-                merged = ""
-            elif skip_empty:
-                merged = pieces[0]
-                for p_i in range(1, len(pieces)):
-                    original_gap_index = active_indexes[p_i-1]
-                    sep = seps[original_gap_index] if original_gap_index < len(seps) else ""
-                    merged += sep + pieces[p_i]
-            else:
-                merged = pieces[0]
-                for i in range(1, len(pieces)):
-                    sep = seps[i-1] if i-1 < len(seps) else ""
-                    merged += sep + pieces[i]
-            row.append(merged)
-        return new_headers, new_rows, f"新增字段 {output_field}"
+    def apply_merge_node(self, headers, rows, config, context=None):
+        node_context = dict(context or {})
+        node_context["check_cancelled"] = lambda index: self.check_workflow_cancelled_periodically(context, index)
+        return workflow_apply_merge_node(headers, rows, config, context=node_context)
 
     def ensure_field_exists(self, headers, rows, field_name):
-        """确保字段存在；不存在则新增一列空值，返回字段索引。"""
-        field_name = str(field_name or "新字段").strip() or "新字段"
-        headers = list(headers)
-        rows = self.normalize_rows(rows, len(headers))
-        if field_name in headers:
-            return headers, rows, headers.index(field_name)
-        new_name = self.get_unique_header(field_name, headers)
-        headers.append(new_name)
-        for row in rows:
-            row.append("")
-        return headers, rows, len(headers) - 1
+        return workflow_ensure_field_exists(headers, rows, field_name)
 
     def ensure_row_count(self, rows, row_count, col_count):
-        rows = self.normalize_rows(rows, col_count)
-        while len(rows) < row_count:
-            rows.append([""] * col_count)
-        return rows
+        return workflow_ensure_row_count(
+            rows,
+            row_count,
+            col_count,
+            max_expanded_rows=self.MAX_EXPANDED_ROWS,
+        )
+
+    def ensure_target_cell_limit(self, row_count, col_count):
+        return workflow_ensure_target_cell_limit(
+            row_count,
+            col_count,
+            max_target_cells=self.MAX_TARGET_CELLS,
+        )
 
     def ensure_column_count(self, headers, rows, col_count, base_name="区域复制列"):
-        """确保表格至少有 col_count 列；不足时在末尾追加新字段。"""
-        headers = list(headers)
-        rows = self.normalize_rows(rows, len(headers))
-        while len(headers) < col_count:
-            new_name = self.get_unique_header(f"{base_name}{len(headers) + 1}", headers)
-            headers.append(new_name)
-            for row in rows:
-                row.append("")
-        return headers, rows
+        return workflow_ensure_column_count(headers, rows, col_count, base_name)
 
     def parse_row_number(self, value, name="行号"):
         n = self.parse_int(value, name)
@@ -13627,683 +13057,98 @@ class PlanWorkflowWindow:
         return n
 
     def get_config_cell_value(self, headers, rows, config, target_row_idx=None):
-        value_source = config.get("value_source", "手动输入值")
-        if value_source == "同行来源字段":
-            src_idx = self.field_index(headers, config.get("source_field", ""))
-            if target_row_idx is None or target_row_idx < 0 or target_row_idx >= len(rows):
-                return ""
-            return self.safe_cell(rows[target_row_idx], src_idx)
-        if value_source == "指定单元格值":
-            src_idx = self.field_index(headers, config.get("source_field", ""))
-            src_row = self.parse_row_number(config.get("source_row", "1"), "取值行号") - 1
-            if src_row < 0 or src_row >= len(rows):
-                return ""
-            return self.safe_cell(rows[src_row], src_idx)
-        return str(config.get("manual_value", ""))
+        return workflow_get_config_cell_value(headers, rows, config, target_row_idx=target_row_idx)
 
     def resolve_start_row_index_by_mode(self, headers, rows, target_field, config):
-        """根据起始位置模式解析 0 基起始行。"""
-        mode = config.get("start_row_mode", "手动指定起始行")
-        if mode == "目标列最后数据行之后":
-            try:
-                last_idx = self.last_non_empty_row_index_by_field(headers, rows, target_field)
-            except Exception:
-                last_idx = -1
-            return max(0, last_idx + 1)
-        if mode == "参考列最后数据行之后":
-            last_idx = self.last_non_empty_row_index_by_field(headers, rows, config.get("reference_field", ""))
-            return max(0, last_idx + 1)
-        if mode == "整体表格最后行之后":
-            return max(0, len(rows))
-        return self.parse_row_number(config.get("start_row", "1"), "起始行号") - 1
+        return workflow_resolve_start_row_index_by_mode(headers, rows, target_field, config)
 
     def get_source_column_values_by_config(self, headers, rows, config):
-        """按来源范围取出来源字段的一整段列结构。"""
-        src_idx = self.field_index(headers, config.get("source_field", ""))
-        normalized = self.normalize_rows(rows, len(headers))
-        mode = config.get("source_range_mode", "来源列数据边界")
-        start_row = self.parse_row_number(config.get("source_start_row", "1"), "来源起始行") - 1
-        if mode == "整体表格数据边界":
-            end_row = len(normalized) - 1
-        elif mode == "手动指定范围":
-            end_row = self.parse_row_number(config.get("source_end_row", "1"), "来源结束行") - 1
-        else:
-            # 单来源字段逻辑：这里只处理填充值节点等“单列循环源”。
-            # 多来源字段循环由 get_source_area_values_by_config(...)/multi_field=True 处理，
-            # 不应在这里引用 c1/c2，否则填充值节点使用“循环源列填充”时会报 c1 未定义。
-            end_row = self.last_non_empty_row_index_by_field(
-                headers,
-                normalized,
-                config.get("source_field", "")
-            )
-        if end_row < 0 or start_row > end_row:
-            return []
-        start_row = max(0, start_row)
-        end_row = min(end_row, len(normalized) - 1)
-        return [self.safe_cell(normalized[r], src_idx) for r in range(start_row, end_row + 1)]
+        return workflow_get_source_column_values_by_config(headers, rows, config)
 
     def get_cycle_source_values_by_config(self, headers, rows, config, multi_field=False):
-        """
-        循环源列填充：获取循环周期值。
-        multi_field=False：仅使用 source_field 这一列。
-        multi_field=True：使用 source_field 到 source_end_field 的多个源字段，按行优先展开为循环周期。
-        """
-        if multi_field:
-            source_area = self.get_source_area_values_by_config(headers, rows, config)
-            raw_values = []
-            for source_row in source_area:
-                raw_values.extend(source_row)
-        else:
-            raw_values = self.get_source_column_values_by_config(headers, rows, config)
-
-        empty_mode = config.get("source_empty_mode", "跳过空值")
-        placeholder = str(config.get("source_empty_placeholder", ""))
-        values = []
-        for value in raw_values:
-            text = "" if value is None else str(value)
-            if text == "":
-                if empty_mode == "跳过空值":
-                    continue
-                if empty_mode == "替换为空值占位符":
-                    text = placeholder
-            values.append(text)
-        return values
+        return workflow_get_cycle_source_values_by_config(headers, rows, config, multi_field=multi_field)
 
     def get_source_row_multi_field_values_by_config(self, headers, rows, config):
-        """区域填充：指定行多字段取值。取指定行中起始字段到结束字段的多个值。"""
-        normalized = self.normalize_rows(rows, len(headers))
-        src_row = self.parse_row_number(config.get("source_row", "1"), "取值行号") - 1
-        if src_row < 0 or src_row >= len(normalized):
-            return []
-        start_idx = self.field_index(headers, config.get("source_field", ""))
-        end_field = config.get("source_end_field", config.get("source_field", ""))
-        end_idx = self.field_index(headers, end_field)
-        c1, c2 = sorted([start_idx, end_idx])
-        return [self.safe_cell(normalized[src_row], c) for c in range(c1, c2 + 1)]
+        return workflow_get_source_row_multi_field_values_by_config(headers, rows, config)
 
     def get_source_area_values_by_config(self, headers, rows, config):
-        """区域填充：来源区域完整复制。按来源字段范围和来源行范围取出二维区域。"""
-        normalized = self.normalize_rows(rows, len(headers))
-        if not normalized:
-            return []
-
-        start_col = self.field_index(headers, config.get("source_field", ""))
-        end_field = config.get("source_end_field", config.get("source_field", ""))
-        end_col = self.field_index(headers, end_field)
-        c1, c2 = sorted([start_col, end_col])
-
-        mode = config.get("source_range_mode", "来源列数据边界")
-        start_row = self.parse_row_number(config.get("source_start_row", "1"), "来源起始行") - 1
-        if mode == "整体表格数据边界":
-            end_row = len(normalized) - 1
-        elif mode == "手动指定范围":
-            end_row = self.parse_row_number(config.get("source_end_row", "1"), "来源结束行") - 1
-        else:
-            end_row = self.last_non_empty_row_index_by_field(headers, normalized, config.get("source_field", ""))
-
-        if end_row < 0 or start_row > end_row:
-            return []
-        start_row = max(0, start_row)
-        end_row = min(end_row, len(normalized) - 1)
-        return [
-            [self.safe_cell(normalized[r], c) for c in range(c1, c2 + 1)]
-            for r in range(start_row, end_row + 1)
-        ]
+        return workflow_get_source_area_values_by_config(headers, rows, config)
 
     def resolve_sequence_count_by_source(self, headers, rows, config):
-        """序列填充数量来源解析。返回 None 表示仍使用原结束条件。"""
-        mode = config.get("count_source_mode", "使用结束条件")
-        if mode == "整体表格数据行数":
-            return max(0, len(rows))
-        if mode == "指定参考列数据数量":
-            last_idx = self.last_non_empty_row_index_by_field(headers, rows, config.get("reference_field", ""))
-            return max(0, last_idx + 1)
-        if mode == "来源列数据数量":
-            return len(self.get_source_column_values_by_config(headers, rows, config))
-        return None
+        return workflow_resolve_sequence_count_by_source(headers, rows, config)
 
     def row_is_empty(self, row, col_count):
-        fixed = list(row) + [""] * max(0, col_count - len(row))
-        return all(str(v).strip() == "" for v in fixed[:col_count])
+        return workflow_row_is_empty(row, col_count)
 
     def last_non_empty_row_index_by_field(self, headers, rows, field_name):
-        """返回指定字段最后一个非空单元格所在的 0 基行号；如果无数据，返回 -1。"""
-        idx = self.field_index(headers, field_name)
-        normalized = self.normalize_rows(rows, len(headers))
-        for row_idx in range(len(normalized) - 1, -1, -1):
-            if self.safe_cell(normalized[row_idx], idx).strip() != "":
-                return row_idx
-        return -1
+        return workflow_last_non_empty_row_index_by_field(headers, rows, field_name)
 
     def resolve_area_end_row_index(self, headers, rows, config):
-        mode = config.get("end_row_mode", "手动指定结束行")
-        if mode == "整体表格数据边界":
-            return max(0, len(rows) - 1)
-        if mode == "指定参考列数据边界":
-            return self.last_non_empty_row_index_by_field(headers, rows, config.get("reference_field", ""))
-        return self.parse_row_number(config.get("end_row", "1"), "结束行号") - 1
+        return workflow_resolve_area_end_row_index(headers, rows, config)
 
     def get_fill_targets(self, headers, rows, target_field, start_row_value, direction, end_mode, count_value, end_row_value, end_field_value, reference_field_value="", allow_expand_rows=True, allow_expand_cols=False):
-        headers, rows, target_col = self.ensure_field_exists(headers, rows, target_field)
-        start_row = self.parse_row_number(start_row_value, "起始行号") - 1
-        rows = self.ensure_row_count(rows, start_row + 1, len(headers))
-        direction = direction or "向下"
-        end_mode = end_mode or "固定数量"
-        count = self.get_positive_int(count_value, 1)
-        targets = []
-
-        def ensure_cols(col_index):
-            nonlocal headers, rows
-            while col_index >= len(headers):
-                headers.append(self.get_unique_header(f"填充列{len(headers)+1}", headers))
-                for r in rows:
-                    r.append("")
-
-        if direction in ["向下", "向上"]:
-            if end_mode == "固定数量":
-                end_row = start_row + count - 1 if direction == "向下" else start_row - count + 1
-            elif end_mode == "填充到指定行":
-                end_row = self.parse_row_number(end_row_value, "结束行号") - 1
-            elif end_mode == "填充到参考列数据边界":
-                ref_last = self.last_non_empty_row_index_by_field(headers, rows, reference_field_value)
-                end_row = ref_last if direction == "向下" else 0
-            elif end_mode in ["填充到数据边界", "填充到指定列"]:
-                end_row = len(rows) - 1 if direction == "向下" else 0
-            elif end_mode in ["遇到已有数据停止", "填充到空行前"]:
-                end_row = len(rows) - 1 if direction == "向下" else 0
-            else:
-                end_row = len(rows) - 1 if direction == "向下" else 0
-            if allow_expand_rows and direction == "向下" and end_row >= len(rows):
-                rows = self.ensure_row_count(rows, end_row + 1, len(headers))
-            step = 1 if direction == "向下" else -1
-            r = start_row
-            while 0 <= r < len(rows) and ((step > 0 and r <= end_row) or (step < 0 and r >= end_row)):
-                if end_mode == "填充到空行前" and self.row_is_empty(rows[r], len(headers)):
-                    break
-                targets.append((r, target_col))
-                r += step
-        else:
-            if end_mode == "固定数量":
-                end_col = target_col + count - 1 if direction == "向右" else target_col - count + 1
-            elif end_mode == "填充到指定列":
-                if end_field_value not in headers:
-                    if allow_expand_cols and direction == "向右":
-                        headers, rows, end_col = self.ensure_field_exists(headers, rows, end_field_value)
-                    else:
-                        raise ValueError(f"结束字段不存在：{end_field_value}")
-                else:
-                    end_col = headers.index(end_field_value)
-            else:
-                end_col = len(headers) - 1 if direction == "向右" else 0
-            if allow_expand_cols and direction == "向右" and end_col >= len(headers):
-                ensure_cols(end_col)
-            step = 1 if direction == "向右" else -1
-            c = target_col
-            while 0 <= c < len(headers) and ((step > 0 and c <= end_col) or (step < 0 and c >= end_col)):
-                targets.append((start_row, c))
-                c += step
-        return headers, rows, targets
+        return workflow_get_fill_targets(
+            headers,
+            rows,
+            target_field,
+            start_row_value,
+            direction,
+            end_mode,
+            count_value,
+            end_row_value,
+            end_field_value,
+            reference_field_value=reference_field_value,
+            allow_expand_rows=allow_expand_rows,
+            allow_expand_cols=allow_expand_cols,
+            max_expanded_rows=self.MAX_EXPANDED_ROWS,
+            max_target_cells=self.MAX_TARGET_CELLS,
+        )
 
     def should_write_cell(self, current_value, overwrite_rule):
-        current = "" if current_value is None else str(current_value)
-        if overwrite_rule == "覆盖所有目标单元格":
-            return True, False
-        if overwrite_rule == "只填充空单元格":
-            return current == "", False
-        if overwrite_rule == "遇到已有数据停止":
-            return current == "", current != ""
-        if overwrite_rule == "不覆盖已有数据，只跳过":
-            return current == "", False
-        return True, False
+        return workflow_should_write_cell(current_value, overwrite_rule)
 
     def apply_copy_column_node(self, headers, rows, config):
-        src_idx = self.field_index(headers, config.get("source_field", ""))
-        headers = list(headers)
-        new_rows = self.normalize_rows(rows, len(headers))
-        values = []
-        trim_value = bool(config.get("trim_value", False))
-        empty_default = str(config.get("empty_default", ""))
-        for row in new_rows:
-            value = self.safe_cell(row, src_idx)
-            if trim_value:
-                value = value.strip()
-            if value == "" and empty_default != "":
-                value = empty_default
-            values.append(value)
-        if config.get("output_mode", "生成新字段") == "覆盖已有字段":
-            headers, new_rows, target_idx = self.ensure_field_exists(headers, new_rows, config.get("target_field", ""))
-            for i, row in enumerate(new_rows):
-                row[target_idx] = values[i]
-            return headers, new_rows, f"复制列并覆盖字段 {headers[target_idx]}"
-        new_header = self.get_unique_header(config.get("new_field", "复制列"), headers)
-        headers.append(new_header)
-        for i, row in enumerate(new_rows):
-            row.append(values[i])
-        return headers, new_rows, f"复制列为新字段 {new_header}"
+        return workflow_apply_copy_column_node(headers, rows, config)
 
     def apply_copy_row_node(self, headers, rows, config):
-        headers = list(headers)
-        new_rows = self.normalize_rows(rows, len(headers))
-        if not new_rows:
-            raise ValueError("当前没有可复制的数据行。")
-        source_idx = self.parse_row_number(config.get("source_row", "1"), "源行号") - 1
-        if source_idx < 0 or source_idx >= len(new_rows):
-            raise ValueError("源行号超出当前数据范围。")
-        copy_count = self.get_positive_int(config.get("copy_count", "1"), 1)
-        copies = [list(new_rows[source_idx]) for _ in range(copy_count)]
-        mode = config.get("insert_mode", "表尾")
-        if mode == "表尾":
-            insert_at = len(new_rows)
-        elif mode == "原行下方":
-            insert_at = source_idx + 1
-        else:
-            insert_row = self.parse_row_number(config.get("insert_row", "1"), "指定行号") - 1
-            insert_row = max(0, min(insert_row, len(new_rows)))
-            insert_at = insert_row if mode == "指定行前" else min(insert_row + 1, len(new_rows))
-        new_rows[insert_at:insert_at] = copies
-        return headers, new_rows, f"复制第 {source_idx + 1} 行 {copy_count} 次"
+        return workflow_apply_copy_row_node(headers, rows, config)
 
     def parse_row_spec_to_indexes(self, spec, max_rows):
         """解析 1,3,5-8 这样的行号列表，返回 0 基下标集合。"""
-        indexes = set()
-        text = str(spec or "").replace("，", ",").strip()
-        if not text:
-            return indexes
-        for part in text.split(","):
-            part = part.strip()
-            if not part:
-                continue
-            part_norm = part.replace("~", "-").replace("～", "-")
-            if "-" in part_norm:
-                left, right = part_norm.split("-", 1)
-                try:
-                    start = int(left.strip())
-                    end = int(right.strip())
-                except Exception:
-                    continue
-                if start > end:
-                    start, end = end, start
-                for row_no in range(start, end + 1):
-                    if 1 <= row_no <= max_rows:
-                        indexes.add(row_no - 1)
-            else:
-                try:
-                    row_no = int(part_norm)
-                except Exception:
-                    continue
-                if 1 <= row_no <= max_rows:
-                    indexes.add(row_no - 1)
-        return indexes
+        return workflow_parse_row_spec_to_indexes(spec, max_rows)
 
     def apply_delete_rows_node(self, headers, rows, config):
-        headers = list(headers)
-        normalized = self.normalize_rows(rows, len(headers))
-        total = len(normalized)
-        mode = config.get("delete_mode", "按行号列表")
-        delete_indexes = set()
+        return workflow_apply_delete_rows_node(headers, rows, config)
 
-        if mode == "按行号列表":
-            delete_indexes = self.parse_row_spec_to_indexes(config.get("row_spec", ""), total)
-
-        elif mode == "按行号范围":
-            start_row = self.parse_row_number(config.get("start_row", "1"), "起始行")
-            end_row = self.parse_row_number(config.get("end_row", "1"), "结束行")
-            if start_row > end_row:
-                start_row, end_row = end_row, start_row
-            start_row = max(1, start_row)
-            end_row = min(total, end_row)
-            if start_row <= end_row:
-                delete_indexes = set(range(start_row - 1, end_row))
-
-        elif mode == "按条件删除":
-            field = config.get("condition_field", "")
-            if field not in headers:
-                raise ValueError(f"条件字段不存在：{field}")
-            idx = headers.index(field)
-            op = config.get("condition_op", "包含")
-            value = config.get("condition_value", "")
-            case_sensitive = bool(config.get("case_sensitive", True))
-            for row_idx, row in enumerate(normalized):
-                if self.compare_values(self.safe_cell(row, idx), op, value, case_sensitive=case_sensitive):
-                    delete_indexes.add(row_idx)
-
-        elif mode == "删除空行":
-            empty_mode = config.get("empty_mode", "整行为空")
-            if empty_mode == "指定字段为空":
-                field = config.get("empty_field", "")
-                if field not in headers:
-                    raise ValueError(f"空行判断字段不存在：{field}")
-                idx = headers.index(field)
-                for row_idx, row in enumerate(normalized):
-                    if self.safe_cell(row, idx).strip() == "":
-                        delete_indexes.add(row_idx)
-            else:
-                for row_idx, row in enumerate(normalized):
-                    if all(self.safe_cell(row, i).strip() == "" for i in range(len(headers))):
-                        delete_indexes.add(row_idx)
-        else:
-            raise ValueError(f"未知删除行方式：{mode}")
-
-        if not delete_indexes:
-            return headers, normalized, "未删除任何行"
-        new_rows = [row for i, row in enumerate(normalized) if i not in delete_indexes]
-        return headers, new_rows, f"删除 {len(delete_indexes)} 行"
-
-    def apply_fill_value_node(self, headers, rows, config):
-        headers = list(headers)
-        rows = self.normalize_rows(rows, len(headers))
-        value_source = config.get("value_source", "手动输入值")
-        target_field = config.get("target_field", "")
-
-        # 新增：循环源列填充。把来源列有效值作为循环周期，重复写入目标区域。
-        if value_source == "循环源列填充":
-            effective_start_row = self.resolve_start_row_index_by_mode(headers, rows, target_field, config) + 1
-            headers, rows, targets = self.get_fill_targets(
-                headers, rows,
-                target_field,
-                str(effective_start_row),
-                config.get("direction", "向下"),
-                config.get("end_mode", "填充到数据边界"),
-                config.get("count", "1"),
-                config.get("end_row", "1"),
-                config.get("end_field", ""),
-                config.get("reference_field", ""),
-                allow_expand_rows=True,
-                allow_expand_cols=True,
-            )
-            cycle_values = self.get_cycle_source_values_by_config(headers, rows, config)
-            if not cycle_values:
-                return headers, rows, "循环源列无可用数据，未执行填充"
-            overwrite_rule = config.get("overwrite_rule", "只填充空单元格")
-            changed = skipped = write_index = 0
-            for r, c in targets:
-                rows = self.ensure_row_count(rows, r + 1, len(headers))
-                can_write, stop = self.should_write_cell(self.safe_cell(rows[r], c), overwrite_rule)
-                if stop:
-                    break
-                if can_write:
-                    rows[r][c] = cycle_values[write_index % len(cycle_values)]
-                    changed += 1
-                    write_index += 1
-                else:
-                    skipped += 1
-            return headers, rows, f"循环源列填充 {changed} 个单元格，跳过 {skipped} 个，循环周期 {len(cycle_values)}"
-
-        # 新增：来源列完整结构填充。把来源列的一整段数据，按顺序写入目标列。
-        if value_source == "来源列完整结构":
-            headers, rows, target_col = self.ensure_field_exists(headers, rows, target_field)
-            start_row = self.resolve_start_row_index_by_mode(headers, rows, target_field, config)
-            values = self.get_source_column_values_by_config(headers, rows, config)
-            if not values:
-                return headers, rows, "来源列无可填充数据，未执行填充"
-            rows = self.ensure_row_count(rows, start_row + len(values), len(headers))
-            overwrite_rule = config.get("overwrite_rule", "只填充空单元格")
-            changed = skipped = 0
-            for offset, value in enumerate(values):
-                r = start_row + offset
-                can_write, stop = self.should_write_cell(self.safe_cell(rows[r], target_col), overwrite_rule)
-                if stop:
-                    break
-                if can_write:
-                    rows[r][target_col] = value
-                    changed += 1
-                else:
-                    skipped += 1
-            return headers, rows, f"来源列完整结构填充 {changed} 个单元格，跳过 {skipped} 个"
-
-        effective_start_row = self.resolve_start_row_index_by_mode(headers, rows, target_field, config) + 1
-        headers, rows, targets = self.get_fill_targets(
-            headers, rows,
-            target_field,
-            str(effective_start_row),
-            config.get("direction", "向下"),
-            config.get("end_mode", "填充到数据边界"),
-            config.get("count", "1"),
-            config.get("end_row", "1"),
-            config.get("end_field", ""),
-            config.get("reference_field", ""),
-            allow_expand_rows=True,
-            allow_expand_cols=True,
-        )
-        changed = skipped = 0
-        overwrite_rule = config.get("overwrite_rule", "只填充空单元格")
-        for r, c in targets:
-            rows = self.ensure_row_count(rows, r + 1, len(headers))
-            can_write, stop = self.should_write_cell(self.safe_cell(rows[r], c), overwrite_rule)
-            if stop:
-                break
-            if can_write:
-                rows[r][c] = self.get_config_cell_value(headers, rows, config, target_row_idx=r)
-                changed += 1
-            else:
-                skipped += 1
-        return headers, rows, f"填充 {changed} 个单元格，跳过 {skipped} 个"
+    def apply_fill_value_node(self, headers, rows, config, context=None):
+        node_context = dict(context or {})
+        node_context.update({
+            "check_cancelled": lambda index: self.check_workflow_cancelled_periodically(context, index),
+            "max_expanded_rows": self.MAX_EXPANDED_ROWS,
+            "max_target_cells": self.MAX_TARGET_CELLS,
+        })
+        return workflow_apply_fill_value_node(headers, rows, config, context=node_context)
 
     def format_sequence_value(self, value, config):
-        zero_pad = self.get_positive_int(config.get("zero_pad", "0"), 0) if str(config.get("zero_pad", "0")).strip() != "0" else 0
-        if abs(value - int(value)) < 1e-12:
-            text = str(int(value))
-            if zero_pad > 0:
-                text = text.zfill(zero_pad)
-        else:
-            text = str(value).rstrip("0").rstrip(".") if "." in str(value) else str(value)
-        return f"{config.get('prefix', '')}{text}{config.get('suffix', '')}"
+        return workflow_format_sequence_value(value, config)
 
-    def apply_sequence_fill_node(self, headers, rows, config):
-        headers = list(headers)
-        rows = self.normalize_rows(rows, len(headers))
-        try:
-            start_value = float(str(config.get("start_value", "1")).strip())
-            step = float(str(config.get("step", "1")).strip())
-        except Exception:
-            raise ValueError("起始值和步长必须是数字。")
+    def apply_sequence_fill_node(self, headers, rows, config, context=None):
+        node_context = dict(context or {})
+        node_context.update({
+            "check_cancelled": lambda index: self.check_workflow_cancelled_periodically(context, index),
+            "max_expanded_rows": self.MAX_EXPANDED_ROWS,
+            "max_target_cells": self.MAX_TARGET_CELLS,
+        })
+        return workflow_apply_sequence_fill_node(headers, rows, config, context=node_context)
 
-        target_field = config.get("target_field", "")
-        effective_start_row = self.resolve_start_row_index_by_mode(headers, rows, target_field, config) + 1
-        count_override = self.resolve_sequence_count_by_source(headers, rows, config)
-        end_mode = config.get("end_mode", "填充到数据边界")
-        count_value = config.get("count", "1")
-        if count_override is not None:
-            end_mode = "固定数量"
-            count_value = str(count_override)
-
-        headers, rows, targets = self.get_fill_targets(
-            headers, rows,
-            target_field,
-            str(effective_start_row),
-            config.get("direction", "向下"),
-            end_mode,
-            count_value,
-            config.get("end_row", "1"),
-            config.get("end_field", ""),
-            config.get("reference_field", ""),
-            allow_expand_rows=True,
-            allow_expand_cols=True,
-        )
-        changed = skipped = seq_index = 0
-        overwrite_rule = config.get("overwrite_rule", "覆盖所有目标单元格")
-        for r, c in targets:
-            rows = self.ensure_row_count(rows, r + 1, len(headers))
-            can_write, stop = self.should_write_cell(self.safe_cell(rows[r], c), overwrite_rule)
-            if stop:
-                break
-            if can_write:
-                rows[r][c] = self.format_sequence_value(start_value + step * seq_index, config)
-                changed += 1
-                seq_index += 1
-            else:
-                skipped += 1
-        return headers, rows, f"序列填充 {changed} 个单元格，跳过 {skipped} 个"
-
-    def apply_area_fill_node(self, headers, rows, config):
-        headers = list(headers)
-        rows = self.normalize_rows(rows, len(headers))
-        if config.get("start_field", "") not in headers:
-            headers, rows, start_col = self.ensure_field_exists(headers, rows, config.get("start_field", ""))
-        else:
-            start_col = headers.index(config.get("start_field", ""))
-        if config.get("end_field", "") not in headers:
-            headers, rows, end_col = self.ensure_field_exists(headers, rows, config.get("end_field", ""))
-        else:
-            end_col = headers.index(config.get("end_field", ""))
-
-        start_row = self.resolve_start_row_index_by_mode(headers, rows, config.get("start_field", ""), config)
-        value_source = config.get("value_source", "手动输入值")
-        c1, c2 = sorted([start_col, end_col])
-        overwrite_rule = config.get("overwrite_rule", "只填充空单元格")
-        changed = skipped = 0
-
-        # 新增：循环源列填充。区域填充默认使用“取值/来源字段”到“取值/结束字段”的多个源字段作为循环周期，按目标区域逐格填充。
-        if value_source == "循环源列填充":
-            cycle_values = self.get_cycle_source_values_by_config(headers, rows, config, multi_field=True)
-            if not cycle_values:
-                return headers, rows, "循环源列无可用数据，未执行区域填充"
-            end_row = self.resolve_area_end_row_index(headers, rows, config)
-            if end_row < 0:
-                return headers, rows, "参考列无数据，未执行区域填充"
-            r1, r2 = sorted([start_row, end_row])
-            rows = self.ensure_row_count(rows, r2 + 1, len(headers))
-            stop_all = False
-            write_index = 0
-            for r in range(r1, r2 + 1):
-                if stop_all:
-                    break
-                for c in range(c1, c2 + 1):
-                    can_write, stop = self.should_write_cell(self.safe_cell(rows[r], c), overwrite_rule)
-                    if stop:
-                        stop_all = True
-                        break
-                    if can_write:
-                        rows[r][c] = cycle_values[write_index % len(cycle_values)]
-                        changed += 1
-                        write_index += 1
-                    else:
-                        skipped += 1
-            return headers, rows, f"循环源列区域填充 {changed} 个单元格，跳过 {skipped} 个，循环周期 {len(cycle_values)}（多源字段）"
-
-        # 新增：来源区域完整复制。把二维源区域按统一左上角锚点复制到目标起点。
-        if value_source == "来源区域完整复制":
-            source_area = self.get_source_area_values_by_config(headers, rows, config)
-            if not source_area:
-                return headers, rows, "来源区域为空或越界，未执行区域完整复制"
-            source_height = len(source_area)
-            source_width = max((len(row) for row in source_area), default=0)
-            if source_height <= 0 or source_width <= 0:
-                return headers, rows, "来源区域为空，未执行区域完整复制"
-
-            # 目标区域以“起始字段 + 起始位置”作为统一左上角锚点，按源区域行列偏移完整复制。
-            headers, rows = self.ensure_column_count(headers, rows, start_col + source_width, "区域复制列")
-            rows = self.ensure_row_count(rows, start_row + source_height, len(headers))
-            stop_all = False
-            for r_offset, source_row in enumerate(source_area):
-                if stop_all:
-                    break
-                target_r = start_row + r_offset
-                for c_offset, value in enumerate(source_row):
-                    target_c = start_col + c_offset
-                    can_write, stop = self.should_write_cell(self.safe_cell(rows[target_r], target_c), overwrite_rule)
-                    if stop:
-                        stop_all = True
-                        break
-                    if can_write:
-                        rows[target_r][target_c] = value
-                        changed += 1
-                    else:
-                        skipped += 1
-            return headers, rows, f"来源区域完整复制 {changed} 个单元格，跳过 {skipped} 个"
-
-        # 新增：来源列完整结构区域填充。把来源列的一整段数据从起始行开始写入目标列/区域。
-        if value_source == "来源列完整结构":
-            values = self.get_source_column_values_by_config(headers, rows, config)
-            if not values:
-                return headers, rows, "来源列无可填充数据，未执行区域填充"
-            rows = self.ensure_row_count(rows, start_row + len(values), len(headers))
-            stop_all = False
-            for offset, value in enumerate(values):
-                if stop_all:
-                    break
-                r = start_row + offset
-                for c in range(c1, c2 + 1):
-                    can_write, stop = self.should_write_cell(self.safe_cell(rows[r], c), overwrite_rule)
-                    if stop:
-                        stop_all = True
-                        break
-                    if can_write:
-                        rows[r][c] = value
-                        changed += 1
-                    else:
-                        skipped += 1
-            return headers, rows, f"来源列完整结构区域填充 {changed} 个单元格，跳过 {skipped} 个"
-
-        # 新增：指定行多字段取值。取指定行中从“取值/来源字段”到“取值/结束字段”的值，按横向或纵向填充目标区域。
-        if value_source == "指定行多字段取值":
-            values = self.get_source_row_multi_field_values_by_config(headers, rows, config)
-            if not values:
-                return headers, rows, "指定行多字段取值为空或越界，未执行区域填充"
-            direction = config.get("multi_field_fill_direction", "横向填充")
-            if direction == "纵向填充":
-                rows = self.ensure_row_count(rows, start_row + len(values), len(headers))
-                stop_all = False
-                for offset, value in enumerate(values):
-                    if stop_all:
-                        break
-                    r = start_row + offset
-                    for c in range(c1, c2 + 1):
-                        can_write, stop = self.should_write_cell(self.safe_cell(rows[r], c), overwrite_rule)
-                        if stop:
-                            stop_all = True
-                            break
-                        if can_write:
-                            rows[r][c] = value
-                            changed += 1
-                        else:
-                            skipped += 1
-            else:
-                end_row = self.resolve_area_end_row_index(headers, rows, config)
-                if end_row < 0:
-                    return headers, rows, "参考列无数据，未执行区域填充"
-                r1, r2 = sorted([start_row, end_row])
-                rows = self.ensure_row_count(rows, r2 + 1, len(headers))
-                target_cols = list(range(c1, c2 + 1))
-                stop_all = False
-                for r in range(r1, r2 + 1):
-                    if stop_all:
-                        break
-                    for offset, c in enumerate(target_cols):
-                        if offset >= len(values):
-                            break
-                        value = values[offset]
-                        can_write, stop = self.should_write_cell(self.safe_cell(rows[r], c), overwrite_rule)
-                        if stop:
-                            stop_all = True
-                            break
-                        if can_write:
-                            rows[r][c] = value
-                            changed += 1
-                        else:
-                            skipped += 1
-            return headers, rows, f"指定行多字段取值区域填充 {changed} 个单元格，跳过 {skipped} 个"
-
-        end_row = self.resolve_area_end_row_index(headers, rows, config)
-        if end_row < 0:
-            return headers, rows, "参考列无数据，未执行区域填充"
-        r1, r2 = sorted([start_row, end_row])
-        rows = self.ensure_row_count(rows, r2 + 1, len(headers))
-        stop_all = False
-        for r in range(r1, r2 + 1):
-            if stop_all:
-                break
-            for c in range(c1, c2 + 1):
-                can_write, stop = self.should_write_cell(self.safe_cell(rows[r], c), overwrite_rule)
-                if stop:
-                    stop_all = True
-                    break
-                if can_write:
-                    rows[r][c] = self.get_config_cell_value(headers, rows, config, target_row_idx=r)
-                    changed += 1
-                else:
-                    skipped += 1
-        return headers, rows, f"区域填充 {changed} 个单元格，跳过 {skipped} 个"
+    def apply_area_fill_node(self, headers, rows, config, context=None):
+        node_context = dict(context or {})
+        node_context.update({
+            "check_cancelled": lambda index: self.check_workflow_cancelled_periodically(context, index),
+            "max_expanded_rows": self.MAX_EXPANDED_ROWS,
+            "max_target_cells": self.MAX_TARGET_CELLS,
+        })
+        return workflow_apply_area_fill_node(headers, rows, config, context=node_context)
 
     def get_positive_int(self, value, default_value):
         try:
@@ -14329,272 +13174,149 @@ class PlanWorkflowWindow:
                 continue
         return fields
 
-    def make_current_table_records(self, headers, rows):
-        normalized = self.normalize_rows(rows, len(headers))
-        records = []
-        for row in normalized:
-            record = {}
-            for i, header in enumerate(headers):
-                value = self.safe_cell(row, i)
-                # 兼容旧版计划：同时支持“字段名”和“当前表.字段名”。
-                record[header] = value
-                record[f"当前表.{header}"] = value
-            records.append(record)
-        return records
+    def normalize_plan_filter_field_reference(self, field, headers, extra_tables=None):
+        return workflow_normalize_plan_filter_field_reference(field, headers, extra_tables)
 
-    def load_plan_table_records(self, table_name, context=None):
+    def normalize_plan_filter_config_field_references(self, config, headers, extra_tables=None):
+        return workflow_normalize_plan_filter_config_field_references(config, headers, extra_tables)
+
+    def get_plan_filter_output_base_headers(self, lookup_fields, headers):
+        return workflow_get_plan_filter_output_base_headers(lookup_fields, headers)
+
+    def get_plan_filter_output_headers(self, lookup_fields, headers):
+        return workflow_get_plan_filter_output_headers(lookup_fields, headers)
+
+    def get_plan_filter_output_header_conflicts(self, lookup_fields, headers):
+        return workflow_get_plan_filter_output_header_conflicts(lookup_fields, headers)
+
+    def plan_filter_field_belongs_to_table(self, field, table_name):
+        return workflow_plan_filter_field_belongs_to_table(field, table_name)
+
+    def get_plan_filter_field_owner(self, field, headers, extra_tables):
+        return workflow_get_plan_filter_field_owner(field, headers, extra_tables)
+
+    def get_plan_filter_hash_join_availability(self, headers, extra_tables, join_rules, join_logic):
+        return workflow_get_plan_filter_hash_join_availability(headers, extra_tables, join_rules, join_logic)
+
+    def get_plan_filter_config_warnings(self, headers, extra_tables, conditions, join_rules, join_logic):
+        return workflow_get_plan_filter_config_warnings(headers, extra_tables, conditions, join_rules, join_logic)
+
+    def add_plan_filter_required_field(self, field, headers, extra_tables, current_headers, table_fields):
+        return workflow_add_plan_filter_required_field(field, headers, extra_tables, current_headers, table_fields)
+
+    def collect_plan_filter_required_fields(self, headers, extra_tables, conditions, join_rules, output_fields, final_fields):
+        return workflow_collect_plan_filter_required_fields(
+            headers, extra_tables, conditions, join_rules, output_fields, final_fields
+        )
+
+    def get_required_columns_for_plan_table(self, table_name, columns, required_fields):
+        return workflow_get_required_columns_for_plan_table(table_name, columns, required_fields)
+
+    def make_current_table_records(self, headers, rows, required_headers=None):
+        return workflow_make_current_table_records(headers, rows, required_headers)
+
+    def load_plan_table_records(self, table_name, context=None, required_fields=None):
         if str(table_name).startswith("中转:"):
             name = str(table_name).split(":", 1)[1]
             transit_tables = (context or {}).get("transit_tables", {})
             if name not in transit_tables:
                 raise ValueError(f"中转副表不存在或尚未生成：{name}")
             item = transit_tables[name]
-            columns = list(item.get("headers", []))
-            db_rows = self.normalize_rows(item.get("rows", []), len(columns))
+            all_columns = list(item.get("headers", []))
+            columns = self.get_required_columns_for_plan_table(table_name, all_columns, required_fields)
+            manager = self.check_transit_table_permission(
+                context,
+                table_name,
+                ["read_table"],
+                operation="read_transit_table",
+                fields=columns,
+                field_action="read",
+                node_type="高级筛选",
+            )
+            column_indexes = [(all_columns.index(col), col) for col in columns]
+            db_rows = self.normalize_rows(item.get("rows", []), len(all_columns))
             records = []
             for row in db_rows:
                 record = {}
-                for i, col in enumerate(columns):
+                for i, col in column_indexes:
                     record[f"{table_name}.{col}"] = self.safe_cell(row, i)
                 records.append(record)
+            self.log_transit_table_event(manager, "read_transit_table", table_name, columns, db_rows, message=f"高级筛选读取中转副表 {table_name}：{len(db_rows)} 行 × {len(columns)} 列")
             return records
 
         db_path = self.get_workflow_db_path(context)
         if not db_path or not os.path.exists(db_path):
             raise ValueError("当前 SQLite 数据库路径不存在，无法读取副表。")
-        columns = self.get_workflow_sqlite_columns(table_name, context)
-        conn = sqlite3.connect(db_path)
-        cur = conn.cursor()
-        cur.execute(f"SELECT * FROM {self.app.quote_ident(table_name)}")
-        db_rows = cur.fetchall()
-        conn.close()
+        all_columns = self.get_workflow_sqlite_columns(table_name, context)
+        columns = self.get_required_columns_for_plan_table(table_name, all_columns, required_fields)
+        data = self.get_table_manager(context, node_type="高级筛选").read_table(table_name, fields=columns)
+        db_rows = [list(row) for row in data.get("rows", [])]
         records = []
         for row in db_rows:
             record = {}
             for i, col in enumerate(columns):
                 value = row[i] if i < len(row) else ""
-                record[f"{table_name}.{col}"] = self.app.format_db_value(value)
+                record[f"{table_name}.{col}"] = value
             records.append(record)
         return records
 
+    def normalize_filter_condition_value_source(self, cond):
+        return workflow_normalize_filter_condition_value_source(cond)
+
+    def resolve_plan_condition_value(self, record, cond):
+        return workflow_resolve_plan_condition_value(record, cond)
+
     def eval_plan_condition_record(self, record, cond):
-        field = cond.get("field", "")
-        op = cond.get("op", "包含")
-        value = cond.get("value", "")
-        if field not in record:
-            return False
-        return self.compare_values(record.get(field, ""), op, value, True)
+        return workflow_eval_plan_condition_record(record, cond)
 
     def eval_plan_join_rule_record(self, record, rule):
-        left_key = rule.get("left", "")
-        right_key = rule.get("right", "")
-        op = rule.get("op", "等于")
-        # 规则引用的字段还没组合进当前中间记录时，暂时不判定，等后续表组合后再生效。
-        if left_key not in record or right_key not in record:
-            return True
-        left = str(record.get(left_key, ""))
-        right = str(record.get(right_key, ""))
-        if op == "等于":
-            return left == right
-        if op == "不等于":
-            return left != right
-        if op == "左包含右":
-            return right != "" and right in left
-        if op == "右包含左":
-            return left != "" and left in right
-        if op == "双向包含":
-            return left != "" and right != "" and (left in right or right in left)
-        return False
+        return workflow_eval_plan_join_rule_record(record, rule)
 
     def record_passes_plan_conditions(self, record, conditions, logic):
-        if not conditions:
-            return True
-        checks = [self.eval_plan_condition_record(record, cond) for cond in conditions]
-        return any(checks) if logic == "OR" else all(checks)
+        return workflow_record_passes_plan_conditions(record, conditions, logic)
+
+    def plan_filter_condition_dependencies(self, cond):
+        return workflow_plan_filter_condition_dependencies(cond)
+
+    def record_survives_available_plan_conditions(self, record, conditions, logic):
+        return workflow_record_survives_available_plan_conditions(record, conditions, logic)
 
     def record_passes_plan_join_rules(self, record, join_rules, logic="AND"):
-        if not join_rules:
-            return True
-        checks = [self.eval_plan_join_rule_record(record, rule) for rule in join_rules]
-        return any(checks) if logic == "OR" else all(checks)
+        return workflow_record_passes_plan_join_rules(record, join_rules, logic)
+
+    def get_plan_filter_hash_join_rules(self, table_name, join_rules, join_logic, right_records):
+        return workflow_get_plan_filter_hash_join_rules(table_name, join_rules, join_logic, right_records)
+
+    def build_plan_filter_right_index(self, right_records, hash_rules):
+        return workflow_build_plan_filter_right_index(right_records, hash_rules)
+
+    def iter_plan_filter_join_candidates(self, left_record, right_records, hash_rules, right_index, missing_key_records):
+        return workflow_iter_plan_filter_join_candidates(
+            left_record, right_records, hash_rules, right_index, missing_key_records
+        )
 
 
     def get_row_mapping_end_index(self, rows, start_idx, config, col_count):
-        """计算行数据映射节点的结束行下标，返回包含式 end_idx。"""
-        total = len(rows)
-        if total <= 0:
-            return -1
-        end_mode = config.get("end_mode", "填充到数据边界")
-        if end_mode == "固定行数":
-            count = self.get_positive_int(config.get("count", "1"), 1)
-            return min(total - 1, start_idx + count - 1)
-        if end_mode == "填充到指定行":
-            end_row = self.parse_row_number(config.get("end_row", "1"), "结束行号") - 1
-            return min(total - 1, max(start_idx, end_row))
-        return total - 1
+        return workflow_get_row_mapping_end_index(rows, start_idx, config, col_count)
 
     def apply_row_data_mapping_node(self, headers, rows, config):
-        """按当前行号同步取值，把每行指定字段展开成多行输出。"""
-        headers = list(headers)
-        normalized = self.normalize_rows(rows, len(headers))
-        if not normalized:
-            return headers, normalized, "当前无数据，未展开"
-
-        value_fields = [f for f in config.get("value_fields", []) if f in headers]
-        if not value_fields:
-            raise ValueError("请至少选择一个取值字段。")
-        keep_fields = [f for f in config.get("keep_fields", []) if f in headers and f not in []]
-
-        start_idx = self.parse_row_number(config.get("start_row", "1"), "起始行号") - 1
-        if start_idx >= len(normalized):
-            raise ValueError("起始行号超出当前数据范围。")
-        end_idx = self.get_row_mapping_end_index(normalized, start_idx, config, len(headers))
-
-        value_indexes = [(f, headers.index(f)) for f in value_fields]
-        keep_indexes = [(f, headers.index(f)) for f in keep_fields]
-        empty_mode = config.get("empty_mode", "跳过空值")
-        empty_fixed = str(config.get("empty_fixed", "未填写"))
-        trim_value = bool(config.get("trim_value", True))
-
-        out_headers = []
-        for f, _ in keep_indexes:
-            if f not in out_headers:
-                out_headers.append(f)
-
-        if bool(config.get("output_original_row", True)):
-            row_field = self.get_unique_header(config.get("original_row_field", "原始行号"), out_headers)
-            out_headers.append(row_field)
-        else:
-            row_field = None
-
-        if bool(config.get("output_source_field", True)):
-            source_field = self.get_unique_header(config.get("source_field_name", "来源字段"), out_headers)
-            out_headers.append(source_field)
-        else:
-            source_field = None
-
-        value_field = self.get_unique_header(config.get("output_value_field", "输出内容"), out_headers)
-        out_headers.append(value_field)
-
-        if bool(config.get("output_status", True)):
-            status_field = self.get_unique_header(config.get("status_field", "状态"), out_headers)
-            out_headers.append(status_field)
-        else:
-            status_field = None
-
-        out_rows = []
-        skipped_empty = 0
-        stopped_by_empty_row = False
-        for row_idx in range(start_idx, end_idx + 1):
-            if row_idx < 0 or row_idx >= len(normalized):
-                continue
-            row = normalized[row_idx]
-            if config.get("end_mode") == "遇到空行停止" and self.row_is_empty(row, len(headers)):
-                stopped_by_empty_row = True
-                break
-
-            keep_values = [self.safe_cell(row, i) for _, i in keep_indexes]
-            for field_name, field_idx in value_indexes:
-                value = self.safe_cell(row, field_idx)
-                if trim_value:
-                    value = value.strip()
-                status = "成功"
-                if value == "":
-                    if empty_mode == "跳过空值":
-                        skipped_empty += 1
-                        continue
-                    if empty_mode == "填写固定值":
-                        value = empty_fixed
-                        status = "空值已填固定值"
-                    else:
-                        status = "空值"
-
-                out_row = list(keep_values)
-                if row_field is not None:
-                    out_row.append(str(row_idx + 1))
-                if source_field is not None:
-                    out_row.append(field_name)
-                out_row.append(value)
-                if status_field is not None:
-                    out_row.append(status)
-                out_rows.append(out_row)
-
-        stat = f"按行取值展开 {len(out_rows)} 行"
-        if skipped_empty:
-            stat += f"，跳过空值 {skipped_empty} 个"
-        if stopped_by_empty_row:
-            stat += "，遇到空行停止"
-        return out_headers, out_rows, stat
+        return workflow_apply_row_data_mapping_node(headers, rows, config)
 
     def make_unique_transit_name(self, base_name, transit_tables):
-        name = str(base_name or "中转数据").strip() or "中转数据"
-        if name not in transit_tables:
-            return name
-        counter = 2
-        while f"{name}_{counter}" in transit_tables:
-            counter += 1
-        return f"{name}_{counter}"
+        return workflow_make_unique_transit_name(base_name, transit_tables)
 
     def append_headers_rows(self, old_headers, old_rows, new_headers, new_rows):
-        """按字段名对齐追加 rows，字段不一致时自动取并集。"""
-        old_headers = list(old_headers or [])
-        new_headers = list(new_headers or [])
-        merged_headers = list(old_headers)
-        for h in new_headers:
-            if h not in merged_headers:
-                merged_headers.append(h)
-
-        def convert_rows(src_headers, src_rows):
-            index = {h: i for i, h in enumerate(src_headers)}
-            converted = []
-            for row in src_rows or []:
-                row = list(row)
-                out = []
-                for h in merged_headers:
-                    i = index.get(h)
-                    if i is None or i >= len(row):
-                        out.append("")
-                    else:
-                        out.append("" if row[i] is None else str(row[i]))
-                converted.append(out)
-            return converted
-
-        merged_rows = convert_rows(old_headers, old_rows) + convert_rows(new_headers, new_rows)
-        return merged_headers, merged_rows
+        return workflow_append_headers_rows(old_headers, old_rows, new_headers, new_rows)
 
     def save_result_to_sqlite_append(self, headers, rows, table_name_raw, context=None):
         """追加写入 SQLite 表；表不存在则创建，字段不足则自动 ADD COLUMN。"""
-        db_path = self.get_workflow_db_path(context if 'context' in locals() else None)
-        if not db_path:
-            raise ValueError("请先设置 SQLite 数据库路径。")
         table_name = self.app.sanitize_sql_name(table_name_raw, "中转数据")
         sql_columns = self.app.make_sql_columns(headers)
         if not sql_columns:
             raise ValueError("没有可写入的字段。")
-        conn = sqlite3.connect(db_path)
-        try:
-            cur = conn.cursor()
-            exists = self.app.table_exists(conn, table_name)
-            if not exists:
-                col_defs = [f"{self.app.quote_ident(col)} TEXT" for col in sql_columns]
-                cur.execute(f"CREATE TABLE {self.app.quote_ident(table_name)} ({', '.join(col_defs)})")
-            else:
-                cur.execute(f"PRAGMA table_info({self.app.quote_ident(table_name)})")
-                existing_cols = [r[1] for r in cur.fetchall()]
-                for col in sql_columns:
-                    if col not in existing_cols:
-                        cur.execute(f"ALTER TABLE {self.app.quote_ident(table_name)} ADD COLUMN {self.app.quote_ident(col)} TEXT")
-
-            placeholders = ", ".join(["?"] * len(sql_columns))
-            col_names = ", ".join(self.app.quote_ident(col) for col in sql_columns)
-            insert_sql = f"INSERT INTO {self.app.quote_ident(table_name)} ({col_names}) VALUES ({placeholders})"
-            normalized_rows = self.normalize_rows(rows, len(sql_columns))
-            if normalized_rows:
-                cur.executemany(insert_sql, normalized_rows)
-            conn.commit()
-            return table_name
-        finally:
-            conn.close()
+        normalized_rows = self.normalize_rows(rows, len(sql_columns))
+        info = self.get_table_manager(context, node_type="保存中转数据").write_table(table_name, sql_columns, normalized_rows, mode="append")
+        return info.get("table_name", table_name)
 
     def export_headers_rows_to_xlsx_file(self, headers, rows, path):
         """把指定 headers / rows 导出为 xlsx 文件，复用主程序现有导出逻辑。"""
@@ -14618,170 +13340,146 @@ class PlanWorkflowWindow:
             self.app.raw_data = old_raw
 
     def sqlite_table_exists_by_name(self, table_name, context=None):
-        db_path = self.get_workflow_db_path(context if 'context' in locals() else None)
+        db_path = self.get_workflow_db_path(context)
         if not db_path or not os.path.exists(db_path):
             return False
-        conn = sqlite3.connect(db_path)
         try:
-            return self.app.table_exists(conn, table_name)
-        finally:
-            conn.close()
+            return self.get_table_manager(context).table_exists(table_name)
+        except Exception:
+            return False
+
+    def apply_save_transit_memory_plan(self, context, memory_plan, headers_copy, rows_copy):
+        if not memory_plan:
+            return
+        manager = self.check_transit_table_write_permission(
+            context,
+            memory_plan["table_name"],
+            exists=bool(memory_plan.get("exists_before")),
+            write_mode=memory_plan.get("write_mode", ""),
+            fields=memory_plan.get("headers", headers_copy),
+            node_type="保存中转数据",
+        )
+        extra = {
+            "write_mode": memory_plan.get("write_mode", ""),
+            "message": memory_plan.get("log_message", ""),
+        }
+        if memory_plan.get("operation") == "append_transit_table":
+            extra["appended_rows"] = memory_plan.get("appended_rows", 0)
+        context["transit_tables"][memory_plan["table_name"]] = {
+            "headers": list(memory_plan.get("headers", headers_copy)),
+            "rows": [list(r) for r in memory_plan.get("rows", rows_copy)],
+            "source": memory_plan.get("source", "保存中转数据:覆盖"),
+        }
+        self.log_transit_table_event(
+            manager,
+            memory_plan.get("operation", "write_transit_table"),
+            memory_plan["table_name"],
+            memory_plan.get("headers", headers_copy),
+            memory_plan.get("rows", rows_copy),
+            **extra,
+        )
+
+    def execute_save_transit_sqlite(self, options, headers_copy, rows_copy, context=None):
+        table_raw = options.get("sqlite_table_raw", options.get("base_name", "中转数据"))
+        table_name = self.app.sanitize_sql_name(table_raw, "中转数据")
+        mode = options.get("sqlite_mode", "自动加时间戳")
+        if mode == "覆盖同名表":
+            saved_name = self.save_result_to_sqlite(headers_copy, rows_copy, table_name, overwrite=True, backup=True, context=context)
+        elif mode == "追加写入":
+            saved_name = self.save_result_to_sqlite_append(headers_copy, rows_copy, table_name, context=context)
+        elif mode == "报错停止":
+            if self.sqlite_table_exists_by_name(table_name, context=context):
+                raise ValueError(f"SQLite 表已存在，按设置停止：{table_name}")
+            saved_name = self.save_result_to_sqlite(headers_copy, rows_copy, table_name, overwrite=False, backup=False, context=context)
+        else:
+            saved_name = self.save_result_to_sqlite(headers_copy, rows_copy, table_name, overwrite=False, backup=False, context=context)
+        return f"SQLite表：{saved_name}" + ("（追加写入）" if mode == "追加写入" else "")
+
+    def execute_save_transit_xlsx(self, options, headers_copy, rows_copy):
+        xlsx_path = str(options.get("xlsx_path", "")).strip()
+        if not xlsx_path:
+            export_dir = os.path.join(getattr(self.app, "app_dir", get_app_dir()), "export")
+            xlsx_path = os.path.join(export_dir, f"{options.get('base_name', '中转数据')}.xlsx")
+        self.export_headers_rows_to_xlsx_file(headers_copy, rows_copy, xlsx_path)
+        return f"xlsx：{xlsx_path}"
 
     def apply_save_transit_node(self, headers, rows, config, context=None, execute_actions=False):
         """保存中转数据：保存当前数据副本，默认不改变主流程数据。"""
         context = context if context is not None else {"transit_tables": {}}
-        transit_tables = context.setdefault("transit_tables", {})
-        base_name = str(config.get("transit_name", "中转数据")).strip() or "中转数据"
-        save_memory = bool(config.get("save_memory", True))
-        append_memory = bool(config.get("append_memory", False))
-        save_sqlite = bool(config.get("save_sqlite", False))
-        save_xlsx = bool(config.get("save_xlsx", False))
-        saved_parts = []
+        context.setdefault("transit_tables", {})
+        result_headers, result_rows, message = workflow_apply_save_transit_node(
+            headers,
+            rows,
+            config,
+            context=context,
+            execute_actions=execute_actions,
+        )
+        options = context.get("save_transit_options", {}) or {}
+        headers_copy = context.get("save_transit_headers")
+        if headers_copy is None:
+            headers_copy = list(headers)
+        rows_copy = context.get("save_transit_rows")
+        if rows_copy is None:
+            rows_copy = [list(row) for row in self.normalize_rows(rows, len(headers_copy))]
+        saved_parts = message.split("；") if message else []
 
-        headers_copy = list(headers)
-        rows_copy = [list(row) for row in self.normalize_rows(rows, len(headers_copy))]
-
-        if save_memory:
-            if append_memory and base_name in transit_tables:
-                old_item = transit_tables.get(base_name, {}) or {}
-                old_headers = old_item.get("headers", []) or []
-                old_rows = old_item.get("rows", []) or []
-                merged_headers, merged_rows = self.append_headers_rows(old_headers, old_rows, headers_copy, rows_copy)
-                transit_tables[base_name] = {"headers": merged_headers, "rows": [list(r) for r in merged_rows], "source": "保存中转数据:追加"}
-                saved_parts.append(f"内存副表追加：{base_name}（新增 {len(rows_copy)} 行，累计 {len(merged_rows)} 行）")
-            else:
-                # 默认覆盖，保证后续节点引用的是最近一次执行结果。
-                transit_tables[base_name] = {"headers": headers_copy, "rows": [list(r) for r in rows_copy], "source": "保存中转数据:覆盖"}
-                saved_parts.append(f"内存副表：{base_name}")
-
-        if save_sqlite:
-            if execute_actions:
-                table_raw = str(config.get("sqlite_table", base_name)).strip() or base_name
-                table_name = self.app.sanitize_sql_name(table_raw, "中转数据")
-                mode = config.get("sqlite_mode", "自动加时间戳")
-                if mode == "覆盖同名表":
-                    saved_name = self.save_result_to_sqlite(headers_copy, rows_copy, table_name, overwrite=True, backup=True, context=context)
-                elif mode == "追加写入":
-                    saved_name = self.save_result_to_sqlite_append(headers_copy, rows_copy, table_name, context=context)
-                elif mode == "报错停止":
-                    if self.sqlite_table_exists_by_name(table_name, context=context):
-                        raise ValueError(f"SQLite 表已存在，按设置停止：{table_name}")
-                    saved_name = self.save_result_to_sqlite(headers_copy, rows_copy, table_name, overwrite=False, backup=False, context=context)
-                else:
-                    saved_name = self.save_result_to_sqlite(headers_copy, rows_copy, table_name, overwrite=False, backup=False, context=context)
-                saved_parts.append(f"SQLite表：{saved_name}" + ("（追加写入）" if mode == "追加写入" else ""))
-            else:
-                saved_parts.append("SQLite表：预览模式未写入")
-
-        if save_xlsx:
-            if execute_actions:
-                xlsx_path = str(config.get("xlsx_path", "")).strip()
-                if not xlsx_path:
-                    export_dir = os.path.join(getattr(self.app, "app_dir", get_app_dir()), "export")
-                    xlsx_path = os.path.join(export_dir, f"{base_name}.xlsx")
-                self.export_headers_rows_to_xlsx_file(headers_copy, rows_copy, xlsx_path)
-                saved_parts.append(f"xlsx：{xlsx_path}")
-            else:
-                saved_parts.append("xlsx：预览模式未导出")
+        self.apply_save_transit_memory_plan(
+            context,
+            context.get("save_transit_memory_plan"),
+            headers_copy,
+            rows_copy,
+        )
+        if execute_actions and options.get("save_sqlite"):
+            saved_parts.append(self.execute_save_transit_sqlite(options, headers_copy, rows_copy, context=context))
+        if execute_actions and options.get("save_xlsx"):
+            saved_parts.append(self.execute_save_transit_xlsx(options, headers_copy, rows_copy))
 
         if not saved_parts:
             saved_parts.append("未选择保存位置，仅透传数据")
 
-        return headers, rows, "；".join(saved_parts)
+        return result_headers, result_rows, "；".join(saved_parts)
 
 
     def compare_writeback_values(self, left, op, right):
-        left = "" if left is None else str(left)
-        right = "" if right is None else str(right)
-        if op == "等于":
-            return left == right
-        if op == "不等于":
-            return left != right
-        if op in ["当前包含目标", "当前包含外部"]:
-            return right != "" and right in left
-        if op in ["目标包含当前", "外部包含当前"]:
-            return left != "" and left in right
-        if op == "双向包含":
-            return (right != "" and right in left) or (left != "" and left in right)
-        return left == right
+        return workflow_compare_writeback_values(left, op, right)
 
     def load_target_table_rows_for_writeback(self, table_name, context=None):
-        db_path = self.get_workflow_db_path(context if 'context' in locals() else None)
+        db_path = self.get_workflow_db_path(context)
         if not db_path or not os.path.exists(db_path):
             raise ValueError("SQLite 数据库路径不存在，请先选择数据库。")
-        columns = self.get_workflow_sqlite_columns(table_name, context)
-        conn = sqlite3.connect(db_path)
-        try:
-            cur = conn.cursor()
-            cur.execute(f"SELECT rowid, * FROM {self.app.quote_ident(table_name)} ORDER BY rowid")
-            raw_rows = cur.fetchall()
-        finally:
-            conn.close()
-        records = []
-        for index, raw in enumerate(raw_rows, start=1):
-            record = {"__rowid__": raw[0], "__row_index__": index}
-            for i, col in enumerate(columns):
-                val = raw[i + 1] if i + 1 < len(raw) else ""
-                record[col] = "" if val is None else str(val)
-            records.append(record)
+        columns, records = self.get_table_manager(context, node_type="字段映射写入表").read_records(
+            table_name,
+            include_rowid=True,
+            include_row_index=True,
+        )
         return columns, records
 
     def backup_sqlite_table_for_writeback(self, table_name, context=None):
-        db_path = self.get_workflow_db_path(context if 'context' in locals() else None)
-        conn = sqlite3.connect(db_path)
-        try:
-            cur = conn.cursor()
-            backup_name = f"{table_name}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            cur.execute(f"CREATE TABLE {self.app.quote_ident(backup_name)} AS SELECT * FROM {self.app.quote_ident(table_name)}")
-            conn.commit()
-            return backup_name
-        finally:
-            conn.close()
+        return self.get_table_manager(context, node_type="字段映射写入表").backup_table(table_name)
 
     def apply_writeback_updates_to_sqlite(self, table_name, actions, context=None):
-        db_path = self.get_workflow_db_path(context if 'context' in locals() else None)
+        db_path = self.get_workflow_db_path(context)
         if not db_path or not os.path.exists(db_path):
             raise ValueError("SQLite 数据库路径不存在，请先选择数据库。")
-        write_actions = [a for a in actions if a.get("write")]
-        if not write_actions:
-            return 0
+        return self.get_table_manager(context, node_type="字段映射写入表").apply_cell_actions(
+            table_name,
+            actions,
+            cancel_event=(context or {}).get("cancel_event"),
+        )
 
-        target_columns = self.get_workflow_sqlite_columns(table_name, context)
-        conn = sqlite3.connect(db_path)
-        try:
-            cur = conn.cursor()
-            actual = 0
-
-            # 1) 已有目标行：按 rowid UPDATE。
-            for action in write_actions:
-                if action.get("is_new_row"):
-                    continue
-                sql = f"UPDATE {self.app.quote_ident(table_name)} SET {self.app.quote_ident(action['target_field'])}=? WHERE rowid=?"
-                cur.execute(sql, (action.get("new_value", ""), action.get("target_rowid")))
-                actual += 1
-
-            # 2) 目标表行数不足时：以“来源行”为单位 INSERT 一整行，再写入该来源行的映射字段。
-            insert_groups = {}
-            for action in write_actions:
-                if not action.get("is_new_row"):
-                    continue
-                key = action.get("new_row_key") or f"source_{action.get('source_row', '')}"
-                insert_groups.setdefault(key, {})[action.get("target_field", "")] = action.get("new_value", "")
-
-            for _, values_by_field in insert_groups.items():
-                insert_cols = [col for col in target_columns if col in values_by_field]
-                if not insert_cols:
-                    continue
-                placeholders = ", ".join(["?"] * len(insert_cols))
-                col_sql = ", ".join(self.app.quote_ident(col) for col in insert_cols)
-                sql = f"INSERT INTO {self.app.quote_ident(table_name)} ({col_sql}) VALUES ({placeholders})"
-                cur.execute(sql, [values_by_field.get(col, "") for col in insert_cols])
-                actual += len(insert_cols)
-
-            conn.commit()
-            return actual
-        finally:
-            conn.close()
+    def apply_writeback_transaction_to_sqlite(self, table_name, actions, target_fields, context=None):
+        db_path = self.get_workflow_db_path(context)
+        if not db_path or not os.path.exists(db_path):
+            raise ValueError("SQLite 数据库路径不存在，请先选择数据库。")
+        return self.get_table_manager(
+            context,
+            node_type="字段映射写入表",
+        ).apply_writeback_transaction(
+            table_name,
+            actions,
+            clear_fields=target_fields,
+            cancel_event=(context or {}).get("cancel_event"),
+        )
 
     def clear_writeback_target_fields_in_sqlite(self, table_name, target_fields, context=None):
         """清空 SQLite 目标表中指定字段的全部旧值，返回清空字段数量。"""
@@ -14793,72 +13491,10 @@ class PlanWorkflowWindow:
                 fields.append(field)
         if not fields:
             return 0
-        db_path = self.get_workflow_db_path(context if 'context' in locals() else None)
-        if not db_path or not os.path.exists(db_path):
-            raise ValueError("SQLite 数据库路径不存在，请先选择数据库。")
-        conn = sqlite3.connect(db_path)
-        try:
-            cur = conn.cursor()
-            set_sql = ", ".join(f"{self.app.quote_ident(field)}=''" for field in fields)
-            cur.execute(f"UPDATE {self.app.quote_ident(table_name)} SET {set_sql}")
-            conn.commit()
-            return len(fields)
-        finally:
-            conn.close()
+        return self.get_table_manager(context, node_type="字段映射写入表").clear_fields(table_name, fields)
 
     def build_writeback_full_structure_rows_for_sqlite(self, headers, rows, config, target_columns):
-        """按来源完整结构生成 SQLite 目标表的新 rows，并生成预览动作。
-
-        目标字段结构沿用 SQLite 目标表字段；输出行数等于来源 rows 行数；
-        未映射字段保持空值，避免目标表旧行/旧值污染后续流程。
-        """
-        mappings = list(config.get("field_mappings", []))
-        if not mappings:
-            raise ValueError("请至少添加一条字段映射规则。")
-        source_empty_policy = config.get("source_empty_policy", "跳过")
-        source_empty_fixed = str(config.get("source_empty_fixed", ""))
-        normalized_rows = self.normalize_rows(rows, len(headers))
-        source_field_index = {h: i for i, h in enumerate(headers)}
-        target_index = {h: i for i, h in enumerate(target_columns)}
-        new_rows = [[""] * len(target_columns) for _ in normalized_rows]
-        actions = []
-
-        def append_action(src_idx, status, target_field="", new_value="", action="跳过", write=False):
-            actions.append({
-                "source_row": src_idx + 1,
-                "target_rowid": "",
-                "target_row_index": src_idx + 1,
-                "match_status": status,
-                "target_field": target_field,
-                "old_value": "",
-                "new_value": new_value,
-                "action": action,
-                "write": bool(write),
-                "is_new_row": True,
-                "new_row_key": f"full_{src_idx + 1}",
-            })
-
-        for src_idx, row in enumerate(normalized_rows):
-            source_record = {h: self.safe_cell(row, i) for i, h in enumerate(headers)}
-            for mapping in mappings:
-                sf = str(mapping.get("source_field", "")).strip()
-                tf = str(mapping.get("target_field", "")).strip()
-                if sf not in source_field_index:
-                    append_action(src_idx, f"来源字段不存在：{sf}", target_field=tf)
-                    continue
-                if tf not in target_index:
-                    append_action(src_idx, f"目标字段不存在：{tf}", target_field=tf)
-                    continue
-                new_value = source_record.get(sf, "")
-                if new_value == "":
-                    if source_empty_policy == "跳过":
-                        append_action(src_idx, "来源为空", target_field=tf, new_value=new_value, action="跳过")
-                        continue
-                    if source_empty_policy == "写入固定值":
-                        new_value = source_empty_fixed
-                new_rows[src_idx][target_index[tf]] = new_value
-                append_action(src_idx, "成功", target_field=tf, new_value=new_value, action="完整结构覆盖写入", write=True)
-        return actions, new_rows
+        return workflow_build_writeback_full_structure_rows_for_sqlite(headers, rows, config, target_columns)
 
     def build_writeback_actions(self, headers, rows, config, context=None):
         table_name = str(config.get("target_table", "")).strip()
@@ -14871,152 +13507,11 @@ class PlanWorkflowWindow:
             raise ValueError("已启用匹配规则定位目标行，请至少添加一条匹配规则；如果想按行号顺序写入，请关闭该选项。")
         if not mappings:
             raise ValueError("请至少添加一条字段映射规则。")
-
         target_columns, target_records = self.load_target_table_rows_for_writeback(table_name, context=context)
-        normalized_rows = self.normalize_rows(rows, len(headers))
-        overwrite_policy = config.get("overwrite_policy", "目标已有值且不同才覆盖")
-        write_range_mode = config.get("write_range_mode", "局部覆盖，保留目标原行数")
-        if write_range_mode == "清空目标字段后覆盖，保留目标原行数":
-            # 清空后目标字段为空，应按来源重新写入，避免“相同则跳过”导致清空后缺值。
-            overwrite_policy = "覆盖全部"
-        source_empty_policy = config.get("source_empty_policy", "跳过")
-        source_empty_fixed = str(config.get("source_empty_fixed", ""))
-        multi_match_policy = config.get("multi_match_policy", "跳过并记录")
-        duplicate_policy = config.get("duplicate_target_policy", "跳过重复并记录异常")
-        sequential_insert_missing_rows = bool(config.get("sequential_insert_missing_rows", True))
-
-        actions = []
-        touched_target_rowids = set()
-        source_field_index = {h: i for i, h in enumerate(headers)}
-
-        def append_status(src_idx, target_record, status, target_field="", old_value="", new_value="", action="跳过", write=False):
-            is_new = bool(target_record.get("__is_new__", False)) if target_record else False
-            actions.append({
-                "source_row": src_idx + 1,
-                "target_rowid": target_record.get("__rowid__", "") if target_record else "",
-                "target_row_index": target_record.get("__row_index__", "") if target_record else "",
-                "match_status": status,
-                "target_field": target_field,
-                "old_value": old_value,
-                "new_value": new_value,
-                "action": action,
-                "write": bool(write),
-                "is_new_row": is_new,
-                "new_row_key": target_record.get("__new_row_key__", "") if target_record else "",
-            })
-
-        for src_idx, row in enumerate(normalized_rows):
-            source_record = {h: self.safe_cell(row, i) for i, h in enumerate(headers)}
-            matched = []
-
-            if use_match_rules:
-                for target_record in target_records:
-                    ok = True
-                    for rule in match_rules:
-                        sf = rule.get("source_field", "")
-                        tf = rule.get("target_field", "")
-                        op = rule.get("operator", "等于")
-                        if sf not in source_field_index or tf not in target_columns:
-                            ok = False
-                            break
-                        if not self.compare_writeback_values(source_record.get(sf, ""), op, target_record.get(tf, "")):
-                            ok = False
-                            break
-                    if ok:
-                        matched.append(target_record)
-            else:
-                # 关闭匹配规则后，以“来源当前表完整数据结构”为边界：
-                # 当前表第 N 行 → 目标表第 N 行；目标表行数不足时，可自动新增目标行。
-                if src_idx < len(target_records):
-                    matched = [target_records[src_idx]]
-                elif sequential_insert_missing_rows:
-                    matched = [{
-                        "__rowid__": "",
-                        "__row_index__": f"新增第{src_idx + 1}行",
-                        "__is_new__": True,
-                        "__new_row_key__": f"source_{src_idx + 1}",
-                    }]
-                else:
-                    matched = []
-
-            if not matched:
-                status_text = "未匹配" if use_match_rules else "按来源完整结构写入失败：目标表行数不足且未启用自动新增行"
-                append_status(src_idx, None, status_text, action="跳过")
-                continue
-            if len(matched) > 1:
-                if multi_match_policy == "只更新第一行":
-                    matched = matched[:1]
-                elif multi_match_policy == "全部更新":
-                    pass
-                else:
-                    append_status(src_idx, None, f"多匹配{len(matched)}行", action="跳过")
-                    continue
-
-            for target_record in matched:
-                target_rowid = target_record.get("__rowid__")
-                is_new_target_row = bool(target_record.get("__is_new__", False))
-                if (not is_new_target_row) and target_rowid in touched_target_rowids and duplicate_policy in ["跳过重复并记录异常", "第一个有效"]:
-                    append_status(src_idx, target_record, "重复目标行", action="跳过")
-                    continue
-
-                for mapping in mappings:
-                    sf = mapping.get("source_field", "")
-                    tf = mapping.get("target_field", "")
-                    if sf not in source_field_index:
-                        append_status(src_idx, target_record, f"来源字段不存在：{sf}", target_field=tf, action="跳过")
-                        continue
-                    if tf not in target_columns:
-                        append_status(src_idx, target_record, f"目标字段不存在：{tf}", target_field=tf, action="跳过")
-                        continue
-
-                    new_value = source_record.get(sf, "")
-                    old_value = target_record.get(tf, "")
-                    if new_value == "":
-                        if source_empty_policy == "跳过":
-                            append_status(src_idx, target_record, "来源为空", target_field=tf, old_value=old_value, new_value=new_value, action="跳过")
-                            continue
-                        if source_empty_policy == "写入固定值":
-                            new_value = source_empty_fixed
-                        # 写入空值则保持 new_value = ""
-
-                    write = False
-                    action_text = "跳过"
-                    if overwrite_policy == "覆盖全部":
-                        write = True
-                        action_text = "将覆盖"
-                    elif overwrite_policy == "只覆盖目标为空的字段":
-                        if old_value == "":
-                            write = True
-                            action_text = "目标为空，将写入"
-                        else:
-                            action_text = "目标已有值，跳过"
-                    elif overwrite_policy == "目标已有值则跳过":
-                        if old_value == "":
-                            write = True
-                            action_text = "目标为空，将写入"
-                        else:
-                            action_text = "目标已有值，跳过"
-                    else:  # 目标已有值且不同才覆盖
-                        if old_value != new_value:
-                            write = True
-                            action_text = "不同，将覆盖"
-                        else:
-                            action_text = "相同，跳过"
-
-                    append_status(src_idx, target_record, "成功", target_field=tf, old_value=old_value, new_value=new_value, action=action_text, write=write)
-                    if write:
-                        # 更新内存中的目标记录，便于同一目标字段后续判断使用最新值。
-                        target_record[tf] = new_value
-
-                if duplicate_policy != "后面的覆盖前面的":
-                    touched_target_rowids.add(target_rowid)
-                else:
-                    touched_target_rowids.add(target_rowid)
-
+        actions = workflow_build_writeback_actions(headers, rows, config, target_columns, target_records)
         return actions, table_name
 
     def apply_external_table_to_current_node(self, headers, rows, config, context=None):
-        """把 SQLite 其他表数据写入当前工作流表。可覆盖已有字段，也可创建新字段。"""
         source_table = str(config.get("source_table", "")).strip()
         if not source_table:
             raise ValueError("请选择来源表。")
@@ -15027,218 +13522,8 @@ class PlanWorkflowWindow:
             raise ValueError("已启用匹配规则定位对应行，请至少添加一条匹配规则；如果想按行号顺序写入，请关闭该选项。")
         if not mappings:
             raise ValueError("请至少添加一条字段映射规则。")
-
         source_columns, source_records = self.load_target_table_rows_for_writeback(source_table, context=context)
-        current_headers = list(headers)
-        current_rows = [list(r) for r in self.normalize_rows(rows, len(current_headers))]
-        current_index = {h: i for i, h in enumerate(current_headers)}
-        source_index = {h: i for i, h in enumerate(source_columns)}
-        overwrite_policy = config.get("overwrite_policy", "目标已有值且不同才覆盖")
-        write_range_mode = config.get("write_range_mode", "局部覆盖，保留目标原行数")
-        if write_range_mode in ["清空目标字段后覆盖，保留目标原行数", "按来源完整结构覆盖"]:
-            # 这两种模式会先清空/重建目标结构，应按来源重新写入。
-            overwrite_policy = "覆盖全部"
-        source_empty_policy = config.get("source_empty_policy", "跳过")
-        source_empty_fixed = str(config.get("source_empty_fixed", ""))
-        multi_match_policy = config.get("multi_match_policy", "跳过并记录")
-        duplicate_policy = config.get("duplicate_target_policy", "跳过重复并记录异常")
-        insert_missing_rows = bool(config.get("sequential_insert_missing_rows", True))
-
-        # 映射右侧允许输入新字段名。先把所有目标字段补到当前表头。
-        for mapping in mappings:
-            tf = str(mapping.get("target_field", "")).strip()
-            if tf and tf not in current_index:
-                current_index[tf] = len(current_headers)
-                current_headers.append(tf)
-                for row in current_rows:
-                    row.append("")
-
-        # 按来源完整结构覆盖：当前表输出行数等于 SQLite 来源表行数，目标旧的多余行被丢弃。
-        # 未映射字段保持空值，避免旧值残留到后续文件生成/批量处理。
-        if write_range_mode == "按来源完整结构覆盖":
-            new_rows = [[""] * len(current_headers) for _ in source_records]
-            actions = []
-            for src_idx, source_record in enumerate(source_records):
-                for mapping in mappings:
-                    sf = str(mapping.get("source_field", "")).strip()
-                    tf = str(mapping.get("target_field", "")).strip()
-                    if sf not in source_columns:
-                        actions.append({"write": False})
-                        continue
-                    if not tf:
-                        actions.append({"write": False})
-                        continue
-                    if tf not in current_index:
-                        current_index[tf] = len(current_headers)
-                        current_headers.append(tf)
-                        for row in new_rows:
-                            row.append("")
-                    new_value = source_record.get(sf, "")
-                    if new_value == "":
-                        if source_empty_policy == "跳过":
-                            actions.append({"write": False})
-                            continue
-                        if source_empty_policy == "写入固定值":
-                            new_value = source_empty_fixed
-                    new_rows[src_idx][current_index[tf]] = new_value
-                    actions.append({"write": True})
-            write_count = sum(1 for a in actions if a.get("write"))
-            stat = f"其他表写入当前表：按来源完整结构覆盖，输出 {len(new_rows)} 行 × {len(current_headers)} 列，写入 {write_count} 个单元格"
-            return current_headers, new_rows, stat
-
-        if write_range_mode == "清空目标字段后覆盖，保留目标原行数":
-            clear_fields = []
-            for mapping in mappings:
-                tf = str(mapping.get("target_field", "")).strip()
-                if tf and tf in current_index and tf not in clear_fields:
-                    clear_fields.append(tf)
-            for row in current_rows:
-                while len(row) < len(current_headers):
-                    row.append("")
-                for tf in clear_fields:
-                    row[current_index[tf]] = ""
-
-        actions = []
-        touched_current_rows = set()
-
-        def append_action(cur_row_index, source_record, status, target_field="", old_value="", new_value="", action="跳过", write=False, is_new_current_row=False):
-            actions.append({
-                "current_row": cur_row_index + 1 if isinstance(cur_row_index, int) else cur_row_index,
-                "source_rowid": source_record.get("__rowid__", "") if source_record else "",
-                "source_row_index": source_record.get("__row_index__", "") if source_record else "",
-                "match_status": status,
-                "target_field": target_field,
-                "old_value": old_value,
-                "new_value": new_value,
-                "action": action,
-                "write": bool(write),
-                "is_new_current_row": bool(is_new_current_row),
-            })
-
-        def ensure_current_row(index):
-            is_new = False
-            while index >= len(current_rows):
-                current_rows.append([""] * len(current_headers))
-                is_new = True
-            # 如果新增字段后历史行长度不足，这里补齐。
-            while len(current_rows[index]) < len(current_headers):
-                current_rows[index].append("")
-            return is_new
-
-        # 处理边界：按当前表行逐行处理；关闭匹配且来源表更长时，可按来源完整结构扩展当前表行。
-        total_rows = len(current_rows)
-        if not use_match_rules and insert_missing_rows:
-            total_rows = max(len(current_rows), len(source_records))
-
-        for cur_idx in range(total_rows):
-            is_new_current_row = ensure_current_row(cur_idx)
-            current_record = {h: self.safe_cell(current_rows[cur_idx], i) for i, h in enumerate(current_headers)}
-            matched = []
-
-            if use_match_rules:
-                for source_record in source_records:
-                    ok = True
-                    for rule in match_rules:
-                        cf = rule.get("source_field", "")   # 当前表字段
-                        sf = rule.get("target_field", "")   # 外部来源表字段
-                        op = rule.get("operator", "等于")
-                        if cf not in current_index or sf not in source_index:
-                            ok = False
-                            break
-                        if not self.compare_writeback_values(current_record.get(cf, ""), op, source_record.get(sf, "")):
-                            ok = False
-                            break
-                    if ok:
-                        matched.append(source_record)
-            else:
-                if cur_idx < len(source_records):
-                    matched = [source_records[cur_idx]]
-                else:
-                    matched = []
-
-            if not matched:
-                append_action(cur_idx, None, "未匹配来源表行" if use_match_rules else "来源表行数不足", action="跳过", is_new_current_row=is_new_current_row)
-                continue
-            if len(matched) > 1:
-                if multi_match_policy == "只更新第一行":
-                    matched = matched[:1]
-                elif multi_match_policy == "全部更新":
-                    pass
-                else:
-                    append_action(cur_idx, None, f"多匹配来源{len(matched)}行", action="跳过", is_new_current_row=is_new_current_row)
-                    continue
-
-            if cur_idx in touched_current_rows and duplicate_policy in ["跳过重复并记录异常", "第一个有效"]:
-                append_action(cur_idx, matched[0] if matched else None, "重复当前目标行", action="跳过", is_new_current_row=is_new_current_row)
-                continue
-
-            for source_record in matched:
-                for mapping in mappings:
-                    sf = str(mapping.get("source_field", "")).strip()   # 来源表字段
-                    tf = str(mapping.get("target_field", "")).strip()   # 当前表字段 / 新字段名
-                    if sf not in source_columns:
-                        append_action(cur_idx, source_record, f"来源字段不存在：{sf}", target_field=tf, action="跳过", is_new_current_row=is_new_current_row)
-                        continue
-                    if not tf:
-                        append_action(cur_idx, source_record, "目标字段为空", target_field=tf, action="跳过", is_new_current_row=is_new_current_row)
-                        continue
-                    if tf not in current_index:
-                        current_index[tf] = len(current_headers)
-                        current_headers.append(tf)
-                        for row in current_rows:
-                            row.append("")
-                    target_col = current_index[tf]
-                    while len(current_rows[cur_idx]) < len(current_headers):
-                        current_rows[cur_idx].append("")
-
-                    new_value = source_record.get(sf, "")
-                    old_value = self.safe_cell(current_rows[cur_idx], target_col)
-                    if new_value == "":
-                        if source_empty_policy == "跳过":
-                            append_action(cur_idx, source_record, "来源为空", target_field=tf, old_value=old_value, new_value=new_value, action="跳过", is_new_current_row=is_new_current_row)
-                            continue
-                        if source_empty_policy == "写入固定值":
-                            new_value = source_empty_fixed
-
-                    write = False
-                    action_text = "跳过"
-                    if overwrite_policy == "覆盖全部":
-                        write = True
-                        action_text = "将覆盖/写入"
-                    elif overwrite_policy == "只覆盖目标为空的字段":
-                        if old_value == "":
-                            write = True
-                            action_text = "目标为空，将写入"
-                        else:
-                            action_text = "目标已有值，跳过"
-                    elif overwrite_policy == "目标已有值则跳过":
-                        if old_value == "":
-                            write = True
-                            action_text = "目标为空，将写入"
-                        else:
-                            action_text = "目标已有值，跳过"
-                    else:
-                        if old_value != new_value:
-                            write = True
-                            action_text = "不同，将覆盖"
-                        else:
-                            action_text = "相同，跳过"
-
-                    if write:
-                        current_rows[cur_idx][target_col] = new_value
-                    append_action(cur_idx, source_record, "成功", target_field=tf, old_value=old_value, new_value=new_value, action=action_text, write=write, is_new_current_row=is_new_current_row)
-
-                touched_current_rows.add(cur_idx)
-
-        write_count = sum(1 for a in actions if a.get("write"))
-        new_field_count = max(0, len(current_headers) - len(headers))
-        new_row_count = max(0, len(current_rows) - len(rows))
-        stat = f"其他表写入当前表：处理动作 {len(actions)} 条，写入 {write_count} 个单元格"
-        if new_field_count:
-            stat += f"，新增字段 {new_field_count} 个"
-        if new_row_count:
-            stat += f"，新增当前行 {new_row_count} 行"
-        return current_headers, current_rows, stat
+        return workflow_apply_external_table_to_current_node(headers, rows, config, source_columns, source_records)
 
     def apply_writeback_node(self, headers, rows, config, execute_actions=False, context=None):
         if config.get("writeback_direction", "当前表写入SQLite目标表") == "其他表写入当前表":
@@ -15255,149 +13540,76 @@ class PlanWorkflowWindow:
         if write_range_mode == "按来源完整结构覆盖":
             target_columns, _target_records = self.load_target_table_rows_for_writeback(table_name, context=context)
             actions, full_rows = self.build_writeback_full_structure_rows_for_sqlite(headers, rows, config, target_columns)
-            write_count = sum(1 for a in actions if a.get("write"))
-            stat = f"完整结构覆盖预览 {len(actions)} 条动作，待写入 {write_count} 个单元格；目标表最终 {len(full_rows)} 行 × {len(target_columns)} 列"
+            stat = workflow_build_writeback_preview_stat(
+                write_range_mode,
+                actions,
+                full_rows=full_rows,
+                target_columns=target_columns,
+            )
             if execute_actions and enable_write:
                 saved = self.save_result_to_sqlite(target_columns, full_rows, table_name, overwrite=True, backup=backup_before_write, context=context)
-                stat = f"已按来源完整结构覆盖 SQLite 表：{saved}（{len(full_rows)} 行 × {len(target_columns)} 列）"
-            elif execute_actions and not enable_write:
-                stat += "；正式执行但未勾选允许写入，未修改数据库"
+                stat = workflow_build_writeback_full_structure_execute_stat(saved, full_rows, target_columns)
             else:
-                stat += "；预览模式未修改数据库"
+                stat += workflow_get_writeback_non_execute_suffix(execute_actions, enable_write)
         else:
             actions, table_name = self.build_writeback_actions(headers, rows, config, context=context)
-            write_count = sum(1 for a in actions if a.get("write"))
-            new_row_count = len({a.get("new_row_key") for a in actions if a.get("write") and a.get("is_new_row") and a.get("new_row_key")})
-            stat = f"写入预览 {len(actions)} 条动作，待写入 {write_count} 个单元格"
-            if write_range_mode == "清空目标字段后覆盖，保留目标原行数":
-                target_fields = [str(m.get("target_field", "")).strip() for m in config.get("field_mappings", []) if str(m.get("target_field", "")).strip()]
-                stat += f"；执行时会先清空 {len(set(target_fields))} 个目标字段的整列旧值"
-            if new_row_count:
-                stat += f"，将新增目标行 {new_row_count} 行"
+            action_counts = workflow_count_writeback_actions(actions)
+            target_fields = workflow_get_writeback_target_fields(config)
+            stat = workflow_build_writeback_preview_stat(write_range_mode, actions, target_fields=target_fields)
 
-            if execute_actions and enable_write and (write_count > 0 or write_range_mode == "清空目标字段后覆盖，保留目标原行数"):
+            if workflow_should_execute_writeback_update(execute_actions, enable_write, action_counts, write_range_mode):
                 backup_name = ""
                 if backup_before_write:
                     backup_name = self.backup_sqlite_table_for_writeback(table_name, context=context)
                 cleared = 0
                 if write_range_mode == "清空目标字段后覆盖，保留目标原行数":
-                    target_fields = [str(m.get("target_field", "")).strip() for m in config.get("field_mappings", []) if str(m.get("target_field", "")).strip()]
-                    cleared = self.clear_writeback_target_fields_in_sqlite(table_name, target_fields, context=context)
-                actual = self.apply_writeback_updates_to_sqlite(table_name, actions, context=context) if write_count > 0 else 0
-                stat = f"已写入目标表 {table_name}：{actual} 处"
-                if cleared:
-                    stat += f"，已先清空目标字段 {cleared} 列"
-                if backup_name:
-                    stat += f"，备份表：{backup_name}"
-            elif execute_actions and not enable_write:
-                stat += "；正式执行但未勾选允许写入，未修改数据库"
+                    result = self.apply_writeback_transaction_to_sqlite(
+                        table_name,
+                        actions,
+                        target_fields,
+                        context=context,
+                    )
+                    cleared = result.get("cleared_fields", 0)
+                    actual = result.get("cells", 0)
+                else:
+                    actual = self.apply_writeback_updates_to_sqlite(
+                        table_name,
+                        actions,
+                        context=context,
+                    ) if action_counts["write_count"] > 0 else 0
+                stat = workflow_build_writeback_execute_stat(table_name, actual, cleared=cleared, backup_name=backup_name)
             else:
-                stat += "；预览模式未修改数据库"
+                stat += workflow_get_writeback_non_execute_suffix(execute_actions, enable_write)
 
-        preview_headers = ["当前行号", "目标rowid", "目标行号", "行类型", "匹配状态", "目标字段", "原值", "新值", "动作"]
-        preview_rows = [[
-            a.get("source_row", ""),
-            a.get("target_rowid", ""),
-            a.get("target_row_index", ""),
-            "新增行" if a.get("is_new_row") else "已有行",
-            a.get("match_status", ""),
-            a.get("target_field", ""),
-            a.get("old_value", ""),
-            a.get("new_value", ""),
-            a.get("action", ""),
-        ] for a in actions]
-
-        if output_preview:
-            return preview_headers, preview_rows, stat
-        return headers, rows, stat
+        return workflow_finish_writeback_node_output(headers, rows, actions, stat, output_preview)
 
     def apply_filter_node(self, headers, rows, config, context=None):
-        conditions = list(config.get("conditions", []))
-        join_rules = list(config.get("join_rules", []))
         extra_tables = list(config.get("extra_tables", []))
-        logic = config.get("logic", "AND")
-        join_logic = config.get("join_logic", "AND")
-        output_fields = list(config.get("output_fields", []))
-        result_limit = self.get_positive_int(config.get("result_limit", "5000"), 5000)
-        max_intermediate = self.get_positive_int(config.get("max_intermediate", "200000"), 200000)
-        remove_duplicates = bool(config.get("remove_duplicates", False))
+        available_fields = self.get_plan_filter_available_fields(headers, extra_tables, context) if extra_tables else None
+        runtime_plan = workflow_build_filter_runtime_plan(headers, config, available_fields=available_fields)
 
-        records = self.make_current_table_records(headers, rows)
+        if (context or {}).get("is_config_probe") and extra_tables:
+            return workflow_build_filter_config_probe_result(runtime_plan["output_headers"])
 
-        # 多表匹配：以上一步结果作为当前表，依次与选中的 SQLite 副表组合。
-        for table in extra_tables:
-            right_records = self.load_plan_table_records(table, context=context)
-            new_records = []
-            for left_record in records:
-                for right_record in right_records:
-                    merged = {}
-                    merged.update(left_record)
-                    merged.update(right_record)
-                    if self.record_passes_plan_join_rules(merged, join_rules, join_logic):
-                        new_records.append(merged)
-                        if len(new_records) > max_intermediate:
-                            raise RuntimeError(
-                                f"高级筛选节点中间结果超过上限 {max_intermediate} 行。"
-                                "请增加匹配规则，或提高中间组合上限。"
-                            )
-            records = new_records
-            if not records:
-                break
+        table_records = {}
+        for table in runtime_plan["extra_tables"]:
+            table_records[table] = self.load_plan_table_records(
+                table,
+                context=context,
+                required_fields=runtime_plan["table_required"].get(table),
+            )
 
-        # 字段输出规则：不选择输出字段时，单表保持旧逻辑输出当前表字段；多表则输出所有可用字段。
-        if output_fields:
-            fields = output_fields
-        elif extra_tables:
-            fields = self.get_plan_filter_available_fields(headers, extra_tables, context)
-        else:
-            fields = list(headers)
-
-        result_rows = []
-        seen_rows = set()
-        duplicate_count = 0
-        for record in records:
-            if not self.record_passes_plan_conditions(record, conditions, logic):
-                continue
-            out_row = [record.get(field, "") for field in fields]
-            if remove_duplicates:
-                row_key = tuple("" if value is None else str(value) for value in out_row)
-                if row_key in seen_rows:
-                    duplicate_count += 1
-                    continue
-                seen_rows.add(row_key)
-            result_rows.append(out_row)
-            if len(result_rows) >= result_limit:
-                break
-
-        stat = f"筛选/匹配后 {len(result_rows)} 行"
-        if remove_duplicates:
-            stat += f"，已去除重复内容 {duplicate_count} 行"
-        return fields, result_rows, stat
+        node_context = {
+            "lookup_fields": runtime_plan["lookup_fields"],
+            "output_headers": runtime_plan["output_headers"],
+            "current_required": runtime_plan["current_required"],
+            "table_required": runtime_plan["table_required"],
+            "table_records": table_records,
+        }
+        return workflow_apply_filter_node(headers, rows, runtime_plan["runtime_config"], context=node_context)
 
     def match_value_output_column_match(self, source_value, lookup_value, mode):
-        """匹配值输出列名节点的匹配规则。"""
-        source_value = "" if source_value is None else str(source_value)
-        lookup_value = "" if lookup_value is None else str(lookup_value)
-        if mode == "完全相等":
-            return source_value == lookup_value
-        if mode == "当前值包含匹配值":
-            return lookup_value != "" and lookup_value in source_value
-        if mode == "匹配值包含当前值":
-            return source_value != "" and source_value in lookup_value
-        if mode == "忽略大小写完全相等":
-            return source_value.lower() == lookup_value.lower()
-        if mode == "忽略大小写当前值包含匹配值":
-            return lookup_value != "" and lookup_value.lower() in source_value.lower()
-        if mode == "忽略大小写匹配值包含当前值":
-            return source_value != "" and source_value.lower() in lookup_value.lower()
-        if mode == "正则匹配":
-            if not lookup_value:
-                return False
-            try:
-                return re.search(lookup_value, source_value) is not None
-            except re.error:
-                return False
-        return False
+        return workflow_match_value_output_column_match(source_value, lookup_value, mode)
 
     def load_lookup_table_for_match_value_output(self, config, context=None):
         """读取匹配值输出列名节点使用的匹配表，支持 SQLite 表与内存中转副表。"""
@@ -15411,6 +13623,15 @@ class PlanWorkflowWindow:
                 raise ValueError(f"中转副表不存在或尚未生成：{lookup_table}。请确认保存中转数据节点在当前节点之前执行。")
             item = transit_tables[lookup_table]
             columns = list(item.get("headers", []))
+            manager = self.check_transit_table_permission(
+                context,
+                lookup_table,
+                ["read_table"],
+                operation="read_transit_table",
+                fields=config.get("lookup_fields", []),
+                field_action="read",
+                node_type="匹配值输出列名",
+            )
             raw_rows = self.normalize_rows(item.get("rows", []), len(columns))
             records = []
             for index, row in enumerate(raw_rows, start=1):
@@ -15418,239 +13639,20 @@ class PlanWorkflowWindow:
                 for i, col in enumerate(columns):
                     record[col] = self.safe_cell(row, i)
                 records.append(record)
+            self.log_transit_table_event(manager, "read_transit_table", lookup_table, columns, raw_rows, message=f"匹配值输出列名读取中转副表 {lookup_table}：{len(raw_rows)} 行 × {len(columns)} 列")
             return columns, records
         return self.load_target_table_rows_for_writeback(lookup_table, context=context)
 
     def apply_match_value_output_field_name_node(self, headers, rows, config, context=None):
-        """匹配值输出列名：用当前表字段值匹配目标表/中转副表多个字段，输出命中的字段名。"""
-        headers = list(headers)
-        rows = self.normalize_rows(rows, len(headers))
-        source_field = str(config.get("source_field", "")).strip()
-        lookup_table = str(config.get("lookup_table", "")).strip()
-        lookup_source_type = str(config.get("lookup_source_type", "SQLite表")).strip() or "SQLite表"
-        lookup_fields = [str(f).strip() for f in config.get("lookup_fields", []) if str(f).strip()]
-        match_mode = config.get("match_mode", "完全相等")
-        if not source_field:
-            raise ValueError("请选择当前表匹配字段。")
-        if source_field not in headers:
-            raise ValueError(f"当前表字段不存在：{source_field}")
-        if not lookup_table:
-            raise ValueError("请选择匹配表或中转副表。")
-        if not lookup_fields:
-            raise ValueError("请选择至少一个参与匹配的目标表字段。")
-
         lookup_columns, lookup_records = self.load_lookup_table_for_match_value_output(config, context=context)
-        missing = [f for f in lookup_fields if f not in lookup_columns]
-        if missing:
-            raise ValueError("匹配表字段不存在：" + ", ".join(missing))
-
-        output_field = str(config.get("output_field", "匹配字段名")).strip() or "匹配字段名"
-        output_match_value = bool(config.get("output_match_value", True))
-        match_value_field = str(config.get("match_value_field", "匹配值")).strip() or "匹配值"
-        output_match_row = bool(config.get("output_match_row", True))
-        match_row_field = str(config.get("match_row_field", "匹配行号")).strip() or "匹配行号"
-        output_status = bool(config.get("output_status", True))
-        status_field = str(config.get("status_field", "匹配状态")).strip() or "匹配状态"
-        multi_policy = config.get("multi_match_policy", "合并所有字段名")
-        sep = str(config.get("multi_match_separator", ";"))
-        no_match_value = str(config.get("no_match_value", "未匹配"))
-        skip_empty_lookup_value = bool(config.get("skip_empty_lookup_value", True))
-
-        source_idx = self.field_index(headers, source_field)
-        out_headers = list(headers)
-        out_rows = [list(row) for row in rows]
-
-        def ensure_field(name):
-            if not name:
-                return None
-            if name not in out_headers:
-                out_headers.append(name)
-                for r in out_rows:
-                    r.append("")
-            return out_headers.index(name)
-
-        out_idx = ensure_field(output_field)
-        match_val_idx = ensure_field(match_value_field) if output_match_value else None
-        match_row_idx = ensure_field(match_row_field) if output_match_row else None
-        status_idx = ensure_field(status_field) if output_status else None
-
-        success_count = 0
-        multi_count = 0
-        no_count = 0
-
-        for row_i, row in enumerate(out_rows):
-            source_value = self.safe_cell(row, source_idx)
-            matches = []
-            if source_value != "":
-                for record in lookup_records:
-                    for field in lookup_fields:
-                        lookup_value = str(record.get(field, ""))
-                        if skip_empty_lookup_value and lookup_value == "":
-                            continue
-                        if self.match_value_output_column_match(source_value, lookup_value, match_mode):
-                            matches.append({
-                                "field": field,
-                                "value": lookup_value,
-                                "row_index": record.get("__row_index__", ""),
-                            })
-
-            if not matches:
-                no_count += 1
-                if out_idx is not None:
-                    row[out_idx] = no_match_value
-                if match_val_idx is not None:
-                    row[match_val_idx] = ""
-                if match_row_idx is not None:
-                    row[match_row_idx] = ""
-                if status_idx is not None:
-                    row[status_idx] = "未匹配"
-                continue
-
-            # 去重但保留顺序。
-            def unique_join(values):
-                result = []
-                seen = set()
-                for v in values:
-                    v = "" if v is None else str(v)
-                    if v not in seen:
-                        result.append(v)
-                        seen.add(v)
-                return sep.join(result)
-
-            if len(matches) == 1:
-                m = matches[0]
-                success_count += 1
-                if out_idx is not None:
-                    row[out_idx] = m["field"]
-                if match_val_idx is not None:
-                    row[match_val_idx] = m["value"]
-                if match_row_idx is not None:
-                    row[match_row_idx] = str(m["row_index"])
-                if status_idx is not None:
-                    row[status_idx] = "成功"
-            else:
-                multi_count += 1
-                if multi_policy == "取第一个匹配字段名":
-                    m = matches[0]
-                    if out_idx is not None:
-                        row[out_idx] = m["field"]
-                    if match_val_idx is not None:
-                        row[match_val_idx] = m["value"]
-                    if match_row_idx is not None:
-                        row[match_row_idx] = str(m["row_index"])
-                    if status_idx is not None:
-                        row[status_idx] = f"多匹配取第一，共{len(matches)}项"
-                elif multi_policy == "标记为多匹配":
-                    if out_idx is not None:
-                        row[out_idx] = "多匹配"
-                    if match_val_idx is not None:
-                        row[match_val_idx] = unique_join([m["value"] for m in matches])
-                    if match_row_idx is not None:
-                        row[match_row_idx] = unique_join([m["row_index"] for m in matches])
-                    if status_idx is not None:
-                        row[status_idx] = f"多匹配，共{len(matches)}项"
-                else:
-                    if out_idx is not None:
-                        row[out_idx] = unique_join([m["field"] for m in matches])
-                    if match_val_idx is not None:
-                        row[match_val_idx] = unique_join([m["value"] for m in matches])
-                    if match_row_idx is not None:
-                        row[match_row_idx] = unique_join([m["row_index"] for m in matches])
-                    if status_idx is not None:
-                        row[status_idx] = f"多匹配，共{len(matches)}项"
-
-        msg = f"匹配值输出列名完成：成功 {success_count} 行，多匹配 {multi_count} 行，未匹配 {no_count} 行"
-        return out_headers, out_rows, msg
+        node_context = dict(context or {})
+        node_context["lookup_columns"] = lookup_columns
+        node_context["lookup_records"] = lookup_records
+        node_context["check_cancelled"] = lambda index: self.check_workflow_cancelled_periodically(context, index)
+        return workflow_apply_match_value_output_field_name_node(headers, rows, config, context=node_context)
 
     def apply_rename_columns_node(self, headers, rows, config):
-        """批量更改列名：只修改 headers，不修改数据内容。"""
-        headers = list(headers)
-        new_headers = list(headers)
-        mode = config.get("mode", "手动映射改名")
-        trim_names = bool(config.get("trim_names", True))
-        duplicate_policy = config.get("duplicate_policy", "自动追加编号")
-        missing_policy = config.get("missing_policy", "跳过并记录警告")
-        warnings = []
-        changed = 0
-
-        def clean_name(name):
-            value = "" if name is None else str(name)
-            return value.strip() if trim_names else value
-
-        def field_scope_indexes():
-            if config.get("scope", "全部字段") == "选中字段":
-                selected = set(config.get("scope_fields", []))
-                return [i for i, h in enumerate(headers) if h in selected]
-            return list(range(len(headers)))
-
-        if mode == "手动映射改名":
-            old_to_new = {}
-            for item in config.get("mappings", []):
-                old = str(item.get("old", "")).strip()
-                new = clean_name(item.get("new", ""))
-                if old:
-                    old_to_new[old] = new
-            for old, new in old_to_new.items():
-                if old not in headers:
-                    msg = f"字段不存在：{old}"
-                    if missing_policy == "报错并停止":
-                        raise ValueError(msg)
-                    warnings.append(msg)
-                    continue
-                idx = headers.index(old)
-                if new:
-                    if new_headers[idx] != new:
-                        changed += 1
-                    new_headers[idx] = new
-        elif mode == "批量添加前缀":
-            prefix = str(config.get("prefix", ""))
-            for idx in field_scope_indexes():
-                new_name = clean_name(prefix + str(headers[idx]))
-                if new_headers[idx] != new_name:
-                    changed += 1
-                new_headers[idx] = new_name
-        elif mode == "批量添加后缀":
-            suffix = str(config.get("suffix", ""))
-            for idx in field_scope_indexes():
-                new_name = clean_name(str(headers[idx]) + suffix)
-                if new_headers[idx] != new_name:
-                    changed += 1
-                new_headers[idx] = new_name
-        elif mode == "批量替换字段名字符":
-            match = str(config.get("replace_match", ""))
-            repl = str(config.get("replace_value", ""))
-            if not match:
-                return list(headers), [list(row) for row in rows], "字段名替换匹配值为空，未修改"
-            for idx in field_scope_indexes():
-                new_name = clean_name(str(headers[idx]).replace(match, repl))
-                if new_headers[idx] != new_name:
-                    changed += 1
-                new_headers[idx] = new_name
-        else:
-            raise ValueError(f"未知改名模式：{mode}")
-
-        # 空字段名兜底。
-        for i, name in enumerate(new_headers):
-            if str(name).strip() == "":
-                new_headers[i] = f"列{i + 1}"
-                warnings.append(f"第{i + 1}列字段名为空，已自动改为 列{i + 1}")
-
-        if duplicate_policy == "自动追加编号":
-            new_headers = self.make_unique_plan_headers(new_headers)
-        else:
-            seen = set()
-            duplicates = []
-            for h in new_headers:
-                if h in seen:
-                    duplicates.append(h)
-                seen.add(h)
-            if duplicates:
-                raise ValueError("字段名重复：" + ", ".join(dict.fromkeys(duplicates)))
-
-        msg = f"已更改 {changed} 个字段名"
-        if warnings:
-            msg += f"，警告 {len(warnings)} 项"
-        return new_headers, [list(row) for row in rows], msg
+        return workflow_apply_rename_columns_node(headers, rows, config)
 
     def make_unique_plan_headers(self, headers):
         """字段名去重：重复字段自动追加 _2、_3。"""
@@ -15673,482 +13675,56 @@ class PlanWorkflowWindow:
 
 
     def parse_numeric_value_for_column_op(self, value):
-        """列数字运算专用数字解析：去除首尾空格后解析为 float。"""
-        text = "" if value is None else str(value).strip()
-        if text == "":
-            raise ValueError("空值")
-        return float(text)
+        return workflow_parse_numeric_value_for_column_op(value)
 
     def format_numeric_column_result(self, value, config):
-        decimal_places = str(config.get("decimal_places", "自动"))
-        if decimal_places == "自动":
-            if abs(value - int(value)) < 1e-12:
-                return str(int(value))
-            return (f"{value:.12f}").rstrip("0").rstrip(".")
-        try:
-            places = int(decimal_places)
-        except Exception:
-            places = 0
-        return f"{value:.{max(0, places)}f}"
+        return workflow_format_numeric_column_result(value, config)
 
     def get_numeric_node_row_indexes(self, headers, rows, config):
-        mode = config.get("range_mode", "全部行")
-        if not rows:
-            return []
-        if mode == "指定起止行":
-            start = self.parse_row_number(config.get("start_row", "1"), "起始行号") - 1
-            end = self.parse_row_number(config.get("end_row", "1"), "结束行号") - 1
-            if start > end:
-                start, end = end, start
-            start = max(0, start)
-            end = min(len(rows) - 1, end)
-            return list(range(start, end + 1)) if start <= end else []
-        if mode == "填充到参考列数据边界":
-            start = self.parse_row_number(config.get("start_row", "1"), "起始行号") - 1
-            end = self.last_non_empty_row_index_by_field(headers, rows, config.get("reference_field", ""))
-            start = max(0, start)
-            return list(range(start, end + 1)) if end >= start else []
-        return list(range(len(rows)))
+        return workflow_get_numeric_node_row_indexes(headers, rows, config)
 
     def numeric_node_fallback_value(self, original_value, policy, fixed_value, fail_text):
-        if policy == "保留原值":
-            return original_value
-        if policy == "填写固定值":
-            return fixed_value
-        if policy in ["标记为计算失败", "标记为除零错误"]:
-            return fail_text
-        return ""
+        return workflow_numeric_node_fallback_value(original_value, policy, fixed_value, fail_text)
 
-    def apply_numeric_column_node(self, headers, rows, config):
-        """列数字运算：对指定列进行加、减、乘、除。"""
-        headers = list(headers)
-        rows = self.normalize_rows(rows, len(headers))
-        if not headers:
-            return headers, rows, "列数字运算：无字段，未处理"
+    def apply_numeric_column_node(self, headers, rows, config, context=None):
+        node_context = dict(context or {})
+        node_context["check_cancelled"] = lambda index: self.check_workflow_cancelled_periodically(context, index)
+        node_context["max_expanded_rows"] = self.MAX_EXPANDED_ROWS
+        return workflow_apply_numeric_column_node(headers, rows, config, context=node_context)
 
-        target_field = config.get("target_field", "")
-        target_idx = self.field_index(headers, target_field)
-        output_mode = config.get("output_mode", "生成新字段")
-        output_field = str(config.get("output_field", "计算结果")).strip() or "计算结果"
-
-        if output_mode == "覆盖原字段":
-            out_idx = target_idx
-        elif output_mode == "写入已有字段":
-            headers, rows, out_idx = self.ensure_field_exists(headers, rows, output_field)
-        else:
-            new_header = self.get_unique_header(output_field, headers)
-            headers.append(new_header)
-            for row in rows:
-                row.append("")
-            out_idx = len(headers) - 1
-
-        operation = config.get("operation", "加")
-        operand_source = config.get("operand_source", "固定值")
-        row_indexes = self.get_numeric_node_row_indexes(headers, rows, config)
-        non_number_policy = config.get("non_number_policy", "留空")
-        divide_zero_policy = config.get("divide_zero_policy", "留空")
-        non_number_fixed = str(config.get("non_number_fixed", ""))
-        divide_zero_fixed = str(config.get("divide_zero_fixed", ""))
-
-        operand_field_idx = None
-        if operand_source == "另一列同行数值":
-            operand_field_idx = self.field_index(headers, config.get("operand_field", ""))
-
-        try:
-            fixed_operand = float(str(config.get("operand_value", "1")).strip())
-        except Exception:
-            fixed_operand = 0.0
-        try:
-            row_offset = float(str(config.get("row_offset", "0")).strip())
-        except Exception:
-            row_offset = 0.0
-        try:
-            sequence_start = float(str(config.get("sequence_start", "1")).strip())
-            sequence_step = float(str(config.get("sequence_step", "1")).strip())
-        except Exception:
-            sequence_start = 1.0
-            sequence_step = 1.0
-
-        changed = skipped = fail_count = zero_count = 0
-        seq_counter = 0
-
-        for row_idx in row_indexes:
-            rows = self.ensure_row_count(rows, row_idx + 1, len(headers))
-            original_text = self.safe_cell(rows[row_idx], target_idx)
-            try:
-                base_value = self.parse_numeric_value_for_column_op(original_text)
-            except Exception:
-                rows[row_idx][out_idx] = self.numeric_node_fallback_value(
-                    original_text, non_number_policy, non_number_fixed, "计算失败"
-                )
-                fail_count += 1
-                continue
-
-            try:
-                if operand_source == "固定值":
-                    operand = fixed_operand
-                elif operand_source == "行号":
-                    operand = float(row_idx + 1)
-                elif operand_source == "行号+N":
-                    operand = float(row_idx + 1) + row_offset
-                elif operand_source == "序号":
-                    operand = sequence_start + sequence_step * seq_counter
-                elif operand_source == "另一列同行数值":
-                    operand = self.parse_numeric_value_for_column_op(self.safe_cell(rows[row_idx], operand_field_idx))
-                else:
-                    operand = fixed_operand
-            except Exception:
-                rows[row_idx][out_idx] = self.numeric_node_fallback_value(
-                    original_text, non_number_policy, non_number_fixed, "计算失败"
-                )
-                fail_count += 1
-                seq_counter += 1
-                continue
-
-            if operation == "加":
-                result = base_value + operand
-            elif operation == "减":
-                result = base_value - operand
-            elif operation == "乘":
-                result = base_value * operand
-            elif operation == "除":
-                if abs(operand) < 1e-12:
-                    rows[row_idx][out_idx] = self.numeric_node_fallback_value(
-                        original_text, divide_zero_policy, divide_zero_fixed, "除零错误"
-                    )
-                    zero_count += 1
-                    seq_counter += 1
-                    continue
-                result = base_value / operand
-            else:
-                raise ValueError(f"未知运算方式：{operation}")
-
-            rows[row_idx][out_idx] = self.format_numeric_column_result(result, config)
-            changed += 1
-            seq_counter += 1
-
-        msg = f"列数字运算完成：成功 {changed} 行"
-        if fail_count:
-            msg += f"，非数字/运算失败 {fail_count} 行"
-        if zero_count:
-            msg += f"，除零 {zero_count} 行"
-        if not row_indexes:
-            msg += "，处理范围为空"
-        return headers, rows, msg
-
-    def apply_dedupe_node(self, headers, rows, config):
-        """去重 / 重复数据处理节点。"""
-        headers = list(headers)
-        normalized = self.normalize_rows(rows, len(headers))
-        if not headers:
-            return headers, normalized, "去重：无字段，未处理"
-
-        mode = config.get("dedupe_mode", "指定字段/组合字段去重")
-        key_fields = list(config.get("key_fields", []))
-        trim = bool(config.get("trim", True))
-        ignore_case = bool(config.get("ignore_case", False))
-        empty_key_policy = config.get("empty_key_policy", "空键参与去重")
-        keep_policy = config.get("keep_policy", "保留第一条")
-        output_mode = config.get("output_mode", "输出去重后的数据")
-        add_marker = bool(config.get("add_marker_columns", True)) or output_mode == "原表增加重复标记列"
-
-        if mode == "整行去重":
-            key_indices = list(range(len(headers)))
-            key_names = list(headers)
-        else:
-            if not key_fields:
-                raise ValueError("去重节点需要至少选择一个去重字段。")
-            missing = [f for f in key_fields if f not in headers]
-            if missing:
-                raise ValueError("去重字段不存在：" + ", ".join(missing))
-            key_indices = [headers.index(f) for f in key_fields]
-            key_names = list(key_fields)
-
-        def normalize_key_value(value):
-            text = "" if value is None else str(value)
-            if trim:
-                text = text.strip()
-            if ignore_case:
-                text = text.lower()
-            return text
-
-        groups = {}
-        order = []
-        skipped_empty = []
-        for row_idx, row in enumerate(normalized):
-            key = tuple(normalize_key_value(self.safe_cell(row, i)) for i in key_indices)
-            if empty_key_policy == "空键跳过去重" and all(v == "" for v in key):
-                skipped_empty.append(row_idx)
-                continue
-            if key not in groups:
-                groups[key] = []
-                order.append(key)
-            groups[key].append(row_idx)
-
-        keep_indices = set(skipped_empty)
-        duplicate_rows = set()
-        group_info = {}
-        duplicate_group_count = 0
-
-        def non_empty_count(row):
-            return sum(1 for cell in row if str(cell).strip() != "")
-
-        for key in order:
-            idxs = groups[key]
-            is_duplicate = len(idxs) > 1
-            if is_duplicate:
-                duplicate_group_count += 1
-                group_id = f"DUP_{duplicate_group_count:04d}"
-                duplicate_rows.update(idxs)
-            else:
-                group_id = ""
-
-            if keep_policy == "保留最后一条":
-                keep_idx = idxs[-1]
-            elif keep_policy == "保留非空字段最多":
-                keep_idx = max(idxs, key=lambda i: (non_empty_count(normalized[i]), -i))
-            else:
-                # “保留第一条”和“不删除，仅标记”都把第一条作为保留标记。
-                keep_idx = idxs[0]
-
-            keep_indices.add(keep_idx)
-            for pos, row_idx in enumerate(idxs, start=1):
-                group_info[row_idx] = {
-                    "key": key,
-                    "group_id": group_id,
-                    "group_index": pos,
-                    "group_count": len(idxs),
-                    "is_duplicate": is_duplicate,
-                    "keep": row_idx == keep_idx,
-                }
-
-        for row_idx in skipped_empty:
-            group_info[row_idx] = {
-                "key": tuple("" for _ in key_indices),
-                "group_id": "",
-                "group_index": 1,
-                "group_count": 1,
-                "is_duplicate": False,
-                "keep": True,
-                "empty_skipped": True,
-            }
-
-        if output_mode == "原表增加重复标记列" or keep_policy == "不删除，仅标记":
-            selected_indices = list(range(len(normalized)))
-            add_marker = True
-        elif output_mode == "输出重复项数据":
-            selected_indices = [i for i in range(len(normalized)) if i in duplicate_rows]
-        elif output_mode == "输出唯一项数据":
-            selected_indices = [i for i in range(len(normalized)) if i not in duplicate_rows]
-        elif output_mode == "输出重复统计表":
-            stat_headers = list(key_names) + ["重复次数", "重复组编号", "是否重复"]
-            stat_rows = []
-            duplicate_group_no = 0
-            for key in order:
-                idxs = groups[key]
-                is_duplicate = len(idxs) > 1
-                if is_duplicate:
-                    duplicate_group_no += 1
-                    gid = f"DUP_{duplicate_group_no:04d}"
-                else:
-                    gid = ""
-                stat_rows.append(list(key) + [str(len(idxs)), gid, "是" if is_duplicate else "否"])
-            # 空键跳过去重的行单独记为未参与。
-            if skipped_empty:
-                stat_rows.append(["" for _ in key_names] + [str(len(skipped_empty)), "", "空键跳过"])
-            return stat_headers, stat_rows, f"去重统计：共 {len(stat_rows)} 个统计项，重复组 {duplicate_group_count} 个"
-        else:
-            selected_indices = [i for i in range(len(normalized)) if i in keep_indices]
-
-        out_headers = list(headers)
-        marker_fields = []
-        if add_marker:
-            marker_fields = [
-                config.get("duplicate_group_field", "重复组编号") or "重复组编号",
-                config.get("duplicate_status_field", "重复状态") or "重复状态",
-                config.get("duplicate_index_field", "组内序号") or "组内序号",
-                config.get("duplicate_count_field", "重复次数") or "重复次数",
-                config.get("keep_flag_field", "是否保留") or "是否保留",
-            ]
-            marker_fields = self.make_unique_headers_for_append(out_headers, marker_fields)
-            out_headers += marker_fields
-
-        out_rows = []
-        for i in selected_indices:
-            row = list(normalized[i])
-            info = group_info.get(i, {})
-            if add_marker:
-                if info.get("empty_skipped"):
-                    status = "空键跳过"
-                elif info.get("is_duplicate"):
-                    status = "重复"
-                else:
-                    status = "唯一"
-                row += [
-                    info.get("group_id", ""),
-                    status,
-                    str(info.get("group_index", "")),
-                    str(info.get("group_count", "")),
-                    "是" if info.get("keep") else "否",
-                ]
-            out_rows.append(row)
-
-        total = len(normalized)
-        output_count = len(out_rows)
-        duplicate_row_count = len(duplicate_rows)
-        if output_mode == "输出去重后的数据":
-            action = "输出去重后的数据"
-        elif output_mode == "输出重复项数据":
-            action = "输出重复项数据"
-        elif output_mode == "输出唯一项数据":
-            action = "输出唯一项数据"
-        else:
-            action = "增加重复标记列"
-        return out_headers, out_rows, f"去重完成：原 {total} 行，输出 {output_count} 行，重复组 {duplicate_group_count} 个，重复行 {duplicate_row_count} 行，模式：{action}"
+    def apply_dedupe_node(self, headers, rows, config, context=None):
+        node_context = dict(context or {})
+        node_context["check_cancelled"] = lambda index: self.check_workflow_cancelled_periodically(context, index)
+        return workflow_apply_dedupe_node(headers, rows, config, context=node_context)
 
     def make_unique_headers_for_append(self, existing_headers, new_headers):
         """给追加字段生成不重复字段名。"""
-        result = []
-        used = set(str(h) for h in existing_headers)
-        for raw in new_headers:
-            base = str(raw).strip() or "字段"
-            name = base
-            n = 2
-            while name in used or name in result:
-                name = f"{base}_{n}"
-                n += 1
-            result.append(name)
-            used.add(name)
-        return result
+        return core_make_unique_headers_for_append(existing_headers, new_headers)
 
     def apply_delete_columns_node(self, headers, rows, config):
-        delete_fields = set(config.get("fields", []))
-        keep_indexes = [i for i, h in enumerate(headers) if h not in delete_fields]
-        new_headers = [headers[i] for i in keep_indexes]
-        normalized = self.normalize_rows(rows, len(headers))
-        new_rows = [[self.safe_cell(row, i) for i in keep_indexes] for row in normalized]
-        return new_headers, new_rows, f"删除 {len(headers)-len(new_headers)} 列"
+        return workflow_apply_delete_columns_node(headers, rows, config)
 
     def apply_move_columns_node(self, headers, rows, config):
-        order = list(config.get("order", []))
-        final_order = [h for h in order if h in headers]
-        for h in headers:
-            if h not in final_order:
-                final_order.append(h)
-        indexes = [headers.index(h) for h in final_order]
-        normalized = self.normalize_rows(rows, len(headers))
-        new_rows = [[self.safe_cell(row, i) for i in indexes] for row in normalized]
-        return final_order, new_rows, "已调整列顺序"
-
-    def execute_plan(self):
-        use_current_preview = False
-        has_actual_rename = any(
-            node.get("enabled", True) and node.get("type") == "批量重命名" and node.get("config", {}).get("actual_rename")
-            for node in self.nodes
-        )
-
-        if self.preview_dirty and self.preview_headers and self.preview_rows and not has_actual_rename:
-            use_current_preview = messagebox.askyesno(
-                "使用已修改的计划预览？",
-                "检测到结果预览区存在手动修改。\n\n"
-                "选择【是】：使用当前预览数据作为输出，不重新执行计划。\n"
-                "选择【否】：重新执行计划，当前预览修改会被覆盖。"
-            )
-
-        if use_current_preview:
-            headers = list(self.preview_headers)
-            rows = [list(row) for row in self.preview_rows]
-            logs = ["使用手动修改后的当前计划预览结果输出"]
-        else:
-            if has_actual_rename:
-                ok = messagebox.askyesno(
-                    "确认执行批量重命名",
-                    "当前计划中存在已勾选【实际执行重命名】的节点。\n\n"
-                    "执行后会修改磁盘上的文件/文件夹名称。建议先使用【预览完整计划】确认结果无误。\n\n是否继续执行？"
-                )
-                if not ok:
-                    return
-            try:
-                headers, rows, logs = self.run_plan(stop_index=None, raise_error=True, execute_actions=True)
-            except Exception as e:
-                messagebox.showerror("执行失败", str(e))
-                return
-
-        mode = self.output_mode_var.get()
-        if mode == "输出到主界面预览区":
-            self.app.headers = list(headers)
-            self.app.rows = [list(row) for row in rows]
-            self.app.raw_data = ""
-            self.app.refresh_tree()
-            self.set_plan_preview_result(headers, rows, display=True)
-            self.app.info_var.set(f"计划执行完成，已输出到主界面：{len(rows)} 行 × {len(headers)} 列。")
-            self.status_var.set("计划执行完成，已输出到主界面。" + self.format_logs(logs))
-            return
-
-        if mode in ["保存为SQLite新表", "覆盖当前表"]:
-            table_name = self.get_workflow_output_table(snapshot_context)
-            if not table_name:
-                messagebox.showwarning("提示", "请填写输出表名。")
-                return
-            overwrite = mode == "覆盖当前表"
-            if overwrite:
-                ok = messagebox.askyesno("确认覆盖", f"即将覆盖 SQLite 表：{table_name}\n覆盖前会按设置自动备份。是否继续？")
-                if not ok:
-                    return
-            try:
-                saved_name = self.save_result_to_sqlite(headers, rows, table_name, overwrite=overwrite, backup=self.get_workflow_backup_before_overwrite(snapshot_context), context=snapshot_context)
-                self.app.refresh_table_list()
-                self.status_var.set(f"计划执行完成，已保存到 SQLite 表：{saved_name}。" + self.format_logs(logs))
-                messagebox.showinfo("保存成功", f"已保存计划结果。\n\n表名：{saved_name}\n行数：{len(rows)}\n列数：{len(headers)}")
-            except Exception as e:
-                messagebox.showerror("保存失败", str(e))
-            return
-
-        if mode == "导出为xlsx":
-            old_headers = self.app.headers
-            old_rows = self.app.rows
-            old_raw = self.app.raw_data
-            try:
-                self.app.headers = list(headers)
-                self.app.rows = [list(row) for row in rows]
-                self.app.raw_data = ""
-                self.app.export_current_preview_to_xlsx()
-                self.status_var.set("计划执行完成，已调用 xlsx 导出。" + self.format_logs(logs))
-            finally:
-                self.app.headers = old_headers
-                self.app.rows = old_rows
-                self.app.raw_data = old_raw
-            return
+        return workflow_apply_move_columns_node(headers, rows, config)
 
     def save_result_to_sqlite(self, headers, rows, table_name_raw, overwrite=False, backup=True, context=None):
-        db_path = self.get_workflow_db_path(context if 'context' in locals() else None)
+        db_path = self.get_workflow_db_path(context)
         if not db_path:
             raise ValueError("请先设置 SQLite 数据库路径。")
         table_name = self.app.sanitize_sql_name(table_name_raw, "计划结果")
         sql_columns = self.app.make_sql_columns(headers)
-        conn = sqlite3.connect(db_path)
-        try:
-            cur = conn.cursor()
-            if overwrite:
-                if self.app.table_exists(conn, table_name):
-                    if backup:
-                        backup_name = f"{table_name}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                        cur.execute(f"CREATE TABLE {self.app.quote_ident(backup_name)} AS SELECT * FROM {self.app.quote_ident(table_name)}")
-                    cur.execute(f"DROP TABLE IF EXISTS {self.app.quote_ident(table_name)}")
-            else:
-                table_name = self.app.get_available_table_name(conn, table_name)
-
-            col_defs = [f"{self.app.quote_ident(col)} TEXT" for col in sql_columns]
-            cur.execute(f"CREATE TABLE IF NOT EXISTS {self.app.quote_ident(table_name)} ({', '.join(col_defs)})")
-            placeholders = ", ".join(["?"] * len(sql_columns))
-            col_names = ", ".join(self.app.quote_ident(col) for col in sql_columns)
-            insert_sql = f"INSERT INTO {self.app.quote_ident(table_name)} ({col_names}) VALUES ({placeholders})"
-            normalized_rows = self.normalize_rows(rows, len(sql_columns))
-            cur.executemany(insert_sql, normalized_rows)
-            conn.commit()
-            return table_name
-        finally:
-            conn.close()
+        if not sql_columns:
+            raise ValueError("没有可写入的字段。")
+        current = (context or {}).get("current_node_info", {}) if isinstance(context, dict) else {}
+        if isinstance(current, dict) and current.get("node_id"):
+            manager = self.get_table_manager(context, node_type="工作流输出")
+        else:
+            manager = self.get_workflow_output_manager(table_name, overwrite=overwrite, context=context)
+        if overwrite and backup and manager.table_exists(table_name):
+            manager.backup_table(table_name)
+        mode = "replace" if overwrite else "timestamp"
+        info = manager.write_table(table_name, sql_columns, self.normalize_rows(rows, len(sql_columns)), mode=mode)
+        return info.get("table_name", table_name)
 
     def get_plan_dir(self):
         """返回程序真实目录下的 plan 模板目录，并确保目录存在。"""
@@ -16175,6 +13751,7 @@ class PlanWorkflowWindow:
         if not plan_name:
             plan_name = self.output_table_var.get().strip() or "工作流计划"
 
+        self.refresh_node_tree_table_access(self.nodes)
         return {
             "template_type": "workflow_plan",
             "version": "1.0",
@@ -16183,6 +13760,7 @@ class PlanWorkflowWindow:
             "output_mode": self.output_mode_var.get(),
             "output_table": self.output_table_var.get(),
             "backup_before_overwrite": self.backup_before_overwrite_var.get(),
+            "table_access_policy": self.normalize_table_access_policy(),
         }
 
     def validate_plan_template_data(self, data):
@@ -16207,9 +13785,11 @@ class PlanWorkflowWindow:
             raise ValueError(reason)
 
         self.nodes = data.get("nodes", [])
+        self.ensure_node_tree_identity(self.nodes)
         self.output_mode_var.set(data.get("output_mode", "输出到主界面预览区"))
         self.output_table_var.set(data.get("output_table", self.make_default_output_table_name()))
         self.backup_before_overwrite_var.set(bool(data.get("backup_before_overwrite", True)))
+        self.set_table_access_policy(data.get("table_access_policy", "audit"))
         self.refresh_node_list()
         self.rebuild_current_config()
 
@@ -16242,8 +13822,7 @@ class PlanWorkflowWindow:
         for file_name in files:
             path = os.path.join(self.plan_dir, file_name)
             try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+                data, _load_info = load_json_with_backup(path)
                 ok, _ = self.validate_plan_template_data(data)
                 if not ok:
                     skipped_count += 1
@@ -16314,8 +13893,7 @@ class PlanWorkflowWindow:
 
         data = self.build_plan_template_data(plan_name=saved_plan_name)
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            atomic_write_json(path, data)
             self.status_var.set(f"计划模板已保存：{path}；plan_name 已同步为：{saved_plan_name}")
             self.refresh_plan_template_list(show_status=False)
 
@@ -16340,8 +13918,7 @@ class PlanWorkflowWindow:
             if not ok:
                 return
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = load_json_file_with_recovery(path, parent=self.window)
             self.apply_plan_template_data(data, source_path=path)
         except Exception as e:
             messagebox.showerror("载入失败", str(e))
@@ -16420,6 +13997,7 @@ class PlanWorkflowWindow:
             "output_table": self.output_table_var.get().strip(),
             "output_mode": self.output_mode_var.get(),
             "backup_before_overwrite": bool(self.backup_before_overwrite_var.get()),
+            "table_access_policy": self.normalize_table_access_policy(),
             "headers": copy.deepcopy(self.app.headers),
             "rows": copy.deepcopy(self.app.rows),
             "nodes": copy.deepcopy(self.nodes),
@@ -16503,6 +14081,12 @@ class PlanWorkflowWindow:
     def _start_background_workflow(self, mode, title, stop_index=None, execute_actions=False):
         if self.is_background_workflow_running():
             messagebox.showwarning("后台任务运行中", "当前已有工作流正在后台执行，请等待完成或先取消。")
+            return
+        if not self.confirm_jump_precheck(execute_actions=execute_actions, stop_index=stop_index):
+            self.status_var.set("工作流已取消：跳转校验未继续。")
+            return
+        if execute_actions and not self.confirm_table_access_precheck(execute_actions=True, stop_index=stop_index):
+            self.status_var.set("执行计划已取消：权限预检未继续。")
             return
         snapshot = self.build_workflow_task_snapshot(mode, stop_index=stop_index, execute_actions=execute_actions)
         self.workflow_worker_queue = queue.Queue()
@@ -16677,13 +14261,13 @@ class PlanWorkflowWindow:
                     percent = max(0, min(100, current_f / total_f * 100))
                     self.node_progress_var.set(percent)
                     if int(total_f) == total_f and int(current_f) == current_f:
-                        self.node_progress_text.set(f"当前节点：{node_name} - {int(current_f)} / {int(total_f)}，{message}")
+                        self.node_progress_text.set(f"当前节点：{node_name} - {int(current_f)} / {int(total_f)}")
                     else:
-                        self.node_progress_text.set(f"当前节点：{node_name} - {current_f:g} / {total_f:g}，{message}")
+                        self.node_progress_text.set(f"当前节点：{node_name} - {current_f:g} / {total_f:g}")
                 else:
-                    self.node_progress_text.set(f"当前节点：{node_name} - {message}")
+                    self.node_progress_text.set(f"当前节点：{node_name} - 处理中")
             except Exception:
-                self.node_progress_text.set(f"当前节点：{node_name} - {message}")
+                self.node_progress_text.set(f"当前节点：{node_name} - 处理中")
             self.worker_status_text.set(detail_message)
             return
         if mtype == "node_done":
@@ -16727,6 +14311,8 @@ class PlanWorkflowWindow:
             context = msg.get("context", {}) or {}
             snapshot = msg.get("snapshot") or context.get("workflow_snapshot", {}) or {}
             self.current_transit_tables = context.get("transit_tables", {})
+            self.last_workflow_context = context
+            self.last_table_access_logs = list(context.get("table_access_logs", []) or [])
             # 后台节点如果写入了 SQLite 表，不直接刷新 UI，只在这里回到主线程后统一刷新表列表。
             refresh_requests = context.get("ui_refresh_requests", []) or []
             if context.get("needs_refresh_table_list") or "table_list" in refresh_requests:
@@ -16771,7 +14357,15 @@ class PlanWorkflowWindow:
                 if not ok:
                     return
             try:
-                saved_name = self.save_result_to_sqlite(headers, rows, table_name, overwrite=overwrite, backup=self.get_workflow_backup_before_overwrite(snapshot_context), context=snapshot_context)
+                saved_name = self.save_result_to_sqlite(
+                    headers,
+                    rows,
+                    table_name,
+                    overwrite=overwrite,
+                    backup=self.get_workflow_backup_before_overwrite(snapshot_context),
+                    context=context,
+                )
+                self.last_table_access_logs = list(context.get("table_access_logs", []) or [])
                 self.app.refresh_table_list()
                 self.status_var.set(f"计划执行完成，已保存到 SQLite 表：{saved_name}。" + self.format_logs(logs))
                 messagebox.showinfo("保存成功", f"已保存计划结果。\n\n表名：{saved_name}\n行数：{len(rows)}\n列数：{len(headers)}")

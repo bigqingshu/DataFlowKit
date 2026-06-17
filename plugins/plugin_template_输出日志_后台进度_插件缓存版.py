@@ -68,7 +68,7 @@ def get_parameter_schema():
             "label": "可选数据库表",
             "type": "table_select",
             "default": "",
-            "help": "示例：插件可通过 context['db'] 读取这个表。",
+            "help": "主程序内置模式可通过 context['db'] 读取；独立模式请配置为输入表。",
         },
         {
             "name": "enable_cache",
@@ -93,6 +93,29 @@ def get_parameter_schema():
             "help": "快速签名=路径+大小+修改时间；文件Hash=额外计算sha256，更准确但更慢。",
         },
     ]
+
+
+def get_output_schema(params=None, input_data=None, context=None):
+    params = dict(params or {})
+    input_data = input_data or {}
+    headers = list(input_data.get("headers", []) or [])
+    prefix = params.get("output_prefix", "插件_")
+    add_status = bool(params.get("add_status", True))
+    out_headers = list(headers)
+    extra_headers = []
+    if add_status:
+        extra_headers.append(prefix + "状态")
+    extra_headers.append(prefix + "缓存状态")
+    extra_headers.append(prefix + "文件大小")
+    for h in extra_headers:
+        if h not in out_headers:
+            out_headers.append(h)
+    return {
+        "type": "table",
+        "headers": out_headers,
+        "rows": [],
+        "meta": {"plugin": PLUGIN_INFO["id"], "lazy_schema": True},
+    }
 
 
 def validate_params(params, input_data, context):
