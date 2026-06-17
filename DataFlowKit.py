@@ -182,7 +182,6 @@ from workflow import output_node_runtime as workflow_output_node_runtime
 from workflow import plugin_input_services as workflow_plugin_input_services
 from workflow import plugin_io_services as workflow_plugin_io_services
 from workflow import plugin_runtime_services as workflow_plugin_runtime_services
-from workflow import table_runtime_services as workflow_table_runtime_services
 from workflow.nodes.transit_nodes import (
     append_headers_rows as workflow_append_headers_rows,
     make_unique_transit_name as workflow_make_unique_transit_name,
@@ -193,6 +192,7 @@ from workflow.nodes.writeback_nodes import (
 )
 from workflow.workflow_config_builder_mixin import WorkflowConfigBuilderMixin
 from workflow.workflow_jump_mixin import WorkflowJumpMixin
+from workflow.workflow_table_runtime_mixin import WorkflowTableRuntimeMixin
 from workflow.table_access_precheck import (
     find_table_access_field_rule as workflow_find_table_access_field_rule,
     find_matching_table_access_entry as workflow_find_matching_table_access_entry,
@@ -4270,6 +4270,7 @@ class PlanWorkflowWindow(
     PlanPreviewMixin,
     WorkflowConfigBuilderMixin,
     WorkflowJumpMixin,
+    WorkflowTableRuntimeMixin,
     PluginConfigWindowMixin,
     FilterConfigWindowMixin,
     GroupConfigWindowMixin,
@@ -5108,119 +5109,6 @@ class PlanWorkflowWindow(
             title="执行前权限预检",
             allow_continue=True,
         )
-
-    def get_table_manager(self, context=None, node=None, node_type="", node_name=""):
-        return workflow_table_runtime_services.get_table_manager(
-            self,
-            context=context,
-            node=node,
-            node_type=node_type,
-            node_name=node_name,
-        )
-
-    def get_workflow_output_manager(self, table_name, overwrite=False, context=None):
-        return workflow_table_runtime_services.get_workflow_output_manager(
-            self,
-            table_name,
-            overwrite=overwrite,
-            context=context,
-        )
-
-    def transit_write_permissions_for_mode(self, exists=False, write_mode="", partial=False):
-        return workflow_table_runtime_services.transit_write_permissions_for_mode(
-            exists=exists,
-            write_mode=write_mode,
-            partial=partial,
-        )
-
-    def check_transit_table_permission(self, context, table_name, permissions, operation="transit_table",
-                                       fields=None, field_action=None, write_mode="", node_type=""):
-        return workflow_table_runtime_services.check_transit_table_permission(
-            self,
-            context,
-            table_name,
-            permissions,
-            operation=operation,
-            fields=fields,
-            field_action=field_action,
-            write_mode=write_mode,
-            node_type=node_type,
-        )
-
-    def check_transit_table_write_permission(self, context, table_name, exists=False, write_mode="",
-                                             fields=None, partial=False, node_type="", operation="write_transit_table"):
-        return workflow_table_runtime_services.check_transit_table_write_permission(
-            self,
-            context,
-            table_name,
-            exists=exists,
-            write_mode=write_mode,
-            fields=fields,
-            partial=partial,
-            node_type=node_type,
-            operation=operation,
-        )
-
-    def log_transit_table_event(self, manager, operation, table_name, headers=None, rows=None, message="", **extra):
-        return workflow_table_runtime_services.log_transit_table_event(
-            manager,
-            operation,
-            table_name,
-            headers=headers,
-            rows=rows,
-            message=message,
-            **extra,
-        )
-
-    def check_current_table_permission(self, context, headers, write=False, operation="current_table"):
-        return workflow_table_runtime_services.check_current_table_permission(
-            self,
-            context,
-            headers,
-            write=write,
-            operation=operation,
-        )
-
-    def log_current_table_transform(self, manager, before_shape, headers, rows, node_type=""):
-        return workflow_table_runtime_services.log_current_table_transform(
-            manager,
-            before_shape,
-            headers,
-            rows,
-            node_type=node_type,
-        )
-
-    def get_workflow_output_mode(self, context=None):
-        snapshot = self.get_workflow_snapshot(context)
-        value = str(snapshot.get("output_mode") or "").strip()
-        if value:
-            return value
-        try:
-            return self.output_mode_var.get()
-        except Exception:
-            return "输出到主界面预览区"
-
-    def get_workflow_output_table(self, context=None):
-        snapshot = self.get_workflow_snapshot(context)
-        value = str(snapshot.get("output_table") or snapshot.get("workflow_name") or "").strip()
-        if value:
-            return value
-        try:
-            return self.output_table_var.get().strip()
-        except Exception:
-            return ""
-
-    def get_workflow_backup_before_overwrite(self, context=None):
-        snapshot = self.get_workflow_snapshot(context)
-        if "backup_before_overwrite" in snapshot:
-            return bool(snapshot.get("backup_before_overwrite"))
-        try:
-            return bool(self.backup_before_overwrite_var.get())
-        except Exception:
-            return True
-
-    def get_workflow_sqlite_columns(self, table_name, context=None):
-        return workflow_table_runtime_services.get_workflow_sqlite_columns(self, table_name, context=context)
 
     def read_plugin_input_table_source(self, spec, current_headers, current_rows, context=None):
         return workflow_plugin_input_services.read_plugin_input_table_source(
@@ -6199,14 +6087,6 @@ class PlanWorkflowWindow(
     def make_current_table_records(self, headers, rows, required_headers=None):
         return workflow_make_current_table_records(headers, rows, required_headers)
 
-    def load_plan_table_records(self, table_name, context=None, required_fields=None):
-        return workflow_table_runtime_services.load_plan_table_records(
-            self,
-            table_name,
-            context=context,
-            required_fields=required_fields,
-        )
-
     def normalize_filter_condition_value_source(self, cond):
         return workflow_normalize_filter_condition_value_source(cond)
 
@@ -6252,20 +6132,8 @@ class PlanWorkflowWindow(
     def append_headers_rows(self, old_headers, old_rows, new_headers, new_rows):
         return workflow_append_headers_rows(old_headers, old_rows, new_headers, new_rows)
 
-    def save_result_to_sqlite_append(self, headers, rows, table_name_raw, context=None):
-        return workflow_table_runtime_services.save_result_to_sqlite_append(
-            self,
-            headers,
-            rows,
-            table_name_raw,
-            context=context,
-        )
-
     def export_headers_rows_to_xlsx_file(self, headers, rows, path):
         return workflow_output_node_runtime.export_headers_rows_to_xlsx_file(self, headers, rows, path)
-
-    def sqlite_table_exists_by_name(self, table_name, context=None):
-        return workflow_table_runtime_services.sqlite_table_exists_by_name(self, table_name, context=context)
 
     def apply_save_transit_memory_plan(self, context, memory_plan, headers_copy, rows_copy):
         return workflow_output_node_runtime.apply_save_transit_memory_plan(
@@ -6291,41 +6159,6 @@ class PlanWorkflowWindow(
     def compare_writeback_values(self, left, op, right):
         return workflow_compare_writeback_values(left, op, right)
 
-    def load_target_table_rows_for_writeback(self, table_name, context=None):
-        return workflow_table_runtime_services.load_target_table_rows_for_writeback(
-            self,
-            table_name,
-            context=context,
-        )
-
-    def backup_sqlite_table_for_writeback(self, table_name, context=None):
-        return workflow_table_runtime_services.backup_sqlite_table_for_writeback(self, table_name, context=context)
-
-    def apply_writeback_updates_to_sqlite(self, table_name, actions, context=None):
-        return workflow_table_runtime_services.apply_writeback_updates_to_sqlite(
-            self,
-            table_name,
-            actions,
-            context=context,
-        )
-
-    def apply_writeback_transaction_to_sqlite(self, table_name, actions, target_fields, context=None):
-        return workflow_table_runtime_services.apply_writeback_transaction_to_sqlite(
-            self,
-            table_name,
-            actions,
-            target_fields,
-            context=context,
-        )
-
-    def clear_writeback_target_fields_in_sqlite(self, table_name, target_fields, context=None):
-        return workflow_table_runtime_services.clear_writeback_target_fields_in_sqlite(
-            self,
-            table_name,
-            target_fields,
-            context=context,
-        )
-
     def build_writeback_full_structure_rows_for_sqlite(self, headers, rows, config, target_columns):
         return workflow_build_writeback_full_structure_rows_for_sqlite(headers, rows, config, target_columns)
 
@@ -6349,13 +6182,6 @@ class PlanWorkflowWindow(
 
     def match_value_output_column_match(self, source_value, lookup_value, mode):
         return workflow_match_value_output_column_match(source_value, lookup_value, mode)
-
-    def load_lookup_table_for_match_value_output(self, config, context=None):
-        return workflow_table_runtime_services.load_lookup_table_for_match_value_output(
-            self,
-            config,
-            context=context,
-        )
 
     def make_unique_plan_headers(self, headers):
         """字段名去重：重复字段自动追加 _2、_3。"""
@@ -6392,17 +6218,6 @@ class PlanWorkflowWindow(
     def make_unique_headers_for_append(self, existing_headers, new_headers):
         """给追加字段生成不重复字段名。"""
         return core_make_unique_headers_for_append(existing_headers, new_headers)
-
-    def save_result_to_sqlite(self, headers, rows, table_name_raw, overwrite=False, backup=True, context=None):
-        return workflow_table_runtime_services.save_result_to_sqlite(
-            self,
-            headers,
-            rows,
-            table_name_raw,
-            overwrite=overwrite,
-            backup=backup,
-            context=context,
-        )
 
     def get_plan_dir(self):
         """返回程序真实目录下的 plan 模板目录，并确保目录存在。"""
