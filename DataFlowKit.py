@@ -199,8 +199,6 @@ from workflow.plugin_config_helpers import (
     default_plugin_input_spec as workflow_default_plugin_input_spec,
     ensure_plugin_input_specs as workflow_ensure_plugin_input_specs,
     format_plugin_input_spec as workflow_format_plugin_input_spec,
-    get_plugin_field_choices_for_table_param as workflow_get_plugin_field_choices_for_table_param,
-    get_plugin_input_table_alias_choices as workflow_get_plugin_input_table_alias_choices,
     normalize_plugin_run_mode as workflow_normalize_plugin_run_mode,
     plugin_config_transit_reuse_note as workflow_plugin_config_transit_reuse_note,
 )
@@ -7756,52 +7754,11 @@ class PlanWorkflowWindow:
             pass
 
     def plugin_config_context_with_live_transit(self, transit_context=None, include_rows=False):
-        """插件配置期复用上次真实预览生成的中转副表。
-
-        include_rows=False 时只补表名和字段，避免点选插件节点时复制大表；
-        打开插件自带设置窗口时再传入真实行数据。
-        """
-        config_context = copy.deepcopy(transit_context or {"transit_tables": {}})
-        transit_tables = config_context.setdefault("transit_tables", {})
-        reused = []
-
-        live_tables = {}
-        if isinstance(getattr(self, "last_workflow_context", None), dict):
-            live_tables.update(self.last_workflow_context.get("transit_tables", {}) or {})
-        live_tables.update(getattr(self, "current_transit_tables", {}) or {})
-
-        for name, live_item in live_tables.items():
-            if not isinstance(live_item, dict):
-                continue
-            live_rows = list(live_item.get("rows", []) or [])
-            if not live_rows:
-                continue
-            existing = transit_tables.get(name)
-            existing_rows = []
-            if isinstance(existing, dict):
-                existing_rows = list(existing.get("rows", []) or [])
-            if existing_rows:
-                continue
-            if include_rows:
-                transit_tables[name] = copy.deepcopy(live_item)
-            else:
-                headers = list(live_item.get("headers", []) or [])
-                source = live_item.get("source", "上次真实预览")
-                if isinstance(existing, dict):
-                    merged = copy.deepcopy(existing)
-                    if not merged.get("headers") and headers:
-                        merged["headers"] = headers
-                    merged.setdefault("rows", [])
-                    merged.setdefault("source", source)
-                    transit_tables[name] = merged
-                else:
-                    transit_tables[name] = {"headers": headers, "rows": [], "source": source}
-            if name not in reused:
-                reused.append(name)
-
-        if reused:
-            config_context["_reused_preview_transit_tables"] = reused
-        return config_context
+        return workflow_plugin_dynamic_config_ui.plugin_config_context_with_live_transit(
+            self,
+            transit_context=transit_context,
+            include_rows=include_rows,
+        )
 
     def plugin_config_transit_reuse_note(self, transit_context=None):
         return workflow_plugin_config_transit_reuse_note(transit_context)
@@ -8292,72 +8249,16 @@ class PlanWorkflowWindow:
         }
 
     def create_plugin_dynamic_config_context(self, item, config, params, headers, transit_context, current_rows, dynamic_param_controls):
-        state = {"refreshing_dynamic_controls": False}
-
-        def set_param(key, value):
-            params[key] = value
-            config["params"] = params
-
-        def get_input_table_header_map():
-            return self.build_plugin_input_table_headers(config, headers, transit_context or {})
-
-        def get_input_table_alias_choices():
-            return workflow_get_plugin_input_table_alias_choices(
-                get_input_table_header_map(),
-                config.get("input_tables", []) or [],
-            )
-
-        def get_field_choices_for_table_param(spec):
-            return workflow_get_plugin_field_choices_for_table_param(
-                spec,
-                params,
-                get_input_table_header_map(),
-            )
-
-        def get_dynamic_parameter_choices(spec, key):
-            return self.get_plugin_dynamic_parameter_choices_for_config(
-                item,
-                config,
-                params,
-                spec,
-                key,
-                headers,
-                current_rows=current_rows,
-                transit_context=transit_context or {},
-                input_table_headers=get_input_table_header_map(),
-            )
-
-        def dynamic_choices_for_control(control):
-            typ = control.get("type", "")
-            spec = control.get("spec", {})
-            key = control.get("key", "")
-            if typ == "dynamic_select":
-                return get_dynamic_parameter_choices(spec, key)
-            if typ == "input_table_select":
-                return get_input_table_alias_choices()
-            if typ == "input_table_field_select":
-                return get_field_choices_for_table_param(spec)
-            return []
-
-        def refresh_plugin_dynamic_controls():
-            state["refreshing_dynamic_controls"] = True
-            try:
-                self.refresh_plugin_dynamic_config_controls(
-                    dynamic_param_controls,
-                    set_param,
-                    dynamic_choices_for_control,
-                )
-            finally:
-                state["refreshing_dynamic_controls"] = False
-
-        return {
-            "set_param": set_param,
-            "get_input_table_alias_choices": get_input_table_alias_choices,
-            "get_field_choices_for_table_param": get_field_choices_for_table_param,
-            "get_dynamic_parameter_choices": get_dynamic_parameter_choices,
-            "refresh_plugin_dynamic_controls": refresh_plugin_dynamic_controls,
-            "is_refreshing_dynamic_controls": lambda: state["refreshing_dynamic_controls"],
-        }
+        return workflow_plugin_dynamic_config_ui.create_plugin_dynamic_config_context(
+            self,
+            item,
+            config,
+            params,
+            headers,
+            transit_context,
+            current_rows,
+            dynamic_param_controls,
+        )
 
     def build_plugin_schema_parameter_controls(
         self,
