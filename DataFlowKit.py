@@ -167,7 +167,6 @@ from workflow.workflow_execution_mixin import WorkflowExecutionMixin
 from workflow.workflow_node_execution_mixin import WorkflowNodeExecutionMixin
 from workflow import group_field_analysis as workflow_group_field_analysis
 from workflow import group_template_ui as workflow_group_template_ui
-from workflow import output_node_runtime as workflow_output_node_runtime
 from workflow.nodes.transit_nodes import (
     append_headers_rows as workflow_append_headers_rows,
     make_unique_transit_name as workflow_make_unique_transit_name,
@@ -179,6 +178,7 @@ from workflow.nodes.writeback_nodes import (
 from workflow.workflow_config_builder_mixin import WorkflowConfigBuilderMixin
 from workflow.workflow_control_runtime_mixin import WorkflowControlRuntimeMixin
 from workflow.workflow_jump_mixin import WorkflowJumpMixin
+from workflow.workflow_output_runtime_mixin import WorkflowOutputRuntimeMixin
 from workflow.workflow_plugin_runtime_mixin import WorkflowPluginRuntimeMixin
 from workflow.workflow_table_runtime_mixin import WorkflowTableRuntimeMixin
 from workflow.table_access_precheck import (
@@ -4261,6 +4261,7 @@ class PlanWorkflowWindow(
     WorkflowControlRuntimeMixin,
     WorkflowPluginRuntimeMixin,
     WorkflowTableRuntimeMixin,
+    WorkflowOutputRuntimeMixin,
     PluginConfigWindowMixin,
     FilterConfigWindowMixin,
     GroupConfigWindowMixin,
@@ -5909,53 +5910,11 @@ class PlanWorkflowWindow(
     def append_headers_rows(self, old_headers, old_rows, new_headers, new_rows):
         return workflow_append_headers_rows(old_headers, old_rows, new_headers, new_rows)
 
-    def export_headers_rows_to_xlsx_file(self, headers, rows, path):
-        return workflow_output_node_runtime.export_headers_rows_to_xlsx_file(self, headers, rows, path)
-
-    def apply_save_transit_memory_plan(self, context, memory_plan, headers_copy, rows_copy):
-        return workflow_output_node_runtime.apply_save_transit_memory_plan(
-            self,
-            context,
-            memory_plan,
-            headers_copy,
-            rows_copy,
-        )
-
-    def execute_save_transit_sqlite(self, options, headers_copy, rows_copy, context=None):
-        return workflow_output_node_runtime.execute_save_transit_sqlite(
-            self,
-            options,
-            headers_copy,
-            rows_copy,
-            context=context,
-        )
-
-    def execute_save_transit_xlsx(self, options, headers_copy, rows_copy):
-        return workflow_output_node_runtime.execute_save_transit_xlsx(self, options, headers_copy, rows_copy)
-
     def compare_writeback_values(self, left, op, right):
         return workflow_compare_writeback_values(left, op, right)
 
     def build_writeback_full_structure_rows_for_sqlite(self, headers, rows, config, target_columns):
         return workflow_build_writeback_full_structure_rows_for_sqlite(headers, rows, config, target_columns)
-
-    def build_writeback_actions(self, headers, rows, config, context=None):
-        return workflow_output_node_runtime.build_writeback_actions(
-            self,
-            headers,
-            rows,
-            config,
-            context=context,
-        )
-
-    def apply_external_table_to_current_node(self, headers, rows, config, context=None):
-        return workflow_output_node_runtime.apply_external_table_to_current_node_for_window(
-            self,
-            headers,
-            rows,
-            config,
-            context=context,
-        )
 
     def match_value_output_column_match(self, source_value, lookup_value, mode):
         return workflow_match_value_output_column_match(source_value, lookup_value, mode)
