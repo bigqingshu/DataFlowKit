@@ -243,7 +243,6 @@ from workflow.plugin_config_helpers import (
     build_plugin_dynamic_select_choices as workflow_build_plugin_dynamic_select_choices,
     build_plugin_field_select_initial_value as workflow_build_plugin_field_select_initial_value,
     build_plugin_input_spec as workflow_build_plugin_input_spec,
-    build_plugin_input_table_choices as workflow_build_plugin_input_table_choices,
     build_plugin_load_status_state as workflow_build_plugin_load_status_state,
     build_plugin_select_initial_value as workflow_build_plugin_select_initial_value,
     default_plugin_input_spec as workflow_default_plugin_input_spec,
@@ -259,6 +258,9 @@ from workflow.plugin_config_helpers import (
 from workflow.plugin_schema_config_ui import (
     build_plugin_output_and_log_section as workflow_build_plugin_output_and_log_section_ui,
     build_plugin_schema_parameter_controls as workflow_build_plugin_schema_parameter_controls_ui,
+)
+from workflow.plugin_config_ui import (
+    build_plugin_node_config as workflow_build_plugin_node_config_ui,
 )
 from workflow.basic_data_config_ui import (
     build_current_datetime_column_config as workflow_build_current_datetime_column_config_ui,
@@ -8987,78 +8989,7 @@ class PlanWorkflowWindow:
         )
 
     def build_plugin_node_config(self, config, headers, transit_context=None, current_rows=None):
-        frame = ttk.LabelFrame(self.config_frame, text="外部插件节点", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-        plugin_id = config.get("plugin_id", "")
-        item = self.plugin_registry.get(plugin_id)
-        if not item:
-            ttk.Label(frame, text=f"插件未加载或缺失：{plugin_id}", foreground="red").grid(row=0, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
-            ttk.Label(frame, text="请将对应插件 .py 放入 plugins 目录后点击左侧“刷新插件”。", foreground="gray").grid(row=1, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
-            return
-
-        info = item.get("info", {})
-        params = config.setdefault("params", {})
-        ttk.Label(frame, text=f"插件：{info.get('name', plugin_id)}", font=("TkDefaultFont", 10, "bold")).grid(row=0, column=0, columnspan=4, sticky=tk.W, padx=4, pady=4)
-        ttk.Label(frame, text=f"ID：{plugin_id}    版本：{info.get('version', '')}    分类：{info.get('category', '')}", foreground="gray").grid(row=1, column=0, columnspan=4, sticky=tk.W, padx=4, pady=2)
-        ttk.Label(frame, text=info.get("description", ""), foreground="gray", wraplength=1050).grid(row=2, column=0, columnspan=4, sticky=tk.W, padx=4, pady=(0, 8))
-
-        row = self.build_plugin_run_environment_section(frame, config, item, plugin_id, start_row=3)
-        transit_context = self.plugin_config_context_with_live_transit(transit_context, include_rows=False)
-        reuse_note = self.plugin_config_transit_reuse_note(transit_context)
-        if reuse_note:
-            ttk.Label(frame, text=reuse_note, foreground="#0f766e", wraplength=1050).grid(row=row, column=0, columnspan=4, sticky=tk.W, padx=4, pady=(2, 6))
-            row += 1
-        try:
-            sqlite_tables = self.app.get_table_names()
-        except Exception:
-            sqlite_tables = self.get_sqlite_table_names()
-        table_choices = workflow_build_plugin_input_table_choices(sqlite_tables, transit_context)
-
-        dynamic_param_controls = []
-        dynamic_context = self.create_plugin_dynamic_config_context(
-            item,
-            config,
-            params,
-            headers,
-            transit_context,
-            current_rows,
-            dynamic_param_controls,
-        )
-        refresh_plugin_dynamic_controls = dynamic_context["refresh_plugin_dynamic_controls"]
-
-        input_section = self.build_plugin_input_tables_section(
-            frame,
-            config,
-            row,
-            table_choices["sqlite_tables"],
-            table_choices["transit_names"],
-            refresh_plugin_dynamic_controls,
-        )
-        row = input_section["next_row"]
-
-        schema = item.get("schema", [])
-        row = self.build_plugin_schema_parameter_controls(
-            frame,
-            schema,
-            config,
-            params,
-            headers,
-            row,
-            dynamic_param_controls,
-            dynamic_context,
-        )
-        self.build_plugin_output_and_log_section(
-            frame,
-            config,
-            item,
-            params,
-            headers,
-            current_rows,
-            transit_context,
-            dynamic_param_controls,
-            refresh_plugin_dynamic_controls,
-            row,
-        )
+        return workflow_build_plugin_node_config_ui(self, config, headers, transit_context=transit_context, current_rows=current_rows)
 
     def normalize_plugin_logs(self, logs, plugin_id="", node_name="插件节点"):
         return workflow_normalize_plugin_logs(logs, plugin_id=plugin_id, node_name=node_name)
