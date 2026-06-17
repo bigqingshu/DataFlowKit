@@ -171,6 +171,7 @@ from workflow.plan_workflow_window_mixin import PlanWorkflowUiMixin
 from workflow.plugin_config_window_mixin import PluginConfigWindowMixin
 from workflow.table_access_window_mixin import TableAccessWindowMixin
 from workflow.workflow_execution_mixin import WorkflowExecutionMixin
+from workflow.workflow_node_execution_mixin import WorkflowNodeExecutionMixin
 from workflow.basic_data_config_ui import (
     build_current_datetime_column_config as workflow_build_current_datetime_column_config_ui,
     build_extract_config as workflow_build_extract_config_ui,
@@ -230,13 +231,10 @@ from workflow import jump_analysis as workflow_jump_analysis
 from workflow import jump_manager_ui as workflow_jump_manager_ui
 from workflow import group_template_ui as workflow_group_template_ui
 from workflow import jump_runtime as workflow_jump_runtime
-from workflow import filter_node_runtime as workflow_filter_node_runtime
 from workflow import loop_node_runtime as workflow_loop_node_runtime
-from workflow import node_dispatch as workflow_node_dispatch
 from workflow import output_node_runtime as workflow_output_node_runtime
 from workflow import plugin_input_services as workflow_plugin_input_services
 from workflow import plugin_io_services as workflow_plugin_io_services
-from workflow import plugin_node_runtime as workflow_plugin_node_runtime
 from workflow import plugin_runtime_services as workflow_plugin_runtime_services
 from workflow import table_runtime_services as workflow_table_runtime_services
 from workflow.row_data_mapping_config_ui import (
@@ -4342,7 +4340,15 @@ class AdvancedFilterWindow:
             messagebox.showerror("载入模板失败", str(e))
 
 
-class PlanWorkflowWindow(PlanWorkflowUiMixin, PluginConfigWindowMixin, FilterConfigWindowMixin, GroupConfigWindowMixin, TableAccessWindowMixin, WorkflowExecutionMixin):
+class PlanWorkflowWindow(
+    PlanWorkflowUiMixin,
+    PluginConfigWindowMixin,
+    FilterConfigWindowMixin,
+    GroupConfigWindowMixin,
+    TableAccessWindowMixin,
+    WorkflowExecutionMixin,
+    WorkflowNodeExecutionMixin,
+):
     """
     计划 / 工作流处理窗口。
 
@@ -5650,39 +5656,6 @@ class PlanWorkflowWindow(PlanWorkflowUiMixin, PluginConfigWindowMixin, FilterCon
     def get_plugin_output_schema_table(self, item, input_data, params, plugin_context, fallback_headers=None):
         return workflow_get_plugin_output_schema_table(item, input_data, params, plugin_context, fallback_headers=fallback_headers)
 
-    def apply_lazy_plugin_probe_node(self, headers, rows, config, item, params, runtime_context):
-        return workflow_plugin_node_runtime.apply_lazy_plugin_probe_node_for_window(
-            self,
-            headers,
-            rows,
-            config,
-            item,
-            params,
-            runtime_context,
-        )
-
-    def run_plugin_node_runtime(self, headers, rows, config, item, params, runtime_context, execute_actions=False):
-        return workflow_plugin_node_runtime.run_plugin_node_runtime_for_window(
-            self,
-            headers,
-            rows,
-            config,
-            item,
-            params,
-            runtime_context,
-            execute_actions=execute_actions,
-        )
-
-    def apply_plugin_node(self, headers, rows, config, context=None, execute_actions=False):
-        return workflow_plugin_node_runtime.apply_plugin_node_for_window(
-            self,
-            headers,
-            rows,
-            config,
-            context=context,
-            execute_actions=execute_actions,
-        )
-
     def default_config_for_type(self, node_type):
         table_names = []
         needs_sqlite_defaults = {"匹配值输出列名", "选定列写入指定表", "字段映射写入表"}
@@ -6022,15 +5995,6 @@ class PlanWorkflowWindow(PlanWorkflowUiMixin, PluginConfigWindowMixin, FilterCon
             context=context,
         )
 
-    def apply_loop_start_node(self, headers, rows, config, context=None):
-        return workflow_loop_node_runtime.apply_loop_start_node_for_window(
-            self,
-            headers,
-            rows,
-            config,
-            context=context,
-        )
-
     def evaluate_loop_condition(self, headers, rows, config, context=None, loop_state=None):
         return workflow_evaluate_loop_condition(headers, rows, config, loop_state=loop_state)
 
@@ -6041,15 +6005,6 @@ class PlanWorkflowWindow(PlanWorkflowUiMixin, PluginConfigWindowMixin, FilterCon
     def find_loop_judge_index(self, loop_id, start_idx, end_idx, nodes=None):
         node_list = nodes if nodes is not None else self.nodes
         return workflow_find_loop_judge_index(loop_id, start_idx, end_idx, node_list)
-
-    def apply_loop_judge_node(self, headers, rows, config, context=None):
-        return workflow_loop_node_runtime.apply_loop_judge_node_for_window(
-            self,
-            headers,
-            rows,
-            config,
-            context=context,
-        )
 
     def build_file_list_config(self, config):
         return workflow_build_file_list_config_ui(self, config)
@@ -6209,16 +6164,6 @@ class PlanWorkflowWindow(PlanWorkflowUiMixin, PluginConfigWindowMixin, FilterCon
             target_name,
             target_fields,
             selected_rows,
-        )
-
-    def apply_selected_columns_write_node(self, headers, rows, config, context=None, execute_actions=False):
-        return workflow_output_node_runtime.apply_selected_columns_write_node_for_window(
-            self,
-            headers,
-            rows,
-            config,
-            context=context,
-            execute_actions=execute_actions,
         )
 
     def build_writeback_config(self, config, headers):
@@ -6635,14 +6580,8 @@ class PlanWorkflowWindow(PlanWorkflowUiMixin, PluginConfigWindowMixin, FilterCon
     def run_group_inner_nodes(self, cur_headers, cur_rows, nodes, child_context, execute_actions=False):
         return workflow_group_runtime.run_group_inner_nodes(self, cur_headers, cur_rows, nodes, child_context, execute_actions=execute_actions)
 
-    def apply_group_node(self, headers, rows, config, execute_actions=False, context=None):
-        return workflow_group_runtime.apply_group_node(self, headers, rows, config, execute_actions=execute_actions, context=context)
-
     def append_jump_runtime_log(self, context, event):
         return workflow_jump_runtime.append_jump_runtime_log(context, event)
-
-    def apply_jump_anchor_node(self, headers, rows, config, context=None):
-        return workflow_jump_runtime.apply_jump_anchor_node(self, headers, rows, config, context=context)
 
     def resolve_jump_target_control(self, anchor_id, context=None, anchors_info=None, nodes=None, source="跳转"):
         return workflow_jump_runtime.resolve_jump_target_control(
@@ -6654,17 +6593,6 @@ class PlanWorkflowWindow(PlanWorkflowUiMixin, PluginConfigWindowMixin, FilterCon
             source=source,
         )
 
-    def apply_unconditional_jump_node(self, headers, rows, config, context=None, anchors_info=None, nodes=None):
-        return workflow_jump_runtime.apply_unconditional_jump_node(
-            self,
-            headers,
-            rows,
-            config,
-            context=context,
-            anchors_info=anchors_info,
-            nodes=nodes,
-        )
-
     def condition_count_empty_cells(self, headers, rows, field):
         return workflow_jump_runtime.condition_count_empty_cells(self, headers, rows, field)
 
@@ -6674,32 +6602,8 @@ class PlanWorkflowWindow(PlanWorkflowUiMixin, PluginConfigWindowMixin, FilterCon
     def evaluate_condition_check_node(self, headers, rows, config, context=None):
         return workflow_jump_runtime.evaluate_condition_check_node(self, headers, rows, config, context=context)
 
-    def apply_condition_check_node(self, headers, rows, config, context=None):
-        return workflow_jump_runtime.apply_condition_check_node(self, headers, rows, config, context=context)
-
     def find_conditional_jump_target(self, flag_value, config):
         return workflow_jump_runtime.find_conditional_jump_target(flag_value, config)
-
-    def apply_conditional_jump_node(self, headers, rows, config, context=None, anchors_info=None, nodes=None):
-        return workflow_jump_runtime.apply_conditional_jump_node(
-            self,
-            headers,
-            rows,
-            config,
-            context=context,
-            anchors_info=anchors_info,
-            nodes=nodes,
-        )
-
-    def apply_node(self, headers, rows, node, execute_actions=False, context=None):
-        return workflow_node_dispatch.apply_workflow_node(
-            self,
-            headers,
-            rows,
-            node,
-            execute_actions=execute_actions,
-            context=context,
-        )
 
     def field_index(self, headers, field):
         if field not in headers:
@@ -7122,17 +7026,6 @@ class PlanWorkflowWindow(PlanWorkflowUiMixin, PluginConfigWindowMixin, FilterCon
     def execute_save_transit_xlsx(self, options, headers_copy, rows_copy):
         return workflow_output_node_runtime.execute_save_transit_xlsx(self, options, headers_copy, rows_copy)
 
-    def apply_save_transit_node(self, headers, rows, config, context=None, execute_actions=False):
-        return workflow_output_node_runtime.apply_save_transit_node_for_window(
-            self,
-            headers,
-            rows,
-            config,
-            context=context,
-            execute_actions=execute_actions,
-        )
-
-
     def compare_writeback_values(self, left, op, right):
         return workflow_compare_writeback_values(left, op, right)
 
@@ -7185,25 +7078,6 @@ class PlanWorkflowWindow(PlanWorkflowUiMixin, PluginConfigWindowMixin, FilterCon
 
     def apply_external_table_to_current_node(self, headers, rows, config, context=None):
         return workflow_output_node_runtime.apply_external_table_to_current_node_for_window(
-            self,
-            headers,
-            rows,
-            config,
-            context=context,
-        )
-
-    def apply_writeback_node(self, headers, rows, config, execute_actions=False, context=None):
-        return workflow_output_node_runtime.apply_writeback_node_for_window(
-            self,
-            headers,
-            rows,
-            config,
-            execute_actions=execute_actions,
-            context=context,
-        )
-
-    def apply_filter_node(self, headers, rows, config, context=None):
-        return workflow_filter_node_runtime.apply_filter_node_for_window(
             self,
             headers,
             rows,
