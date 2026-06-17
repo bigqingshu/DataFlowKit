@@ -2,6 +2,7 @@
 import unittest
 
 from DataFlowKit import PlanWorkflowWindow
+from workflow import loop_node_runtime
 from workflow.nodes.loop_nodes import (
     apply_loop_judge_to_state,
     build_loop_judge_output,
@@ -151,6 +152,46 @@ class WorkflowLoopNodesTests(unittest.TestCase):
         self.assertIn("循环队列_L", context["transit_tables"])
         self.assertEqual(context["loop_states"]["L"]["queue_rows"][0][0], "2")
         self.assertTrue(any(event[1] == "循环结果" for event in events))
+
+    def test_loop_runtime_helpers_do_not_depend_on_window_loop_wrappers(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+        events = []
+        window.check_transit_table_write_permission = lambda *args, **kwargs: {"ok": True}
+        window.log_transit_table_event = lambda manager, action, name, headers, rows, **kwargs: events.append((action, name))
+
+        def legacy_wrapper_should_not_be_called(*_args, **_kwargs):
+            raise AssertionError("loop runtime should use lower-level helpers directly")
+
+        window.get_loop_source_table_data = legacy_wrapper_should_not_be_called
+        window.init_loop_state = legacy_wrapper_should_not_be_called
+        window.apply_loop_start_node = legacy_wrapper_should_not_be_called
+        window.apply_loop_judge_node = legacy_wrapper_should_not_be_called
+
+        context = {}
+        headers, rows, stat, ctrl = loop_node_runtime.apply_loop_start_node_for_window(
+            window,
+            ["A"],
+            [["a"]],
+            {"loop_id": "L", "fields": ["A"], "current_table_name": "当前项"},
+            context=context,
+        )
+
+        self.assertEqual((headers, rows, ctrl), (["A"], [["a"]], {"no_pending": False}))
+        self.assertIn("取第 1 条", stat)
+        self.assertIn("当前项", context["transit_tables"])
+
+        headers, rows, stat, ctrl = loop_node_runtime.apply_loop_judge_node_for_window(
+            window,
+            headers,
+            rows,
+            {"loop_id": "L", "condition_mode": "始终成功", "result_table_name": "循环结果"},
+            context=context,
+        )
+
+        self.assertEqual(ctrl, {"jump_to": None})
+        self.assertIn("循环结果", context["transit_tables"])
+        self.assertIn("循环队列_L", context["transit_tables"])
+        self.assertTrue(events)
 
 
 if __name__ == "__main__":

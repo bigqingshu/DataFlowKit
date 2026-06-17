@@ -177,20 +177,65 @@ class NodeDispatchTests(unittest.TestCase):
         self.assertEqual(filter_helper.call_args.args[:4], (mock.ANY, ["A"], [["x"]], {"conditions": []}))
         self.assertIs(filter_helper.call_args.kwargs["context"], context)
 
-    def test_dispatch_loop_node_drops_control_payload(self):
+    def test_dispatch_group_and_loop_nodes_use_runtime_helpers(self):
         class Window:
-            def apply_loop_start_node(self, headers, rows, config, context=None):
-                return list(headers), [list(row) for row in rows], "loop", {"no_pending": True}
+            def apply_group_node(self, *_args, **_kwargs):
+                raise AssertionError("should dispatch to group runtime helper")
 
-        result = apply_workflow_node(
-            Window(),
-            ["A"],
-            [["a"]],
-            {"type": "循环执行起点", "config": {"loop_id": "L"}},
-            context={},
-        )
+            def apply_loop_start_node(self, *_args, **_kwargs):
+                raise AssertionError("should dispatch to loop runtime helper")
 
-        self.assertEqual(result, (["A"], [["a"]], "loop"))
+            def apply_loop_judge_node(self, *_args, **_kwargs):
+                raise AssertionError("should dispatch to loop runtime helper")
+
+        with mock.patch(
+            "workflow.node_dispatch.apply_group_node_for_window",
+            return_value=(["G"], [["g"]], "group runtime"),
+        ) as group_helper, mock.patch(
+            "workflow.node_dispatch.apply_loop_start_node_for_window",
+            return_value=(["S"], [["s"]], "loop start runtime", {"no_pending": True}),
+        ) as start_helper, mock.patch(
+            "workflow.node_dispatch.apply_loop_judge_node_for_window",
+            return_value=(["J"], [["j"]], "loop judge runtime", {"jump_to": 7}),
+        ) as judge_helper:
+            context = {"transit_tables": {}}
+            self.assertEqual(
+                apply_workflow_node(
+                    Window(),
+                    ["A"],
+                    [["a"]],
+                    {"type": "节点组 / 子工作流", "config": {"group_name": "G"}},
+                    context=context,
+                ),
+                (["G"], [["g"]], "group runtime"),
+            )
+            self.assertEqual(
+                apply_workflow_node(
+                    Window(),
+                    ["A"],
+                    [["a"]],
+                    {"type": "循环执行起点", "config": {"loop_id": "L"}},
+                    context=context,
+                ),
+                (["S"], [["s"]], "loop start runtime"),
+            )
+            self.assertEqual(
+                apply_workflow_node(
+                    Window(),
+                    ["A"],
+                    [["a"]],
+                    {"type": "循环判断回跳", "config": {"loop_id": "L"}},
+                    context=context,
+                ),
+                (["J"], [["j"]], "loop judge runtime"),
+            )
+
+        self.assertEqual(group_helper.call_args.args[:4], (mock.ANY, ["A"], [["a"]], {"group_name": "G"}))
+        self.assertEqual(start_helper.call_args.args[:4], (mock.ANY, ["A"], [["a"]], {"loop_id": "L"}))
+        self.assertEqual(judge_helper.call_args.args[:4], (mock.ANY, ["A"], [["a"]], {"loop_id": "L"}))
+        self.assertIs(group_helper.call_args.kwargs["context"], context)
+        self.assertIs(start_helper.call_args.kwargs["context"], context)
+        self.assertIs(judge_helper.call_args.kwargs["context"], context)
 
     def test_dispatch_direct_pure_data_nodes_without_window_methods(self):
         class Window:

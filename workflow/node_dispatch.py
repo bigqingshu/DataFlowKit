@@ -27,6 +27,11 @@ from workflow.file_node_runtime import (
     apply_file_list_node_for_window,
 )
 from workflow.filter_node_runtime import apply_filter_node_for_window
+from workflow.group_runtime import apply_group_node as apply_group_node_for_window
+from workflow.loop_node_runtime import (
+    apply_loop_judge_node_for_window,
+    apply_loop_start_node_for_window,
+)
 from workflow.output_node_runtime import (
     apply_save_transit_node_for_window,
     apply_selected_columns_write_node_for_window,
@@ -55,12 +60,12 @@ def apply_workflow_node(window, headers, rows, node, execute_actions=False, cont
     node_type = node.get("type")
     config = node.get("config", {})
     if node_type == "节点组 / 子工作流":
-        return window.apply_group_node(headers, rows, config, execute_actions=execute_actions, context=context)
+        return apply_group_node_for_window(window, headers, rows, config, execute_actions=execute_actions, context=context)
     if node_type == "循环执行起点":
-        h, r, stat, _ctrl = window.apply_loop_start_node(headers, rows, config, context=context)
+        h, r, stat, _ctrl = apply_loop_start_node_for_window(window, headers, rows, config, context=context)
         return h, r, stat
     if node_type == "循环判断回跳":
-        h, r, stat, _ctrl = window.apply_loop_judge_node(headers, rows, config, context=context)
+        h, r, stat, _ctrl = apply_loop_judge_node_for_window(window, headers, rows, config, context=context)
         return h, r, stat
     if node_type == "获取文件列表":
         return apply_file_list_node_for_window(window, headers, rows, config, context=context)

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import unittest
+from unittest import mock
 
 from workflow.run_plan_dispatch import dispatch_run_plan_node
 
@@ -26,8 +27,8 @@ class RunPlanDispatchTests(unittest.TestCase):
 
     def test_dispatch_loop_start_can_jump_after_judge_when_no_pending(self):
         class Window:
-            def apply_loop_start_node(self, headers, rows, config, context=None):
-                return list(headers), [list(row) for row in rows], "loop start", {"no_pending": True}
+            def apply_loop_start_node(self, *_args, **_kwargs):
+                raise AssertionError("should dispatch to loop runtime helper")
 
             def find_loop_judge_index(self, loop_id, idx, end, nodes=None):
                 self.seen = (loop_id, idx, end, nodes)
@@ -35,22 +36,63 @@ class RunPlanDispatchTests(unittest.TestCase):
 
         window = Window()
         node_list = [{"type": "x"}] * 6
-        headers, rows, stat, jump_to = dispatch_run_plan_node(
-            window,
-            ["A"],
-            [["a"]],
-            {"type": "循环执行起点", "config": {"loop_id": "L"}},
-            {},
-            node_list=node_list,
-            idx=1,
-            end=5,
-        )
+        context = {}
+        with mock.patch(
+            "workflow.run_plan_dispatch.apply_loop_start_node_for_window",
+            return_value=(["A"], [["a"]], "loop start", {"no_pending": True}),
+        ) as start_helper:
+            headers, rows, stat, jump_to = dispatch_run_plan_node(
+                window,
+                ["A"],
+                [["a"]],
+                {"type": "循环执行起点", "config": {"loop_id": "L"}},
+                context,
+                node_list=node_list,
+                idx=1,
+                end=5,
+            )
 
         self.assertEqual(headers, ["A"])
         self.assertEqual(rows, [["a"]])
         self.assertEqual(jump_to, 5)
         self.assertIn("无待执行项，跳过循环体到节点 6", stat)
         self.assertEqual(window.seen, ("L", 1, 5, node_list))
+        self.assertEqual(start_helper.call_args.args[:4], (window, ["A"], [["a"]], {"loop_id": "L"}))
+        self.assertIs(start_helper.call_args.kwargs["context"], context)
+
+    def test_dispatch_loop_judge_resolves_runtime_loop_start_jump(self):
+        class Window:
+            def apply_loop_judge_node(self, *_args, **_kwargs):
+                raise AssertionError("should dispatch to loop runtime helper")
+
+            def find_loop_start_index(self, loop_id, idx, nodes=None):
+                self.seen = (loop_id, idx, nodes)
+                return 2
+
+        window = Window()
+        node_list = [{"type": "x"}] * 4
+        context = {}
+        with mock.patch(
+            "workflow.run_plan_dispatch.apply_loop_judge_node_for_window",
+            return_value=(["A"], [["a"]], "loop judge", {"jump_to": "__LOOP_START__"}),
+        ) as judge_helper:
+            headers, rows, stat, jump_to = dispatch_run_plan_node(
+                window,
+                ["A"],
+                [["a"]],
+                {"type": "循环判断回跳", "config": {"loop_id": "L"}},
+                context,
+                node_list=node_list,
+                idx=3,
+            )
+
+        self.assertEqual(headers, ["A"])
+        self.assertEqual(rows, [["a"]])
+        self.assertEqual(stat, "loop judge")
+        self.assertEqual(jump_to, 2)
+        self.assertEqual(window.seen, ("L", 3, node_list))
+        self.assertEqual(judge_helper.call_args.args[:4], (window, ["A"], [["a"]], {"loop_id": "L"}))
+        self.assertIs(judge_helper.call_args.kwargs["context"], context)
 
     def test_dispatch_conditional_jump_returns_target(self):
         class Window:

@@ -1,6 +1,11 @@
 # -*- coding: utf-8 -*-
 """Dispatch helpers for PlanWorkflowWindow.run_plan."""
 
+from workflow.loop_node_runtime import (
+    apply_loop_judge_node_for_window,
+    apply_loop_start_node_for_window,
+)
+
 
 def dispatch_run_plan_node(
     window,
@@ -19,14 +24,14 @@ def dispatch_run_plan_node(
     jump_to = None
 
     if node_type == "循环执行起点":
-        headers, rows, stat, ctrl = window.apply_loop_start_node(headers, rows, config, context=context)
+        headers, rows, stat, ctrl = apply_loop_start_node_for_window(window, headers, rows, config, context=context)
         if ctrl.get("no_pending"):
             judge_idx = window.find_loop_judge_index(config.get("loop_id", ""), idx, end, nodes=node_list)
             if judge_idx is not None:
                 jump_to = judge_idx + 1
                 stat += f"；无待执行项，跳过循环体到节点 {jump_to + 1 if jump_to <= end else '结束'}"
     elif node_type == "循环判断回跳":
-        headers, rows, stat, ctrl = window.apply_loop_judge_node(headers, rows, config, context=context)
+        headers, rows, stat, ctrl = apply_loop_judge_node_for_window(window, headers, rows, config, context=context)
         if ctrl.get("jump_to") is not None:
             if ctrl.get("jump_to") == "__LOOP_START__":
                 jump_to = window.find_loop_start_index(config.get("loop_id", ""), idx, nodes=node_list)
