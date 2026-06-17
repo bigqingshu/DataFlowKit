@@ -144,34 +144,11 @@ from workflow.nodes.file_nodes import (
     parse_extensions_filter as workflow_parse_extensions_filter,
 )
 from workflow.nodes.group_nodes import (
-    add_group_inner_node as workflow_add_group_inner_node,
-    apply_group_inner_node_list_action as workflow_apply_group_inner_node_list_action,
-    apply_group_mapping as workflow_apply_group_mapping,
-    apply_inferred_group_inputs as workflow_apply_inferred_group_inputs,
-    apply_group_template_config as workflow_apply_group_template_config,
-    auto_group_mapping_by_name as workflow_auto_group_mapping_by_name,
     build_group_input_table as workflow_build_group_input_table,
-    build_group_output_config_state as workflow_build_group_output_config_state,
-    ensure_group_config_defaults as workflow_ensure_group_config_defaults,
-    group_input_fields_text as workflow_group_input_fields_text,
-    group_inner_node_type_values as workflow_group_inner_node_type_values,
-    group_infer_input_apply_decision as workflow_group_infer_input_apply_decision,
-    group_mapping_detail as workflow_group_mapping_detail,
-    group_mapping_rows as workflow_group_mapping_rows,
-    group_mapping_selection_detail as workflow_group_mapping_selection_detail,
-    group_node_label as workflow_group_node_label,
-    make_group_inner_node as workflow_make_group_inner_node,
-    group_selected_input_state as workflow_group_selected_input_state,
-    group_source_field_combo_state as workflow_group_source_field_combo_state,
-    group_source_headers_for_mapping as workflow_group_source_headers_for_mapping,
     make_group_child_context as workflow_make_group_child_context,
     normalize_group_sqlite_mode as workflow_normalize_group_sqlite_mode,
     normalize_group_transit_conflict_mode as workflow_normalize_group_transit_conflict_mode,
-    parse_group_inner_node_json as workflow_parse_group_inner_node_json,
     parse_group_input_fields as workflow_parse_group_input_fields,
-    update_group_input_fields_config as workflow_update_group_input_fields_config,
-    use_source_headers_as_group_inputs as workflow_use_source_headers_as_group_inputs,
-    unique_keep_order as workflow_unique_keep_order,
 )
 from workflow.nodes.loop_nodes import (
     evaluate_loop_condition as workflow_evaluate_loop_condition,
@@ -189,6 +166,7 @@ from workflow.nodes.plugin_nodes import (
 )
 from workflow.default_configs import default_config_for_type as workflow_default_config_for_type
 from workflow.filter_config_window_mixin import FilterConfigWindowMixin
+from workflow.group_config_window_mixin import GroupConfigWindowMixin
 from workflow.plugin_config_window_mixin import PluginConfigWindowMixin
 from workflow.basic_data_config_ui import (
     build_current_datetime_column_config as workflow_build_current_datetime_column_config_ui,
@@ -243,7 +221,6 @@ from workflow.control_flow_config_ui import (
     jump_anchor_choices as workflow_jump_anchor_choices_ui,
     set_anchor_var_to_config as workflow_set_anchor_var_to_config_ui,
 )
-from workflow import group_config_ui as workflow_group_config_ui
 from workflow import group_field_analysis as workflow_group_field_analysis
 from workflow import group_runtime as workflow_group_runtime
 from workflow import jump_analysis as workflow_jump_analysis
@@ -4410,7 +4387,7 @@ class AdvancedFilterWindow:
             messagebox.showerror("载入模板失败", str(e))
 
 
-class PlanWorkflowWindow(PluginConfigWindowMixin, FilterConfigWindowMixin):
+class PlanWorkflowWindow(PluginConfigWindowMixin, FilterConfigWindowMixin, GroupConfigWindowMixin):
     """
     计划 / 工作流处理窗口。
 
@@ -5938,217 +5915,6 @@ class PlanWorkflowWindow(PluginConfigWindowMixin, FilterConfigWindowMixin):
         except Exception:
             pass
 
-    def get_group_config_source_headers(self, source_type, headers, transit_context=None, transit_name="", sqlite_table=""):
-        sqlite_columns = []
-        if source_type == "SQLite表" and sqlite_table:
-            try:
-                sqlite_columns = self.get_workflow_sqlite_columns(
-                    sqlite_table,
-                    context=transit_context if isinstance(transit_context, dict) else None,
-                )
-            except Exception:
-                sqlite_columns = []
-        return workflow_group_source_headers_for_mapping(
-            source_type,
-            headers,
-            (transit_context or {}).get("transit_tables", {}) if isinstance(transit_context, dict) else {},
-            transit_name,
-            sqlite_columns,
-        )
-
-    def save_group_inner_node_json_text(self, config, index, text):
-        nodes = config.setdefault("nodes", [])
-        if index is None or index < 0 or index >= len(nodes):
-            raise ValueError("请先选择一个组内节点。")
-        nodes[index] = workflow_parse_group_inner_node_json(text)
-        return index
-
-    def load_group_template_into_config(self, config):
-        data = self.load_group_template_dialog()
-        if data is None:
-            return False
-        workflow_apply_group_template_config(config, self.group_config_from_template_data(data))
-        self.rebuild_current_config()
-        return True
-
-    def get_group_inner_node_type_values(self):
-        return workflow_group_inner_node_type_values(self.get_node_type_values())
-
-    def make_group_inner_node(self, node_type):
-        return workflow_make_group_inner_node(
-            node_type,
-            plugin_display_map=getattr(self, "plugin_display_map", {}),
-            plugin_registry=getattr(self, "plugin_registry", {}),
-            plugin_config_factory=self.default_config_for_plugin,
-            default_name_factory=self.default_name_for_node,
-            default_config_factory=self.default_config_for_type,
-        )
-
-    def add_group_inner_node_to_config(self, config, node_type):
-        _, index = workflow_add_group_inner_node(
-            config,
-            node_type,
-            plugin_display_map=getattr(self, "plugin_display_map", {}),
-            plugin_registry=getattr(self, "plugin_registry", {}),
-            plugin_config_factory=self.default_config_for_plugin,
-            default_name_factory=self.default_name_for_node,
-            default_config_factory=self.default_config_for_type,
-        )
-        return index
-
-    def apply_group_inner_node_list_action_to_config(self, config, index, action, delta=0):
-        nodes, select_idx = workflow_apply_group_inner_node_list_action(
-            config.setdefault("nodes", []),
-            index,
-            action,
-            delta=delta,
-        )
-        config["nodes"] = nodes
-        return select_idx
-
-    def build_group_input_source_controls(self, input_frame, config, transit_context=None):
-        return workflow_group_config_ui.build_group_input_source_controls(self, input_frame, config, transit_context=transit_context)
-
-    def build_group_input_fields_controls(self, input_frame, config, refresh_mapping):
-        return workflow_group_config_ui.build_group_input_fields_controls(self, input_frame, config, refresh_mapping)
-
-    def build_group_mapping_tree_control(self, input_frame):
-        return workflow_group_config_ui.build_group_mapping_tree_control(input_frame)
-
-    def build_group_mapping_edit_controls(self, input_frame):
-        return workflow_group_config_ui.build_group_mapping_edit_controls(input_frame)
-
-    def build_group_mapping_action_buttons(
-        self,
-        map_edit,
-        apply_mapping,
-        auto_mapping,
-        use_source_headers,
-        infer_inputs,
-    ):
-        return workflow_group_config_ui.build_group_mapping_action_buttons(
-            map_edit,
-            apply_mapping,
-            auto_mapping,
-            use_source_headers,
-            infer_inputs,
-        )
-
-    def build_group_input_mapping_section(self, frame, config, headers, transit_context=None, row=2):
-        return workflow_group_config_ui.build_group_input_mapping_section(
-            self,
-            frame,
-            config,
-            headers,
-            transit_context=transit_context,
-            row=row,
-        )
-
-    def build_group_output_section(self, frame, config, row=3):
-        return workflow_group_config_ui.build_group_output_section(self, frame, config, row=row)
-
-    def refresh_group_source_field_combo(self, source_field_combo, source_field_var, source_headers):
-        return workflow_group_config_ui.refresh_group_source_field_combo(source_field_combo, source_field_var, source_headers)
-
-    def sync_group_mapping_edit_from_selected(
-        self,
-        config,
-        mapping_tree,
-        selected_input_var,
-        source_field_var,
-        default_value_var,
-        refresh_source_fields,
-    ):
-        return workflow_group_config_ui.sync_group_mapping_edit_from_selected(
-            config,
-            mapping_tree,
-            selected_input_var,
-            source_field_var,
-            default_value_var,
-            refresh_source_fields,
-        )
-
-    def refresh_group_selected_input_combo(self, config, selected_input_combo, selected_input_var, sync_detail=None):
-        return workflow_group_config_ui.refresh_group_selected_input_combo(config, selected_input_combo, selected_input_var, sync_detail=sync_detail)
-
-    def refresh_group_mapping_tree(self, config, mapping_tree, refresh_selected_inputs):
-        return workflow_group_config_ui.refresh_group_mapping_tree(config, mapping_tree, refresh_selected_inputs)
-
-    def apply_group_mapping_from_controls(self, config, selected_input_var, source_field_var, default_value_var, refresh_mapping):
-        return workflow_group_config_ui.apply_group_mapping_from_controls(
-            config,
-            selected_input_var,
-            source_field_var,
-            default_value_var,
-            refresh_mapping,
-            messagebox_module=messagebox,
-        )
-
-    def auto_group_mapping_by_name_from_source(self, config, get_source_headers, refresh_mapping):
-        return workflow_group_config_ui.auto_group_mapping_by_name_from_source(config, get_source_headers, refresh_mapping)
-
-    def use_group_source_headers_as_inputs(self, config, get_source_headers, set_input_fields_text, refresh_mapping):
-        return workflow_group_config_ui.use_group_source_headers_as_inputs(
-            config,
-            get_source_headers,
-            set_input_fields_text,
-            refresh_mapping,
-        )
-
-    def create_group_input_mapping_callbacks(
-        self,
-        config,
-        transit_context,
-        get_source_headers,
-        mapping_tree,
-        selected_input_combo,
-        selected_input_var,
-        source_field_combo,
-        source_field_var,
-        default_value_var,
-        input_fields_var,
-    ):
-        return workflow_group_config_ui.create_group_input_mapping_callbacks(
-            self,
-            config,
-            transit_context,
-            get_source_headers,
-            mapping_tree,
-            selected_input_combo,
-            selected_input_var,
-            source_field_combo,
-            source_field_var,
-            default_value_var,
-            input_fields_var,
-            messagebox_module=messagebox,
-        )
-
-    def infer_and_apply_group_input_fields_for_config(
-        self,
-        config,
-        transit_context,
-        get_source_headers,
-        set_input_fields_text,
-        refresh_mapping,
-    ):
-        return workflow_group_config_ui.infer_and_apply_group_input_fields_for_config(
-            self,
-            config,
-            transit_context,
-            get_source_headers,
-            set_input_fields_text,
-            refresh_mapping,
-            messagebox_module=messagebox,
-        )
-
-    def build_group_inner_nodes_section(self, frame, config, row):
-        return workflow_group_config_ui.build_group_inner_nodes_section(
-            self,
-            frame,
-            config,
-            row,
-            messagebox_module=messagebox,
-        )
     def normalize_plugin_logs(self, logs, plugin_id="", node_name="插件节点"):
         return workflow_normalize_plugin_logs(logs, plugin_id=plugin_id, node_name=node_name)
 
@@ -6559,9 +6325,6 @@ class PlanWorkflowWindow(PluginConfigWindowMixin, FilterConfigWindowMixin):
     # ------------------------------
     # 节点组 / 子工作流
     # ------------------------------
-    def build_group_node_config(self, config, headers, transit_context=None):
-        return workflow_group_config_ui.build_group_node_config(self, config, headers, transit_context=transit_context)
-
     def merge_selected_nodes_to_group(self):
         return workflow_group_template_ui.merge_selected_nodes_to_group(
             self,
@@ -7217,9 +6980,6 @@ class PlanWorkflowWindow(PluginConfigWindowMixin, FilterConfigWindowMixin):
             return_context=return_context,
         )
 
-
-    def unique_keep_order(self, values):
-        return workflow_unique_keep_order(values)
 
     def parse_group_input_fields(self, config):
         return workflow_parse_group_input_fields(config)
