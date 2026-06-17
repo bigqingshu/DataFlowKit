@@ -5778,19 +5778,10 @@ class PlanWorkflowWindow:
         )
 
     def confirm_jump_precheck(self, execute_actions=False, stop_index=None):
-        issues = self.validate_jump_relations()
-        actionable = [issue for issue in issues if issue.get("severity") in ("error", "warning")]
-        self.last_jump_precheck = list(issues or [])
-        if not actionable:
-            return True
-        errors = [issue for issue in actionable if issue.get("severity") == "error"]
-        if not execute_actions and not errors:
-            self.status_var.set(self.jump_validation_summary_text(actionable) + " 预览继续执行；可在跳转管理中查看。")
-            return True
-        return self.show_jump_precheck_dialog(
-            actionable,
-            title="执行前跳转校验" if execute_actions else "预览前跳转校验",
-            allow_continue=True,
+        return workflow_jump_analysis.confirm_jump_precheck(
+            self,
+            execute_actions=execute_actions,
+            stop_index=stop_index,
         )
 
     def open_jump_manager_window(self):

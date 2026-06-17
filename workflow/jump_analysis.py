@@ -338,3 +338,20 @@ def jump_issue_detail_text(issue):
             f"启用：{'是' if anchor.get('enabled') else '否'}",
         ])
     return "\n".join(lines)
+
+
+def confirm_jump_precheck(window, execute_actions=False, stop_index=None):
+    issues = window.validate_jump_relations()
+    actionable = [issue for issue in issues if issue.get("severity") in ("error", "warning")]
+    window.last_jump_precheck = list(issues or [])
+    if not actionable:
+        return True
+    errors = [issue for issue in actionable if issue.get("severity") == "error"]
+    if not execute_actions and not errors:
+        window.status_var.set(window.jump_validation_summary_text(actionable) + " 预览继续执行；可在跳转管理中查看。")
+        return True
+    return window.show_jump_precheck_dialog(
+        actionable,
+        title="执行前跳转校验" if execute_actions else "预览前跳转校验",
+        allow_continue=True,
+    )

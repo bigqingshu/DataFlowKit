@@ -5,6 +5,7 @@ from workflow.jump_analysis import (
     collect_condition_flag_producers,
     collect_jump_anchors,
     collect_jump_relations,
+    confirm_jump_precheck,
     jump_issue_detail_text,
     jump_validation_summary_text,
     resolve_jump_anchor_index,
@@ -58,6 +59,43 @@ class JumpAnalysisTests(unittest.TestCase):
         detail = jump_issue_detail_text(next(issue for issue in issues if issue.get("relation")))
         self.assertIn("关系：", detail)
         self.assertIn("来源：", detail)
+
+    def test_confirm_jump_precheck_tracks_last_state_and_allows_preview(self):
+        class DummyWindow:
+            def __init__(self, issues):
+                self._issues = issues
+                self.last_jump_precheck = None
+                self.status_messages = []
+
+            def validate_jump_relations(self):
+                return list(self._issues)
+
+            def jump_validation_summary_text(self, issues):
+                return jump_validation_summary_text(issues)
+
+            def show_jump_precheck_dialog(self, issues, title="跳转校验", allow_continue=False):
+                self.dialog = (list(issues), title, allow_continue)
+                return True
+
+            @property
+            def status_var(self):
+                class _Status:
+                    def __init__(self, outer):
+                        self.outer = outer
+
+                    def set(self, value):
+                        self.outer.status_messages.append(value)
+
+                return _Status(self)
+
+        preview_window = DummyWindow([{"severity": "warning", "item": "A", "message": "warn"}])
+        self.assertTrue(confirm_jump_precheck(preview_window, execute_actions=False))
+        self.assertEqual(preview_window.last_jump_precheck[0]["severity"], "warning")
+        self.assertEqual(preview_window.status_messages[0], "跳转校验完成：警告 1 预览继续执行；可在跳转管理中查看。")
+
+        execute_window = DummyWindow([{"severity": "error", "item": "B", "message": "err"}])
+        self.assertTrue(confirm_jump_precheck(execute_window, execute_actions=True))
+        self.assertEqual(execute_window.dialog[1], "执行前跳转校验")
 
 
 if __name__ == "__main__":
