@@ -175,8 +175,6 @@ from workflow.workflow_execution_mixin import WorkflowExecutionMixin
 from workflow.workflow_node_execution_mixin import WorkflowNodeExecutionMixin
 from workflow import group_field_analysis as workflow_group_field_analysis
 from workflow import group_runtime as workflow_group_runtime
-from workflow import jump_analysis as workflow_jump_analysis
-from workflow import jump_manager_ui as workflow_jump_manager_ui
 from workflow import group_template_ui as workflow_group_template_ui
 from workflow import jump_runtime as workflow_jump_runtime
 from workflow import loop_node_runtime as workflow_loop_node_runtime
@@ -194,6 +192,7 @@ from workflow.nodes.writeback_nodes import (
     compare_writeback_values as workflow_compare_writeback_values,
 )
 from workflow.workflow_config_builder_mixin import WorkflowConfigBuilderMixin
+from workflow.workflow_jump_mixin import WorkflowJumpMixin
 from workflow.table_access_precheck import (
     find_table_access_field_rule as workflow_find_table_access_field_rule,
     find_matching_table_access_entry as workflow_find_matching_table_access_entry,
@@ -4270,6 +4269,7 @@ class PlanWorkflowWindow(
     PlanWorkflowUiMixin,
     PlanPreviewMixin,
     WorkflowConfigBuilderMixin,
+    WorkflowJumpMixin,
     PluginConfigWindowMixin,
     FilterConfigWindowMixin,
     GroupConfigWindowMixin,
@@ -5108,72 +5108,6 @@ class PlanWorkflowWindow(
             title="执行前权限预检",
             allow_continue=True,
         )
-
-    def jump_node_label(self, idx, node):
-        return workflow_jump_analysis.jump_node_label(idx, node)
-
-    def collect_jump_anchors(self, nodes=None):
-        node_list = nodes if nodes is not None else self.nodes
-        return workflow_jump_analysis.collect_jump_anchors(nodes=node_list)
-
-    def collect_condition_flag_producers(self, nodes=None):
-        node_list = nodes if nodes is not None else self.nodes
-        return workflow_jump_analysis.collect_condition_flag_producers(nodes=node_list)
-
-    def resolve_jump_anchor_index(self, anchor_id, anchors_info=None, nodes=None):
-        node_list = nodes if nodes is not None else self.nodes
-        return workflow_jump_analysis.resolve_jump_anchor_index(anchor_id, anchors_info=anchors_info, nodes=node_list)
-
-    def jump_relation_status_text(self, relation, anchors_info=None, nodes=None):
-        node_list = nodes if nodes is not None else self.nodes
-        return workflow_jump_analysis.jump_relation_status_text(relation, anchors_info=anchors_info, nodes=node_list)
-
-    def collect_jump_relations(self, nodes=None, anchors_info=None):
-        node_list = nodes if nodes is not None else self.nodes
-        return workflow_jump_analysis.collect_jump_relations(nodes=node_list, anchors_info=anchors_info)
-
-    def add_jump_validation_issue(self, issues, severity, item, message, suggestion="", relation=None, anchor=None):
-        return workflow_jump_analysis.add_jump_validation_issue(
-            issues,
-            severity,
-            item,
-            message,
-            suggestion=suggestion,
-            relation=relation,
-            anchor=anchor,
-        )
-
-    def next_enabled_node_after_anchor(self, anchor, nodes=None):
-        node_list = nodes if nodes is not None else self.nodes
-        return workflow_jump_analysis.next_enabled_node_after_anchor(anchor, nodes=node_list)
-
-    def validate_jump_relations(self, nodes=None):
-        node_list = nodes if nodes is not None else self.nodes
-        return workflow_jump_analysis.validate_jump_relations(nodes=node_list)
-
-    def jump_validation_summary_text(self, issues):
-        return workflow_jump_analysis.jump_validation_summary_text(issues)
-
-    def jump_issue_detail_text(self, issue):
-        return workflow_jump_analysis.jump_issue_detail_text(issue)
-
-    def show_jump_precheck_dialog(self, issues, title="跳转校验", allow_continue=False):
-        return workflow_jump_manager_ui.show_jump_precheck_dialog(
-            self,
-            issues,
-            title=title,
-            allow_continue=allow_continue,
-        )
-
-    def confirm_jump_precheck(self, execute_actions=False, stop_index=None):
-        return workflow_jump_analysis.confirm_jump_precheck(
-            self,
-            execute_actions=execute_actions,
-            stop_index=stop_index,
-        )
-
-    def open_jump_manager_window(self):
-        return workflow_jump_manager_ui.open_jump_manager_window(self)
 
     def get_table_manager(self, context=None, node=None, node_type="", node_name=""):
         return workflow_table_runtime_services.get_table_manager(
