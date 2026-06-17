@@ -3,6 +3,7 @@
 
 import os
 
+from core.data_utils import normalize_rows
 from db import TableAccessManager
 
 
@@ -35,6 +36,152 @@ def get_table_manager(window, context=None, node=None, node_type="", node_name="
         context=context,
         table_access=table_access,
     )
+
+
+def get_workflow_output_manager(window, table_name, overwrite=False, context=None):
+    db_path = window.get_workflow_db_path(context)
+    exists = bool(db_path and os.path.exists(db_path) and TableAccessManager(db_path).table_exists(table_name))
+    permissions = window.table_permission_set(
+        read=bool(overwrite and exists),
+        write=True,
+        create=True,
+        replace=bool(overwrite),
+    )
+    access = {
+        "version": 1,
+        "auto_generated": True,
+        "system_scope": "workflow_output",
+        "tables": [
+            window.make_table_access_entry(
+                "workflow_output",
+                table_name,
+                permissions=permissions,
+                write_mode="replace_table" if overwrite else "timestamp_new",
+                declared_by="workflow_output",
+            )
+        ],
+    }
+    policy = None
+    if isinstance(context, dict):
+        snapshot = context.get("workflow_snapshot") or {}
+        policy = context.get("table_access_policy") or (
+            snapshot.get("table_access_policy") if isinstance(snapshot, dict) else None
+        )
+    return TableAccessManager(
+        db_path,
+        node_id="__workflow_output__",
+        node_name="工作流最终输出",
+        node_type="工作流输出",
+        context=context if isinstance(context, dict) else None,
+        table_access=access,
+        permission_policy=policy,
+    )
+
+
+def get_workflow_sqlite_columns(window, table_name, context=None):
+    """执行期读取 SQLite 字段，后台线程使用快照中的 db_path。"""
+    db_path = window.get_workflow_db_path(context)
+    if not db_path:
+        raise ValueError("请先设置 SQLite 数据库路径。")
+    return window.get_table_manager(context).get_columns(table_name)
+
+
+def save_result_to_sqlite(window, headers, rows, table_name_raw, overwrite=False, backup=True, context=None):
+    db_path = window.get_workflow_db_path(context)
+    if not db_path:
+        raise ValueError("请先设置 SQLite 数据库路径。")
+    table_name = window.app.sanitize_sql_name(table_name_raw, "计划结果")
+    sql_columns = window.app.make_sql_columns(headers)
+    if not sql_columns:
+        raise ValueError("没有可写入的字段。")
+    current = (context or {}).get("current_node_info", {}) if isinstance(context, dict) else {}
+    if isinstance(current, dict) and current.get("node_id"):
+        manager = window.get_table_manager(context, node_type="工作流输出")
+    else:
+        manager = window.get_workflow_output_manager(table_name, overwrite=overwrite, context=context)
+    if overwrite and backup and manager.table_exists(table_name):
+        manager.backup_table(table_name)
+    mode = "replace" if overwrite else "timestamp"
+    info = manager.write_table(table_name, sql_columns, window.normalize_rows(rows, len(sql_columns)), mode=mode)
+    return info.get("table_name", table_name)
+
+
+def save_result_to_sqlite_append(window, headers, rows, table_name_raw, context=None):
+    table_name = window.app.sanitize_sql_name(table_name_raw, "中转数据")
+    sql_columns = window.app.make_sql_columns(headers)
+    if not sql_columns:
+        raise ValueError("没有可写入的字段。")
+    normalized_rows = normalize_rows(rows, len(sql_columns))
+    info = window.get_table_manager(context, node_type="保存中转数据").write_table(
+        table_name,
+        sql_columns,
+        normalized_rows,
+        mode="append",
+    )
+    return info.get("table_name", table_name)
+
+
+def sqlite_table_exists_by_name(window, table_name, context=None):
+    db_path = window.get_workflow_db_path(context)
+    if not db_path or not os.path.exists(db_path):
+        return False
+    try:
+        return window.get_table_manager(context).table_exists(table_name)
+    except Exception:
+        return False
+
+
+def load_target_table_rows_for_writeback(window, table_name, context=None):
+    db_path = window.get_workflow_db_path(context)
+    if not db_path or not os.path.exists(db_path):
+        raise ValueError("SQLite 数据库路径不存在，请先选择数据库。")
+    return window.get_table_manager(context, node_type="字段映射写入表").read_records(
+        table_name,
+        include_rowid=True,
+        include_row_index=True,
+    )
+
+
+def backup_sqlite_table_for_writeback(window, table_name, context=None):
+    return window.get_table_manager(context, node_type="字段映射写入表").backup_table(table_name)
+
+
+def apply_writeback_updates_to_sqlite(window, table_name, actions, context=None):
+    db_path = window.get_workflow_db_path(context)
+    if not db_path or not os.path.exists(db_path):
+        raise ValueError("SQLite 数据库路径不存在，请先选择数据库。")
+    return window.get_table_manager(context, node_type="字段映射写入表").apply_cell_actions(
+        table_name,
+        actions,
+        cancel_event=(context or {}).get("cancel_event"),
+    )
+
+
+def apply_writeback_transaction_to_sqlite(window, table_name, actions, target_fields, context=None):
+    db_path = window.get_workflow_db_path(context)
+    if not db_path or not os.path.exists(db_path):
+        raise ValueError("SQLite 数据库路径不存在，请先选择数据库。")
+    return window.get_table_manager(
+        context,
+        node_type="字段映射写入表",
+    ).apply_writeback_transaction(
+        table_name,
+        actions,
+        clear_fields=target_fields,
+        cancel_event=(context or {}).get("cancel_event"),
+    )
+
+
+def clear_writeback_target_fields_in_sqlite(window, table_name, target_fields, context=None):
+    fields = []
+    existing = set(window.get_workflow_sqlite_columns(table_name, context))
+    for field in target_fields or []:
+        field = str(field or "").strip()
+        if field and field in existing and field not in fields:
+            fields.append(field)
+    if not fields:
+        return 0
+    return window.get_table_manager(context, node_type="字段映射写入表").clear_fields(table_name, fields)
 
 
 def transit_write_permissions_for_mode(exists=False, write_mode="", partial=False):

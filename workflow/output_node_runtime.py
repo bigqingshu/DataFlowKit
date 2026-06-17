@@ -5,6 +5,7 @@ import os
 import sys
 
 from core.data_utils import normalize_rows
+from workflow import table_runtime_services
 from workflow.nodes.selected_columns_nodes import (
     apply_selected_columns_to_memory_table,
     build_selected_columns_write_payload,
@@ -298,18 +299,13 @@ def apply_selected_columns_write_node_for_window(window, headers, rows, config, 
 
 
 def save_result_to_sqlite_append(window, headers, rows, table_name_raw, context=None):
-    table_name = window.app.sanitize_sql_name(table_name_raw, "中转数据")
-    sql_columns = window.app.make_sql_columns(headers)
-    if not sql_columns:
-        raise ValueError("没有可写入的字段。")
-    normalized_rows = normalize_rows(rows, len(sql_columns))
-    info = window.get_table_manager(context, node_type="保存中转数据").write_table(
-        table_name,
-        sql_columns,
-        normalized_rows,
-        mode="append",
+    return table_runtime_services.save_result_to_sqlite_append(
+        window,
+        headers,
+        rows,
+        table_name_raw,
+        context=context,
     )
-    return info.get("table_name", table_name)
 
 
 def export_headers_rows_to_xlsx_file(window, headers, rows, path):
@@ -334,13 +330,7 @@ def export_headers_rows_to_xlsx_file(window, headers, rows, path):
 
 
 def sqlite_table_exists_by_name(window, table_name, context=None):
-    db_path = window.get_workflow_db_path(context)
-    if not db_path or not os.path.exists(db_path):
-        return False
-    try:
-        return window.get_table_manager(context).table_exists(table_name)
-    except Exception:
-        return False
+    return table_runtime_services.sqlite_table_exists_by_name(window, table_name, context=context)
 
 
 def apply_save_transit_memory_plan(window, context, memory_plan, headers_copy, rows_copy):
@@ -431,56 +421,39 @@ def apply_save_transit_node_for_window(window, headers, rows, config, context=No
 
 
 def load_target_table_rows_for_writeback(window, table_name, context=None):
-    db_path = window.get_workflow_db_path(context)
-    if not db_path or not os.path.exists(db_path):
-        raise ValueError("SQLite 数据库路径不存在，请先选择数据库。")
-    return window.get_table_manager(context, node_type="字段映射写入表").read_records(
-        table_name,
-        include_rowid=True,
-        include_row_index=True,
-    )
+    return table_runtime_services.load_target_table_rows_for_writeback(window, table_name, context=context)
 
 
 def backup_sqlite_table_for_writeback(window, table_name, context=None):
-    return window.get_table_manager(context, node_type="字段映射写入表").backup_table(table_name)
+    return table_runtime_services.backup_sqlite_table_for_writeback(window, table_name, context=context)
 
 
 def apply_writeback_updates_to_sqlite(window, table_name, actions, context=None):
-    db_path = window.get_workflow_db_path(context)
-    if not db_path or not os.path.exists(db_path):
-        raise ValueError("SQLite 数据库路径不存在，请先选择数据库。")
-    return window.get_table_manager(context, node_type="字段映射写入表").apply_cell_actions(
+    return table_runtime_services.apply_writeback_updates_to_sqlite(
+        window,
         table_name,
         actions,
-        cancel_event=(context or {}).get("cancel_event"),
+        context=context,
     )
 
 
 def apply_writeback_transaction_to_sqlite(window, table_name, actions, target_fields, context=None):
-    db_path = window.get_workflow_db_path(context)
-    if not db_path or not os.path.exists(db_path):
-        raise ValueError("SQLite 数据库路径不存在，请先选择数据库。")
-    return window.get_table_manager(
-        context,
-        node_type="字段映射写入表",
-    ).apply_writeback_transaction(
+    return table_runtime_services.apply_writeback_transaction_to_sqlite(
+        window,
         table_name,
         actions,
-        clear_fields=target_fields,
-        cancel_event=(context or {}).get("cancel_event"),
+        target_fields,
+        context=context,
     )
 
 
 def clear_writeback_target_fields_in_sqlite(window, table_name, target_fields, context=None):
-    fields = []
-    existing = set(window.get_workflow_sqlite_columns(table_name, context))
-    for field in target_fields or []:
-        field = str(field or "").strip()
-        if field and field in existing and field not in fields:
-            fields.append(field)
-    if not fields:
-        return 0
-    return window.get_table_manager(context, node_type="字段映射写入表").clear_fields(table_name, fields)
+    return table_runtime_services.clear_writeback_target_fields_in_sqlite(
+        window,
+        table_name,
+        target_fields,
+        context=context,
+    )
 
 
 def build_writeback_actions(window, headers, rows, config, context=None):

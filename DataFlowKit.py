@@ -7578,40 +7578,11 @@ class PlanWorkflowWindow:
         )
 
     def get_workflow_output_manager(self, table_name, overwrite=False, context=None):
-        db_path = self.get_workflow_db_path(context)
-        exists = bool(db_path and os.path.exists(db_path) and TableAccessManager(db_path).table_exists(table_name))
-        permissions = self.table_permission_set(
-            read=bool(overwrite and exists),
-            write=True,
-            create=True,
-            replace=bool(overwrite),
-        )
-        access = {
-            "version": 1,
-            "auto_generated": True,
-            "system_scope": "workflow_output",
-            "tables": [
-                self.make_table_access_entry(
-                    "workflow_output",
-                    table_name,
-                    permissions=permissions,
-                    write_mode="replace_table" if overwrite else "timestamp_new",
-                    declared_by="workflow_output",
-                )
-            ],
-        }
-        policy = None
-        if isinstance(context, dict):
-            snapshot = context.get("workflow_snapshot") or {}
-            policy = context.get("table_access_policy") or (snapshot.get("table_access_policy") if isinstance(snapshot, dict) else None)
-        return TableAccessManager(
-            db_path,
-            node_id="__workflow_output__",
-            node_name="工作流最终输出",
-            node_type="工作流输出",
-            context=context if isinstance(context, dict) else None,
-            table_access=access,
-            permission_policy=policy,
+        return workflow_table_runtime_services.get_workflow_output_manager(
+            self,
+            table_name,
+            overwrite=overwrite,
+            context=context,
         )
 
     def transit_write_permissions_for_mode(self, exists=False, write_mode="", partial=False):
@@ -7708,11 +7679,7 @@ class PlanWorkflowWindow:
             return True
 
     def get_workflow_sqlite_columns(self, table_name, context=None):
-        """执行期读取 SQLite 字段，后台线程使用快照中的 db_path。"""
-        db_path = self.get_workflow_db_path(context)
-        if not db_path:
-            raise ValueError("请先设置 SQLite 数据库路径。")
-        return self.get_table_manager(context).get_columns(table_name)
+        return workflow_table_runtime_services.get_workflow_sqlite_columns(self, table_name, context=context)
 
     def read_plugin_input_table_source(self, spec, current_headers, current_rows, context=None):
         """按插件节点多表配置读取一张输入表。"""
@@ -11164,7 +11131,7 @@ class PlanWorkflowWindow:
         return workflow_append_headers_rows(old_headers, old_rows, new_headers, new_rows)
 
     def save_result_to_sqlite_append(self, headers, rows, table_name_raw, context=None):
-        return workflow_output_node_runtime.save_result_to_sqlite_append(
+        return workflow_table_runtime_services.save_result_to_sqlite_append(
             self,
             headers,
             rows,
@@ -11176,7 +11143,7 @@ class PlanWorkflowWindow:
         return workflow_output_node_runtime.export_headers_rows_to_xlsx_file(self, headers, rows, path)
 
     def sqlite_table_exists_by_name(self, table_name, context=None):
-        return workflow_output_node_runtime.sqlite_table_exists_by_name(self, table_name, context=context)
+        return workflow_table_runtime_services.sqlite_table_exists_by_name(self, table_name, context=context)
 
     def apply_save_transit_memory_plan(self, context, memory_plan, headers_copy, rows_copy):
         return workflow_output_node_runtime.apply_save_transit_memory_plan(
@@ -11214,17 +11181,17 @@ class PlanWorkflowWindow:
         return workflow_compare_writeback_values(left, op, right)
 
     def load_target_table_rows_for_writeback(self, table_name, context=None):
-        return workflow_output_node_runtime.load_target_table_rows_for_writeback(
+        return workflow_table_runtime_services.load_target_table_rows_for_writeback(
             self,
             table_name,
             context=context,
         )
 
     def backup_sqlite_table_for_writeback(self, table_name, context=None):
-        return workflow_output_node_runtime.backup_sqlite_table_for_writeback(self, table_name, context=context)
+        return workflow_table_runtime_services.backup_sqlite_table_for_writeback(self, table_name, context=context)
 
     def apply_writeback_updates_to_sqlite(self, table_name, actions, context=None):
-        return workflow_output_node_runtime.apply_writeback_updates_to_sqlite(
+        return workflow_table_runtime_services.apply_writeback_updates_to_sqlite(
             self,
             table_name,
             actions,
@@ -11232,7 +11199,7 @@ class PlanWorkflowWindow:
         )
 
     def apply_writeback_transaction_to_sqlite(self, table_name, actions, target_fields, context=None):
-        return workflow_output_node_runtime.apply_writeback_transaction_to_sqlite(
+        return workflow_table_runtime_services.apply_writeback_transaction_to_sqlite(
             self,
             table_name,
             actions,
@@ -11241,7 +11208,7 @@ class PlanWorkflowWindow:
         )
 
     def clear_writeback_target_fields_in_sqlite(self, table_name, target_fields, context=None):
-        return workflow_output_node_runtime.clear_writeback_target_fields_in_sqlite(
+        return workflow_table_runtime_services.clear_writeback_target_fields_in_sqlite(
             self,
             table_name,
             target_fields,
@@ -11335,23 +11302,15 @@ class PlanWorkflowWindow:
         return core_make_unique_headers_for_append(existing_headers, new_headers)
 
     def save_result_to_sqlite(self, headers, rows, table_name_raw, overwrite=False, backup=True, context=None):
-        db_path = self.get_workflow_db_path(context)
-        if not db_path:
-            raise ValueError("请先设置 SQLite 数据库路径。")
-        table_name = self.app.sanitize_sql_name(table_name_raw, "计划结果")
-        sql_columns = self.app.make_sql_columns(headers)
-        if not sql_columns:
-            raise ValueError("没有可写入的字段。")
-        current = (context or {}).get("current_node_info", {}) if isinstance(context, dict) else {}
-        if isinstance(current, dict) and current.get("node_id"):
-            manager = self.get_table_manager(context, node_type="工作流输出")
-        else:
-            manager = self.get_workflow_output_manager(table_name, overwrite=overwrite, context=context)
-        if overwrite and backup and manager.table_exists(table_name):
-            manager.backup_table(table_name)
-        mode = "replace" if overwrite else "timestamp"
-        info = manager.write_table(table_name, sql_columns, self.normalize_rows(rows, len(sql_columns)), mode=mode)
-        return info.get("table_name", table_name)
+        return workflow_table_runtime_services.save_result_to_sqlite(
+            self,
+            headers,
+            rows,
+            table_name_raw,
+            overwrite=overwrite,
+            backup=backup,
+            context=context,
+        )
 
     def get_plan_dir(self):
         """返回程序真实目录下的 plan 模板目录，并确保目录存在。"""
