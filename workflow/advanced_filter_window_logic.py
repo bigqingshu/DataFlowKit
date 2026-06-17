@@ -261,6 +261,75 @@ def normalize_advanced_filter_template_data(data, tables_cache, valid_fields, cu
     }
 
 
+def build_advanced_filter_field_display_cache(selected_tables, columns_by_table):
+    fields = []
+    for table in selected_tables or []:
+        for col in columns_by_table.get(table, []) or []:
+            fields.append(f"{table}.{col}")
+    return fields
+
+
+def select_advanced_filter_combo_defaults(fields, filter_field="", join_left="", join_right=""):
+    fields = list(fields or [])
+    if not fields:
+        return {
+            "filter_field": filter_field,
+            "join_left": join_left,
+            "join_right": join_right,
+        }
+
+    return {
+        "filter_field": filter_field if filter_field in fields else fields[0],
+        "join_left": join_left if join_left in fields else fields[0],
+        "join_right": join_right if join_right in fields else fields[min(1, len(fields) - 1)],
+    }
+
+
+def filter_advanced_filter_valid_state(conditions, join_rules, output_fields, valid_fields):
+    valid = set(valid_fields or [])
+    return {
+        "conditions": [
+            cond for cond in conditions or []
+            if cond.get("field") in valid
+        ],
+        "join_rules": [
+            rule for rule in join_rules or []
+            if rule.get("left") in valid and rule.get("right") in valid
+        ],
+        "output_fields": [
+            field for field in output_fields or []
+            if field in valid
+        ],
+    }
+
+
+def add_advanced_filter_output_fields(output_fields, available_fields, indexes):
+    result = list(output_fields or [])
+    available_fields = list(available_fields or [])
+    for index in indexes or []:
+        if 0 <= index < len(available_fields):
+            field = available_fields[index]
+            if field not in result:
+                result.append(field)
+    return result
+
+
+def add_all_advanced_filter_output_fields(output_fields, available_fields):
+    result = list(output_fields or [])
+    for field in available_fields or []:
+        if field not in result:
+            result.append(field)
+    return result
+
+
+def remove_advanced_filter_output_fields(output_fields, indexes):
+    result = list(output_fields or [])
+    for index in sorted(indexes or [], reverse=True):
+        if 0 <= index < len(result):
+            result.pop(index)
+    return result
+
+
 def parse_positive_int_setting(value, default_value):
     try:
         parsed = int(str(value).strip())

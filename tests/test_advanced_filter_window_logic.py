@@ -5,16 +5,22 @@ import unittest
 from pathlib import Path
 
 from workflow.advanced_filter_window_logic import (
+    add_advanced_filter_output_fields,
+    add_all_advanced_filter_output_fields,
+    build_advanced_filter_field_display_cache,
     build_advanced_filter_template_data,
     build_advanced_filter_result_records,
     eval_advanced_filter_condition,
     eval_advanced_filter_conditions,
     eval_advanced_filter_join_rule,
     eval_advanced_filter_join_rules,
+    filter_advanced_filter_valid_state,
     load_advanced_filter_table_records,
     normalize_advanced_filter_template_data,
     parse_advanced_filter_number,
     parse_positive_int_setting,
+    remove_advanced_filter_output_fields,
+    select_advanced_filter_combo_defaults,
     select_advanced_filter_template_tables,
 )
 
@@ -141,6 +147,71 @@ class AdvancedFilterWindowLogicTests(unittest.TestCase):
             select_advanced_filter_template_tables({"main_table": "other", "selected_tables": ["missing"]}, ["main", "other"]),
             ["other"],
         )
+
+    def test_field_state_helpers_build_defaults_and_filter_invalid_items(self):
+        fields = build_advanced_filter_field_display_cache(
+            ["orders", "people", "missing"],
+            {
+                "orders": ["id", "person_id"],
+                "people": ["id", "name"],
+                "missing": None,
+            },
+        )
+        self.assertEqual(fields, ["orders.id", "orders.person_id", "people.id", "people.name"])
+        self.assertEqual(
+            select_advanced_filter_combo_defaults(
+                fields,
+                filter_field="people.name",
+                join_left="bad",
+                join_right="",
+            ),
+            {
+                "filter_field": "people.name",
+                "join_left": "orders.id",
+                "join_right": "orders.person_id",
+            },
+        )
+        self.assertEqual(
+            select_advanced_filter_combo_defaults([], "old_filter", "old_left", "old_right"),
+            {
+                "filter_field": "old_filter",
+                "join_left": "old_left",
+                "join_right": "old_right",
+            },
+        )
+
+        state = filter_advanced_filter_valid_state(
+            [
+                {"field": "orders.id", "op": "等于", "value": "1"},
+                {"field": "bad", "op": "等于", "value": "2"},
+            ],
+            [
+                {"left": "orders.person_id", "op": "等于", "right": "people.id"},
+                {"left": "orders.id", "op": "等于", "right": "bad"},
+            ],
+            ["people.name", "bad"],
+            fields,
+        )
+        self.assertEqual(state["conditions"], [{"field": "orders.id", "op": "等于", "value": "1"}])
+        self.assertEqual(state["join_rules"], [{"left": "orders.person_id", "op": "等于", "right": "people.id"}])
+        self.assertEqual(state["output_fields"], ["people.name"])
+
+    def test_output_field_helpers_keep_order_and_ignore_invalid_indexes(self):
+        output_fields = add_advanced_filter_output_fields(
+            ["orders.id"],
+            ["orders.id", "people.name", "people.age"],
+            [1, 0, 99, -1],
+        )
+        self.assertEqual(output_fields, ["orders.id", "people.name"])
+
+        output_fields = add_all_advanced_filter_output_fields(
+            output_fields,
+            ["people.age", "people.name", "orders.total"],
+        )
+        self.assertEqual(output_fields, ["orders.id", "people.name", "people.age", "orders.total"])
+
+        output_fields = remove_advanced_filter_output_fields(output_fields, [1, 99, -1, 3])
+        self.assertEqual(output_fields, ["orders.id", "people.age"])
 
 
 if __name__ == "__main__":

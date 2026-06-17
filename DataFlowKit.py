@@ -158,17 +158,23 @@ from workflow.nodes.loop_nodes import (
 )
 from workflow.default_configs import default_config_for_type as workflow_default_config_for_type
 from workflow.advanced_filter_window_logic import (
+    add_advanced_filter_output_fields as workflow_add_advanced_filter_output_fields,
+    add_all_advanced_filter_output_fields as workflow_add_all_advanced_filter_output_fields,
+    build_advanced_filter_field_display_cache as workflow_build_advanced_filter_field_display_cache,
     build_advanced_filter_template_data as workflow_build_advanced_filter_template_data,
     build_advanced_filter_result_records as workflow_build_advanced_filter_result_records,
     eval_advanced_filter_condition as workflow_eval_advanced_filter_condition,
     eval_advanced_filter_conditions as workflow_eval_advanced_filter_conditions,
     eval_advanced_filter_join_rule as workflow_eval_advanced_filter_join_rule,
     eval_advanced_filter_join_rules as workflow_eval_advanced_filter_join_rules,
+    filter_advanced_filter_valid_state as workflow_filter_advanced_filter_valid_state,
     format_advanced_filter_db_value as workflow_format_advanced_filter_db_value,
     load_advanced_filter_table_records as workflow_load_advanced_filter_table_records,
     normalize_advanced_filter_template_data as workflow_normalize_advanced_filter_template_data,
     parse_advanced_filter_number as workflow_parse_advanced_filter_number,
     parse_positive_int_setting as workflow_parse_positive_int_setting,
+    remove_advanced_filter_output_fields as workflow_remove_advanced_filter_output_fields,
+    select_advanced_filter_combo_defaults as workflow_select_advanced_filter_combo_defaults,
     select_advanced_filter_template_tables as workflow_select_advanced_filter_template_tables,
 )
 from workflow.filter_config_window_mixin import FilterConfigWindowMixin
@@ -3663,7 +3669,6 @@ class AdvancedFilterWindow:
     def refresh_fields(self):
         selected_tables = self.get_selected_tables()
 
-        fields = []
         for table in selected_tables:
             columns = self.columns_cache.get(table)
             if columns is None:
@@ -3673,49 +3678,44 @@ class AdvancedFilterWindow:
                 except Exception:
                     columns = []
 
-            for col in columns:
-                fields.append(f"{table}.{col}")
-
-        self.field_display_cache = fields
+        self.field_display_cache = workflow_build_advanced_filter_field_display_cache(
+            selected_tables,
+            self.columns_cache,
+        )
 
         for combo in [
             self.filter_field_combo,
             self.join_left_combo,
             self.join_right_combo
         ]:
-            combo["values"] = fields
+            combo["values"] = self.field_display_cache
 
         self.available_fields_listbox.delete(0, tk.END)
-        for field in fields:
+        for field in self.field_display_cache:
             self.available_fields_listbox.insert(tk.END, field)
 
-        if fields:
-            if not self.filter_field_var.get() or self.filter_field_var.get() not in fields:
-                self.filter_field_var.set(fields[0])
-            if not self.join_left_var.get() or self.join_left_var.get() not in fields:
-                self.join_left_var.set(fields[0])
-            if not self.join_right_var.get() or self.join_right_var.get() not in fields:
-                self.join_right_var.set(fields[min(1, len(fields) - 1)])
+        defaults = workflow_select_advanced_filter_combo_defaults(
+            self.field_display_cache,
+            self.filter_field_var.get(),
+            self.join_left_var.get(),
+            self.join_right_var.get(),
+        )
+        self.filter_field_var.set(defaults["filter_field"])
+        self.join_left_var.set(defaults["join_left"])
+        self.join_right_var.set(defaults["join_right"])
 
         self.remove_invalid_rules_and_outputs()
 
     def remove_invalid_rules_and_outputs(self):
-        valid = set(self.field_display_cache)
-
-        self.conditions = [
-            cond for cond in self.conditions
-            if cond["field"] in valid
-        ]
-
-        self.join_rules = [
-            rule for rule in self.join_rules
-            if rule["left"] in valid and rule["right"] in valid
-        ]
-
-        self.output_fields = [
-            field for field in self.output_fields
-            if field in valid
-        ]
+        state = workflow_filter_advanced_filter_valid_state(
+            self.conditions,
+            self.join_rules,
+            self.output_fields,
+            self.field_display_cache,
+        )
+        self.conditions = state["conditions"]
+        self.join_rules = state["join_rules"]
+        self.output_fields = state["output_fields"]
 
         self.refresh_conditions_tree()
         self.refresh_join_tree()
@@ -3819,17 +3819,19 @@ class AdvancedFilterWindow:
         if not selections:
             return
 
-        for index in selections:
-            field = self.available_fields_listbox.get(index)
-            if field not in self.output_fields:
-                self.output_fields.append(field)
+        self.output_fields = workflow_add_advanced_filter_output_fields(
+            self.output_fields,
+            self.field_display_cache,
+            selections,
+        )
 
         self.refresh_output_fields_listbox()
 
     def add_all_output_fields(self):
-        for field in self.field_display_cache:
-            if field not in self.output_fields:
-                self.output_fields.append(field)
+        self.output_fields = workflow_add_all_advanced_filter_output_fields(
+            self.output_fields,
+            self.field_display_cache,
+        )
 
         self.refresh_output_fields_listbox()
 
@@ -3838,9 +3840,10 @@ class AdvancedFilterWindow:
         if not selections:
             return
 
-        for index in reversed(selections):
-            if 0 <= index < len(self.output_fields):
-                self.output_fields.pop(index)
+        self.output_fields = workflow_remove_advanced_filter_output_fields(
+            self.output_fields,
+            selections,
+        )
 
         self.refresh_output_fields_listbox()
 
