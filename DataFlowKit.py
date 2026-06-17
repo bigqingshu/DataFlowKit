@@ -163,6 +163,7 @@ from workflow.advanced_filter_window_logic import (
     add_advanced_filter_output_fields as workflow_add_advanced_filter_output_fields,
     add_all_advanced_filter_output_fields as workflow_add_all_advanced_filter_output_fields,
     build_advanced_filter_field_display_cache as workflow_build_advanced_filter_field_display_cache,
+    build_advanced_filter_main_preview_snapshot as workflow_build_advanced_filter_main_preview_snapshot,
     build_advanced_filter_preview_rows as workflow_build_advanced_filter_preview_rows,
     build_advanced_filter_template_data as workflow_build_advanced_filter_template_data,
     build_advanced_filter_result_records as workflow_build_advanced_filter_result_records,
@@ -177,6 +178,7 @@ from workflow.advanced_filter_window_logic import (
     get_advanced_filter_output_fields as workflow_get_advanced_filter_output_fields,
     load_advanced_filter_table_records as workflow_load_advanced_filter_table_records,
     normalize_advanced_filter_template_data as workflow_normalize_advanced_filter_template_data,
+    normalize_advanced_filter_save_table_name as workflow_normalize_advanced_filter_save_table_name,
     parse_advanced_filter_number as workflow_parse_advanced_filter_number,
     parse_positive_int_setting as workflow_parse_positive_int_setting,
     remove_advanced_filter_items_by_indexes as workflow_remove_advanced_filter_items_by_indexes,
@@ -3974,9 +3976,13 @@ class AdvancedFilterWindow:
             messagebox.showwarning("提示", "请先预览结果。")
             return
 
-        self.app.headers = self.preview_headers[:]
-        self.app.rows = [row[:] for row in self.preview_rows]
-        self.app.raw_data = ""
+        snapshot = workflow_build_advanced_filter_main_preview_snapshot(
+            self.preview_headers,
+            self.preview_rows,
+        )
+        self.app.headers = snapshot["headers"]
+        self.app.rows = snapshot["rows"]
+        self.app.raw_data = snapshot["raw_data"]
         self.app.refresh_tree()
         self.app.info_var.set(
             f"已从高级筛选载入预览结果：{len(self.app.rows)} 行 × {len(self.app.headers)} 列。"
@@ -3989,7 +3995,7 @@ class AdvancedFilterWindow:
         if not self.preview_headers:
             return
 
-        save_name = self.save_table_var.get().strip()
+        save_name = workflow_normalize_advanced_filter_save_table_name(self.save_table_var.get())
         if not save_name:
             messagebox.showwarning("提示", "请填写保存的新表名。")
             return

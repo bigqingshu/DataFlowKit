@@ -10,6 +10,7 @@ from workflow.advanced_filter_window_logic import (
     add_advanced_filter_output_fields,
     add_all_advanced_filter_output_fields,
     build_advanced_filter_field_display_cache,
+    build_advanced_filter_main_preview_snapshot,
     build_advanced_filter_preview_rows,
     build_advanced_filter_template_data,
     build_advanced_filter_result_records,
@@ -22,6 +23,7 @@ from workflow.advanced_filter_window_logic import (
     filter_advanced_filter_valid_state,
     get_advanced_filter_output_fields,
     load_advanced_filter_table_records,
+    normalize_advanced_filter_save_table_name,
     normalize_advanced_filter_template_data,
     parse_advanced_filter_number,
     parse_positive_int_setting,
@@ -285,6 +287,20 @@ class AdvancedFilterWindowLogicTests(unittest.TestCase):
         )
         self.assertEqual(result["removed"], 2)
         self.assertEqual(result["rows"], [["1", None], ["2", "Bob"]])
+
+    def test_preview_snapshot_and_save_name_helpers_copy_data(self):
+        headers = ["orders.id", "people.name"]
+        rows = [["1", "Alice"], ("2", "Bob")]
+
+        snapshot = build_advanced_filter_main_preview_snapshot(headers, rows)
+
+        self.assertEqual(snapshot["headers"], headers)
+        self.assertEqual(snapshot["rows"], [["1", "Alice"], ["2", "Bob"]])
+        self.assertEqual(snapshot["raw_data"], "")
+        self.assertIsNot(snapshot["headers"], headers)
+        self.assertIsNot(snapshot["rows"][0], rows[0])
+        self.assertEqual(normalize_advanced_filter_save_table_name("  result_table  "), "result_table")
+        self.assertEqual(normalize_advanced_filter_save_table_name(None), "")
 
 
 if __name__ == "__main__":

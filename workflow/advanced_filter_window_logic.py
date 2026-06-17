@@ -388,6 +388,20 @@ def dedupe_advanced_filter_preview_rows(rows):
     }
 
 
+def build_advanced_filter_main_preview_snapshot(preview_headers, preview_rows):
+    headers = list(preview_headers or [])
+    rows = [list(row) for row in preview_rows or []]
+    return {
+        "headers": headers,
+        "rows": rows,
+        "raw_data": "",
+    }
+
+
+def normalize_advanced_filter_save_table_name(value):
+    return str(value or "").strip()
+
+
 def parse_positive_int_setting(value, default_value):
     try:
         parsed = int(str(value).strip())
