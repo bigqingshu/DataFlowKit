@@ -157,6 +157,16 @@ from workflow.nodes.loop_nodes import (
     loop_last_non_empty_row_index as workflow_loop_last_non_empty_row_index,
 )
 from workflow.default_configs import default_config_for_type as workflow_default_config_for_type
+from workflow.advanced_filter_window_logic import (
+    eval_advanced_filter_condition as workflow_eval_advanced_filter_condition,
+    eval_advanced_filter_conditions as workflow_eval_advanced_filter_conditions,
+    eval_advanced_filter_join_rule as workflow_eval_advanced_filter_join_rule,
+    eval_advanced_filter_join_rules as workflow_eval_advanced_filter_join_rules,
+    format_advanced_filter_db_value as workflow_format_advanced_filter_db_value,
+    load_advanced_filter_table_records as workflow_load_advanced_filter_table_records,
+    parse_advanced_filter_number as workflow_parse_advanced_filter_number,
+    parse_positive_int_setting as workflow_parse_positive_int_setting,
+)
 from workflow.filter_config_window_mixin import FilterConfigWindowMixin
 from workflow.group_config_window_mixin import GroupConfigWindowMixin
 from workflow.plan_preview_mixin import PlanPreviewMixin
@@ -3840,147 +3850,32 @@ class AdvancedFilterWindow:
             self.output_fields_listbox.insert(tk.END, field)
 
     def format_db_value(self, value):
-        return self.app.format_db_value(value)
+        return workflow_format_advanced_filter_db_value(self.app, value)
 
     def load_table_records(self, table_name):
         columns = self.columns_cache.get(table_name)
         if columns is None:
             columns = self.app.get_table_columns(table_name)
             self.columns_cache[table_name] = columns
-
-        data = TableAccessManager(
-            self.app.get_db_path(),
-            node_type="高级筛选窗口读取",
-        ).read_table(table_name)
-        rows = [list(row) for row in data.get("rows", [])]
-
-        records = []
-        for row in rows:
-            record = {}
-            for idx, col in enumerate(columns):
-                key = f"{table_name}.{col}"
-                value = row[idx] if idx < len(row) else ""
-                record[key] = value
-            records.append(record)
-
-        return records
+        return workflow_load_advanced_filter_table_records(self.app.get_db_path(), table_name, columns)
 
     def parse_number(self, value):
-        text = str(value).strip()
-        if text == "":
-            return None
-
-        # 去掉常见千分位逗号
-        text = text.replace(",", "")
-        return float(text)
+        return workflow_parse_advanced_filter_number(value)
 
     def eval_condition(self, record, cond):
-        field = cond["field"]
-        op = cond["op"]
-        target = cond.get("value", "")
-
-        value = record.get(field, "")
-        value_text = "" if value is None else str(value)
-        target_text = "" if target is None else str(target)
-
-        if op == "等于":
-            return value_text == target_text
-        if op == "不等于":
-            return value_text != target_text
-        if op == "包含":
-            return target_text in value_text
-        if op == "不包含":
-            return target_text not in value_text
-        if op == "开头是":
-            return value_text.startswith(target_text)
-        if op == "结尾是":
-            return value_text.endswith(target_text)
-        if op == "为空":
-            return value_text.strip() == ""
-        if op == "不为空":
-            return value_text.strip() != ""
-        if op == "忽略大小写等于":
-            return value_text.lower() == target_text.lower()
-        if op == "忽略大小写包含":
-            return target_text.lower() in value_text.lower()
-
-        if op in ["大于", "小于", "大于等于", "小于等于"]:
-            try:
-                left = self.parse_number(value_text)
-                right = self.parse_number(target_text)
-                if left is None or right is None:
-                    return False
-
-                if op == "大于":
-                    return left > right
-                if op == "小于":
-                    return left < right
-                if op == "大于等于":
-                    return left >= right
-                if op == "小于等于":
-                    return left <= right
-            except Exception:
-                return False
-
-        return False
+        return workflow_eval_advanced_filter_condition(record, cond)
 
     def eval_join_rule(self, record, rule):
-        left_value = str(record.get(rule["left"], ""))
-        right_value = str(record.get(rule["right"], ""))
-        op = rule["op"]
-
-        if op == "等于":
-            return left_value == right_value
-        if op == "不等于":
-            return left_value != right_value
-        if op == "左包含右":
-            if right_value == "":
-                return False
-            return right_value in left_value
-        if op == "右包含左":
-            if left_value == "":
-                return False
-            return left_value in right_value
-        if op == "双向包含":
-            if left_value == "" or right_value == "":
-                return False
-            return left_value in right_value or right_value in left_value
-
-        return False
+        return workflow_eval_advanced_filter_join_rule(record, rule)
 
     def eval_conditions(self, record):
-        if not self.conditions:
-            return True
-
-        results = [self.eval_condition(record, cond) for cond in self.conditions]
-
-        if self.logic_var.get() == "OR":
-            return any(results)
-
-        return all(results)
+        return workflow_eval_advanced_filter_conditions(record, self.conditions, self.logic_var.get())
 
     def eval_join_rules(self, record):
-        if not self.join_rules:
-            return True
-
-        checks = []
-        for rule in self.join_rules:
-            # 规则引用的字段还没组合进当前中间记录时，暂时不参与本轮判断，等后续表组合后再生效。
-            if rule["left"] in record and rule["right"] in record:
-                checks.append(self.eval_join_rule(record, rule))
-
-        if not checks:
-            return True
-        return any(checks) if self.join_logic_var.get() == "OR" else all(checks)
+        return workflow_eval_advanced_filter_join_rules(record, self.join_rules, self.join_logic_var.get())
 
     def get_int_setting(self, var, default_value):
-        try:
-            value = int(str(var.get()).strip())
-            if value <= 0:
-                return default_value
-            return value
-        except Exception:
-            return default_value
+        return workflow_parse_positive_int_setting(var.get(), default_value)
 
     def build_result_records(self):
         selected_tables = self.get_selected_tables()
