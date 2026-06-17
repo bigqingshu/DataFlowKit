@@ -168,6 +168,8 @@ from workflow.default_configs import default_config_for_type as workflow_default
 from workflow.filter_config_window_mixin import FilterConfigWindowMixin
 from workflow.group_config_window_mixin import GroupConfigWindowMixin
 from workflow.plugin_config_window_mixin import PluginConfigWindowMixin
+from workflow.table_access_window_mixin import TableAccessWindowMixin
+from workflow.workflow_execution_mixin import WorkflowExecutionMixin
 from workflow.basic_data_config_ui import (
     build_current_datetime_column_config as workflow_build_current_datetime_column_config_ui,
     build_extract_config as workflow_build_extract_config_ui,
@@ -231,17 +233,12 @@ from workflow import filter_node_runtime as workflow_filter_node_runtime
 from workflow import loop_node_runtime as workflow_loop_node_runtime
 from workflow import node_dispatch as workflow_node_dispatch
 from workflow import output_node_runtime as workflow_output_node_runtime
-from workflow import background_workflow as workflow_background_workflow
 from workflow import plugin_input_services as workflow_plugin_input_services
 from workflow import plugin_io_services as workflow_plugin_io_services
 from workflow import plugin_node_runtime as workflow_plugin_node_runtime
 from workflow import plugin_runtime_services as workflow_plugin_runtime_services
 from workflow import plan_workflow_ui as workflow_plan_workflow_ui
-from workflow import run_plan_context as workflow_run_plan_context
-from workflow import run_plan_loop as workflow_run_plan_loop
-from workflow import run_plan_step as workflow_run_plan_step
 from workflow import table_runtime_services as workflow_table_runtime_services
-from workflow import table_access_audit_ui as workflow_table_access_audit_ui
 from workflow.row_data_mapping_config_ui import (
     build_row_data_mapping_config as workflow_build_row_data_mapping_config_ui,
 )
@@ -291,65 +288,23 @@ from workflow.table_access_defaults import (
     build_default_table_access_for_node as workflow_build_default_table_access_for_node,
 )
 from workflow.table_access_window_ui import (
-    add_table_access_entry as workflow_add_table_access_entry,
     apply_auto_field_mapping_by_name as workflow_apply_auto_field_mapping_by_name,
     apply_auto_field_mapping_by_order as workflow_apply_auto_field_mapping_by_order,
-    build_table_access_impact_preview as workflow_build_table_access_impact_preview,
-    build_table_access_bottom_buttons as workflow_build_table_access_bottom_buttons,
-    build_table_access_field_action_buttons as workflow_build_table_access_field_action_buttons,
-    build_table_access_field_form_section as workflow_build_table_access_field_form_section,
-    build_table_access_list_section as workflow_build_table_access_list_section,
-    build_table_access_table_action_buttons as workflow_build_table_access_table_action_buttons,
-    build_table_access_table_form_section as workflow_build_table_access_table_form_section,
-    build_table_access_window_shell as workflow_build_table_access_window_shell,
-    build_table_access_permission_check as workflow_build_table_access_permission_check,
-    add_table_access_window_field_entry as workflow_add_table_access_window_field_entry,
-    add_table_access_window_table_entry as workflow_add_table_access_window_table_entry,
-    apply_table_access_window_table_preset as workflow_apply_table_access_window_table_preset,
-    auto_match_table_access_window_fields as workflow_auto_match_table_access_window_fields,
-    auto_match_table_access_window_fields_by_order as workflow_auto_match_table_access_window_fields_by_order,
-    check_table_access_window_permissions as workflow_check_table_access_window_permissions,
     clear_field_mapping as workflow_clear_field_mapping,
-    clear_table_access_window_fields as workflow_clear_table_access_window_fields,
-    collect_table_access_window_table_form as workflow_collect_table_access_window_table_form,
-    current_table_access_window_access as workflow_current_table_access_window_access,
-    current_table_access_window_node as workflow_current_table_access_window_node,
-    current_table_access_window_table_entry as workflow_current_table_access_window_table_entry,
-    delete_table_access_window_field_entry as workflow_delete_table_access_window_field_entry,
-    delete_table_access_window_table_entry as workflow_delete_table_access_window_table_entry,
     delete_table_access_entry as workflow_delete_table_access_entry,
     delete_field_mapping_entry as workflow_delete_field_mapping_entry,
     field_mapping_item as workflow_field_mapping_item,
     field_mapping_mode_display as workflow_field_mapping_mode_display,
     field_mapping_mode_value as workflow_field_mapping_mode_value,
     load_field_form as workflow_load_field_form,
-    load_table_access_table_form as workflow_load_table_access_table_form,
-    load_table_access_window_table_form as workflow_load_table_access_window_table_form,
     make_table_access_field_key as workflow_make_table_access_field_key,
-    on_table_access_window_field_selected as workflow_on_table_access_window_field_selected,
-    on_table_access_window_node_selected as workflow_on_table_access_window_node_selected,
-    on_table_access_window_table_selected as workflow_on_table_access_window_table_selected,
-    preview_table_access_window_impact as workflow_preview_table_access_window_impact,
     rebuild_table_access as workflow_rebuild_table_access,
-    rebuild_table_access_window_default_access as workflow_rebuild_table_access_window_default_access,
-    refresh_table_access_field_choices as workflow_refresh_table_access_field_choices,
-    refresh_table_access_field_tree as workflow_refresh_table_access_field_tree,
-    refresh_table_access_node_tree as workflow_refresh_table_access_node_tree,
-    refresh_table_access_window_field_tree as workflow_refresh_table_access_window_field_tree,
-    refresh_table_access_window_table_tree as workflow_refresh_table_access_window_table_tree,
     render_field_mapping_tree as workflow_render_field_mapping_tree,
     render_table_access_tree as workflow_render_table_access_tree,
     reset_field_form as workflow_reset_field_form,
-    save_table_access_window_field_entry as workflow_save_table_access_window_field_entry,
-    save_table_access_window_table_entry as workflow_save_table_access_window_table_entry,
-    create_table_access_field_action_callbacks as workflow_create_table_access_field_action_callbacks,
-    create_table_access_selection_callbacks as workflow_create_table_access_selection_callbacks,
-    create_table_access_table_action_callbacks as workflow_create_table_access_table_action_callbacks,
-    create_table_access_window_callbacks as workflow_create_table_access_window_callbacks,
     save_table_access_entry as workflow_save_table_access_entry,
     selected_field_key as workflow_selected_field_key,
     table_access_preset_config as workflow_table_access_preset_config,
-    open_table_access_window as workflow_open_table_access_window,
     upsert_field_mapping_entry as workflow_upsert_field_mapping_entry,
 )
 
@@ -4387,7 +4342,7 @@ class AdvancedFilterWindow:
             messagebox.showerror("载入模板失败", str(e))
 
 
-class PlanWorkflowWindow(PluginConfigWindowMixin, FilterConfigWindowMixin, GroupConfigWindowMixin):
+class PlanWorkflowWindow(PluginConfigWindowMixin, FilterConfigWindowMixin, GroupConfigWindowMixin, TableAccessWindowMixin, WorkflowExecutionMixin):
     """
     计划 / 工作流处理窗口。
 
@@ -5290,14 +5245,6 @@ class PlanWorkflowWindow(PluginConfigWindowMixin, FilterConfigWindowMixin, Group
         self.last_table_access_precheck = issues
         return issues
 
-    def show_table_access_precheck_dialog(self, issues, title="权限预检", allow_continue=False):
-        return workflow_plan_workflow_ui.show_table_access_precheck_dialog(
-            self,
-            issues,
-            title=title,
-            allow_continue=allow_continue,
-        )
-
     def confirm_table_access_precheck(self, execute_actions=True, stop_index=None):
         issues = self.build_table_access_precheck(execute_actions=execute_actions, stop_index=stop_index)
         self.last_table_access_precheck = list(issues or [])
@@ -5326,10 +5273,6 @@ class PlanWorkflowWindow(PluginConfigWindowMixin, FilterConfigWindowMixin, Group
             title="执行前权限预检",
             allow_continue=True,
         )
-
-    def open_table_access_precheck_window(self):
-        issues = self.build_table_access_precheck(execute_actions=True)
-        self.show_table_access_precheck_dialog(issues, title="权限预检", allow_continue=False)
 
     def jump_node_label(self, idx, node):
         return workflow_jump_analysis.jump_node_label(idx, node)
@@ -5396,335 +5339,6 @@ class PlanWorkflowWindow(PluginConfigWindowMixin, FilterConfigWindowMixin, Group
 
     def open_jump_manager_window(self):
         return workflow_jump_manager_ui.open_jump_manager_window(self)
-
-    def table_access_log_text(self, event):
-        return workflow_table_access_audit_ui.table_access_log_text(event)
-
-    def open_table_access_audit_window(self):
-        return workflow_table_access_audit_ui.open_table_access_audit_window(self)
-
-    def build_table_access_window_shell(self):
-        return workflow_build_table_access_window_shell(self)
-
-    def build_table_access_list_section(self, parent):
-        return workflow_build_table_access_list_section(self, parent)
-
-    def build_table_access_table_form_section(self, parent):
-        return workflow_build_table_access_table_form_section(self, parent)
-
-    def build_table_access_field_form_section(self, parent):
-        return workflow_build_table_access_field_form_section(self, parent)
-
-    def build_table_access_table_action_buttons(self, table_form, commands):
-        return workflow_build_table_access_table_action_buttons(self, table_form, commands)
-
-    def build_table_access_field_action_buttons(self, field_form, commands):
-        return workflow_build_table_access_field_action_buttons(self, field_form, commands)
-
-    def build_table_access_bottom_buttons(self, win, commands):
-        return workflow_build_table_access_bottom_buttons(self, win, commands)
-
-    def current_table_access_window_node(self, state):
-        return workflow_current_table_access_window_node(self, state)
-
-    def refresh_table_access_node_tree(self, node_tree, state):
-        return workflow_refresh_table_access_node_tree(self, node_tree, state)
-
-    def load_table_access_table_form(self, table_section, entry, table_choices):
-        return workflow_load_table_access_table_form(self, table_section, entry, table_choices)
-
-    def refresh_table_access_field_choices(self, field_section, choices):
-        return workflow_refresh_table_access_field_choices(self, field_section, choices)
-
-    def refresh_table_access_field_tree(self, state, field_tree, entry, field_section, choices):
-        return workflow_refresh_table_access_field_tree(self, state, field_tree, entry, field_section, choices)
-
-    def current_table_access_window_access(self, state):
-        return workflow_current_table_access_window_access(self, state)
-
-    def current_table_access_window_table_entry(self, state):
-        return workflow_current_table_access_window_table_entry(self, state)
-
-    def load_table_access_window_table_form(self, state, table_section, entry):
-        return workflow_load_table_access_window_table_form(self, state, table_section, entry)
-
-    def collect_table_access_window_table_form(self, table_section):
-        return workflow_collect_table_access_window_table_form(self, table_section)
-
-    def refresh_table_access_window_field_tree(self, state, field_section, field_tree):
-        return workflow_refresh_table_access_window_field_tree(self, state, field_section, field_tree)
-
-    def refresh_table_access_window_table_tree(
-        self,
-        state,
-        table_section,
-        field_section,
-        node_tree,
-        table_tree,
-        field_tree,
-        select_index=None,
-    ):
-        return workflow_refresh_table_access_window_table_tree(
-            self,
-            state,
-            table_section,
-            field_section,
-            node_tree,
-            table_tree,
-            field_tree,
-            select_index=select_index,
-        )
-
-    def on_table_access_window_node_selected(
-        self,
-        state,
-        table_section,
-        field_section,
-        node_tree,
-        table_tree,
-        field_tree,
-        status_var,
-        event=None,
-        force=False,
-    ):
-        return workflow_on_table_access_window_node_selected(
-            self,
-            state,
-            table_section,
-            field_section,
-            node_tree,
-            table_tree,
-            field_tree,
-            status_var,
-            event=event,
-            force=force,
-        )
-
-    def on_table_access_window_table_selected(
-        self,
-        state,
-        table_section,
-        field_section,
-        table_tree,
-        field_tree,
-        event=None,
-    ):
-        return workflow_on_table_access_window_table_selected(
-            self,
-            state,
-            table_section,
-            field_section,
-            table_tree,
-            field_tree,
-            event=event,
-        )
-
-    def on_table_access_window_field_selected(self, state, field_section, field_tree, event=None):
-        return workflow_on_table_access_window_field_selected(
-            self,
-            state,
-            field_section,
-            field_tree,
-            event=event,
-        )
-
-    def save_table_access_window_table_entry(
-        self,
-        state,
-        table_section,
-        field_section,
-        node_tree,
-        table_tree,
-        field_tree,
-        status_var,
-    ):
-        return workflow_save_table_access_window_table_entry(
-            self,
-            state,
-            table_section,
-            field_section,
-            node_tree,
-            table_tree,
-            field_tree,
-            status_var,
-        )
-
-    def add_table_access_window_table_entry(
-        self,
-        state,
-        table_section,
-        field_section,
-        node_tree,
-        table_tree,
-        field_tree,
-    ):
-        return workflow_add_table_access_window_table_entry(
-            self,
-            state,
-            table_section,
-            field_section,
-            node_tree,
-            table_tree,
-            field_tree,
-        )
-
-    def delete_table_access_window_table_entry(
-        self,
-        state,
-        table_section,
-        field_section,
-        node_tree,
-        table_tree,
-        field_tree,
-        status_var,
-    ):
-        return workflow_delete_table_access_window_table_entry(
-            self,
-            state,
-            table_section,
-            field_section,
-            node_tree,
-            table_tree,
-            field_tree,
-            status_var,
-        )
-
-    def rebuild_table_access_window_default_access(
-        self,
-        win,
-        state,
-        table_section,
-        field_section,
-        node_tree,
-        table_tree,
-        field_tree,
-        status_var,
-    ):
-        return workflow_rebuild_table_access_window_default_access(
-            self,
-            win,
-            state,
-            table_section,
-            field_section,
-            node_tree,
-            table_tree,
-            field_tree,
-            status_var,
-        )
-
-    def check_table_access_window_permissions(self, win, status_var):
-        return workflow_check_table_access_window_permissions(self, win, status_var)
-
-    def preview_table_access_window_impact(self, win, state):
-        return workflow_preview_table_access_window_impact(self, win, state)
-
-    def apply_table_access_window_table_preset(self, table_section, event=None):
-        return workflow_apply_table_access_window_table_preset(self, table_section, event=event)
-
-    def save_table_access_window_field_entry(self, state, table_section, field_section, field_tree, status_var):
-        return workflow_save_table_access_window_field_entry(self, state, table_section, field_section, field_tree, status_var)
-
-    def add_table_access_window_field_entry(self, table_section, field_section, field_tree):
-        return workflow_add_table_access_window_field_entry(self, table_section, field_section, field_tree)
-
-    def delete_table_access_window_field_entry(self, state, field_section, field_tree, status_var):
-        return workflow_delete_table_access_window_field_entry(self, state, field_section, field_tree, status_var)
-
-    def auto_match_table_access_window_fields(self, state, field_section, field_tree, status_var):
-        return workflow_auto_match_table_access_window_fields(self, state, field_section, field_tree, status_var)
-
-    def auto_match_table_access_window_fields_by_order(self, state, table_section, field_section, field_tree, status_var):
-        return workflow_auto_match_table_access_window_fields_by_order(self, state, table_section, field_section, field_tree, status_var)
-
-    def clear_table_access_window_fields(self, state, field_section, field_tree, status_var):
-        return workflow_clear_table_access_window_fields(self, state, field_section, field_tree, status_var)
-
-    def create_table_access_selection_callbacks(
-        self,
-        state,
-        table_section,
-        field_section,
-        node_tree,
-        table_tree,
-        field_tree,
-        status_var,
-    ):
-        return workflow_create_table_access_selection_callbacks(
-            self,
-            state,
-            table_section,
-            field_section,
-            node_tree,
-            table_tree,
-            field_tree,
-            status_var,
-        )
-
-    def create_table_access_table_action_callbacks(
-        self,
-        win,
-        state,
-        table_section,
-        field_section,
-        node_tree,
-        table_tree,
-        field_tree,
-        status_var,
-    ):
-        return workflow_create_table_access_table_action_callbacks(
-            self,
-            win,
-            state,
-            table_section,
-            field_section,
-            node_tree,
-            table_tree,
-            field_tree,
-            status_var,
-        )
-
-    def create_table_access_field_action_callbacks(
-        self,
-        state,
-        table_section,
-        field_section,
-        field_tree,
-        status_var,
-    ):
-        return workflow_create_table_access_field_action_callbacks(
-            self,
-            state,
-            table_section,
-            field_section,
-            field_tree,
-            status_var,
-        )
-
-    def create_table_access_window_callbacks(
-        self,
-        win,
-        state,
-        table_section,
-        field_section,
-        node_tree,
-        table_tree,
-        field_tree,
-        status_var,
-    ):
-        return workflow_create_table_access_window_callbacks(
-            self,
-            win,
-            state,
-            table_section,
-            field_section,
-            node_tree,
-            table_tree,
-            field_tree,
-            status_var,
-        )
-
-    def open_table_access_window(self, initial_index=None):
-        return workflow_open_table_access_window(self, initial_index=initial_index)
 
     def get_table_manager(self, context=None, node=None, node_type="", node_name=""):
         return workflow_table_runtime_services.get_table_manager(
@@ -6941,46 +6555,6 @@ class PlanWorkflowWindow(PluginConfigWindowMixin, FilterConfigWindowMixin, Group
         except Exception as e:
             messagebox.showerror("执行循环一次失败", str(e))
 
-    def run_plan(self, stop_index=None, raise_error=False, execute_actions=False, return_context=False,
-                 start_index=0, initial_headers=None, initial_rows=None, initial_context=None, suppress_jump_at_stop=False,
-                 progress_callback=None, cancel_event=None, workflow_snapshot=None):
-        """执行计划。
-
-        这里从原来的简单 for 循环升级为 PC（程序计数器）模式，用于支持
-        “循环执行起点 / 循环判断回跳”这类需要跳转的节点。
-        """
-        initial_state = workflow_run_plan_context.build_run_plan_initial_state(
-            self,
-            stop_index=stop_index,
-            start_index=start_index,
-            initial_headers=initial_headers,
-            initial_rows=initial_rows,
-            initial_context=initial_context,
-            progress_callback=progress_callback,
-            cancel_event=cancel_event,
-            workflow_snapshot=workflow_snapshot,
-            normalize_policy=TableAccessManager.normalize_permission_policy,
-        )
-        final_state = workflow_run_plan_loop.execute_run_plan_loop(
-            self,
-            initial_state,
-            execute_actions=execute_actions,
-            progress_callback=progress_callback,
-            cancel_event=cancel_event,
-            suppress_jump_at_stop=suppress_jump_at_stop,
-            raise_error=raise_error,
-        )
-
-        # 不在后台线程直接写 self.current_transit_tables；由 workflow_done 回到主线程后统一更新。
-        return workflow_run_plan_loop.build_run_plan_result(
-            final_state["headers"],
-            final_state["rows"],
-            final_state["logs"],
-            final_state["context"],
-            return_context=return_context,
-        )
-
-
     def parse_group_input_fields(self, config):
         return workflow_parse_group_input_fields(config)
 
@@ -7902,177 +7476,6 @@ class PlanWorkflowWindow(PluginConfigWindowMixin, FilterConfigWindowMixin, Group
         except Exception:
             return ""
 
-    def build_workflow_task_snapshot(self, mode, stop_index=None, execute_actions=False):
-        """在 Tk 主线程创建后台任务快照，后台线程只读普通 Python 数据，避免直接访问 Tk 变量。"""
-        return {
-            "mode": mode,
-            "stop_index": stop_index,
-            "execute_actions": bool(execute_actions),
-            "app_dir": getattr(self.app, "app_dir", get_app_dir()),
-            "db_path": self.app.db_path_var.get().strip(),
-            "workflow_name": self.output_table_var.get().strip(),
-            "output_table": self.output_table_var.get().strip(),
-            "output_mode": self.output_mode_var.get(),
-            "backup_before_overwrite": bool(self.backup_before_overwrite_var.get()),
-            "table_access_policy": self.normalize_table_access_policy(),
-            "headers": copy.deepcopy(self.app.headers),
-            "rows": copy.deepcopy(self.app.rows),
-            "nodes": copy.deepcopy(self.nodes),
-            "manual_loop_context": copy.deepcopy(self.manual_loop_context) if self.manual_loop_context is not None else None,
-            "manual_loop_after_index": self.manual_loop_after_index,
-            "manual_loop_headers": copy.deepcopy(self.manual_loop_headers) if self.manual_loop_headers is not None else None,
-            "manual_loop_rows": copy.deepcopy(self.manual_loop_rows) if self.manual_loop_rows is not None else None,
-        }
-
-    def start_workflow_task(self, task_type, title=None, stop_index=None, execute_actions=False):
-        """统一后台任务入口。保留 _start_background_workflow 作为底层实现。"""
-        title = title or task_type
-        return self._start_background_workflow(task_type, title, stop_index=stop_index, execute_actions=execute_actions)
-
-    def _iter_workflow_child_widgets(self, parent):
-        for child in parent.winfo_children():
-            yield child
-            yield from self._iter_workflow_child_widgets(child)
-
-    def _set_workflow_cancel_enabled(self, enabled):
-        try:
-            if self.workflow_cancel_button is not None and self.workflow_cancel_button.winfo_exists():
-                self.workflow_cancel_button.configure(state="normal" if enabled else "disabled")
-        except Exception:
-            pass
-
-    def _set_workflow_controls_enabled(self, enabled):
-        """后台运行期间锁定配置/执行控件，避免节点列表在执行中被改动。"""
-        classes = {"TButton", "TCombobox", "TEntry", "TCheckbutton", "TRadiobutton", "Entry", "Text", "Listbox", "Button", "Checkbutton", "Radiobutton", "Spinbox", "TSpinbox"}
-        if not enabled:
-            self.workflow_widget_state_backup = {}
-            for widget in self._iter_workflow_child_widgets(self.window):
-                if widget is self.workflow_cancel_button:
-                    continue
-                try:
-                    if widget.winfo_class() not in classes:
-                        continue
-                    old_state = widget.cget("state")
-                    self.workflow_widget_state_backup[widget] = old_state
-                    widget.configure(state="disabled")
-                except Exception:
-                    continue
-            self._set_workflow_cancel_enabled(True)
-            return
-
-        for widget, old_state in list(self.workflow_widget_state_backup.items()):
-            try:
-                if widget.winfo_exists():
-                    widget.configure(state=old_state)
-            except Exception:
-                pass
-        self.workflow_widget_state_backup = {}
-        self._set_workflow_cancel_enabled(False)
-
-    def is_background_workflow_running(self):
-        return bool(self.workflow_worker_running and self.workflow_worker_thread and self.workflow_worker_thread.is_alive())
-
-    def cancel_background_workflow(self):
-        if not self.is_background_workflow_running():
-            self.worker_status_text.set("执行状态：当前没有后台任务。")
-            return
-        if self.workflow_worker_cancel is not None:
-            self.workflow_worker_cancel.set()
-        self.worker_status_text.set("执行状态：正在请求取消，当前节点会在安全检查点停止。")
-
-    def _set_background_workflow_state(self, running, title=""):
-        self.workflow_worker_running = bool(running)
-        if running:
-            self.workflow_current_task = title
-            self._set_workflow_controls_enabled(False)
-            self.worker_status_text.set(f"执行状态：后台运行中 - {title}")
-            self.workflow_progress_var.set(0)
-            self.node_progress_var.set(0)
-            self.workflow_progress_text.set("总进度：准备开始")
-            self.node_progress_text.set("当前节点：等待执行")
-        else:
-            self.workflow_worker_running = False
-            self.workflow_current_task = None
-            self._set_workflow_controls_enabled(True)
-
-    def _start_background_workflow(self, mode, title, stop_index=None, execute_actions=False):
-        return workflow_background_workflow.start_background_workflow(
-            self,
-            mode,
-            title,
-            stop_index=stop_index,
-            execute_actions=execute_actions,
-        )
-
-    def _background_progress_callback(self, message):
-        try:
-            self.workflow_worker_queue.put(message)
-        except Exception:
-            pass
-
-    def _background_workflow_worker(self, mode, stop_index=None, execute_actions=False, snapshot=None):
-        return workflow_background_workflow.background_workflow_worker(
-            self,
-            mode,
-            stop_index=stop_index,
-            execute_actions=execute_actions,
-            snapshot=snapshot,
-        )
-
-    def _poll_background_workflow_queue(self):
-        return workflow_background_workflow.poll_background_workflow_queue(self)
-
-    def _handle_background_workflow_message(self, msg):
-        return workflow_background_workflow.handle_background_workflow_message(self, msg)
-
-    def _finish_execute_plan_output(self, headers, rows, logs, context=None, snapshot=None):
-        return workflow_background_workflow.finish_execute_plan_output(
-            self,
-            headers,
-            rows,
-            logs,
-            context=context,
-            snapshot=snapshot,
-        )
-
-    # 覆盖原同步预览/执行入口：改为后台执行，避免长节点阻塞 Tkinter 主事件循环。
-    def preview_to_selected_node(self):
-        idx = self.get_selected_node_index()
-        if idx is None:
-            messagebox.showwarning("提示", "请先选择一个节点。")
-            return
-        self.start_workflow_task("preview_to", f"预览到节点 {idx + 1}", stop_index=idx, execute_actions=False)
-
-    def preview_full_plan(self):
-        self.start_workflow_task("preview_full", "预览完整计划", stop_index=None, execute_actions=False)
-
-    def execute_plan(self):
-        if self.is_background_workflow_running():
-            messagebox.showwarning("后台任务运行中", "当前已有工作流正在后台执行。")
-            return
-        has_actual_rename = any(
-            node.get("enabled", True) and node.get("type") == "批量重命名" and node.get("config", {}).get("actual_rename")
-            for node in self.nodes
-        )
-        if self.preview_dirty and self.preview_headers and self.preview_rows and not has_actual_rename:
-            use_current_preview = messagebox.askyesno(
-                "使用已修改的计划预览？",
-                "检测到结果预览区存在手动修改。\n\n"
-                "选择【是】：使用当前预览数据作为输出，不重新执行计划。\n"
-                "选择【否】：重新执行计划，当前预览修改会被覆盖。"
-            )
-            if use_current_preview:
-                self._finish_execute_plan_output(list(self.preview_headers), [list(row) for row in self.preview_rows], ["使用手动修改后的当前计划预览结果输出"], snapshot=self.build_workflow_task_snapshot("execute_plan", execute_actions=True))
-                return
-        if has_actual_rename:
-            ok = messagebox.askyesno(
-                "确认执行批量重命名",
-                "当前计划中存在已勾选【实际执行重命名】的节点。\n\n"
-                "执行后会修改磁盘上的文件/文件夹名称。建议先使用【预览完整计划】确认结果无误。\n\n是否继续执行？"
-            )
-            if not ok:
-                return
-        self.start_workflow_task("execute_plan", "执行计划", stop_index=None, execute_actions=True)
 
 
 if __name__ == "__main__":
