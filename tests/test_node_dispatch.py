@@ -5,10 +5,50 @@ import types
 import unittest
 from unittest import mock
 
-from workflow.node_dispatch import apply_workflow_node
+from workflow.node_dispatch import (
+    apply_workflow_node,
+    dispatch_data_node,
+    dispatch_lookup_data_node,
+    dispatch_window_runtime_node,
+)
 
 
 class NodeDispatchTests(unittest.TestCase):
+    def test_dispatch_category_helpers_return_none_for_unmatched_nodes(self):
+        class Window:
+            MAX_EXPANDED_ROWS = 200000
+            MAX_TARGET_CELLS = 1000000
+
+            def check_workflow_cancelled_periodically(self, context, index):
+                return None
+
+        window = Window()
+        self.assertIsNone(dispatch_data_node(window, [], [], "插件节点", {}, None))
+        self.assertIsNone(dispatch_lookup_data_node(window, [], [], "新建列", {}, None))
+        self.assertIsNone(dispatch_window_runtime_node(window, [], [], "新建列", {}, None))
+
+    def test_dispatch_window_runtime_helper_routes_plugin_node(self):
+        class Window:
+            pass
+
+        expected = (["A"], [["plugin"]], "plugin runtime")
+        context = {}
+        with mock.patch("workflow.node_dispatch.apply_plugin_node_for_window", return_value=expected) as helper:
+            result = dispatch_window_runtime_node(
+                Window(),
+                ["A"],
+                [["a"]],
+                "插件节点",
+                {"plugin_id": "p1"},
+                context,
+                execute_actions=True,
+            )
+
+        self.assertEqual(result, expected)
+        self.assertEqual(helper.call_args.args[:4], (mock.ANY, ["A"], [["a"]], {"plugin_id": "p1"}))
+        self.assertTrue(helper.call_args.kwargs["execute_actions"])
+        self.assertIs(helper.call_args.kwargs["context"], context)
+
     def test_dispatch_plain_data_node(self):
         class Window:
             pass
