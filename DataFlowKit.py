@@ -188,7 +188,6 @@ from workflow.nodes.plugin_nodes import (
     merge_plugin_output_fields_to_current as workflow_merge_plugin_output_fields_to_current,
     normalize_plugin_logs as workflow_normalize_plugin_logs,
     normalize_plugin_output_schema as workflow_normalize_plugin_output_schema,
-    plugin_log_items_to_table as workflow_plugin_log_items_to_table,
     should_save_plugin_output_as_transit as workflow_should_save_plugin_output_as_transit,
 )
 from workflow.default_configs import default_config_for_type as workflow_default_config_for_type
@@ -300,10 +299,12 @@ from workflow import filter_node_runtime as workflow_filter_node_runtime
 from workflow import loop_node_runtime as workflow_loop_node_runtime
 from workflow import node_dispatch as workflow_node_dispatch
 from workflow import output_node_runtime as workflow_output_node_runtime
+from workflow import plugin_io_services as workflow_plugin_io_services
 from workflow import plugin_node_runtime as workflow_plugin_node_runtime
 from workflow import run_plan_context as workflow_run_plan_context
 from workflow import run_plan_loop as workflow_run_plan_loop
 from workflow import run_plan_step as workflow_run_plan_step
+from workflow import table_runtime_services as workflow_table_runtime_services
 from workflow.row_data_mapping_config_ui import (
     build_row_data_mapping_config as workflow_build_row_data_mapping_config_ui,
 )
@@ -7568,31 +7569,12 @@ class PlanWorkflowWindow:
             status_var.set("当前没有节点，请先添加工作流节点。")
 
     def get_table_manager(self, context=None, node=None, node_type="", node_name=""):
-        db_path = self.get_workflow_db_path(context)
-        if isinstance(context, dict) and "table_access_policy" not in context:
-            snapshot = context.get("workflow_snapshot") or {}
-            if isinstance(snapshot, dict) and snapshot.get("table_access_policy") is not None:
-                context["table_access_policy"] = TableAccessManager.normalize_permission_policy(snapshot.get("table_access_policy"))
-        current = (context or {}).get("current_node_info", {}) if isinstance(context, dict) else {}
-        table_access = None
-        if isinstance(node, dict):
-            self.ensure_node_identity(node)
-            node_id = node.get("node_id", "")
-            node_name = node.get("name", node_name)
-            node_type = node.get("type", node_type)
-            table_access = node.get("table_access") if isinstance(node.get("table_access"), dict) else None
-        else:
-            node_id = current.get("node_id", "")
-            node_name = current.get("node_name", node_name)
-            node_type = current.get("node_type", node_type)
-            table_access = current.get("table_access") if isinstance(current.get("table_access"), dict) else None
-        return TableAccessManager(
-            db_path,
-            node_id=node_id,
-            node_name=node_name,
-            node_type=node_type,
+        return workflow_table_runtime_services.get_table_manager(
+            self,
             context=context,
-            table_access=table_access,
+            node=node,
+            node_type=node_type,
+            node_name=node_name,
         )
 
     def get_workflow_output_manager(self, table_name, overwrite=False, context=None):
@@ -7633,84 +7615,67 @@ class PlanWorkflowWindow:
         )
 
     def transit_write_permissions_for_mode(self, exists=False, write_mode="", partial=False):
-        required = TableAccessManager.required_permissions_for_write_mode(write_mode or "replace_table", exists=exists, partial=partial)
-        standard = TableAccessManager.normalize_write_mode(write_mode)
-        if standard in {"overlay_by_order", "write_fields_only", "fill_blank_fields", "clear_keep_schema"}:
-            required.append("alter_schema")
-        result = []
-        for perm in required:
-            if perm not in result:
-                result.append(perm)
-        return result
+        return workflow_table_runtime_services.transit_write_permissions_for_mode(
+            exists=exists,
+            write_mode=write_mode,
+            partial=partial,
+        )
 
     def check_transit_table_permission(self, context, table_name, permissions, operation="transit_table",
                                        fields=None, field_action=None, write_mode="", node_type=""):
-        table_name = str(table_name or "").strip()
-        if not table_name:
-            return None
-        manager = self.get_table_manager(context if isinstance(context, dict) else None, node_type=node_type or "中转副表")
-        manager.check_table_permission(
+        return workflow_table_runtime_services.check_transit_table_permission(
+            self,
+            context,
             table_name,
             permissions,
             operation=operation,
             fields=fields,
             field_action=field_action,
             write_mode=write_mode,
-            source_type="中转副表",
-        )
-        return manager
-
-    def check_transit_table_write_permission(self, context, table_name, exists=False, write_mode="",
-                                             fields=None, partial=False, node_type="", operation="write_transit_table"):
-        return self.check_transit_table_permission(
-            context,
-            table_name,
-            self.transit_write_permissions_for_mode(exists=exists, write_mode=write_mode, partial=partial),
-            operation=operation,
-            fields=fields,
-            field_action="write",
-            write_mode=write_mode,
             node_type=node_type,
         )
 
+    def check_transit_table_write_permission(self, context, table_name, exists=False, write_mode="",
+                                             fields=None, partial=False, node_type="", operation="write_transit_table"):
+        return workflow_table_runtime_services.check_transit_table_write_permission(
+            self,
+            context,
+            table_name,
+            exists=exists,
+            write_mode=write_mode,
+            fields=fields,
+            partial=partial,
+            node_type=node_type,
+            operation=operation,
+        )
+
     def log_transit_table_event(self, manager, operation, table_name, headers=None, rows=None, message="", **extra):
-        if not isinstance(manager, TableAccessManager):
-            return
-        headers = list(headers or [])
-        row_count = len(rows or [])
-        extra.setdefault("source_type", "中转副表")
-        extra.setdefault("rows", row_count)
-        extra.setdefault("columns", len(headers))
-        if not message:
-            message = f"{operation} {table_name}：{row_count} 行 × {len(headers)} 列"
-        manager._log_event(operation, table_name, message=message, **extra)
+        return workflow_table_runtime_services.log_transit_table_event(
+            manager,
+            operation,
+            table_name,
+            headers=headers,
+            rows=rows,
+            message=message,
+            **extra,
+        )
 
     def check_current_table_permission(self, context, headers, write=False, operation="current_table"):
-        manager = self.get_table_manager(context if isinstance(context, dict) else None, node_type="当前工作流表")
-        manager.check_table_permission(
-            "__CURRENT_TABLE__",
-            ["write_table", "update_rows"] if write else ["read_table"],
+        return workflow_table_runtime_services.check_current_table_permission(
+            self,
+            context,
+            headers,
+            write=write,
             operation=operation,
-            fields=list(headers or []),
-            field_action="write" if write else "read",
-            write_mode="current_table_default" if write else "",
-            source_type="当前工作流表",
         )
-        return manager
 
     def log_current_table_transform(self, manager, before_shape, headers, rows, node_type=""):
-        if not isinstance(manager, TableAccessManager):
-            return
-        after_shape = (len(rows or []), len(headers or []))
-        manager._log_event(
-            "transform_current_table",
-            "__CURRENT_TABLE__",
-            source_type="当前工作流表",
-            before_rows=before_shape[0],
-            before_columns=before_shape[1],
-            rows=after_shape[0],
-            columns=after_shape[1],
-            message=f"当前工作流表处理完成：{before_shape[0]}×{before_shape[1]} -> {after_shape[0]}×{after_shape[1]}，节点 {node_type}",
+        return workflow_table_runtime_services.log_current_table_transform(
+            manager,
+            before_shape,
+            headers,
+            rows,
+            node_type=node_type,
         )
 
     def get_workflow_output_mode(self, context=None):
@@ -8606,123 +8571,43 @@ class PlanWorkflowWindow:
         return workflow_normalize_plugin_logs(logs, plugin_id=plugin_id, node_name=node_name)
 
     def save_plugin_logs_to_file(self, plugin_id, log_items):
-        if not log_items:
-            return ""
-        log_dir = self.get_plugin_log_dir()
-        os.makedirs(log_dir, exist_ok=True)
-        safe_id = re.sub(r"[^0-9A-Za-z_\-\u4e00-\u9fff]+", "_", str(plugin_id or "plugin"))
-        path = os.path.join(log_dir, f"{safe_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
-        with open(path, "w", encoding="utf-8") as f:
-            for it in log_items:
-                f.write(f"[{it.get('time','')}] [{it.get('level','INFO')}] [{it.get('plugin_id','')}] {it.get('object','')} {it.get('message','')}\n")
-                tb = it.get("traceback") or ""
-                if tb:
-                    f.write(str(tb).rstrip() + "\n")
-        return path
+        return workflow_plugin_io_services.save_plugin_logs_to_file(self, plugin_id, log_items)
 
     def save_plugin_logs_to_sqlite(self, log_items, db_path=None, context=None):
-        if not log_items:
-            return 0
-        db_path = str(db_path or "").strip()
-        if not db_path:
-            db_path = self.get_workflow_db_path(context)
-        if not db_path:
-            return 0
-        if isinstance(context, dict):
-            manager = self.get_table_manager(context, node_type="插件日志")
-            if not manager.db_path:
-                current = context.get("current_node_info", {}) if isinstance(context.get("current_node_info"), dict) else {}
-                manager = TableAccessManager(
-                    db_path,
-                    node_id=current.get("node_id", ""),
-                    node_name=current.get("node_name", ""),
-                    node_type=current.get("node_type", "插件日志"),
-                    context=context,
-                    table_access=current.get("table_access") if isinstance(current.get("table_access"), dict) else None,
-                )
-            return manager.write_plugin_logs(log_items)
-        return TableAccessManager(db_path, node_type="插件日志").write_plugin_logs(log_items)
+        return workflow_plugin_io_services.save_plugin_logs_to_sqlite(
+            self,
+            log_items,
+            db_path=db_path,
+            context=context,
+        )
 
     def plugin_log_items_to_table(self, log_items):
-        return workflow_plugin_log_items_to_table(log_items)
+        return workflow_plugin_io_services.plugin_log_items_to_table(log_items)
 
     def save_plugin_output_to_transit(self, context, name, headers, rows, conflict_mode="覆盖", source="插件输出"):
-        if context is None:
-            return "未保存：无上下文"
-        transit_tables = context.setdefault("transit_tables", {})
-        base_name = str(name or "插件输出").strip() or "插件输出"
-        headers = list(headers or [])
-        rows = [list(r) for r in (rows or [])]
-        exists_before = base_name in transit_tables
-        if conflict_mode == "自动加时间戳":
-            manager = self.check_transit_table_write_permission(
-                context,
-                base_name,
-                exists=exists_before,
-                write_mode=conflict_mode,
-                fields=headers,
-                node_type="插件节点",
-            )
-            final_name = self.make_unique_transit_name(base_name, transit_tables)
-            transit_tables[final_name] = {"headers": headers, "rows": rows, "source": source}
-            self.log_transit_table_event(manager, "write_transit_table", final_name, headers, rows, write_mode=conflict_mode, message=f"写入中转副表 {final_name}：{len(rows)} 行 × {len(headers)} 列")
-            return f"中转副表：{final_name}"
-        if conflict_mode == "追加" and base_name in transit_tables:
-            manager = self.check_transit_table_write_permission(
-                context,
-                base_name,
-                exists=True,
-                write_mode=conflict_mode,
-                fields=headers,
-                node_type="插件节点",
-            )
-            old = transit_tables.get(base_name, {}) or {}
-            mh, mr = self.append_headers_rows(old.get("headers", []), old.get("rows", []), headers, rows)
-            transit_tables[base_name] = {"headers": mh, "rows": mr, "source": f"{source}:追加"}
-            self.log_transit_table_event(manager, "append_transit_table", base_name, mh, mr, write_mode=conflict_mode, appended_rows=len(rows), message=f"追加中转副表 {base_name}：新增 {len(rows)} 行，累计 {len(mr)} 行")
-            return f"中转副表追加：{base_name}（新增 {len(rows)} 行，累计 {len(mr)} 行）"
-        manager = self.check_transit_table_write_permission(
+        return workflow_plugin_io_services.save_plugin_output_to_transit(
+            self,
             context,
-            base_name,
-            exists=exists_before,
-            write_mode=conflict_mode or "覆盖",
-            fields=headers,
-            node_type="插件节点",
+            name,
+            headers,
+            rows,
+            conflict_mode=conflict_mode,
+            source=source,
         )
-        transit_tables[base_name] = {"headers": headers, "rows": rows, "source": source}
-        self.log_transit_table_event(manager, "write_transit_table", base_name, headers, rows, write_mode=conflict_mode or "覆盖", message=f"写入中转副表 {base_name}：{len(rows)} 行 × {len(headers)} 列")
-        return f"中转副表：{base_name}"
 
     def save_plugin_log_outputs(self, plugin_id, plugin_name, config, log_items, plugin_context=None, context=None, execute_actions=False, include_transit=True, suppress_errors=False):
-        log_saved_parts = []
-        plugin_context = plugin_context or {}
-        should_save_persistent = execute_actions or config.get("plugin_log_in_preview", False)
-        if config.get("save_plugin_log_file", True) and should_save_persistent:
-            try:
-                path = self.save_plugin_logs_to_file(plugin_id, log_items)
-                if path:
-                    log_saved_parts.append(f"日志文件：{path}")
-            except Exception as e:
-                if not suppress_errors:
-                    log_saved_parts.append(f"日志文件保存失败：{e}")
-        if config.get("save_plugin_log_sqlite", False) and should_save_persistent:
-            try:
-                cnt = self.save_plugin_logs_to_sqlite(log_items, db_path=plugin_context.get("db_path"), context=context)
-                if cnt:
-                    log_saved_parts.append(f"SQLite日志：{cnt}条")
-            except Exception as e:
-                if not suppress_errors:
-                    log_saved_parts.append(f"SQLite日志保存失败：{e}")
-        if include_transit and config.get("save_plugin_log_transit", False):
-            try:
-                lh, lr = self.plugin_log_items_to_table(log_items)
-                log_name = config.get("plugin_log_transit_name") or f"{plugin_name or plugin_id}_日志"
-                part = self.save_plugin_output_to_transit(context, log_name, lh, lr, config.get("transit_conflict_mode", "覆盖"), source=f"插件日志:{plugin_id}")
-                log_saved_parts.append(part)
-            except Exception as e:
-                if not suppress_errors:
-                    log_saved_parts.append(f"日志中转保存失败：{e}")
-        return log_saved_parts
+        return workflow_plugin_io_services.save_plugin_log_outputs(
+            self,
+            plugin_id,
+            plugin_name,
+            config,
+            log_items,
+            plugin_context=plugin_context,
+            context=context,
+            execute_actions=execute_actions,
+            include_transit=include_transit,
+            suppress_errors=suppress_errors,
+        )
 
     def save_plugin_result_transit_output(self, config, item, plugin_id, context, headers, rows, source_prefix="插件"):
         if not workflow_should_save_plugin_output_as_transit(config):
@@ -11226,49 +11111,12 @@ class PlanWorkflowWindow:
         return workflow_make_current_table_records(headers, rows, required_headers)
 
     def load_plan_table_records(self, table_name, context=None, required_fields=None):
-        if str(table_name).startswith("中转:"):
-            name = str(table_name).split(":", 1)[1]
-            transit_tables = (context or {}).get("transit_tables", {})
-            if name not in transit_tables:
-                raise ValueError(f"中转副表不存在或尚未生成：{name}")
-            item = transit_tables[name]
-            all_columns = list(item.get("headers", []))
-            columns = self.get_required_columns_for_plan_table(table_name, all_columns, required_fields)
-            manager = self.check_transit_table_permission(
-                context,
-                table_name,
-                ["read_table"],
-                operation="read_transit_table",
-                fields=columns,
-                field_action="read",
-                node_type="高级筛选",
-            )
-            column_indexes = [(all_columns.index(col), col) for col in columns]
-            db_rows = self.normalize_rows(item.get("rows", []), len(all_columns))
-            records = []
-            for row in db_rows:
-                record = {}
-                for i, col in column_indexes:
-                    record[f"{table_name}.{col}"] = self.safe_cell(row, i)
-                records.append(record)
-            self.log_transit_table_event(manager, "read_transit_table", table_name, columns, db_rows, message=f"高级筛选读取中转副表 {table_name}：{len(db_rows)} 行 × {len(columns)} 列")
-            return records
-
-        db_path = self.get_workflow_db_path(context)
-        if not db_path or not os.path.exists(db_path):
-            raise ValueError("当前 SQLite 数据库路径不存在，无法读取副表。")
-        all_columns = self.get_workflow_sqlite_columns(table_name, context)
-        columns = self.get_required_columns_for_plan_table(table_name, all_columns, required_fields)
-        data = self.get_table_manager(context, node_type="高级筛选").read_table(table_name, fields=columns)
-        db_rows = [list(row) for row in data.get("rows", [])]
-        records = []
-        for row in db_rows:
-            record = {}
-            for i, col in enumerate(columns):
-                value = row[i] if i < len(row) else ""
-                record[f"{table_name}.{col}"] = value
-            records.append(record)
-        return records
+        return workflow_table_runtime_services.load_plan_table_records(
+            self,
+            table_name,
+            context=context,
+            required_fields=required_fields,
+        )
 
     def normalize_filter_condition_value_source(self, cond):
         return workflow_normalize_filter_condition_value_source(cond)
@@ -11444,36 +11292,11 @@ class PlanWorkflowWindow:
         return workflow_match_value_output_column_match(source_value, lookup_value, mode)
 
     def load_lookup_table_for_match_value_output(self, config, context=None):
-        """读取匹配值输出列名节点使用的匹配表，支持 SQLite 表与内存中转副表。"""
-        lookup_source_type = str(config.get("lookup_source_type", "SQLite表")).strip() or "SQLite表"
-        lookup_table = str(config.get("lookup_table", "")).strip()
-        if not lookup_table:
-            raise ValueError("请选择匹配表或中转副表。")
-        if lookup_source_type == "中转副表":
-            transit_tables = (context or {}).get("transit_tables", {})
-            if lookup_table not in transit_tables:
-                raise ValueError(f"中转副表不存在或尚未生成：{lookup_table}。请确认保存中转数据节点在当前节点之前执行。")
-            item = transit_tables[lookup_table]
-            columns = list(item.get("headers", []))
-            manager = self.check_transit_table_permission(
-                context,
-                lookup_table,
-                ["read_table"],
-                operation="read_transit_table",
-                fields=config.get("lookup_fields", []),
-                field_action="read",
-                node_type="匹配值输出列名",
-            )
-            raw_rows = self.normalize_rows(item.get("rows", []), len(columns))
-            records = []
-            for index, row in enumerate(raw_rows, start=1):
-                record = {"__rowid__": "", "__row_index__": index}
-                for i, col in enumerate(columns):
-                    record[col] = self.safe_cell(row, i)
-                records.append(record)
-            self.log_transit_table_event(manager, "read_transit_table", lookup_table, columns, raw_rows, message=f"匹配值输出列名读取中转副表 {lookup_table}：{len(raw_rows)} 行 × {len(columns)} 列")
-            return columns, records
-        return self.load_target_table_rows_for_writeback(lookup_table, context=context)
+        return workflow_table_runtime_services.load_lookup_table_for_match_value_output(
+            self,
+            config,
+            context=context,
+        )
 
     def make_unique_plan_headers(self, headers):
         """字段名去重：重复字段自动追加 _2、_3。"""
