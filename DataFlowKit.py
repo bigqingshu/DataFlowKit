@@ -68,16 +68,7 @@ from plugin_runtime.progress import handle_plugin_stdout_line
 from plugin_runtime.scanner import scan_plugins
 from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
 from workflow.nodes.data_nodes import (
-    apply_area_fill_node as workflow_apply_area_fill_node,
-    apply_dedupe_node as workflow_apply_dedupe_node,
     apply_filter_node as workflow_apply_filter_node,
-    apply_fill_value_node as workflow_apply_fill_value_node,
-    apply_merge_node as workflow_apply_merge_node,
-    apply_match_value_output_field_name_node as workflow_apply_match_value_output_field_name_node,
-    apply_numeric_column_node as workflow_apply_numeric_column_node,
-    apply_replace_node as workflow_apply_replace_node,
-    apply_row_data_mapping_node as workflow_apply_row_data_mapping_node,
-    apply_sequence_fill_node as workflow_apply_sequence_fill_node,
     apply_unmatched_format_value as workflow_apply_unmatched_format_value,
     apply_unmatched_extract as workflow_apply_unmatched_extract,
     add_plan_filter_required_field as workflow_add_plan_filter_required_field,
@@ -11435,11 +11426,6 @@ class PlanWorkflowWindow:
 
         return headers, rows, message
 
-    def apply_replace_node(self, headers, rows, config, context=None):
-        node_context = dict(context or {})
-        node_context["check_cancelled"] = lambda index: self.check_workflow_cancelled_periodically(context, index)
-        return workflow_apply_replace_node(headers, rows, config, context=node_context)
-
     def parse_int(self, value, name):
         return workflow_parse_int(value, name)
 
@@ -11530,11 +11516,6 @@ class PlanWorkflowWindow:
     def parse_new_columns_specs(self, config):
         return workflow_parse_new_columns_specs(config)
 
-    def apply_merge_node(self, headers, rows, config, context=None):
-        node_context = dict(context or {})
-        node_context["check_cancelled"] = lambda index: self.check_workflow_cancelled_periodically(context, index)
-        return workflow_apply_merge_node(headers, rows, config, context=node_context)
-
     def ensure_field_exists(self, headers, rows, field_name):
         return workflow_ensure_field_exists(headers, rows, field_name)
 
@@ -11613,35 +11594,8 @@ class PlanWorkflowWindow:
     def should_write_cell(self, current_value, overwrite_rule):
         return workflow_should_write_cell(current_value, overwrite_rule)
 
-    def apply_fill_value_node(self, headers, rows, config, context=None):
-        node_context = dict(context or {})
-        node_context.update({
-            "check_cancelled": lambda index: self.check_workflow_cancelled_periodically(context, index),
-            "max_expanded_rows": self.MAX_EXPANDED_ROWS,
-            "max_target_cells": self.MAX_TARGET_CELLS,
-        })
-        return workflow_apply_fill_value_node(headers, rows, config, context=node_context)
-
     def format_sequence_value(self, value, config):
         return workflow_format_sequence_value(value, config)
-
-    def apply_sequence_fill_node(self, headers, rows, config, context=None):
-        node_context = dict(context or {})
-        node_context.update({
-            "check_cancelled": lambda index: self.check_workflow_cancelled_periodically(context, index),
-            "max_expanded_rows": self.MAX_EXPANDED_ROWS,
-            "max_target_cells": self.MAX_TARGET_CELLS,
-        })
-        return workflow_apply_sequence_fill_node(headers, rows, config, context=node_context)
-
-    def apply_area_fill_node(self, headers, rows, config, context=None):
-        node_context = dict(context or {})
-        node_context.update({
-            "check_cancelled": lambda index: self.check_workflow_cancelled_periodically(context, index),
-            "max_expanded_rows": self.MAX_EXPANDED_ROWS,
-            "max_target_cells": self.MAX_TARGET_CELLS,
-        })
-        return workflow_apply_area_fill_node(headers, rows, config, context=node_context)
 
     def get_positive_int(self, value, default_value):
         try:
@@ -11791,9 +11745,6 @@ class PlanWorkflowWindow:
 
     def get_row_mapping_end_index(self, rows, start_idx, config, col_count):
         return workflow_get_row_mapping_end_index(rows, start_idx, config, col_count)
-
-    def apply_row_data_mapping_node(self, headers, rows, config):
-        return workflow_apply_row_data_mapping_node(headers, rows, config)
 
     def make_unique_transit_name(self, base_name, transit_tables):
         return workflow_make_unique_transit_name(base_name, transit_tables)
@@ -12136,14 +12087,6 @@ class PlanWorkflowWindow:
             return columns, records
         return self.load_target_table_rows_for_writeback(lookup_table, context=context)
 
-    def apply_match_value_output_field_name_node(self, headers, rows, config, context=None):
-        lookup_columns, lookup_records = self.load_lookup_table_for_match_value_output(config, context=context)
-        node_context = dict(context or {})
-        node_context["lookup_columns"] = lookup_columns
-        node_context["lookup_records"] = lookup_records
-        node_context["check_cancelled"] = lambda index: self.check_workflow_cancelled_periodically(context, index)
-        return workflow_apply_match_value_output_field_name_node(headers, rows, config, context=node_context)
-
     def make_unique_plan_headers(self, headers):
         """字段名去重：重复字段自动追加 _2、_3。"""
         result = []
@@ -12175,17 +12118,6 @@ class PlanWorkflowWindow:
 
     def numeric_node_fallback_value(self, original_value, policy, fixed_value, fail_text):
         return workflow_numeric_node_fallback_value(original_value, policy, fixed_value, fail_text)
-
-    def apply_numeric_column_node(self, headers, rows, config, context=None):
-        node_context = dict(context or {})
-        node_context["check_cancelled"] = lambda index: self.check_workflow_cancelled_periodically(context, index)
-        node_context["max_expanded_rows"] = self.MAX_EXPANDED_ROWS
-        return workflow_apply_numeric_column_node(headers, rows, config, context=node_context)
-
-    def apply_dedupe_node(self, headers, rows, config, context=None):
-        node_context = dict(context or {})
-        node_context["check_cancelled"] = lambda index: self.check_workflow_cancelled_periodically(context, index)
-        return workflow_apply_dedupe_node(headers, rows, config, context=node_context)
 
     def make_unique_headers_for_append(self, existing_headers, new_headers):
         """给追加字段生成不重复字段名。"""

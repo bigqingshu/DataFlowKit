@@ -25,7 +25,7 @@ class NodeDispatchTests(unittest.TestCase):
         context = {"transit_tables": {}}
 
         class Window:
-            def apply_dedupe_node(self, headers, rows, config, context=None):
+            def apply_file_list_node(self, headers, rows, config, context=None):
                 calls.append((config, context))
                 return list(headers), [list(row) for row in rows], "dedupe"
 
@@ -33,7 +33,7 @@ class NodeDispatchTests(unittest.TestCase):
             Window(),
             ["A"],
             [["a"]],
-            {"type": "去重 / 重复数据处理", "config": {"fields": ["A"]}},
+            {"type": "获取文件列表", "config": {"folder": "C:/tmp"}},
             context=context,
         )
 
@@ -78,7 +78,11 @@ class NodeDispatchTests(unittest.TestCase):
 
     def test_dispatch_direct_pure_data_nodes_without_window_methods(self):
         class Window:
-            pass
+            MAX_EXPANDED_ROWS = 200000
+            MAX_TARGET_CELLS = 1000000
+
+            def check_workflow_cancelled_periodically(self, context, index):
+                return None
 
         headers, rows, stat = apply_workflow_node(
             Window(),
@@ -202,6 +206,178 @@ class NodeDispatchTests(unittest.TestCase):
         self.assertEqual(headers, ["AA", "B"])
         self.assertEqual(rows, [["x", "y"]])
         self.assertEqual(stat, "已更改 1 个字段名")
+
+        headers, rows, stat = apply_workflow_node(
+            Window(),
+            ["A", "B"],
+            [["x", "y"]],
+            {"type": "合并列", "config": {"fields": ["A", "B"], "separators": ["-"], "output_field": "AB"}},
+        )
+        self.assertEqual(headers, ["A", "B", "AB"])
+        self.assertEqual(rows, [["x", "y", "x-y"]])
+        self.assertEqual(stat, "新增字段 AB")
+
+        headers, rows, stat = apply_workflow_node(
+            Window(),
+            ["A"],
+            [["x"], ["x"], ["y"]],
+            {"type": "去重 / 重复数据处理", "config": {"key_fields": ["A"]}},
+        )
+        self.assertEqual(headers, ["A", "重复组编号", "重复状态", "组内序号", "重复次数", "是否保留"])
+        self.assertEqual(len(rows), 2)
+        self.assertIn("去重完成", stat)
+
+        headers, rows, stat = apply_workflow_node(
+            Window(),
+            ["A"],
+            [["2"]],
+            {
+                "type": "列数字运算",
+                "config": {
+                    "target_field": "A",
+                    "operation": "乘",
+                    "operand_source": "固定值",
+                    "operand_value": "3",
+                    "output_mode": "生成新字段",
+                    "output_field": "Result",
+                },
+            },
+        )
+        self.assertEqual(headers, ["A", "Result"])
+        self.assertEqual(rows, [["2", "6"]])
+        self.assertIn("列数字运算完成：成功 1 行", stat)
+
+        headers, rows, stat = apply_workflow_node(
+            Window(),
+            ["Text"],
+            [["abc"]],
+            {
+                "type": "批量替换",
+                "config": {
+                    "target_field": "Text",
+                    "match_mode": "正则匹配",
+                    "replace_mode": "局部替换匹配字符串",
+                    "match_value": "abc",
+                    "replace_value": "x",
+                },
+            },
+        )
+        self.assertEqual(rows, [["x"]])
+        self.assertIn("修改 1 处", stat)
+
+        headers, rows, stat = apply_workflow_node(
+            Window(),
+            ["A"],
+            [["", ""], ["x", ""]],
+            {
+                "type": "填充值",
+                "config": {
+                    "target_field": "A",
+                    "value_source": "手动输入值",
+                    "manual_value": "v",
+                    "direction": "向下",
+                    "end_mode": "固定数量",
+                    "count": "2",
+                    "overwrite_rule": "只填充空单元格",
+                },
+            },
+        )
+        self.assertEqual(rows[0][0], "v")
+        self.assertEqual(stat, "填充 1 个单元格，跳过 1 个")
+
+        headers, rows, stat = apply_workflow_node(
+            Window(),
+            ["Seq"],
+            [[""], [""]],
+            {
+                "type": "序列填充",
+                "config": {
+                    "target_field": "Seq",
+                    "start_value": "1",
+                    "step": "1",
+                    "direction": "向下",
+                    "end_mode": "固定数量",
+                    "count": "2",
+                    "overwrite_rule": "覆盖所有目标单元格",
+                },
+            },
+        )
+        self.assertEqual(rows, [["1"], ["2"]])
+        self.assertEqual(stat, "序列填充 2 个单元格，跳过 0 个")
+
+        headers, rows, stat = apply_workflow_node(
+            Window(),
+            ["A", "B"],
+            [["", ""], ["", ""]],
+            {
+                "type": "区域填充",
+                "config": {
+                    "start_field": "A",
+                    "end_field": "B",
+                    "start_row": "1",
+                    "end_row": "2",
+                    "value_source": "手动输入值",
+                    "manual_value": "v",
+                    "overwrite_rule": "覆盖所有目标单元格",
+                },
+            },
+        )
+        self.assertEqual(rows, [["v", "v"], ["v", "v"]])
+        self.assertEqual(stat, "区域填充 4 个单元格，跳过 0 个")
+
+        headers, rows, stat = apply_workflow_node(
+            Window(),
+            ["ID", "A"],
+            [["R1", "x"], ["R2", "y"]],
+            {
+                "type": "行数据映射填充",
+                "config": {
+                    "keep_fields": ["ID"],
+                    "value_fields": ["A"],
+                    "start_row": "1",
+                },
+            },
+        )
+        self.assertEqual(headers, ["ID", "原始行号", "来源字段", "输出内容", "状态"])
+        self.assertEqual(len(rows), 2)
+        self.assertIn("按行取值展开", stat)
+
+    def test_dispatch_match_value_output_prepares_lookup_context(self):
+        class Window:
+            MAX_EXPANDED_ROWS = 200000
+            MAX_TARGET_CELLS = 1000000
+
+            def check_workflow_cancelled_periodically(self, context, index):
+                return None
+
+            def load_lookup_table_for_match_value_output(self, config, context=None):
+                self.loaded = (config, context)
+                return ["Needle"], [{"__row_index__": 1, "Needle": "x"}]
+
+        context = {"transit_tables": {}}
+        window = Window()
+        headers, rows, stat = apply_workflow_node(
+            window,
+            ["Source"],
+            [["x"]],
+            {
+                "type": "匹配值输出列名",
+                "config": {
+                    "source_field": "Source",
+                    "lookup_table": "lookup",
+                    "lookup_fields": ["Needle"],
+                    "output_match_value": False,
+                    "output_match_row": False,
+                    "output_status": False,
+                },
+            },
+            context=context,
+        )
+
+        self.assertIs(window.loaded[1], context)
+        self.assertEqual(headers, ["Source", "匹配字段名"])
+        self.assertEqual(rows, [["x", "Needle"]])
+        self.assertIn("匹配值输出列名完成：成功 1 行", stat)
 
     def test_dispatch_unknown_node_raises(self):
         with self.assertRaisesRegex(ValueError, "未知节点类型：不存在"):

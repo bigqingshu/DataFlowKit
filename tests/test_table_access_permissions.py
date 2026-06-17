@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from DataFlowKit import PlanWorkflowWindow, TableAccessManager
 from plugins import word_excel_read_to_db_plugin_v1 as read_plugin
 from shared.table_access_policy import extract_read_tables
+from workflow.nodes.data_nodes import apply_numeric_column_node, apply_replace_node
 
 
 @contextmanager
@@ -392,9 +393,8 @@ class TableAccessPermissionTests(unittest.TestCase):
         self.assertIn("transform_current_table", operations)
 
     def test_replace_node_reports_invalid_fixed_regex(self):
-        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
         with self.assertRaisesRegex(ValueError, "批量替换正则错误"):
-            window.apply_replace_node(
+            apply_replace_node(
                 ["text"],
                 [["abc"]],
                 {
@@ -407,11 +407,10 @@ class TableAccessPermissionTests(unittest.TestCase):
             )
 
     def test_replace_node_honors_cancel_signal(self):
-        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
         cancel_event = threading.Event()
         cancel_event.set()
         with self.assertRaisesRegex(RuntimeError, "用户取消"):
-            window.apply_replace_node(
+            apply_replace_node(
                 ["text"],
                 [["abc"]],
                 {
@@ -421,7 +420,7 @@ class TableAccessPermissionTests(unittest.TestCase):
                     "match_value": "a",
                     "replace_value": "x",
                 },
-                context={"cancel_event": cancel_event},
+                context={"check_cancelled": lambda index: (_ for _ in ()).throw(RuntimeError("用户取消"))},
             )
 
     def test_row_expansion_rejects_excessive_target(self):
@@ -434,8 +433,7 @@ class TableAccessPermissionTests(unittest.TestCase):
             )
 
     def test_numeric_column_uses_decimal_for_long_integer(self):
-        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
-        headers, rows, _stat = window.apply_numeric_column_node(
+        headers, rows, _stat = apply_numeric_column_node(
             ["n"],
             [["123456789012345678"]],
             {

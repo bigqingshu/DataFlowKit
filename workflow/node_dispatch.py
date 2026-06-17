@@ -2,17 +2,42 @@
 """Regular node dispatch helpers for PlanWorkflowWindow.apply_node."""
 
 from workflow.nodes.data_nodes import (
+    apply_area_fill_node,
     apply_copy_column_node,
     apply_copy_row_node,
     apply_current_datetime_column_node,
     apply_delete_columns_node,
     apply_delete_rows_node,
     apply_extract_node,
+    apply_fill_value_node,
     apply_format_datetime_node,
+    apply_dedupe_node,
+    apply_match_value_output_field_name_node,
+    apply_merge_node,
+    apply_numeric_column_node,
     apply_move_columns_node,
     apply_new_columns_node,
     apply_rename_columns_node,
+    apply_replace_node,
+    apply_row_data_mapping_node,
+    apply_sequence_fill_node,
 )
+
+
+def make_window_data_node_context(window, context):
+    node_context = dict(context or {})
+    node_context["check_cancelled"] = lambda index: window.check_workflow_cancelled_periodically(context, index)
+    node_context["max_expanded_rows"] = window.MAX_EXPANDED_ROWS
+    node_context["max_target_cells"] = window.MAX_TARGET_CELLS
+    return node_context
+
+
+def make_match_value_output_context(window, config, context):
+    node_context = make_window_data_node_context(window, context)
+    lookup_columns, lookup_records = window.load_lookup_table_for_match_value_output(config, context=context)
+    node_context["lookup_columns"] = lookup_columns
+    node_context["lookup_records"] = lookup_records
+    return node_context
 
 
 def apply_workflow_node(window, headers, rows, node, execute_actions=False, context=None):
@@ -29,7 +54,7 @@ def apply_workflow_node(window, headers, rows, node, execute_actions=False, cont
     if node_type == "获取文件列表":
         return window.apply_file_list_node(headers, rows, config, context=context)
     if node_type == "批量替换":
-        return window.apply_replace_node(headers, rows, config, context=context)
+        return apply_replace_node(headers, rows, config, context=make_window_data_node_context(window, context))
     if node_type == "数据提取":
         return apply_extract_node(headers, rows, config)
     if node_type == "格式规范化 / 日期时间解析":
@@ -39,15 +64,20 @@ def apply_workflow_node(window, headers, rows, node, execute_actions=False, cont
     if node_type == "新建列":
         return apply_new_columns_node(headers, rows, config)
     if node_type == "合并列":
-        return window.apply_merge_node(headers, rows, config, context=context)
+        return apply_merge_node(headers, rows, config, context=make_window_data_node_context(window, context))
     if node_type == "批量更改列名":
         return apply_rename_columns_node(headers, rows, config)
     if node_type == "去重 / 重复数据处理":
-        return window.apply_dedupe_node(headers, rows, config, context=context)
+        return apply_dedupe_node(headers, rows, config, context=make_window_data_node_context(window, context))
     if node_type == "列数字运算":
-        return window.apply_numeric_column_node(headers, rows, config, context=context)
+        return apply_numeric_column_node(headers, rows, config, context=make_window_data_node_context(window, context))
     if node_type == "匹配值输出列名":
-        return window.apply_match_value_output_field_name_node(headers, rows, config, context=context)
+        return apply_match_value_output_field_name_node(
+            headers,
+            rows,
+            config,
+            context=make_match_value_output_context(window, config, context),
+        )
     if node_type == "插件节点":
         return window.apply_plugin_node(headers, rows, config, context=context, execute_actions=execute_actions)
     if node_type == "复制列":
@@ -57,13 +87,13 @@ def apply_workflow_node(window, headers, rows, node, execute_actions=False, cont
     if node_type == "删除行":
         return apply_delete_rows_node(headers, rows, config)
     if node_type == "填充值":
-        return window.apply_fill_value_node(headers, rows, config, context=context)
+        return apply_fill_value_node(headers, rows, config, context=make_window_data_node_context(window, context))
     if node_type == "序列填充":
-        return window.apply_sequence_fill_node(headers, rows, config, context=context)
+        return apply_sequence_fill_node(headers, rows, config, context=make_window_data_node_context(window, context))
     if node_type == "区域填充":
-        return window.apply_area_fill_node(headers, rows, config, context=context)
+        return apply_area_fill_node(headers, rows, config, context=make_window_data_node_context(window, context))
     if node_type == "行数据映射填充":
-        return window.apply_row_data_mapping_node(headers, rows, config)
+        return apply_row_data_mapping_node(headers, rows, config)
     if node_type == "保存中转数据":
         return window.apply_save_transit_node(headers, rows, config, context=context, execute_actions=execute_actions)
     if node_type == "选定列写入指定表":
