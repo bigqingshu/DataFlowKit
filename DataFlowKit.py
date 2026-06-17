@@ -6050,92 +6050,12 @@ class PlanWorkflowWindow:
         return "\n".join(lines)
 
     def show_jump_precheck_dialog(self, issues, title="跳转校验", allow_continue=False):
-        issues = list(issues or [])
-        result = {"continue": not allow_continue}
-        win = tk.Toplevel(self.window)
-        win.title(title)
-        win.geometry("1180x620")
-        win.minsize(900, 480)
-        win.transient(self.window)
-
-        main = ttk.Frame(win, padding=8)
-        main.pack(fill=tk.BOTH, expand=True)
-        summary_var = tk.StringVar(value=self.jump_validation_summary_text(issues))
-        ttk.Label(main, textvariable=summary_var, font=("TkDefaultFont", 10, "bold")).pack(anchor=tk.W, pady=(0, 6))
-        ttk.Label(main, text="跳转目标无效时运行会默认不跳转；这里用于提前发现配置风险。", foreground="gray").pack(anchor=tk.W, pady=(0, 6))
-
-        tree_wrap = ttk.Frame(main)
-        tree_wrap.pack(fill=tk.BOTH, expand=True)
-        columns = ("severity", "item", "message", "suggestion")
-        tree = ttk.Treeview(tree_wrap, columns=columns, show="headings", height=18)
-        for col, text, width in [
-            ("severity", "级别", 70),
-            ("item", "对象", 180),
-            ("message", "问题", 420),
-            ("suggestion", "建议", 360),
-        ]:
-            tree.heading(col, text=text)
-            tree.column(col, width=width, anchor=tk.W)
-        tree.tag_configure("error", foreground="#b00020")
-        tree.tag_configure("warning", foreground="#8a5a00")
-        tree.tag_configure("info", foreground="#335c99")
-        yscroll = ttk.Scrollbar(tree_wrap, orient=tk.VERTICAL, command=tree.yview)
-        xscroll = ttk.Scrollbar(tree_wrap, orient=tk.HORIZONTAL, command=tree.xview)
-        tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
-        tree.grid(row=0, column=0, sticky="nsew")
-        yscroll.grid(row=0, column=1, sticky="ns")
-        xscroll.grid(row=1, column=0, sticky="ew")
-        tree_wrap.rowconfigure(0, weight=1)
-        tree_wrap.columnconfigure(0, weight=1)
-
-        for idx, issue in enumerate(issues):
-            sev = issue.get("severity", "info")
-            tree.insert(
-                "",
-                tk.END,
-                iid=str(idx),
-                values=(sev, issue.get("item", ""), issue.get("message", ""), issue.get("suggestion", "")),
-                tags=(sev,),
-            )
-
-        def show_detail(event=None):
-            sel = tree.selection()
-            if not sel:
-                return
-            issue = issues[int(sel[0])]
-            messagebox.showinfo("跳转校验详情", self.jump_issue_detail_text(issue), parent=win)
-
-        def open_manager():
-            result["continue"] = False
-            win.destroy()
-            self.open_jump_manager_window()
-
-        tree.bind("<Double-1>", show_detail)
-
-        bottom = ttk.Frame(win, padding=(8, 0, 8, 8))
-        bottom.pack(fill=tk.X)
-        ttk.Button(bottom, text="打开跳转管理", command=open_manager).pack(side=tk.LEFT, padx=4)
-        ttk.Button(bottom, text="详情", command=show_detail).pack(side=tk.LEFT, padx=4)
-        if allow_continue:
-            def continue_run():
-                result["continue"] = True
-                win.destroy()
-            def cancel_run():
-                result["continue"] = False
-                win.destroy()
-            ttk.Button(bottom, text="继续运行", command=continue_run).pack(side=tk.RIGHT, padx=4)
-            ttk.Button(bottom, text="取消运行", command=cancel_run).pack(side=tk.RIGHT, padx=4)
-            win.protocol("WM_DELETE_WINDOW", cancel_run)
-        else:
-            ttk.Button(bottom, text="关闭", command=win.destroy).pack(side=tk.RIGHT, padx=4)
-
-        self.center_toplevel(win, self.window, 1180, 620)
-        try:
-            win.grab_set()
-        except Exception:
-            pass
-        self.window.wait_window(win)
-        return bool(result.get("continue"))
+        return workflow_jump_manager_ui.show_jump_precheck_dialog(
+            self,
+            issues,
+            title=title,
+            allow_continue=allow_continue,
+        )
 
     def confirm_jump_precheck(self, execute_actions=False, stop_index=None):
         issues = self.validate_jump_relations()
