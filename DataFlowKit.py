@@ -167,6 +167,7 @@ from workflow.nodes.plugin_nodes import (
 from workflow.default_configs import default_config_for_type as workflow_default_config_for_type
 from workflow.filter_config_window_mixin import FilterConfigWindowMixin
 from workflow.group_config_window_mixin import GroupConfigWindowMixin
+from workflow.plan_workflow_window_mixin import PlanWorkflowUiMixin
 from workflow.plugin_config_window_mixin import PluginConfigWindowMixin
 from workflow.table_access_window_mixin import TableAccessWindowMixin
 from workflow.workflow_execution_mixin import WorkflowExecutionMixin
@@ -237,7 +238,6 @@ from workflow import plugin_input_services as workflow_plugin_input_services
 from workflow import plugin_io_services as workflow_plugin_io_services
 from workflow import plugin_node_runtime as workflow_plugin_node_runtime
 from workflow import plugin_runtime_services as workflow_plugin_runtime_services
-from workflow import plan_workflow_ui as workflow_plan_workflow_ui
 from workflow import table_runtime_services as workflow_table_runtime_services
 from workflow.row_data_mapping_config_ui import (
     build_row_data_mapping_config as workflow_build_row_data_mapping_config_ui,
@@ -4342,7 +4342,7 @@ class AdvancedFilterWindow:
             messagebox.showerror("载入模板失败", str(e))
 
 
-class PlanWorkflowWindow(PluginConfigWindowMixin, FilterConfigWindowMixin, GroupConfigWindowMixin, TableAccessWindowMixin, WorkflowExecutionMixin):
+class PlanWorkflowWindow(PlanWorkflowUiMixin, PluginConfigWindowMixin, FilterConfigWindowMixin, GroupConfigWindowMixin, TableAccessWindowMixin, WorkflowExecutionMixin):
     """
     计划 / 工作流处理窗口。
 
@@ -4538,9 +4538,6 @@ class PlanWorkflowWindow(PluginConfigWindowMixin, FilterConfigWindowMixin, Group
             "fill_blank_fields": "字段空缺补齐",
         }
         return labels.get(standard, str(mode or ""))
-
-    def build_ui(self):
-        return workflow_plan_workflow_ui.build_ui(self)
 
     def _on_config_frame_configure(self, event=None):
         """更新节点配置区滚动范围。"""
@@ -5863,9 +5860,6 @@ class PlanWorkflowWindow(PluginConfigWindowMixin, FilterConfigWindowMixin, Group
         except Exception:
             return self.make_config_preview_context()
 
-    def build_node_config(self, idx):
-        return workflow_plan_workflow_ui.build_node_config(self, idx)
-
     def make_node_enabled_var(self, idx):
         var = tk.BooleanVar(value=self.nodes[idx].get("enabled", True))
         def on_change(*_):
@@ -6269,9 +6263,6 @@ class PlanWorkflowWindow(PluginConfigWindowMixin, FilterConfigWindowMixin, Group
             if self.preview_edit_entry is not None:
                 self.preview_edit_entry.destroy()
                 self.preview_edit_entry = None
-
-    def on_preview_tree_double_click(self, event):
-        return workflow_plan_workflow_ui.on_preview_tree_double_click(self, event)
 
     def refresh_preview_tree(self, headers, rows, limit=1000):
         if self.preview_edit_entry is not None:
@@ -7348,9 +7339,6 @@ class PlanWorkflowWindow(PluginConfigWindowMixin, FilterConfigWindowMixin, Group
             self.status_var.set(f"计划模板已载入：{source_path}")
         else:
             self.status_var.set("计划模板已载入。")
-
-    def refresh_plan_template_list(self, show_status=True):
-        return workflow_plan_workflow_ui.refresh_plan_template_list(self, show_status=show_status)
 
     def open_plan_dir(self):
         """打开程序真实目录下的 plan 模板目录。"""
