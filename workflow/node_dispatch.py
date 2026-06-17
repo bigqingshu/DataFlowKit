@@ -4,9 +4,14 @@
 from workflow.nodes.data_nodes import (
     apply_copy_column_node,
     apply_copy_row_node,
+    apply_current_datetime_column_node,
     apply_delete_columns_node,
     apply_delete_rows_node,
+    apply_extract_node,
+    apply_format_datetime_node,
     apply_move_columns_node,
+    apply_new_columns_node,
+    apply_rename_columns_node,
 )
 
 
@@ -26,17 +31,17 @@ def apply_workflow_node(window, headers, rows, node, execute_actions=False, cont
     if node_type == "批量替换":
         return window.apply_replace_node(headers, rows, config, context=context)
     if node_type == "数据提取":
-        return window.apply_extract_node(headers, rows, config)
+        return apply_extract_node(headers, rows, config)
     if node_type == "格式规范化 / 日期时间解析":
-        return window.apply_format_datetime_node(headers, rows, config)
+        return apply_format_datetime_node(headers, rows, config)
     if node_type == "新建日期时间列":
-        return window.apply_current_datetime_column_node(headers, rows, config)
+        return apply_current_datetime_column_node(headers, rows, config)
     if node_type == "新建列":
-        return window.apply_new_columns_node(headers, rows, config)
+        return apply_new_columns_node(headers, rows, config)
     if node_type == "合并列":
         return window.apply_merge_node(headers, rows, config, context=context)
     if node_type == "批量更改列名":
-        return window.apply_rename_columns_node(headers, rows, config)
+        return apply_rename_columns_node(headers, rows, config)
     if node_type == "去重 / 重复数据处理":
         return window.apply_dedupe_node(headers, rows, config, context=context)
     if node_type == "列数字运算":

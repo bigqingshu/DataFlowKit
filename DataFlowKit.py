@@ -69,18 +69,13 @@ from plugin_runtime.scanner import scan_plugins
 from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
 from workflow.nodes.data_nodes import (
     apply_area_fill_node as workflow_apply_area_fill_node,
-    apply_current_datetime_column_node as workflow_apply_current_datetime_column_node,
     apply_dedupe_node as workflow_apply_dedupe_node,
-    apply_extract_node as workflow_apply_extract_node,
     apply_filter_node as workflow_apply_filter_node,
-    apply_format_datetime_node as workflow_apply_format_datetime_node,
     apply_fill_value_node as workflow_apply_fill_value_node,
     apply_merge_node as workflow_apply_merge_node,
-    apply_new_columns_node as workflow_apply_new_columns_node,
     apply_match_value_output_field_name_node as workflow_apply_match_value_output_field_name_node,
     apply_numeric_column_node as workflow_apply_numeric_column_node,
     apply_replace_node as workflow_apply_replace_node,
-    apply_rename_columns_node as workflow_apply_rename_columns_node,
     apply_row_data_mapping_node as workflow_apply_row_data_mapping_node,
     apply_sequence_fill_node as workflow_apply_sequence_fill_node,
     apply_unmatched_format_value as workflow_apply_unmatched_format_value,
@@ -11526,9 +11521,6 @@ class PlanWorkflowWindow:
     def build_format_component_columns(self, parts, parse_type, prefix):
         return workflow_build_format_component_columns(parts, parse_type, prefix)
 
-    def apply_format_datetime_node(self, headers, rows, config):
-        return workflow_apply_format_datetime_node(headers, rows, config)
-
     def get_datetime_parse_warning(self, original, config, parts):
         return workflow_get_datetime_parse_warning(original, config, parts)
 
@@ -11537,15 +11529,6 @@ class PlanWorkflowWindow:
 
     def parse_new_columns_specs(self, config):
         return workflow_parse_new_columns_specs(config)
-
-    def apply_new_columns_node(self, headers, rows, config):
-        return workflow_apply_new_columns_node(headers, rows, config)
-
-    def apply_current_datetime_column_node(self, headers, rows, config):
-        return workflow_apply_current_datetime_column_node(headers, rows, config)
-
-    def apply_extract_node(self, headers, rows, config):
-        return workflow_apply_extract_node(headers, rows, config)
 
     def apply_merge_node(self, headers, rows, config, context=None):
         node_context = dict(context or {})
@@ -12160,9 +12143,6 @@ class PlanWorkflowWindow:
         node_context["lookup_records"] = lookup_records
         node_context["check_cancelled"] = lambda index: self.check_workflow_cancelled_periodically(context, index)
         return workflow_apply_match_value_output_field_name_node(headers, rows, config, context=node_context)
-
-    def apply_rename_columns_node(self, headers, rows, config):
-        return workflow_apply_rename_columns_node(headers, rows, config)
 
     def make_unique_plan_headers(self, headers):
         """字段名去重：重复字段自动追加 _2、_3。"""

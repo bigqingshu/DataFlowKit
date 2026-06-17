@@ -6,22 +6,19 @@ from workflow.node_dispatch import apply_workflow_node
 
 class NodeDispatchTests(unittest.TestCase):
     def test_dispatch_plain_data_node(self):
-        calls = []
-
         class Window:
-            def apply_new_columns_node(self, headers, rows, config):
-                calls.append(("new_columns", tuple(headers), tuple(config.items())))
-                return list(headers) + ["B"], [list(row) + ["b"] for row in rows], "new"
+            pass
 
         result = apply_workflow_node(
             Window(),
             ["A"],
             [["a"]],
-            {"type": "新建列", "config": {"name": "B"}},
+            {"type": "新建列", "config": {"columns_text": "B=b", "value_mode": "按列配置值"}},
         )
 
-        self.assertEqual(result, (["A", "B"], [["a", "b"]], "new"))
-        self.assertEqual(calls, [("new_columns", ("A",), (("name", "B"),))])
+        self.assertEqual(result[0], ["A", "B"])
+        self.assertEqual(result[1], [["a", "b"]])
+        self.assertIn("新建列完成", result[2])
 
     def test_dispatch_context_node(self):
         calls = []
@@ -134,6 +131,77 @@ class NodeDispatchTests(unittest.TestCase):
             {"type": "移动列", "config": {"order": ["C", "A"]}},
         )
         self.assertEqual((headers, rows, stat), (["C", "A", "B"], [["c", "a", "b"]], "已调整列顺序"))
+
+        headers, rows, stat = apply_workflow_node(
+            Window(),
+            ["Raw"],
+            [["abc"]],
+            {
+                "type": "数据提取",
+                "config": {
+                    "source_field": "Raw",
+                    "method": "正则提取",
+                    "regex_pattern": r"(a)",
+                    "regex_group": "1",
+                    "new_field": "Out",
+                },
+            },
+        )
+        self.assertEqual(headers, ["Raw", "Out"])
+        self.assertEqual(rows, [["abc", "a"]])
+        self.assertEqual(stat, "写入 1 行，跳过 0 行")
+
+        headers, rows, stat = apply_workflow_node(
+            Window(),
+            ["Raw"],
+            [["2026-06-15"]],
+            {
+                "type": "格式规范化 / 日期时间解析",
+                "config": {
+                    "source_field": "Raw",
+                    "parse_type": "日期",
+                    "input_structure": "自动识别常见格式",
+                    "output_mode": "覆盖源字段",
+                    "output_template": "{YYYY}-{MM}-{DD}",
+                    "output_status": False,
+                },
+            },
+        )
+        self.assertEqual(headers, ["Raw"])
+        self.assertEqual(rows, [["2026-06-15"]])
+        self.assertEqual(stat, "格式规范化完成：写入 1 行，失败 0 行，跳过 0 行")
+
+        headers, rows, stat = apply_workflow_node(
+            Window(),
+            ["A"],
+            [["x"]],
+            {"type": "新建列", "config": {"columns_text": "B=1", "value_mode": "按列配置值"}},
+        )
+        self.assertEqual(headers, ["A", "B"])
+        self.assertEqual(rows, [["x", "1"]])
+        self.assertIn("新建列完成", stat)
+
+        headers, rows, stat = apply_workflow_node(
+            Window(),
+            ["A"],
+            [["x"]],
+            {"type": "新建日期时间列", "config": {"new_field": "Now"}},
+        )
+        self.assertEqual(headers, ["A", "Now"])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], "x")
+        self.assertTrue(rows[0][1])
+        self.assertIn("新建日期时间列完成：字段【Now】", stat)
+
+        headers, rows, stat = apply_workflow_node(
+            Window(),
+            ["A", "B"],
+            [["x", "y"]],
+            {"type": "批量更改列名", "config": {"mode": "手动映射改名", "mappings": [{"old": "A", "new": "AA"}]}},
+        )
+        self.assertEqual(headers, ["AA", "B"])
+        self.assertEqual(rows, [["x", "y"]])
+        self.assertEqual(stat, "已更改 1 个字段名")
 
     def test_dispatch_unknown_node_raises(self):
         with self.assertRaisesRegex(ValueError, "未知节点类型：不存在"):
