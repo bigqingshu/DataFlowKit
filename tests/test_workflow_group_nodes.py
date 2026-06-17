@@ -497,6 +497,29 @@ class WorkflowGroupNodesTests(unittest.TestCase):
         self.assertIn(("apply", "新建列", 0), calls)
         self.assertIn(("log", "新建列", (1, 1), (1, 2), "write_current_table"), calls)
 
+    def test_dataflowkit_apply_group_node_handles_empty_group_preview_output(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+        context = {}
+
+        headers, rows, stat = window.apply_group_node(
+            ["A"],
+            [["a"]],
+            {
+                "group_name": "G",
+                "nodes": [],
+                "main_output_mode": "透传原当前表",
+                "save_to_sqlite": True,
+            },
+            execute_actions=False,
+            context=context,
+        )
+
+        self.assertEqual(headers, ["A"])
+        self.assertEqual(rows, [["a"]])
+        self.assertIn("节点组【G】为空，透传原当前表", stat)
+        self.assertIn("SQLite保存已跳过：仅执行计划时保存", stat)
+        self.assertIn("transit_tables", context)
+
     def test_dataflowkit_group_config_source_headers_resolves_sources(self):
         window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
         window.get_workflow_sqlite_columns = lambda table, context=None: ["S1", "S2"] if table == "sql" else []
