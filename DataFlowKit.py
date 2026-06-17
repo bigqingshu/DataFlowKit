@@ -188,24 +188,8 @@ from workflow.nodes.plugin_nodes import (
     should_save_plugin_output_as_transit as workflow_should_save_plugin_output_as_transit,
 )
 from workflow.default_configs import default_config_for_type as workflow_default_config_for_type
-from workflow.plugin_config_helpers import (
-    build_plugin_dynamic_select_choices as workflow_build_plugin_dynamic_select_choices,
-    build_plugin_field_select_initial_value as workflow_build_plugin_field_select_initial_value,
-    build_plugin_select_initial_value as workflow_build_plugin_select_initial_value,
-    plugin_config_transit_reuse_note as workflow_plugin_config_transit_reuse_note,
-)
-from workflow.plugin_schema_config_ui import (
-    build_plugin_output_and_log_section as workflow_build_plugin_output_and_log_section_ui,
-    build_plugin_schema_parameter_controls as workflow_build_plugin_schema_parameter_controls_ui,
-)
-from workflow import plugin_dynamic_config_ui as workflow_plugin_dynamic_config_ui
-from workflow.plugin_config_ui import (
-    build_plugin_input_tables_section as workflow_build_plugin_input_tables_section_ui,
-    build_plugin_node_config as workflow_build_plugin_node_config_ui,
-    build_plugin_run_environment_section as workflow_build_plugin_run_environment_section_ui,
-    open_plugin_input_spec_editor as workflow_open_plugin_input_spec_editor_ui,
-    refresh_plugin_input_listbox as workflow_refresh_plugin_input_listbox_ui,
-)
+from workflow.filter_config_window_mixin import FilterConfigWindowMixin
+from workflow.plugin_config_window_mixin import PluginConfigWindowMixin
 from workflow.basic_data_config_ui import (
     build_current_datetime_column_config as workflow_build_current_datetime_column_config_ui,
     build_extract_config as workflow_build_extract_config_ui,
@@ -258,28 +242,6 @@ from workflow.control_flow_config_ui import (
     build_unconditional_jump_config as workflow_build_unconditional_jump_config_ui,
     jump_anchor_choices as workflow_jump_anchor_choices_ui,
     set_anchor_var_to_config as workflow_set_anchor_var_to_config_ui,
-)
-from workflow.filter_config_ui import (
-    build_filter_condition_action_buttons as workflow_build_filter_condition_action_buttons_ui,
-    build_filter_condition_section as workflow_build_filter_condition_section_ui,
-    build_filter_config as workflow_build_filter_config_ui,
-    build_filter_header_risk_section as workflow_build_filter_header_risk_section_ui,
-    build_filter_join_action_buttons as workflow_build_filter_join_action_buttons_ui,
-    build_filter_join_section as workflow_build_filter_join_section_ui,
-    build_filter_output_action_buttons as workflow_build_filter_output_action_buttons_ui,
-    build_filter_output_section as workflow_build_filter_output_section_ui,
-    build_filter_source_table_section as workflow_build_filter_source_table_section_ui,
-    edit_filter_condition_cell as workflow_edit_filter_condition_cell_ui,
-    filter_tree_rows as workflow_filter_tree_rows_ui,
-    invert_output_fields as workflow_invert_output_fields_ui,
-    refresh_filter_actual_output_text as workflow_refresh_filter_actual_output_text_ui,
-    refresh_filter_condition_value_input as workflow_refresh_filter_condition_value_input_ui,
-    refresh_filter_field_sources as workflow_refresh_filter_field_sources_ui,
-    refresh_filter_risk_text as workflow_refresh_filter_risk_text_ui,
-    replace_filter_tree_rows as workflow_replace_filter_tree_rows_ui,
-    select_all_output_fields as workflow_select_all_output_fields_ui,
-    select_current_table_output_fields as workflow_select_current_table_output_fields_ui,
-    sync_filter_output_fields as workflow_sync_filter_output_fields_ui,
 )
 from workflow import group_config_ui as workflow_group_config_ui
 from workflow import group_field_analysis as workflow_group_field_analysis
@@ -4448,7 +4410,7 @@ class AdvancedFilterWindow:
             messagebox.showerror("载入模板失败", str(e))
 
 
-class PlanWorkflowWindow:
+class PlanWorkflowWindow(PluginConfigWindowMixin, FilterConfigWindowMixin):
     """
     计划 / 工作流处理窗口。
 
@@ -5976,71 +5938,6 @@ class PlanWorkflowWindow:
         except Exception:
             pass
 
-    def plugin_config_context_with_live_transit(self, transit_context=None, include_rows=False):
-        return workflow_plugin_dynamic_config_ui.plugin_config_context_with_live_transit(
-            self,
-            transit_context=transit_context,
-            include_rows=include_rows,
-        )
-
-    def plugin_config_transit_reuse_note(self, transit_context=None):
-        return workflow_plugin_config_transit_reuse_note(transit_context)
-
-    def get_plugin_dynamic_parameter_choices_for_config(
-        self,
-        item,
-        config,
-        params,
-        spec,
-        key,
-        headers,
-        current_rows=None,
-        transit_context=None,
-        input_table_headers=None,
-    ):
-        return workflow_plugin_dynamic_config_ui.get_plugin_dynamic_parameter_choices_for_config(
-            self,
-            item,
-            config,
-            params,
-            spec,
-            key,
-            headers,
-            current_rows=current_rows,
-            transit_context=transit_context,
-            input_table_headers=input_table_headers,
-        )
-
-    def run_plugin_custom_config_window(
-        self,
-        item,
-        config,
-        params,
-        headers,
-        current_rows=None,
-        transit_context=None,
-        dynamic_param_controls=None,
-        refresh_dynamic_controls=None,
-    ):
-        return workflow_plugin_dynamic_config_ui.run_plugin_custom_config_window(
-            self,
-            item,
-            config,
-            params,
-            headers,
-            current_rows=current_rows,
-            transit_context=transit_context,
-            dynamic_param_controls=dynamic_param_controls,
-            refresh_dynamic_controls=refresh_dynamic_controls,
-        )
-
-    def refresh_plugin_dynamic_config_controls(self, controls, set_param, get_choices):
-        return workflow_plugin_dynamic_config_ui.refresh_plugin_dynamic_config_controls(
-            controls,
-            set_param,
-            get_choices,
-        )
-
     def get_group_config_source_headers(self, source_type, headers, transit_context=None, transit_name="", sqlite_table=""):
         sqlite_columns = []
         if source_type == "SQLite表" and sqlite_table:
@@ -6252,122 +6149,6 @@ class PlanWorkflowWindow:
             row,
             messagebox_module=messagebox,
         )
-    def build_plugin_run_environment_section(self, frame, config, item, plugin_id, start_row=3):
-        return workflow_build_plugin_run_environment_section_ui(
-            self,
-            frame,
-            config,
-            item,
-            plugin_id,
-            start_row=start_row,
-        )
-
-    def refresh_plugin_input_listbox(self, input_lb, config):
-        return workflow_refresh_plugin_input_listbox_ui(input_lb, config)
-
-    def open_plugin_input_spec_editor(
-        self,
-        config,
-        index,
-        sqlite_tables,
-        transit_names,
-        refresh_input_lb,
-        refresh_plugin_dynamic_controls,
-    ):
-        return workflow_open_plugin_input_spec_editor_ui(
-            self,
-            config,
-            index,
-            sqlite_tables,
-            transit_names,
-            refresh_input_lb,
-            refresh_plugin_dynamic_controls,
-        )
-
-    def build_plugin_input_tables_section(
-        self,
-        frame,
-        config,
-        row,
-        sqlite_tables,
-        transit_names,
-        refresh_plugin_dynamic_controls,
-    ):
-        return workflow_build_plugin_input_tables_section_ui(
-            self,
-            frame,
-            config,
-            row,
-            sqlite_tables,
-            transit_names,
-            refresh_plugin_dynamic_controls,
-        )
-
-    def create_plugin_dynamic_config_context(self, item, config, params, headers, transit_context, current_rows, dynamic_param_controls):
-        return workflow_plugin_dynamic_config_ui.create_plugin_dynamic_config_context(
-            self,
-            item,
-            config,
-            params,
-            headers,
-            transit_context,
-            current_rows,
-            dynamic_param_controls,
-        )
-
-    def build_plugin_schema_parameter_controls(
-        self,
-        frame,
-        schema,
-        config,
-        params,
-        headers,
-        row,
-        dynamic_param_controls,
-        dynamic_context,
-    ):
-        return workflow_build_plugin_schema_parameter_controls_ui(
-            self,
-            frame,
-            schema,
-            config,
-            params,
-            headers,
-            row,
-            dynamic_param_controls,
-            dynamic_context,
-        )
-
-    def build_plugin_output_and_log_section(
-        self,
-        frame,
-        config,
-        item,
-        params,
-        headers,
-        current_rows,
-        transit_context,
-        dynamic_param_controls,
-        refresh_plugin_dynamic_controls,
-        row,
-    ):
-        return workflow_build_plugin_output_and_log_section_ui(
-            self,
-            frame,
-            config,
-            item,
-            params,
-            headers,
-            current_rows,
-            transit_context,
-            dynamic_param_controls,
-            refresh_plugin_dynamic_controls,
-            row,
-        )
-
-    def build_plugin_node_config(self, config, headers, transit_context=None, current_rows=None):
-        return workflow_build_plugin_node_config_ui(self, config, headers, transit_context=transit_context, current_rows=current_rows)
-
     def normalize_plugin_logs(self, logs, plugin_id="", node_name="插件节点"):
         return workflow_normalize_plugin_logs(logs, plugin_id=plugin_id, node_name=node_name)
 
@@ -7071,100 +6852,6 @@ class PlanWorkflowWindow:
 
     def build_writeback_config(self, config, headers):
         return workflow_build_writeback_config_ui(self, config, headers)
-
-    def build_filter_header_risk_section(self, frame, start_row=0):
-        return workflow_build_filter_header_risk_section_ui(self, frame, start_row=start_row)
-
-    def build_filter_source_table_section(self, frame, config, headers, selected_tables, transit_context, sync_extra_tables, start_row=2):
-        return workflow_build_filter_source_table_section_ui(
-            self,
-            frame,
-            config,
-            headers,
-            selected_tables,
-            transit_context,
-            sync_extra_tables,
-            start_row=start_row,
-        )
-
-    def build_filter_condition_section(self, frame, config, all_fields, start_row=3):
-        return workflow_build_filter_condition_section_ui(self, frame, config, all_fields, start_row=start_row)
-
-    def build_filter_join_section(self, frame, config, all_fields, current_fields, start_row=4):
-        return workflow_build_filter_join_section_ui(self, frame, config, all_fields, current_fields, start_row=start_row)
-
-    def build_filter_output_section(self, frame, config, all_fields, start_row=5):
-        return workflow_build_filter_output_section_ui(self, frame, config, all_fields, start_row=start_row)
-
-    def refresh_filter_risk_text(self, headers, config, risk_var, risk_label):
-        return workflow_refresh_filter_risk_text_ui(self, headers, config, risk_var, risk_label)
-
-    def refresh_filter_condition_value_input(self, field_state, value_source_var, value_var, value_combo):
-        return workflow_refresh_filter_condition_value_input_ui(field_state, value_source_var, value_var, value_combo)
-
-    def filter_tree_rows(self, tree):
-        return workflow_filter_tree_rows_ui(tree)
-
-    def replace_filter_tree_rows(self, tree, rows):
-        return workflow_replace_filter_tree_rows_ui(tree, rows)
-
-    def edit_filter_condition_cell(self, event, cond_tree, cond_edit_mode, sync_conditions_from_tree):
-        return workflow_edit_filter_condition_cell_ui(event, cond_tree, cond_edit_mode, sync_conditions_from_tree)
-
-    def build_filter_condition_action_buttons(self, condition_section, config, refresh_filter_risk_text):
-        return workflow_build_filter_condition_action_buttons_ui(self, condition_section, config, refresh_filter_risk_text)
-
-    def build_filter_join_action_buttons(self, join_section, config, refresh_filter_risk_text):
-        return workflow_build_filter_join_action_buttons_ui(self, join_section, config, refresh_filter_risk_text)
-
-    def refresh_filter_actual_output_text(self, out_list, actual_output_var, headers, field_state, config):
-        return workflow_refresh_filter_actual_output_text_ui(out_list, actual_output_var, headers, field_state, config)
-
-    def sync_filter_output_fields(self, out_list, actual_output_var, headers, field_state, config):
-        return workflow_sync_filter_output_fields_ui(out_list, actual_output_var, headers, field_state, config)
-
-    def build_filter_output_action_buttons(self, output_section, config, headers, field_state):
-        return workflow_build_filter_output_action_buttons_ui(self, output_section, config, headers, field_state)
-
-    def refresh_filter_field_sources(
-        self,
-        headers,
-        config,
-        transit_context,
-        field_state,
-        source_section,
-        condition_section,
-        join_section,
-        output_section,
-        sync_output_fields,
-        refresh_condition_value_input,
-        refresh_filter_risk_text,
-    ):
-        return workflow_refresh_filter_field_sources_ui(
-            self,
-            headers,
-            config,
-            transit_context,
-            field_state,
-            source_section,
-            condition_section,
-            join_section,
-            output_section,
-            sync_output_fields,
-            refresh_condition_value_input,
-            refresh_filter_risk_text,
-        )
-    def build_filter_config(self, config, headers, transit_context=None):
-        return workflow_build_filter_config_ui(self, config, headers, transit_context=transit_context)
-
-    def select_all_output_fields(self, listbox, config):
-        return workflow_select_all_output_fields_ui(listbox, config)
-
-    def invert_output_fields(self, listbox, config):
-        return workflow_invert_output_fields_ui(listbox, config)
-
-    def select_current_table_output_fields(self, listbox, config):
-        return workflow_select_current_table_output_fields_ui(listbox, config)
 
     def build_copy_column_config(self, config, headers):
         return workflow_build_copy_column_config_ui(self, config, headers)
