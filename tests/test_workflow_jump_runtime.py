@@ -83,6 +83,69 @@ class JumpRuntimeTests(unittest.TestCase):
         self.assertIn("无条件跳转：跳转到锚点 target（节点 2）", stat)
         self.assertEqual(context["jump_logs"][0]["event"], "unconditional_jump")
 
+    def test_dataflowkit_condition_check_evaluates_counts_and_writes_flag(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+        context = {"current_node_info": {"node_name": "条件判断"}}
+
+        self.assertEqual(window.condition_count_empty_cells(["A"], [[""], ["x"]], "A"), 1)
+        self.assertEqual(window.condition_count_contains_cells(["A"], [["Alpha"], ["beta"]], "A", "a", case_sensitive=False), 2)
+        passed, actual, detail = window.evaluate_condition_check_node(
+            ["A"],
+            [[""], ["x"]],
+            {"condition_type": "字段空值数量", "field": "A", "op": "等于", "value": "1"},
+        )
+
+        self.assertTrue(passed)
+        self.assertEqual(actual, 1)
+        self.assertIn("字段空值数量：A=1", detail)
+
+        headers, rows, stat = window.apply_condition_check_node(
+            ["A"],
+            [["yes"], ["no"]],
+            {
+                "flag_name": "flag",
+                "condition_type": "字段值",
+                "field": "A",
+                "op": "等于",
+                "value": "yes",
+                "true_value": "Y",
+                "false_value": "N",
+            },
+            context=context,
+        )
+
+        self.assertEqual(headers, ["A"])
+        self.assertEqual(rows, [["yes"], ["no"]])
+        self.assertIn("条件判断：flag=Y", stat)
+        self.assertEqual(context["condition_flags"]["flag"]["value"], "Y")
+        self.assertEqual(context["jump_logs"][-1]["event"], "condition_check")
+
+    def test_dataflowkit_conditional_jump_handles_missing_and_matching_flags(self):
+        window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
+        window.resolve_jump_anchor_index = lambda anchor_id, anchors_info=None, nodes=None: (4, "OK")
+        config = {
+            "flag_name": "flag",
+            "jump_rules": [{"value": "Y", "target_anchor_id": "target_y"}],
+            "default_anchor_id": "default",
+        }
+
+        self.assertEqual(window.find_conditional_jump_target("N", config), ("default", "条件值 N 未映射，使用默认锚点"))
+
+        missing_context = {}
+        headers, rows, stat, ctrl = window.apply_conditional_jump_node(["A"], [["a"]], config, context=missing_context)
+        self.assertEqual(headers, ["A"])
+        self.assertEqual(rows, [["a"]])
+        self.assertEqual(ctrl["jump_to"], None)
+        self.assertIn("条件标志未产生：flag", stat)
+        self.assertEqual(missing_context["jump_logs"][0]["status"], "warning")
+
+        context = {"condition_flags": {"flag": {"value": "Y"}}}
+        headers, rows, stat, ctrl = window.apply_conditional_jump_node(["A"], [["a"]], config, context=context)
+
+        self.assertEqual(ctrl, {"jump_to": 4, "message": "跳转到锚点 target_y（节点 5）", "status": "ok"})
+        self.assertIn("条件跳转：flag=Y；命中条件值 Y", stat)
+        self.assertEqual(context["jump_logs"][0]["event"], "conditional_jump")
+
 
 if __name__ == "__main__":
     unittest.main()
