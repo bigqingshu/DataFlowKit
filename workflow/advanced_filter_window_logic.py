@@ -134,6 +134,68 @@ def eval_advanced_filter_join_rules(record, join_rules, logic):
     return any(checks) if logic == "OR" else all(checks)
 
 
+def build_advanced_filter_result_records(
+    selected_tables,
+    table_records_map,
+    conditions=None,
+    condition_logic="AND",
+    join_rules=None,
+    join_logic="AND",
+    result_limit=5000,
+    max_intermediate=200000,
+):
+    if not selected_tables:
+        raise ValueError("请至少选择一个数据表。")
+
+    conditions = list(conditions or [])
+    join_rules = list(join_rules or [])
+
+    if len(selected_tables) == 1:
+        records = table_records_map[selected_tables[0]]
+        filtered = []
+        for record in records:
+            if eval_advanced_filter_conditions(record, conditions, condition_logic):
+                filtered.append(record)
+                if len(filtered) >= result_limit:
+                    break
+        return filtered
+
+    combined_records = table_records_map[selected_tables[0]]
+
+    for table in selected_tables[1:]:
+        new_records = []
+        right_records = table_records_map[table]
+
+        for left_record in combined_records:
+            for right_record in right_records:
+                merged = {}
+                merged.update(left_record)
+                merged.update(right_record)
+
+                if eval_advanced_filter_join_rules(merged, join_rules, join_logic):
+                    new_records.append(merged)
+
+                    if len(new_records) > max_intermediate:
+                        raise RuntimeError(
+                            f"中间结果超过上限 {max_intermediate} 行。"
+                            "请增加匹配规则或筛选条件，避免笛卡尔组合过大。"
+                        )
+
+        combined_records = new_records
+
+        if not combined_records:
+            break
+
+    filtered = []
+    for record in combined_records:
+        if eval_advanced_filter_conditions(record, conditions, condition_logic):
+            filtered.append(record)
+            if len(filtered) >= result_limit:
+                break
+
+    return filtered
+
+
 def parse_positive_int_setting(value, default_value):
     try:
         parsed = int(str(value).strip())

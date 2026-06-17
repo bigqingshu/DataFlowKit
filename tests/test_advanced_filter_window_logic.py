@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from workflow.advanced_filter_window_logic import (
+    build_advanced_filter_result_records,
     eval_advanced_filter_condition,
     eval_advanced_filter_conditions,
     eval_advanced_filter_join_rule,
@@ -61,6 +62,50 @@ class AdvancedFilterWindowLogicTests(unittest.TestCase):
                 {"people.id": "2", "people.name": "", "people.missing": ""},
             ],
         )
+
+    def test_build_result_records_filters_single_table_and_limits(self):
+        records = build_advanced_filter_result_records(
+            ["people"],
+            {
+                "people": [
+                    {"people.name": "Alice", "people.age": "20"},
+                    {"people.name": "Bob", "people.age": "30"},
+                    {"people.name": "Cathy", "people.age": "40"},
+                ]
+            },
+            conditions=[{"field": "people.age", "op": "大于等于", "value": "30"}],
+            result_limit=1,
+        )
+
+        self.assertEqual(records, [{"people.name": "Bob", "people.age": "30"}])
+
+    def test_build_result_records_joins_tables_and_checks_intermediate_limit(self):
+        joined = build_advanced_filter_result_records(
+            ["orders", "people"],
+            {
+                "orders": [
+                    {"orders.id": "1", "orders.person_id": "A"},
+                    {"orders.id": "2", "orders.person_id": "B"},
+                ],
+                "people": [
+                    {"people.id": "A", "people.name": "Alice"},
+                    {"people.id": "C", "people.name": "Cathy"},
+                ],
+            },
+            join_rules=[{"left": "orders.person_id", "op": "等于", "right": "people.id"}],
+        )
+
+        self.assertEqual(joined, [{"orders.id": "1", "orders.person_id": "A", "people.id": "A", "people.name": "Alice"}])
+
+        with self.assertRaisesRegex(RuntimeError, "中间结果超过上限 1 行"):
+            build_advanced_filter_result_records(
+                ["a", "b"],
+                {
+                    "a": [{"a.x": "1"}, {"a.x": "2"}],
+                    "b": [{"b.y": "1"}, {"b.y": "2"}],
+                },
+                max_intermediate=1,
+            )
 
 
 if __name__ == "__main__":

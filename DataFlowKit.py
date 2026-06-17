@@ -158,6 +158,7 @@ from workflow.nodes.loop_nodes import (
 )
 from workflow.default_configs import default_config_for_type as workflow_default_config_for_type
 from workflow.advanced_filter_window_logic import (
+    build_advanced_filter_result_records as workflow_build_advanced_filter_result_records,
     eval_advanced_filter_condition as workflow_eval_advanced_filter_condition,
     eval_advanced_filter_conditions as workflow_eval_advanced_filter_conditions,
     eval_advanced_filter_join_rule as workflow_eval_advanced_filter_join_rule,
@@ -3880,9 +3881,6 @@ class AdvancedFilterWindow:
     def build_result_records(self):
         selected_tables = self.get_selected_tables()
 
-        if not selected_tables:
-            raise ValueError("请至少选择一个数据表。")
-
         result_limit = self.get_int_setting(self.result_limit_var, 5000)
         max_intermediate = self.get_int_setting(self.max_intermediate_var, 200000)
 
@@ -3890,50 +3888,16 @@ class AdvancedFilterWindow:
         for table in selected_tables:
             table_records_map[table] = self.load_table_records(table)
 
-        if len(selected_tables) == 1:
-            records = table_records_map[selected_tables[0]]
-            filtered = []
-            for record in records:
-                if self.eval_conditions(record):
-                    filtered.append(record)
-                    if len(filtered) >= result_limit:
-                        break
-            return filtered
-
-        combined_records = table_records_map[selected_tables[0]]
-
-        for table in selected_tables[1:]:
-            new_records = []
-            right_records = table_records_map[table]
-
-            for left_record in combined_records:
-                for right_record in right_records:
-                    merged = {}
-                    merged.update(left_record)
-                    merged.update(right_record)
-
-                    if self.eval_join_rules(merged):
-                        new_records.append(merged)
-
-                        if len(new_records) > max_intermediate:
-                            raise RuntimeError(
-                                f"中间结果超过上限 {max_intermediate} 行。"
-                                "请增加匹配规则或筛选条件，避免笛卡尔组合过大。"
-                            )
-
-            combined_records = new_records
-
-            if not combined_records:
-                break
-
-        filtered = []
-        for record in combined_records:
-            if self.eval_conditions(record):
-                filtered.append(record)
-                if len(filtered) >= result_limit:
-                    break
-
-        return filtered
+        return workflow_build_advanced_filter_result_records(
+            selected_tables,
+            table_records_map,
+            conditions=self.conditions,
+            condition_logic=self.logic_var.get(),
+            join_rules=self.join_rules,
+            join_logic=self.join_logic_var.get(),
+            result_limit=result_limit,
+            max_intermediate=max_intermediate,
+        )
 
     def get_output_fields(self):
         if self.output_fields:
