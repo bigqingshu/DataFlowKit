@@ -362,18 +362,45 @@ from workflow.table_access_window_ui import (
     build_table_access_table_form_section as workflow_build_table_access_table_form_section,
     build_table_access_window_shell as workflow_build_table_access_window_shell,
     build_table_access_permission_check as workflow_build_table_access_permission_check,
+    add_table_access_window_field_entry as workflow_add_table_access_window_field_entry,
+    add_table_access_window_table_entry as workflow_add_table_access_window_table_entry,
+    apply_table_access_window_table_preset as workflow_apply_table_access_window_table_preset,
+    auto_match_table_access_window_fields as workflow_auto_match_table_access_window_fields,
+    auto_match_table_access_window_fields_by_order as workflow_auto_match_table_access_window_fields_by_order,
+    check_table_access_window_permissions as workflow_check_table_access_window_permissions,
     clear_field_mapping as workflow_clear_field_mapping,
+    clear_table_access_window_fields as workflow_clear_table_access_window_fields,
+    collect_table_access_window_table_form as workflow_collect_table_access_window_table_form,
+    current_table_access_window_access as workflow_current_table_access_window_access,
+    current_table_access_window_node as workflow_current_table_access_window_node,
+    current_table_access_window_table_entry as workflow_current_table_access_window_table_entry,
+    delete_table_access_window_field_entry as workflow_delete_table_access_window_field_entry,
+    delete_table_access_window_table_entry as workflow_delete_table_access_window_table_entry,
     delete_table_access_entry as workflow_delete_table_access_entry,
     delete_field_mapping_entry as workflow_delete_field_mapping_entry,
     field_mapping_item as workflow_field_mapping_item,
     field_mapping_mode_display as workflow_field_mapping_mode_display,
     field_mapping_mode_value as workflow_field_mapping_mode_value,
     load_field_form as workflow_load_field_form,
+    load_table_access_table_form as workflow_load_table_access_table_form,
+    load_table_access_window_table_form as workflow_load_table_access_window_table_form,
     make_table_access_field_key as workflow_make_table_access_field_key,
+    on_table_access_window_field_selected as workflow_on_table_access_window_field_selected,
+    on_table_access_window_node_selected as workflow_on_table_access_window_node_selected,
+    on_table_access_window_table_selected as workflow_on_table_access_window_table_selected,
+    preview_table_access_window_impact as workflow_preview_table_access_window_impact,
     rebuild_table_access as workflow_rebuild_table_access,
+    rebuild_table_access_window_default_access as workflow_rebuild_table_access_window_default_access,
+    refresh_table_access_field_choices as workflow_refresh_table_access_field_choices,
+    refresh_table_access_field_tree as workflow_refresh_table_access_field_tree,
+    refresh_table_access_node_tree as workflow_refresh_table_access_node_tree,
+    refresh_table_access_window_field_tree as workflow_refresh_table_access_window_field_tree,
+    refresh_table_access_window_table_tree as workflow_refresh_table_access_window_table_tree,
     render_field_mapping_tree as workflow_render_field_mapping_tree,
     render_table_access_tree as workflow_render_table_access_tree,
     reset_field_form as workflow_reset_field_form,
+    save_table_access_window_field_entry as workflow_save_table_access_window_field_entry,
+    save_table_access_window_table_entry as workflow_save_table_access_window_table_entry,
     create_table_access_field_action_callbacks as workflow_create_table_access_field_action_callbacks,
     create_table_access_selection_callbacks as workflow_create_table_access_selection_callbacks,
     create_table_access_table_action_callbacks as workflow_create_table_access_table_action_callbacks,
@@ -5821,99 +5848,34 @@ class PlanWorkflowWindow:
         return workflow_build_table_access_bottom_buttons(self, win, commands)
 
     def current_table_access_window_node(self, state):
-        idx = state.get("node_index")
-        if idx is None or idx < 0 or idx >= len(self.nodes):
-            return None
-        return self.nodes[idx]
+        return workflow_current_table_access_window_node(self, state)
 
     def refresh_table_access_node_tree(self, node_tree, state):
-        state["refreshing_node_tree"] = True
-        try:
-            node_tree.delete(*node_tree.get_children())
-            for idx, node in enumerate(self.nodes):
-                mark = "√" if node.get("enabled", True) else "×"
-                node_tree.insert(
-                    "",
-                    tk.END,
-                    iid=str(idx),
-                    values=(idx + 1, f"{mark} {node.get('type', '')}", node.get("name", ""), self.table_access_node_status(node)),
-                )
-            selected = state.get("node_index")
-            if selected is not None and 0 <= selected < len(self.nodes):
-                node_tree.selection_set(str(selected))
-                node_tree.focus(str(selected))
-        finally:
-            state["refreshing_node_tree"] = False
+        return workflow_refresh_table_access_node_tree(self, node_tree, state)
 
     def load_table_access_table_form(self, table_section, entry, table_choices):
-        entry = entry or {}
-        table_section["role_var"].set(entry.get("role", "target"))
-        table_section["source_type_var"].set(entry.get("source_type", "SQLite表"))
-        table_section["table_var"].set(entry.get("table", ""))
-        table_section["write_mode_var"].set(self.normalize_table_access_write_mode(entry.get("write_mode", "")))
-        table_section["field_mapping_mode_var"].set(workflow_field_mapping_mode_display(entry))
-        table_section["is_current_var"].set(bool(entry.get("is_current_table")))
-        table_section["log_only_var"].set(bool(entry.get("log_only")))
-        perms = entry.get("permissions") or {}
-        for key, var in table_section["permission_vars"].items():
-            var.set(bool(perms.get(key)))
-        table_section["preset_var"].set("自定义")
-        table_section["table_combo"].configure(values=table_choices)
+        return workflow_load_table_access_table_form(self, table_section, entry, table_choices)
 
     def refresh_table_access_field_choices(self, field_section, choices):
-        field_section["source_field_combo"].configure(values=choices)
-        field_section["target_field_combo"].configure(values=choices)
+        return workflow_refresh_table_access_field_choices(self, field_section, choices)
 
     def refresh_table_access_field_tree(self, state, field_tree, entry, field_section, choices):
-        state["field_keys"] = workflow_render_field_mapping_tree(
-            field_tree,
-            entry,
-            self.field_bool_text,
-            self.field_permission_status,
-        )
-        self.refresh_table_access_field_choices(field_section, choices)
+        return workflow_refresh_table_access_field_tree(self, state, field_tree, entry, field_section, choices)
 
     def current_table_access_window_access(self, state):
-        node = self.current_table_access_window_node(state)
-        return self.get_node_table_access(node) if node is not None else {"tables": []}
+        return workflow_current_table_access_window_access(self, state)
 
     def current_table_access_window_table_entry(self, state):
-        access = self.current_table_access_window_access(state)
-        idx = state.get("table_index")
-        tables = access.get("tables", [])
-        if idx is None or idx < 0 or idx >= len(tables):
-            return None
-        return tables[idx]
+        return workflow_current_table_access_window_table_entry(self, state)
 
     def load_table_access_window_table_form(self, state, table_section, entry):
-        self.load_table_access_table_form(
-            table_section,
-            entry,
-            self.table_access_table_choices(self.current_table_access_window_node(state)),
-        )
+        return workflow_load_table_access_window_table_form(self, state, table_section, entry)
 
     def collect_table_access_window_table_form(self, table_section):
-        permission_vars = table_section["permission_vars"]
-        return {
-            "role": table_section["role_var"].get(),
-            "source_type": table_section["source_type_var"].get(),
-            "table": table_section["table_var"].get(),
-            "is_current_table": table_section["is_current_var"].get(),
-            "log_only": table_section["log_only_var"].get(),
-            "write_mode": self.normalize_table_access_write_mode(table_section["write_mode_var"].get()),
-            "field_mapping_mode": workflow_field_mapping_mode_value(table_section["field_mapping_mode_var"].get()),
-            "permissions": {key: bool(var.get()) for key, var in permission_vars.items()},
-        }
+        return workflow_collect_table_access_window_table_form(self, table_section)
 
     def refresh_table_access_window_field_tree(self, state, field_section, field_tree):
-        entry = self.current_table_access_window_table_entry(state)
-        self.refresh_table_access_field_tree(
-            state,
-            field_tree,
-            entry,
-            field_section,
-            self.get_table_access_field_choices(state.get("node_index") or 0, entry or {}),
-        )
+        return workflow_refresh_table_access_window_field_tree(self, state, field_section, field_tree)
 
     def refresh_table_access_window_table_tree(
         self,
@@ -5925,37 +5887,16 @@ class PlanWorkflowWindow:
         field_tree,
         select_index=None,
     ):
-        access = self.current_table_access_window_access(state)
-        tables = access.get("tables", [])
-        if tables:
-            if select_index is None:
-                select_index = state.get("table_index")
-            select_index = workflow_render_table_access_tree(
-                table_tree,
-                tables,
-                self.table_access_entry_table_label,
-                self.table_access_operation_summary,
-                self.table_permission_summary,
-                self.write_mode_display_text,
-                self.table_access_entry_status,
-                select_index=select_index,
-            )
-            state["table_index"] = select_index
-            self.load_table_access_window_table_form(state, table_section, tables[select_index])
-        else:
-            workflow_render_table_access_tree(
-                table_tree,
-                tables,
-                self.table_access_entry_table_label,
-                self.table_access_operation_summary,
-                self.table_permission_summary,
-                self.write_mode_display_text,
-                self.table_access_entry_status,
-            )
-            state["table_index"] = None
-            self.load_table_access_window_table_form(state, table_section, {})
-        self.refresh_table_access_window_field_tree(state, field_section, field_tree)
-        self.refresh_table_access_node_tree(node_tree, state)
+        return workflow_refresh_table_access_window_table_tree(
+            self,
+            state,
+            table_section,
+            field_section,
+            node_tree,
+            table_tree,
+            field_tree,
+            select_index=select_index,
+        )
 
     def on_table_access_window_node_selected(
         self,
@@ -5969,27 +5910,18 @@ class PlanWorkflowWindow:
         event=None,
         force=False,
     ):
-        if state.get("refreshing_node_tree"):
-            return
-        sel = node_tree.selection()
-        if not sel:
-            return
-        selected_index = int(sel[0])
-        if not force and selected_index == state.get("node_index"):
-            return
-        state["node_index"] = selected_index
-        state["table_index"] = None
-        self.refresh_table_access_window_table_tree(
+        return workflow_on_table_access_window_node_selected(
+            self,
             state,
             table_section,
             field_section,
             node_tree,
             table_tree,
             field_tree,
+            status_var,
+            event=event,
+            force=force,
         )
-        node = self.current_table_access_window_node(state)
-        if node:
-            status_var.set(f"当前节点：{state['node_index'] + 1}.{node.get('type')} / {node.get('name', '')}")
 
     def on_table_access_window_table_selected(
         self,
@@ -6000,33 +5932,23 @@ class PlanWorkflowWindow:
         field_tree,
         event=None,
     ):
-        sel = table_tree.selection()
-        if not sel:
-            return
-        state["table_index"] = int(sel[0])
-        entry = self.current_table_access_window_table_entry(state)
-        self.load_table_access_window_table_form(state, table_section, entry)
-        self.refresh_table_access_window_field_tree(state, field_section, field_tree)
+        return workflow_on_table_access_window_table_selected(
+            self,
+            state,
+            table_section,
+            field_section,
+            table_tree,
+            field_tree,
+            event=event,
+        )
 
     def on_table_access_window_field_selected(self, state, field_section, field_tree, event=None):
-        sel = field_tree.selection()
-        if not sel:
-            return
-        row_idx = int(sel[0])
-        entry = self.current_table_access_window_table_entry(state)
-        if not entry or row_idx >= len(state["field_keys"]):
-            return
-        key = state["field_keys"][row_idx]
-        item = workflow_field_mapping_item(entry, key)
-        if item is None:
-            return
-        workflow_load_field_form(
-            item,
-            field_section["source_field_var"],
-            field_section["target_field_var"],
-            field_section["source_index_var"],
-            field_section["target_index_var"],
-            field_section["field_permission_vars"],
+        return workflow_on_table_access_window_field_selected(
+            self,
+            state,
+            field_section,
+            field_tree,
+            event=event,
         )
 
     def save_table_access_window_table_entry(
@@ -6039,28 +5961,16 @@ class PlanWorkflowWindow:
         field_tree,
         status_var,
     ):
-        node = self.current_table_access_window_node(state)
-        if node is None:
-            return
-        access = self.mark_node_table_access_manual(node)
-        result = workflow_save_table_access_entry(
-            access,
-            state.get("table_index"),
-            self.collect_table_access_window_table_form(table_section),
-            lambda: self.make_table_access_entry("target", ""),
-        )
-        idx = result["table_index"]
-        state["table_index"] = idx
-        self.refresh_table_access_window_table_tree(
+        return workflow_save_table_access_window_table_entry(
+            self,
             state,
             table_section,
             field_section,
             node_tree,
             table_tree,
             field_tree,
-            select_index=idx,
+            status_var,
         )
-        status_var.set("表角色设置已保存。")
 
     def add_table_access_window_table_entry(
         self,
@@ -6071,27 +5981,14 @@ class PlanWorkflowWindow:
         table_tree,
         field_tree,
     ):
-        node = self.current_table_access_window_node(state)
-        if node is None:
-            return
-        access = self.mark_node_table_access_manual(node)
-        result = workflow_add_table_access_entry(
-            access,
-            self.make_table_access_entry(
-                "target",
-                "",
-                permissions=self.table_permission_set(read=True),
-            ),
-        )
-        state["table_index"] = result["table_index"]
-        self.refresh_table_access_window_table_tree(
+        return workflow_add_table_access_window_table_entry(
+            self,
             state,
             table_section,
             field_section,
             node_tree,
             table_tree,
             field_tree,
-            select_index=state["table_index"],
         )
 
     def delete_table_access_window_table_entry(
@@ -6104,23 +6001,16 @@ class PlanWorkflowWindow:
         field_tree,
         status_var,
     ):
-        node = self.current_table_access_window_node(state)
-        idx = state.get("table_index")
-        if node is None or idx is None:
-            return
-        access = self.mark_node_table_access_manual(node)
-        result = workflow_delete_table_access_entry(access, idx)
-        state["table_index"] = result["table_index"]
-        self.refresh_table_access_window_table_tree(
+        return workflow_delete_table_access_window_table_entry(
+            self,
             state,
             table_section,
             field_section,
             node_tree,
             table_tree,
             field_tree,
-            select_index=state["table_index"],
+            status_var,
         )
-        status_var.set("表角色已删除。")
 
     def rebuild_table_access_window_default_access(
         self,
@@ -6133,140 +6023,44 @@ class PlanWorkflowWindow:
         field_tree,
         status_var,
     ):
-        node = self.current_table_access_window_node(state)
-        if node is None:
-            return
-        if not messagebox.askyesno("重建默认映射", "将根据当前节点配置重建 table_access，并覆盖手动设置。继续吗？", parent=win):
-            return
-        workflow_rebuild_table_access(node, self.default_table_access_for_node(node))
-        state["table_index"] = None
-        self.refresh_table_access_window_table_tree(
+        return workflow_rebuild_table_access_window_default_access(
+            self,
+            win,
             state,
             table_section,
             field_section,
             node_tree,
             table_tree,
             field_tree,
+            status_var,
         )
-        status_var.set("已重建默认映射。")
 
     def check_table_access_window_permissions(self, win, status_var):
-        result = workflow_build_table_access_permission_check(
-            self.nodes,
-            self.get_node_table_access,
-            self.table_access_entry_status,
-        )
-        messagebox.showinfo("权限检查", result["message"], parent=win)
-        status_var.set("权限检查完成。")
+        return workflow_check_table_access_window_permissions(self, win, status_var)
 
     def preview_table_access_window_impact(self, win, state):
-        node = self.current_table_access_window_node(state)
-        entry = self.current_table_access_window_table_entry(state)
-        message = workflow_build_table_access_impact_preview(
-            state.get("node_index") or 0,
-            node,
-            entry,
-            self.table_access_field_items(entry) if entry is not None else [],
-            self.table_access_entry_table_label,
-            self.table_access_operation_summary,
-            self.table_access_entry_status,
-            self.table_permission_summary,
-            self.write_mode_display_text,
-        )
-        if message is None:
-            messagebox.showwarning("预览影响", "请先选择节点和表角色。", parent=win)
-            return
-        messagebox.showinfo("预览影响", message, parent=win)
+        return workflow_preview_table_access_window_impact(self, win, state)
 
     def apply_table_access_window_table_preset(self, table_section, event=None):
-        preset = table_section["preset_var"].get()
-        self.apply_table_access_preset_to_vars(
-            preset,
-            table_section["permission_vars"],
-            table_section["log_only_var"],
-        )
-        preset_config = workflow_table_access_preset_config(
-            preset,
-            [key for key, _ in self.table_access_permission_items()],
-        )
-        if preset_config and preset_config.get("write_mode"):
-            table_section["write_mode_var"].set(preset_config["write_mode"])
+        return workflow_apply_table_access_window_table_preset(self, table_section, event=event)
 
     def save_table_access_window_field_entry(self, state, table_section, field_section, field_tree, status_var):
-        entry = self.current_table_access_window_table_entry(state)
-        node = self.current_table_access_window_node(state)
-        if entry is None or node is None:
-            return
-        self.mark_node_table_access_manual(node)
-        sel = field_tree.selection()
-        key = workflow_selected_field_key(sel, state["field_keys"])
-        workflow_upsert_field_mapping_entry(
-            entry,
-            key,
-            field_section["source_field_var"].get(),
-            field_section["target_field_var"].get(),
-            field_section["source_index_var"].get(),
-            field_section["target_index_var"].get(),
-            "by_order" if table_section["field_mapping_mode_var"].get() == "按列顺序" else "by_name",
-            {pkey: bool(var.get()) for pkey, var in field_section["field_permission_vars"].items()},
-            self.make_table_access_field_key,
-        )
-        self.refresh_table_access_window_field_tree(state, field_section, field_tree)
-        status_var.set("字段映射已保存。")
+        return workflow_save_table_access_window_field_entry(self, state, table_section, field_section, field_tree, status_var)
 
     def add_table_access_window_field_entry(self, table_section, field_section, field_tree):
-        workflow_reset_field_form(
-            field_section["source_field_var"],
-            field_section["target_field_var"],
-            field_section["source_index_var"],
-            field_section["target_index_var"],
-            field_section["field_permission_vars"],
-            write_enabled=table_section["permission_vars"]["write_table"].get(),
-        )
-        field_tree.selection_remove(field_tree.selection())
+        return workflow_add_table_access_window_field_entry(self, table_section, field_section, field_tree)
 
     def delete_table_access_window_field_entry(self, state, field_section, field_tree, status_var):
-        entry = self.current_table_access_window_table_entry(state)
-        node = self.current_table_access_window_node(state)
-        sel = field_tree.selection()
-        if entry is None or node is None or not sel:
-            return
-        key = workflow_selected_field_key(sel, state["field_keys"])
-        if key and workflow_delete_field_mapping_entry(entry, key):
-            self.mark_node_table_access_manual(node)
-            self.refresh_table_access_window_field_tree(state, field_section, field_tree)
-            status_var.set("字段映射已删除。")
+        return workflow_delete_table_access_window_field_entry(self, state, field_section, field_tree, status_var)
 
     def auto_match_table_access_window_fields(self, state, field_section, field_tree, status_var):
-        entry = self.current_table_access_window_table_entry(state)
-        node = self.current_table_access_window_node(state)
-        if entry is None or node is None:
-            return
-        self.mark_node_table_access_manual(node)
-        count = self.auto_match_table_access_fields(state.get("node_index") or 0, entry)
-        self.refresh_table_access_window_field_tree(state, field_section, field_tree)
-        status_var.set(f"自动字段匹配完成：{count} 个字段。")
+        return workflow_auto_match_table_access_window_fields(self, state, field_section, field_tree, status_var)
 
     def auto_match_table_access_window_fields_by_order(self, state, table_section, field_section, field_tree, status_var):
-        entry = self.current_table_access_window_table_entry(state)
-        node = self.current_table_access_window_node(state)
-        if entry is None or node is None:
-            return
-        self.mark_node_table_access_manual(node)
-        count = self.auto_match_table_access_fields_by_order(state.get("node_index") or 0, entry)
-        table_section["field_mapping_mode_var"].set("按列顺序")
-        self.refresh_table_access_window_field_tree(state, field_section, field_tree)
-        status_var.set(f"按列顺序字段匹配完成：{count} 个字段。")
+        return workflow_auto_match_table_access_window_fields_by_order(self, state, table_section, field_section, field_tree, status_var)
 
     def clear_table_access_window_fields(self, state, field_section, field_tree, status_var):
-        entry = self.current_table_access_window_table_entry(state)
-        node = self.current_table_access_window_node(state)
-        if entry is None or node is None:
-            return
-        self.mark_node_table_access_manual(node)
-        workflow_clear_field_mapping(entry)
-        self.refresh_table_access_window_field_tree(state, field_section, field_tree)
-        status_var.set("字段映射已清空。")
+        return workflow_clear_table_access_window_fields(self, state, field_section, field_tree, status_var)
 
     def create_table_access_selection_callbacks(
         self,
