@@ -338,6 +338,12 @@ from workflow.control_flow_config_ui import (
     jump_anchor_choices as workflow_jump_anchor_choices_ui,
     set_anchor_var_to_config as workflow_set_anchor_var_to_config_ui,
 )
+from workflow.filter_config_ui import (
+    build_filter_config as workflow_build_filter_config_ui,
+    invert_output_fields as workflow_invert_output_fields_ui,
+    select_all_output_fields as workflow_select_all_output_fields_ui,
+    select_current_table_output_fields as workflow_select_current_table_output_fields_ui,
+)
 from workflow.row_data_mapping_config_ui import (
     build_row_data_mapping_config as workflow_build_row_data_mapping_config_ui,
 )
@@ -11248,119 +11254,16 @@ class PlanWorkflowWindow:
         self.status_var.set(workflow_build_filter_field_refresh_status(len(config.get("extra_tables", [])), len(state["all_values"])))
 
     def build_filter_config(self, config, headers, transit_context=None):
-        """
-        计划节点内的高级筛选配置。
-        主输入固定为“上一步结果”，在字段列表中显示为“当前表.字段”。
-        可额外勾选 SQLite 数据库中的表，并通过匹配规则把当前表和副表关联起来。
-        """
-        workflow_ensure_filter_config_defaults(config)
-        self.normalize_plan_filter_config_field_references(
-            config,
-            headers,
-            config.get("extra_tables", []),
-        )
-
-        frame = ttk.LabelFrame(self.config_frame, text="高级筛选节点（支持：上一步结果 + 多表匹配）", padding=8)
-        frame.pack(fill=tk.BOTH, expand=True, pady=8)
-
-        risk_section = self.build_filter_header_risk_section(frame, start_row=0)
-        risk_var = risk_section["risk_var"]
-        risk_label = risk_section["risk_label"]
-
-        def refresh_filter_risk_text():
-            self.refresh_filter_risk_text(headers, config, risk_var, risk_label)
-
-        selected_tables = list(config.get("extra_tables", []))
-        transit_context = transit_context or {"transit_tables": {}}
-        all_fields = self.get_plan_filter_available_fields(headers, selected_tables, transit_context)
-        field_state = workflow_build_filter_field_refresh_state(
-            headers,
-            all_fields,
-            selected_output_fields=config.get("output_fields", []),
-        )
-        current_fields = field_state["current_values"]
-
-        def sync_extra_tables(rebuild=False):
-            config["extra_tables"] = [table_list.get(i) for i in table_list.curselection()]
-            if rebuild:
-                refresh_filter_field_sources()
-
-        source_section = self.build_filter_source_table_section(
-            frame,
-            config,
-            headers,
-            selected_tables,
-            transit_context,
-            sync_extra_tables,
-            start_row=risk_section["next_row"],
-        )
-        table_list = source_section["table_list"]
-
-        condition_section = self.build_filter_condition_section(frame, config, all_fields, start_row=3)
-        value_source_var = condition_section["value_source_var"]
-        value_var = condition_section["value_var"]
-        value_combo = condition_section["value_combo"]
-
-        def refresh_condition_value_input(*_):
-            self.refresh_filter_condition_value_input(field_state, value_source_var, value_var, value_combo)
-
-        value_source_var.trace_add("write", refresh_condition_value_input)
-        refresh_condition_value_input()
-
-        self.build_filter_condition_action_buttons(condition_section, config, refresh_filter_risk_text)
-
-        join_section = self.build_filter_join_section(frame, config, all_fields, current_fields, start_row=4)
-        join_logic_var = join_section["join_logic_var"]
-        join_logic_var.trace_add("write", lambda *_: refresh_filter_risk_text())
-        self.build_filter_join_action_buttons(join_section, config, refresh_filter_risk_text)
-
-        output_section = self.build_filter_output_section(frame, config, all_fields, start_row=5)
-        output_actions = self.build_filter_output_action_buttons(output_section, config, headers, field_state)
-        refresh_actual_output_text = output_actions["refresh_actual_output_text"]
-        sync_output_fields = output_actions["sync_output_fields"]
-
-        def refresh_filter_field_sources():
-            self.refresh_filter_field_sources(
-                headers,
-                config,
-                transit_context,
-                field_state,
-                source_section,
-                condition_section,
-                join_section,
-                output_section,
-                sync_output_fields,
-                refresh_condition_value_input,
-                refresh_filter_risk_text,
-            )
-
-        refresh_actual_output_text()
-        refresh_filter_risk_text()
+        return workflow_build_filter_config_ui(self, config, headers, transit_context=transit_context)
 
     def select_all_output_fields(self, listbox, config):
-        fields = workflow_select_all_filter_output_fields(listbox.get(0, tk.END))
-        listbox.selection_set(0, tk.END)
-        config["output_fields"] = fields
+        return workflow_select_all_output_fields_ui(listbox, config)
 
     def invert_output_fields(self, listbox, config):
-        selected = set(listbox.curselection())
-        fields = list(listbox.get(0, tk.END))
-        result = workflow_invert_filter_output_fields_by_indexes(fields, selected)
-        listbox.selection_clear(0, tk.END)
-        for i, field in enumerate(fields):
-            if i not in selected:
-                listbox.selection_set(i)
-        config["output_fields"] = result
+        return workflow_invert_output_fields_ui(listbox, config)
 
     def select_current_table_output_fields(self, listbox, config):
-        listbox.selection_clear(0, tk.END)
-        fields = list(listbox.get(0, tk.END))
-        selected = workflow_select_current_table_filter_output_fields(fields)
-        selected_set = set(selected)
-        for i, field in enumerate(fields):
-            if field in selected_set:
-                listbox.selection_set(i)
-        config["output_fields"] = selected
+        return workflow_select_current_table_output_fields_ui(listbox, config)
 
     def build_copy_column_config(self, config, headers):
         return workflow_build_copy_column_config_ui(self, config, headers)
