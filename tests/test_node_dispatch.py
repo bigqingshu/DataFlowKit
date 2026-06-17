@@ -101,10 +101,14 @@ class NodeDispatchTests(unittest.TestCase):
             def apply_writeback_node(self, *_args, **_kwargs):
                 raise AssertionError("should dispatch to output runtime helper")
 
+            def apply_filter_node(self, *_args, **_kwargs):
+                raise AssertionError("should dispatch to filter runtime helper")
+
         helper_results = {
             "save": (["A"], [["save"]], "save runtime"),
             "selected": (["A"], [["selected"]], "selected runtime"),
             "writeback": (["A"], [["writeback"]], "writeback runtime"),
+            "filter": (["A"], [["filter"]], "filter runtime"),
         }
         with mock.patch(
             "workflow.node_dispatch.apply_save_transit_node_for_window",
@@ -115,7 +119,10 @@ class NodeDispatchTests(unittest.TestCase):
         ) as selected_helper, mock.patch(
             "workflow.node_dispatch.apply_writeback_node_for_window",
             return_value=helper_results["writeback"],
-        ) as writeback_helper:
+        ) as writeback_helper, mock.patch(
+            "workflow.node_dispatch.apply_filter_node_for_window",
+            return_value=helper_results["filter"],
+        ) as filter_helper:
             context = {"transit_tables": {}}
             self.assertEqual(
                 apply_workflow_node(
@@ -150,12 +157,25 @@ class NodeDispatchTests(unittest.TestCase):
                 ),
                 helper_results["writeback"],
             )
+            self.assertEqual(
+                apply_workflow_node(
+                    Window(),
+                    ["A"],
+                    [["x"]],
+                    {"type": "高级筛选", "config": {"conditions": []}},
+                    execute_actions=True,
+                    context=context,
+                ),
+                helper_results["filter"],
+            )
 
         self.assertEqual(save_helper.call_args.args[:4], (mock.ANY, ["A"], [["x"]], {"transit_name": "T"}))
         self.assertTrue(save_helper.call_args.kwargs["execute_actions"])
         self.assertIs(save_helper.call_args.kwargs["context"], context)
         self.assertEqual(selected_helper.call_args.args[:4], (mock.ANY, ["A"], [["x"]], {"target_type": "当前工作表"}))
         self.assertEqual(writeback_helper.call_args.args[:4], (mock.ANY, ["A"], [["x"]], {"target_table": "T"}))
+        self.assertEqual(filter_helper.call_args.args[:4], (mock.ANY, ["A"], [["x"]], {"conditions": []}))
+        self.assertIs(filter_helper.call_args.kwargs["context"], context)
 
     def test_dispatch_loop_node_drops_control_payload(self):
         class Window:

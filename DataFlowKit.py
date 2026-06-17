@@ -68,13 +68,10 @@ from plugin_runtime.progress import handle_plugin_stdout_line
 from plugin_runtime.scanner import scan_plugins
 from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
 from workflow.nodes.data_nodes import (
-    apply_filter_node as workflow_apply_filter_node,
     apply_unmatched_format_value as workflow_apply_unmatched_format_value,
     apply_unmatched_extract as workflow_apply_unmatched_extract,
     add_plan_filter_required_field as workflow_add_plan_filter_required_field,
     build_plan_filter_right_index as workflow_build_plan_filter_right_index,
-    build_filter_config_probe_result as workflow_build_filter_config_probe_result,
-    build_filter_runtime_plan as workflow_build_filter_runtime_plan,
     build_date_parts as workflow_build_date_parts,
     build_format_component_columns as workflow_build_format_component_columns,
     build_time_parts as workflow_build_time_parts,
@@ -304,6 +301,7 @@ from workflow import group_config_ui as workflow_group_config_ui
 from workflow import group_runtime as workflow_group_runtime
 from workflow import group_template_ui as workflow_group_template_ui
 from workflow import jump_runtime as workflow_jump_runtime
+from workflow import filter_node_runtime as workflow_filter_node_runtime
 from workflow import node_dispatch as workflow_node_dispatch
 from workflow import output_node_runtime as workflow_output_node_runtime
 from workflow import plugin_node_runtime as workflow_plugin_node_runtime
@@ -11513,29 +11511,13 @@ class PlanWorkflowWindow:
         )
 
     def apply_filter_node(self, headers, rows, config, context=None):
-        extra_tables = list(config.get("extra_tables", []))
-        available_fields = self.get_plan_filter_available_fields(headers, extra_tables, context) if extra_tables else None
-        runtime_plan = workflow_build_filter_runtime_plan(headers, config, available_fields=available_fields)
-
-        if (context or {}).get("is_config_probe") and extra_tables:
-            return workflow_build_filter_config_probe_result(runtime_plan["output_headers"])
-
-        table_records = {}
-        for table in runtime_plan["extra_tables"]:
-            table_records[table] = self.load_plan_table_records(
-                table,
-                context=context,
-                required_fields=runtime_plan["table_required"].get(table),
-            )
-
-        node_context = {
-            "lookup_fields": runtime_plan["lookup_fields"],
-            "output_headers": runtime_plan["output_headers"],
-            "current_required": runtime_plan["current_required"],
-            "table_required": runtime_plan["table_required"],
-            "table_records": table_records,
-        }
-        return workflow_apply_filter_node(headers, rows, runtime_plan["runtime_config"], context=node_context)
+        return workflow_filter_node_runtime.apply_filter_node_for_window(
+            self,
+            headers,
+            rows,
+            config,
+            context=context,
+        )
 
     def match_value_output_column_match(self, source_value, lookup_value, mode):
         return workflow_match_value_output_column_match(source_value, lookup_value, mode)

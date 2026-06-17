@@ -26,6 +26,7 @@ from workflow.file_node_runtime import (
     apply_batch_rename_node_for_window,
     apply_file_list_node_for_window,
 )
+from workflow.filter_node_runtime import apply_filter_node_for_window
 from workflow.output_node_runtime import (
     apply_save_transit_node_for_window,
     apply_selected_columns_write_node_for_window,
@@ -132,7 +133,7 @@ def apply_workflow_node(window, headers, rows, node, execute_actions=False, cont
             context=context,
         )
     if node_type == "高级筛选":
-        return window.apply_filter_node(headers, rows, config, context=context)
+        return apply_filter_node_for_window(window, headers, rows, config, context=context)
     if node_type == "删除列":
         return apply_delete_columns_node(headers, rows, config)
     if node_type == "移动列":
