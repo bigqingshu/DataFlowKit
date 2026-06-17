@@ -68,25 +68,27 @@ class NodeDispatchTests(unittest.TestCase):
         self.assertEqual(calls, [])
 
     def test_dispatch_execute_action_node(self):
-        calls = []
         context = {}
+        expected = (["A"], [["plugin"]], "plugin runtime")
 
         class Window:
             def apply_plugin_node(self, headers, rows, config, context=None, execute_actions=False):
-                calls.append((config, context, execute_actions))
-                return list(headers), [list(row) for row in rows], "plugin"
+                raise AssertionError("should dispatch to plugin runtime helper")
 
-        result = apply_workflow_node(
-            Window(),
-            ["A"],
-            [["a"]],
-            {"type": "插件节点", "config": {"plugin_id": "p1"}},
-            execute_actions=True,
-            context=context,
-        )
+        with mock.patch("workflow.node_dispatch.apply_plugin_node_for_window", return_value=expected) as helper:
+            result = apply_workflow_node(
+                Window(),
+                ["A"],
+                [["a"]],
+                {"type": "插件节点", "config": {"plugin_id": "p1"}},
+                execute_actions=True,
+                context=context,
+            )
 
-        self.assertEqual(result[2], "plugin")
-        self.assertEqual(calls, [({"plugin_id": "p1"}, context, True)])
+        self.assertEqual(result, expected)
+        self.assertEqual(helper.call_args.args[:4], (mock.ANY, ["A"], [["a"]], {"plugin_id": "p1"}))
+        self.assertTrue(helper.call_args.kwargs["execute_actions"])
+        self.assertIs(helper.call_args.kwargs["context"], context)
 
     def test_dispatch_output_nodes_use_runtime_helpers(self):
         class Window:

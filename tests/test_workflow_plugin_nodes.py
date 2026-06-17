@@ -3,6 +3,7 @@ import types
 import unittest
 
 from DataFlowKit import PlanWorkflowWindow
+from workflow import plugin_node_runtime
 from workflow.nodes.plugin_nodes import (
     build_plugin_failure_output,
     build_plugin_final_output,
@@ -154,6 +155,58 @@ class WorkflowPluginNodesTests(unittest.TestCase):
         self.assertEqual(normalized["headers"], ["OUT"])
         self.assertEqual(normalized["rows"], [["ok"]])
         self.assertFalse(plugin_context["execute_actions"])
+
+    def test_plugin_runtime_helpers_do_not_depend_on_window_runtime_wrappers(self):
+        module = types.SimpleNamespace(
+            run=lambda input_data, params, context: {
+                "ok": True,
+                "output": {"type": "table", "headers": ["B"], "rows": [[params["p"]]]},
+            }
+        )
+        window = self.make_plugin_window(module)
+
+        def legacy_wrapper_should_not_be_called(*_args, **_kwargs):
+            raise AssertionError("plugin runtime should call lower-level window capabilities directly")
+
+        window.apply_plugin_node = legacy_wrapper_should_not_be_called
+        window.run_plugin_node_runtime = legacy_wrapper_should_not_be_called
+        window.apply_lazy_plugin_probe_node = legacy_wrapper_should_not_be_called
+
+        headers, rows, stat = plugin_node_runtime.apply_plugin_node_for_window(
+            window,
+            ["A"],
+            [["a"]],
+            {"plugin_id": "test_plugin", "params": {"p": "ok"}},
+            context={},
+        )
+
+        self.assertEqual(headers, ["B"])
+        self.assertEqual(rows, [["ok"]])
+        self.assertIn("插件 测试插件 完成", stat)
+
+    def test_plugin_runtime_config_probe_uses_declared_schema_without_run(self):
+        module = types.SimpleNamespace(
+            get_output_schema=lambda params, input_data, context: {"headers": ["Declared"]},
+            run=lambda input_data, params, context: self.fail("config probe should not run plugin"),
+        )
+        window = self.make_plugin_window(module)
+        window.build_plugin_probe_input_tables = lambda config, headers, context=None: {
+            "当前表": {"type": "table", "headers": list(headers), "rows": []}
+        }
+        item = window.plugin_registry["test_plugin"]
+        context = {"is_config_probe": True}
+
+        headers, rows, stat = plugin_node_runtime.apply_plugin_node_for_window(
+            window,
+            ["A"],
+            [["a"]],
+            {"plugin_id": "test_plugin", "params": {}},
+            context=context,
+        )
+
+        self.assertEqual(headers, ["Declared"])
+        self.assertEqual(rows, [])
+        self.assertIn("字段懒加载", stat)
 
     def test_dataflowkit_plugin_config_dynamic_choices_uses_provider_context(self):
         calls = []
