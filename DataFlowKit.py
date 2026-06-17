@@ -158,11 +158,14 @@ from workflow.nodes.loop_nodes import (
 )
 from workflow.default_configs import default_config_for_type as workflow_default_config_for_type
 from workflow.advanced_filter_window_logic import (
+    add_advanced_filter_condition as workflow_add_advanced_filter_condition,
+    add_advanced_filter_join_rule as workflow_add_advanced_filter_join_rule,
     add_advanced_filter_output_fields as workflow_add_advanced_filter_output_fields,
     add_all_advanced_filter_output_fields as workflow_add_all_advanced_filter_output_fields,
     build_advanced_filter_field_display_cache as workflow_build_advanced_filter_field_display_cache,
     build_advanced_filter_template_data as workflow_build_advanced_filter_template_data,
     build_advanced_filter_result_records as workflow_build_advanced_filter_result_records,
+    clear_advanced_filter_items as workflow_clear_advanced_filter_items,
     eval_advanced_filter_condition as workflow_eval_advanced_filter_condition,
     eval_advanced_filter_conditions as workflow_eval_advanced_filter_conditions,
     eval_advanced_filter_join_rule as workflow_eval_advanced_filter_join_rule,
@@ -173,6 +176,7 @@ from workflow.advanced_filter_window_logic import (
     normalize_advanced_filter_template_data as workflow_normalize_advanced_filter_template_data,
     parse_advanced_filter_number as workflow_parse_advanced_filter_number,
     parse_positive_int_setting as workflow_parse_positive_int_setting,
+    remove_advanced_filter_items_by_indexes as workflow_remove_advanced_filter_items_by_indexes,
     remove_advanced_filter_output_fields as workflow_remove_advanced_filter_output_fields,
     select_advanced_filter_combo_defaults as workflow_select_advanced_filter_combo_defaults,
     select_advanced_filter_template_tables as workflow_select_advanced_filter_template_tables,
@@ -3734,11 +3738,12 @@ class AdvancedFilterWindow:
             if not messagebox.askyesno("确认", "当前条件值为空，是否继续添加？"):
                 return
 
-        self.conditions.append({
-            "field": field,
-            "op": op,
-            "value": value
-        })
+        self.conditions = workflow_add_advanced_filter_condition(
+            self.conditions,
+            field,
+            op,
+            value,
+        )
 
         self.refresh_conditions_tree()
         self.filter_value_var.set("")
@@ -3748,15 +3753,16 @@ class AdvancedFilterWindow:
         if not selections:
             return
 
-        indexes = sorted([self.conditions_tree.index(item) for item in selections], reverse=True)
-        for index in indexes:
-            if 0 <= index < len(self.conditions):
-                self.conditions.pop(index)
+        indexes = [self.conditions_tree.index(item) for item in selections]
+        self.conditions = workflow_remove_advanced_filter_items_by_indexes(
+            self.conditions,
+            indexes,
+        )
 
         self.refresh_conditions_tree()
 
     def clear_conditions(self):
-        self.conditions = []
+        self.conditions = workflow_clear_advanced_filter_items()
         self.refresh_conditions_tree()
 
     def refresh_conditions_tree(self):
@@ -3781,11 +3787,12 @@ class AdvancedFilterWindow:
             if not messagebox.askyesno("确认", "左右字段相同，是否仍然添加？"):
                 return
 
-        self.join_rules.append({
-            "left": left,
-            "op": op,
-            "right": right
-        })
+        self.join_rules = workflow_add_advanced_filter_join_rule(
+            self.join_rules,
+            left,
+            op,
+            right,
+        )
 
         self.refresh_join_tree()
 
@@ -3794,15 +3801,16 @@ class AdvancedFilterWindow:
         if not selections:
             return
 
-        indexes = sorted([self.join_tree.index(item) for item in selections], reverse=True)
-        for index in indexes:
-            if 0 <= index < len(self.join_rules):
-                self.join_rules.pop(index)
+        indexes = [self.join_tree.index(item) for item in selections]
+        self.join_rules = workflow_remove_advanced_filter_items_by_indexes(
+            self.join_rules,
+            indexes,
+        )
 
         self.refresh_join_tree()
 
     def clear_join_rules(self):
-        self.join_rules = []
+        self.join_rules = workflow_clear_advanced_filter_items()
         self.refresh_join_tree()
 
     def refresh_join_tree(self):

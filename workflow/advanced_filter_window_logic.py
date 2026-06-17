@@ -303,6 +303,38 @@ def filter_advanced_filter_valid_state(conditions, join_rules, output_fields, va
     }
 
 
+def add_advanced_filter_condition(conditions, field, op, value):
+    result = list(conditions or [])
+    result.append({
+        "field": field,
+        "op": op,
+        "value": value,
+    })
+    return result
+
+
+def remove_advanced_filter_items_by_indexes(items, indexes):
+    result = list(items or [])
+    for index in sorted(indexes or [], reverse=True):
+        if 0 <= index < len(result):
+            result.pop(index)
+    return result
+
+
+def clear_advanced_filter_items():
+    return []
+
+
+def add_advanced_filter_join_rule(join_rules, left, op, right):
+    result = list(join_rules or [])
+    result.append({
+        "left": left,
+        "op": op,
+        "right": right,
+    })
+    return result
+
+
 def add_advanced_filter_output_fields(output_fields, available_fields, indexes):
     result = list(output_fields or [])
     available_fields = list(available_fields or [])
@@ -323,11 +355,7 @@ def add_all_advanced_filter_output_fields(output_fields, available_fields):
 
 
 def remove_advanced_filter_output_fields(output_fields, indexes):
-    result = list(output_fields or [])
-    for index in sorted(indexes or [], reverse=True):
-        if 0 <= index < len(result):
-            result.pop(index)
-    return result
+    return remove_advanced_filter_items_by_indexes(output_fields, indexes)
 
 
 def parse_positive_int_setting(value, default_value):

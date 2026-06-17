@@ -5,11 +5,14 @@ import unittest
 from pathlib import Path
 
 from workflow.advanced_filter_window_logic import (
+    add_advanced_filter_condition,
+    add_advanced_filter_join_rule,
     add_advanced_filter_output_fields,
     add_all_advanced_filter_output_fields,
     build_advanced_filter_field_display_cache,
     build_advanced_filter_template_data,
     build_advanced_filter_result_records,
+    clear_advanced_filter_items,
     eval_advanced_filter_condition,
     eval_advanced_filter_conditions,
     eval_advanced_filter_join_rule,
@@ -19,6 +22,7 @@ from workflow.advanced_filter_window_logic import (
     normalize_advanced_filter_template_data,
     parse_advanced_filter_number,
     parse_positive_int_setting,
+    remove_advanced_filter_items_by_indexes,
     remove_advanced_filter_output_fields,
     select_advanced_filter_combo_defaults,
     select_advanced_filter_template_tables,
@@ -212,6 +216,42 @@ class AdvancedFilterWindowLogicTests(unittest.TestCase):
 
         output_fields = remove_advanced_filter_output_fields(output_fields, [1, 99, -1, 3])
         self.assertEqual(output_fields, ["orders.id", "people.age"])
+
+    def test_rule_state_helpers_append_remove_and_clear_items(self):
+        conditions = add_advanced_filter_condition(
+            [{"field": "orders.id", "op": "等于", "value": "1"}],
+            "people.name",
+            "包含",
+            "Alice",
+        )
+        self.assertEqual(
+            conditions,
+            [
+                {"field": "orders.id", "op": "等于", "value": "1"},
+                {"field": "people.name", "op": "包含", "value": "Alice"},
+            ],
+        )
+
+        conditions = remove_advanced_filter_items_by_indexes(conditions, [5, 0, -1])
+        self.assertEqual(conditions, [{"field": "people.name", "op": "包含", "value": "Alice"}])
+        self.assertEqual(clear_advanced_filter_items(), [])
+
+        join_rules = add_advanced_filter_join_rule(
+            [{"left": "orders.person_id", "op": "等于", "right": "people.id"}],
+            "orders.code",
+            "左包含右",
+            "people.code",
+        )
+        self.assertEqual(
+            join_rules,
+            [
+                {"left": "orders.person_id", "op": "等于", "right": "people.id"},
+                {"left": "orders.code", "op": "左包含右", "right": "people.code"},
+            ],
+        )
+
+        join_rules = remove_advanced_filter_items_by_indexes(join_rules, [1, 0])
+        self.assertEqual(join_rules, [])
 
 
 if __name__ == "__main__":
