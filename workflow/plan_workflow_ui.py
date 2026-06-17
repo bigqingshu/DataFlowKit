@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
 """Main workflow window UI orchestration helpers."""
 
+import os
 import tkinter as tk
 from tkinter import messagebox, ttk
+
+from shared.atomic_json_utils import load_json_with_backup
 
 
 def show_table_access_precheck_dialog(window, issues, title="权限预检", allow_continue=False):
@@ -242,6 +245,130 @@ def build_node_config(window, idx):
         window.build_batch_rename_config(config, available_headers)
     else:
         ttk.Label(window.config_frame, text="未知节点类型。", foreground="red").pack(anchor=tk.W)
+
+
+def on_preview_tree_double_click(window, event):
+    if not window.preview_edit_mode:
+        return
+    region = window.preview_tree.identify("region", event.x, event.y)
+    if region != "cell":
+        return
+    row_id = window.preview_tree.identify_row(event.y)
+    col_id = window.preview_tree.identify_column(event.x)
+    if not row_id or not col_id:
+        return
+    try:
+        col_index = int(col_id.replace("#", "")) - 1
+        row_index = window.preview_tree.index(row_id)
+    except Exception:
+        return
+    if row_index < 0 or row_index >= len(window.preview_rows):
+        return
+    if col_index < 0 or col_index >= len(window.preview_headers):
+        return
+    bbox = window.preview_tree.bbox(row_id, col_id)
+    if not bbox:
+        return
+    x, y, width, height = bbox
+    old_value = ""
+    if col_index < len(window.preview_rows[row_index]):
+        old_value = window.preview_rows[row_index][col_index]
+    if window.preview_edit_entry is not None:
+        window.preview_edit_entry.destroy()
+        window.preview_edit_entry = None
+    entry = ttk.Entry(window.preview_tree)
+    entry.place(x=x, y=y, width=width, height=height)
+    entry.insert(0, old_value)
+    entry.select_range(0, tk.END)
+    entry.focus()
+    closed = {"done": False}
+
+    def close_editor(save=True):
+        if closed["done"]:
+            return
+        closed["done"] = True
+        if save:
+            new_value = entry.get()
+            while len(window.preview_rows[row_index]) < len(window.preview_headers):
+                window.preview_rows[row_index].append("")
+            window.preview_rows[row_index][col_index] = new_value
+            values = list(window.preview_tree.item(row_id, "values"))
+            while len(values) < len(window.preview_headers):
+                values.append("")
+            values[col_index] = new_value
+            window.preview_tree.item(row_id, values=values)
+            if getattr(window, "preview_view_kind", "preview") == "preview":
+                window.plan_preview_headers = list(window.preview_headers)
+                window.plan_preview_rows = [list(r) for r in window.preview_rows]
+            window.preview_dirty = True
+            window.status_var.set(f"已修改计划预览：第 {row_index + 1} 行，第 {col_index + 1} 列。")
+        entry.destroy()
+        window.preview_edit_entry = None
+
+    entry.bind("<Return>", lambda e: close_editor(save=True))
+    entry.bind("<FocusOut>", lambda e: close_editor(save=True))
+    entry.bind("<Escape>", lambda e: close_editor(save=False))
+    window.preview_edit_entry = entry
+
+
+def refresh_plan_template_list(window, show_status=True):
+    """Scan the plan directory and list readable workflow_plan JSON templates."""
+    os.makedirs(window.plan_dir, exist_ok=True)
+
+    template_map = {}
+    valid_count = 0
+    skipped_count = 0
+
+    try:
+        files = sorted(
+            file_name for file_name in os.listdir(window.plan_dir)
+            if file_name.lower().endswith(".json")
+        )
+    except Exception as exc:
+        if hasattr(window, "plan_template_combo"):
+            window.plan_template_combo["values"] = []
+        window.plan_template_map = {}
+        if show_status:
+            window.status_var.set(f"读取 plan 目录失败：{exc}")
+        return
+
+    for file_name in files:
+        path = os.path.join(window.plan_dir, file_name)
+        try:
+            data, _load_info = load_json_with_backup(path)
+            ok, _ = window.validate_plan_template_data(data)
+            if not ok:
+                skipped_count += 1
+                continue
+
+            plan_name = str(data.get("plan_name") or "").strip() or "未命名计划"
+            display = plan_name
+
+            original_display = display
+            suffix = 2
+            while display in template_map:
+                display = f"{original_display} ({suffix})"
+                suffix += 1
+
+            template_map[display] = path
+            valid_count += 1
+        except Exception:
+            skipped_count += 1
+            continue
+
+    window.plan_template_map = template_map
+    values = list(template_map.keys())
+    if hasattr(window, "plan_template_combo"):
+        window.plan_template_combo["values"] = values
+
+    current = window.plan_template_var.get()
+    if current not in template_map:
+        window.plan_template_var.set(values[0] if values else "")
+
+    if show_status:
+        window.status_var.set(
+            f"模板刷新完成：可用 {valid_count} 个，跳过 {skipped_count} 个。目录：{window.plan_dir}"
+        )
 
 
 def build_ui(window):

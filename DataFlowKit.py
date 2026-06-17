@@ -282,6 +282,7 @@ from workflow.filter_config_ui import (
     sync_filter_output_fields as workflow_sync_filter_output_fields_ui,
 )
 from workflow import group_config_ui as workflow_group_config_ui
+from workflow import group_field_analysis as workflow_group_field_analysis
 from workflow import group_runtime as workflow_group_runtime
 from workflow import jump_analysis as workflow_jump_analysis
 from workflow import jump_manager_ui as workflow_jump_manager_ui
@@ -7206,67 +7207,7 @@ class PlanWorkflowWindow:
                 self.preview_edit_entry = None
 
     def on_preview_tree_double_click(self, event):
-        if not self.preview_edit_mode:
-            return
-        region = self.preview_tree.identify("region", event.x, event.y)
-        if region != "cell":
-            return
-        row_id = self.preview_tree.identify_row(event.y)
-        col_id = self.preview_tree.identify_column(event.x)
-        if not row_id or not col_id:
-            return
-        try:
-            col_index = int(col_id.replace("#", "")) - 1
-            row_index = self.preview_tree.index(row_id)
-        except Exception:
-            return
-        if row_index < 0 or row_index >= len(self.preview_rows):
-            return
-        if col_index < 0 or col_index >= len(self.preview_headers):
-            return
-        bbox = self.preview_tree.bbox(row_id, col_id)
-        if not bbox:
-            return
-        x, y, width, height = bbox
-        old_value = ""
-        if col_index < len(self.preview_rows[row_index]):
-            old_value = self.preview_rows[row_index][col_index]
-        if self.preview_edit_entry is not None:
-            self.preview_edit_entry.destroy()
-            self.preview_edit_entry = None
-        entry = ttk.Entry(self.preview_tree)
-        entry.place(x=x, y=y, width=width, height=height)
-        entry.insert(0, old_value)
-        entry.select_range(0, tk.END)
-        entry.focus()
-        closed = {"done": False}
-
-        def close_editor(save=True):
-            if closed["done"]:
-                return
-            closed["done"] = True
-            if save:
-                new_value = entry.get()
-                while len(self.preview_rows[row_index]) < len(self.preview_headers):
-                    self.preview_rows[row_index].append("")
-                self.preview_rows[row_index][col_index] = new_value
-                values = list(self.preview_tree.item(row_id, "values"))
-                while len(values) < len(self.preview_headers):
-                    values.append("")
-                values[col_index] = new_value
-                self.preview_tree.item(row_id, values=values)
-                if getattr(self, "preview_view_kind", "preview") == "preview":
-                    self.plan_preview_headers = list(self.preview_headers)
-                    self.plan_preview_rows = [list(r) for r in self.preview_rows]
-                self.preview_dirty = True
-                self.status_var.set(f"已修改计划预览：第 {row_index + 1} 行，第 {col_index + 1} 列。")
-            entry.destroy()
-            self.preview_edit_entry = None
-
-        entry.bind("<Return>", lambda e: close_editor(save=True))
-        entry.bind("<FocusOut>", lambda e: close_editor(save=True))
-        entry.bind("<Escape>", lambda e: close_editor(save=False))
-        self.preview_edit_entry = entry
+        return workflow_plan_workflow_ui.on_preview_tree_double_click(self, event)
 
     def refresh_preview_tree(self, headers, rows, limit=1000):
         if self.preview_edit_entry is not None:
@@ -7598,463 +7539,65 @@ class PlanWorkflowWindow:
 
 
     def parse_new_column_names_for_group_analysis(self, text, strip_name=True, allow_empty=False):
-        """
-        节点组入口自动推导辅助：解析“新建列”节点的字段定义。
-
-        支持：
-        - 字段A
-        - 字段B=默认值
-        - 逗号/分号/换行混合分隔
-        这里只关心字段名，不关心默认值。
-        """
-        result = []
-        for part in re.split(r"[\n,，;；]+", str(text or "")):
-            item = part.strip() if strip_name else str(part)
-            if not item and not allow_empty:
-                continue
-            if "=" in item:
-                name = item.split("=", 1)[0]
-            else:
-                name = item
-            name = name.strip() if strip_name else name
-            if name or allow_empty:
-                result.append(name)
-        return self.unique_keep_order(result)
+        return workflow_group_field_analysis.parse_new_column_names_for_group_analysis(
+            text,
+            strip_name=strip_name,
+            allow_empty=allow_empty,
+        )
 
     def add_group_field_ref(self, target, value):
-        """节点组入口自动推导辅助：把字段名/字段列表安全加入 target。"""
-        if value is None:
-            return
-        if isinstance(value, str):
-            text = value.strip()
-            if text:
-                target.append(text)
-            return
-        if isinstance(value, (list, tuple, set)):
-            for item in value:
-                self.add_group_field_ref(target, item)
+        return workflow_group_field_analysis.add_group_field_ref(target, value)
 
     def add_group_field_refs_from_dict_list(self, target, items, keys):
-        """从规则列表中按多个可能 key 收集字段名。"""
-        if not isinstance(items, list):
-            return
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            for key in keys:
-                self.add_group_field_ref(target, item.get(key))
+        return workflow_group_field_analysis.add_group_field_refs_from_dict_list(target, items, keys)
 
     def classify_group_filter_field_reference(self, field, extra_tables=None):
-        """
-        将高级筛选字段引用转换为节点组静态分析使用的字段名。
-
-        当前表限定名去掉本轮“当前表.”前缀；副表字段保留限定名，但标记为
-        external，表示它由高级筛选节点自行读取，不属于节点组入口。
-        """
-        text = str(field or "").strip()
-        if not text:
-            return "", ""
-        for table in extra_tables or []:
-            table_name = str(table or "").strip()
-            if table_name and text.startswith(f"{table_name}."):
-                return "external", text
-        if text.startswith("当前表."):
-            return "current", text[len("当前表."):]
-        return "current", text
+        return workflow_group_field_analysis.classify_group_filter_field_reference(
+            field,
+            extra_tables=extra_tables,
+        )
 
     def get_group_filter_external_output_fields(self, config, context=None):
-        """读取无显式投影时高级筛选会输出的副表字段。"""
-        fields = []
-        unresolved = []
-        transit_tables = (context or {}).get("transit_tables", {})
-        for table in list((config or {}).get("extra_tables", []) or []):
-            table_name = str(table or "").strip()
-            if not table_name:
-                continue
-            try:
-                if table_name.startswith("中转:"):
-                    transit_name = table_name.split(":", 1)[1]
-                    item = transit_tables.get(transit_name)
-                    if not isinstance(item, dict):
-                        raise ValueError("中转副表尚未生成")
-                    columns = list(item.get("headers", []) or [])
-                else:
-                    columns = list(self.get_workflow_sqlite_columns(table_name, context))
-                fields.extend(f"{table_name}.{column}" for column in columns)
-            except Exception as exc:
-                unresolved.append(f"{table_name}（{exc}）")
-        return self.unique_keep_order(fields), unresolved
+        return workflow_group_field_analysis.get_group_filter_external_output_fields(
+            self,
+            config,
+            context=context,
+        )
 
     def analyze_group_filter_field_io(self, config, context=None):
-        """专门分析节点组内高级筛选的条件、匹配规则和投影字段。"""
-        cfg = config or {}
-        extra_tables = list(cfg.get("extra_tables", []) or [])
-        reads = []
-        writes = []
-        write_prefixes = []
-
-        def add_current_read(field):
-            owner, name = self.classify_group_filter_field_reference(field, extra_tables)
-            if owner == "current":
-                self.add_group_field_ref(reads, name)
-
-        def add_output(field):
-            owner, name = self.classify_group_filter_field_reference(field, extra_tables)
-            if not name:
-                return
-            if owner == "current":
-                self.add_group_field_ref(reads, name)
-            self.add_group_field_ref(writes, name)
-
-        for cond in cfg.get("conditions", []) or []:
-            if not isinstance(cond, dict):
-                continue
-            add_current_read(cond.get("field"))
-            if self.normalize_filter_condition_value_source(cond) == "字段值":
-                add_current_read(cond.get("value"))
-
-        for rule in cfg.get("join_rules", []) or []:
-            if not isinstance(rule, dict):
-                continue
-            add_current_read(rule.get("left"))
-            add_current_read(rule.get("right"))
-
-        for field in cfg.get("output_fields", []) or []:
-            add_output(field)
-
-        note = "当前表字段作为组内输入；副表字段由高级筛选自行读取"
-        if cfg.get("output_fields"):
-            note += "；显式输出字段参与后续节点推导"
-        else:
-            external_fields, unresolved = self.get_group_filter_external_output_fields(
-                cfg,
-                context=context,
-            )
-            writes.extend(external_fields)
-            write_prefixes.extend(
-                f"{str(table).strip()}."
-                for table in extra_tables
-                if str(table).strip()
-            )
-            note += f"；未指定输出字段，已推导副表输出 {len(external_fields)} 个字段"
-            if unresolved:
-                note += "；结构未解析：" + "、".join(unresolved)
-        return {
-            "read_fields": self.unique_keep_order(reads),
-            "write_fields": self.unique_keep_order(writes),
-            "write_field_prefixes": self.unique_keep_order(write_prefixes),
-            "note": note,
-        }
+        return workflow_group_field_analysis.analyze_group_filter_field_io(
+            self,
+            config,
+            context=context,
+        )
 
     def analyze_group_inner_node_field_io(self, node, context=None):
-        """
-        分析组内单个节点的字段输入/输出。
-
-        返回：
-        {
-            "read_fields": [...],     # 节点需要读取的字段
-            "write_fields": [...],    # 节点会生成/覆盖的字段
-            "note": "..."            # 简短说明，用于推导明细
-        }
-
-        规则目标不是做到 100% 静态分析，而是覆盖当前工作流里最常见的列处理节点：
-        数据提取、格式规范化、新建列、合并列、复制列、填充值、高级筛选等。
-        对复杂节点采用“保守读取”：宁可把可能读取的字段列入入口候选，也避免漏掉真正需要外部传入的字段。
-        """
-        node_type = node.get("type", "")
-        cfg = node.get("config", {}) or {}
-        reads = []
-        writes = []
-        note = ""
-
-        if node_type == "批量替换":
-            self.add_group_field_ref(reads, cfg.get("target_field"))
-            legacy_source = cfg.get("value_source", "手动输入")
-            match_source = cfg.get("match_value_source") or legacy_source
-            replace_source = cfg.get("replace_value_source") or legacy_source
-            if match_source == "列字段":
-                self.add_group_field_ref(reads, cfg.get("match_value_field"))
-            if replace_source == "列字段":
-                self.add_group_field_ref(reads, cfg.get("replace_value_field"))
-            self.add_group_field_ref(writes, cfg.get("target_field"))
-            note = "读取目标字段及匹配/替换来源字段，覆盖目标字段"
-
-        elif node_type == "数据提取":
-            src = cfg.get("source_field")
-            self.add_group_field_ref(reads, src)
-            if cfg.get("output_mode") == "覆盖源字段":
-                self.add_group_field_ref(writes, src)
-            else:
-                self.add_group_field_ref(writes, cfg.get("new_field"))
-            note = "source_field 为输入；新字段/覆盖字段为输出"
-
-        elif node_type == "格式规范化 / 日期时间解析":
-            self.add_group_field_ref(reads, cfg.get("source_field"))
-            if cfg.get("use_separate_time_field"):
-                self.add_group_field_ref(reads, cfg.get("time_source_field"))
-            mode = cfg.get("output_mode", "生成新字段")
-            parse_type = cfg.get("parse_type", "日期")
-            if mode == "覆盖源字段":
-                self.add_group_field_ref(writes, cfg.get("source_field"))
-            elif mode == "生成多个字段":
-                prefix = str(cfg.get("component_prefix") or "解析").strip() or "解析"
-                if parse_type in ("日期", "日期时间"):
-                    writes.extend([f"{prefix}年", f"{prefix}月", f"{prefix}日"])
-                if parse_type in ("时间", "日期时间"):
-                    writes.extend([f"{prefix}时", f"{prefix}分", f"{prefix}秒"])
-                self.add_group_field_ref(writes, cfg.get("new_field"))
-            else:
-                self.add_group_field_ref(writes, cfg.get("new_field"))
-            if cfg.get("output_status"):
-                self.add_group_field_ref(writes, cfg.get("status_field"))
-            note = "日期/时间源字段为输入；标准字段/组件/状态为输出"
-
-        elif node_type == "新建日期时间列":
-            if cfg.get("output_mode") == "覆盖已有字段":
-                self.add_group_field_ref(writes, cfg.get("target_field"))
-            else:
-                self.add_group_field_ref(writes, cfg.get("new_field"))
-            note = "不读取外部字段，只生成日期时间字段"
-
-        elif node_type == "新建列":
-            writes.extend(self.parse_new_column_names_for_group_analysis(
-                cfg.get("columns_text", ""),
-                strip_name=bool(cfg.get("strip_column_name", True)),
-                allow_empty=bool(cfg.get("allow_empty_name", False)),
-            ))
-            note = "不读取外部字段，只新建字段"
-
-        elif node_type == "合并列":
-            self.add_group_field_ref(reads, cfg.get("fields"))
-            self.add_group_field_ref(writes, cfg.get("output_field"))
-            note = "合并字段为输入；合并结果为输出"
-
-        elif node_type == "批量更改列名":
-            # 只处理手动映射：旧字段是输入，新字段是输出。
-            self.add_group_field_refs_from_dict_list(reads, cfg.get("mappings"), ["old", "old_field", "source", "source_field", "from"])
-            self.add_group_field_refs_from_dict_list(writes, cfg.get("mappings"), ["new", "new_field", "target", "target_field", "to"])
-            self.add_group_field_ref(reads, cfg.get("scope_fields"))
-            note = "按映射读取旧字段并输出新字段"
-
-        elif node_type == "去重 / 重复数据处理":
-            self.add_group_field_ref(reads, cfg.get("key_fields"))
-            if cfg.get("add_marker_columns"):
-                for key in ["duplicate_group_field", "duplicate_status_field", "duplicate_index_field", "duplicate_count_field", "keep_flag_field"]:
-                    self.add_group_field_ref(writes, cfg.get(key))
-            note = "去重键字段为输入；标记列为输出"
-
-        elif node_type == "列数字运算":
-            self.add_group_field_ref(reads, cfg.get("target_field"))
-            if cfg.get("operand_source") == "另一列字段":
-                self.add_group_field_ref(reads, cfg.get("operand_field"))
-            self.add_group_field_ref(reads, cfg.get("reference_field"))
-            if cfg.get("output_mode") == "覆盖原列":
-                self.add_group_field_ref(writes, cfg.get("target_field"))
-            else:
-                self.add_group_field_ref(writes, cfg.get("output_field"))
-            note = "目标字段/操作数字段为输入；计算结果为输出"
-
-        elif node_type == "匹配值输出列名":
-            self.add_group_field_ref(reads, cfg.get("source_field"))
-            for key in ["output_field", "match_value_field", "match_row_field", "status_field"]:
-                # 是否实际输出由开关控制，但加入输出集合不会影响入口推导。
-                self.add_group_field_ref(writes, cfg.get(key))
-            note = "source_field 为输入；匹配结果字段为输出"
-
-        elif node_type == "复制列":
-            src = cfg.get("source_field")
-            self.add_group_field_ref(reads, src)
-            if cfg.get("output_mode") == "覆盖已有字段":
-                self.add_group_field_ref(writes, cfg.get("target_field"))
-            else:
-                self.add_group_field_ref(writes, cfg.get("new_field"))
-            note = "源字段为输入；复制目标为输出"
-
-        elif node_type == "删除行":
-            if str(cfg.get("delete_mode", "")).startswith("按条件") or cfg.get("condition_field"):
-                self.add_group_field_ref(reads, cfg.get("condition_field"))
-            self.add_group_field_ref(reads, cfg.get("empty_field"))
-            note = "条件/空值判断字段为输入"
-
-        elif node_type == "填充值":
-            self.add_group_field_ref(writes, cfg.get("target_field"))
-            if cfg.get("value_source") != "手动输入值":
-                for key in ["source_field", "source_end_field"]:
-                    self.add_group_field_ref(reads, cfg.get(key))
-            for key in ["end_field", "reference_field"]:
-                self.add_group_field_ref(reads, cfg.get(key))
-            note = "来源字段/边界字段为输入；目标字段为输出"
-
-        elif node_type == "序列填充":
-            self.add_group_field_ref(writes, cfg.get("target_field"))
-            for key in ["end_field", "reference_field"]:
-                self.add_group_field_ref(reads, cfg.get(key))
-            note = "边界字段为输入；目标字段为输出"
-
-        elif node_type == "区域填充":
-            for key in ["start_field", "end_field"]:
-                self.add_group_field_ref(writes, cfg.get(key))
-            if cfg.get("value_source") != "手动输入值":
-                for key in ["source_field", "source_end_field"]:
-                    self.add_group_field_ref(reads, cfg.get(key))
-            self.add_group_field_ref(reads, cfg.get("reference_field"))
-            note = "来源/边界字段为输入；区域字段为输出"
-
-        elif node_type == "行数据映射填充":
-            self.add_group_field_ref(reads, cfg.get("value_fields"))
-            self.add_group_field_ref(reads, cfg.get("keep_fields"))
-            for key in ["output_value_field", "source_field_name", "original_row_field", "status_field"]:
-                self.add_group_field_ref(writes, cfg.get(key))
-            note = "展开取值字段/保留字段为输入；输出字段为输出"
-
-        elif node_type == "保存中转数据":
-            note = "保存当前组内表，不新增入口字段"
-
-        elif node_type == "选定列写入指定表":
-            self.add_group_field_ref(reads, cfg.get("selected_fields"))
-            # field_mappings 里可能有 source/target 字段。
-            self.add_group_field_refs_from_dict_list(reads, cfg.get("field_mappings"), ["source", "source_field", "源字段", "from"])
-            self.add_group_field_refs_from_dict_list(writes, cfg.get("field_mappings"), ["target", "target_field", "目标字段", "to"])
-            note = "选定来源字段为输入；写入目标字段为副作用输出"
-
-        elif node_type == "字段映射写入表":
-            self.add_group_field_refs_from_dict_list(reads, cfg.get("match_rules"), ["source_field", "left_field", "field", "当前表字段"])
-            self.add_group_field_refs_from_dict_list(reads, cfg.get("field_mappings"), ["source_field", "source", "当前表字段", "from"])
-            note = "匹配规则/字段映射中的当前表字段为输入"
-
-        elif node_type == "高级筛选":
-            return self.analyze_group_filter_field_io(cfg, context=context)
-
-        elif node_type == "删除列":
-            self.add_group_field_ref(reads, cfg.get("fields"))
-            note = "待删除字段为输入"
-
-        elif node_type == "移动列":
-            self.add_group_field_ref(reads, cfg.get("order"))
-            note = "列顺序字段为输入"
-
-        elif node_type == "批量重命名":
-            for key in ["path_field", "new_name_field", "new_path_field", "status_field"]:
-                if key in ("status_field", "new_path_field"):
-                    self.add_group_field_ref(writes, cfg.get(key))
-                else:
-                    self.add_group_field_ref(reads, cfg.get(key))
-            note = "路径字段/新文件名字段为输入；状态字段为输出"
-
-        elif node_type == "插件节点":
-            # 插件参数没有统一字段 schema，第一版只扫描常见字段键。
-            self.collect_group_fields_from_nested_config(
-                reads,
-                cfg,
-                field_keys={"source_field", "target_field", "field", "path_field", "file_field", "input_field"},
-            )
-            self.collect_group_fields_from_nested_config(
-                writes,
-                cfg,
-                field_keys={"output_field", "new_field", "status_field", "result_field"},
-            )
-            note = "插件节点按常见字段参数保守推导"
-
-        else:
-            # 未识别节点：保守扫描常见输入/输出键，避免完全失效。
-            self.collect_group_fields_from_nested_config(
-                reads,
-                cfg,
-                field_keys={"source_field", "target_field", "field", "fields", "key_fields", "reference_field"},
-            )
-            self.collect_group_fields_from_nested_config(
-                writes,
-                cfg,
-                field_keys={"new_field", "output_field", "status_field", "target_field"},
-            )
-            note = "未知节点，按常见字段键保守推导"
-
-        return {
-            "read_fields": self.unique_keep_order(reads),
-            "write_fields": self.unique_keep_order(writes),
-            "note": note,
-        }
+        return workflow_group_field_analysis.analyze_group_inner_node_field_io(
+            self,
+            node,
+            context=context,
+        )
 
     def collect_group_fields_from_nested_config(self, target, value, field_keys=None):
-        """递归扫描复杂配置中的字段名。仅在 key 命中 field_keys 时收集。"""
-        field_keys = set(field_keys or [])
-        if isinstance(value, dict):
-            for k, v in value.items():
-                if k in field_keys:
-                    self.add_group_field_ref(target, v)
-                elif isinstance(v, (dict, list, tuple)):
-                    self.collect_group_fields_from_nested_config(target, v, field_keys=field_keys)
-        elif isinstance(value, (list, tuple)):
-            for item in value:
-                self.collect_group_fields_from_nested_config(target, item, field_keys=field_keys)
+        return workflow_group_field_analysis.collect_group_fields_from_nested_config(
+            target,
+            value,
+            field_keys=field_keys,
+        )
 
     def infer_group_input_fields_from_nodes(self, nodes, context=None):
-        """
-        从组内节点顺序自动推导“真正需要从组外传入”的入口字段。
-
-        核心规则：
-        - read_fields 中如果字段尚未由前序节点生成，则视为组入口字段。
-        - write_fields 加入 produced_fields，后续节点读取它时不再作为入口。
-        - 同一个字段既读又写时，如果它之前没有生成，仍然需要作为入口。
-        """
-        required = []
-        produced = set()
-        produced_prefixes = []
-        details = []
-        for idx, node in enumerate(nodes or [], start=1):
-            if not node.get("enabled", True):
-                details.append({
-                    "index": idx,
-                    "type": node.get("type", ""),
-                    "reads": [],
-                    "writes": [],
-                    "write_prefixes": [],
-                    "required": [],
-                    "note": "节点已禁用，跳过推导",
-                })
-                continue
-            info = self.analyze_group_inner_node_field_io(node, context=context)
-            reads = info.get("read_fields", [])
-            writes = info.get("write_fields", [])
-            write_prefixes = info.get("write_field_prefixes", [])
-            req_this = []
-            for f in reads:
-                if f not in produced and not any(str(f).startswith(prefix) for prefix in produced_prefixes):
-                    req_this.append(f)
-                    required.append(f)
-            for f in writes:
-                produced.add(f)
-            produced_prefixes.extend(
-                prefix
-                for prefix in write_prefixes
-                if prefix and prefix not in produced_prefixes
-            )
-            details.append({
-                "index": idx,
-                "type": node.get("type", ""),
-                "reads": reads,
-                "writes": writes,
-                "write_prefixes": write_prefixes,
-                "required": self.unique_keep_order(req_this),
-                "note": info.get("note", ""),
-            })
-        return self.unique_keep_order(required), details
+        return workflow_group_field_analysis.infer_group_input_fields_from_nodes(
+            self,
+            nodes,
+            context=context,
+        )
 
     def format_group_input_infer_details(self, inferred, details, limit=20):
-        """把入口推导明细整理成弹窗文本。"""
-        lines = [f"推导入口字段：{', '.join(inferred) if inferred else '无'}", ""]
-        for item in details[:limit]:
-            lines.append(f"{item.get('index')}. {item.get('type')}")
-            lines.append(f"  读取：{', '.join(item.get('reads') or []) or '-'}")
-            lines.append(f"  输出：{', '.join(item.get('writes') or []) or '-'}")
-            if item.get("write_prefixes"):
-                lines.append(f"  动态输出前缀：{', '.join(item.get('write_prefixes') or [])}")
-            lines.append(f"  需要入口：{', '.join(item.get('required') or []) or '-'}")
-            if item.get("note"):
-                lines.append(f"  说明：{item.get('note')}")
-        if len(details) > limit:
-            lines.append(f"... 仅显示前 {limit} 个节点，共 {len(details)} 个节点。")
-        return "\n".join(lines)
+        return workflow_group_field_analysis.format_group_input_infer_details(
+            inferred,
+            details,
+            limit=limit,
+        )
 
     def normalize_group_transit_conflict_mode(self, mode):
         return workflow_normalize_group_transit_conflict_mode(mode)
@@ -8786,67 +8329,7 @@ class PlanWorkflowWindow:
             self.status_var.set("计划模板已载入。")
 
     def refresh_plan_template_list(self, show_status=True):
-        """扫描 plan 目录，只列出能正常读取的新版 workflow_plan JSON。"""
-        os.makedirs(self.plan_dir, exist_ok=True)
-
-        template_map = {}
-        valid_count = 0
-        skipped_count = 0
-
-        try:
-            files = sorted(
-                f for f in os.listdir(self.plan_dir)
-                if f.lower().endswith(".json")
-            )
-        except Exception as e:
-            if hasattr(self, "plan_template_combo"):
-                self.plan_template_combo["values"] = []
-            self.plan_template_map = {}
-            if show_status:
-                self.status_var.set(f"读取 plan 目录失败：{e}")
-            return
-
-        for file_name in files:
-            path = os.path.join(self.plan_dir, file_name)
-            try:
-                data, _load_info = load_json_with_backup(path)
-                ok, _ = self.validate_plan_template_data(data)
-                if not ok:
-                    skipped_count += 1
-                    continue
-
-                # 下拉菜单只显示 JSON 内部的 plan_name，不再显示文件名。
-                # 如果 plan_name 为空，则显示“未命名计划”；仍然不显示文件名。
-                plan_name = str(data.get("plan_name") or "").strip() or "未命名计划"
-                display = plan_name
-
-                # 避免多个模板 plan_name 相同导致映射冲突。
-                # 重名时只追加序号，不显示 json 文件名。
-                original_display = display
-                i = 2
-                while display in template_map:
-                    display = f"{original_display} ({i})"
-                    i += 1
-
-                template_map[display] = path
-                valid_count += 1
-            except Exception:
-                skipped_count += 1
-                continue
-
-        self.plan_template_map = template_map
-        values = list(template_map.keys())
-        if hasattr(self, "plan_template_combo"):
-            self.plan_template_combo["values"] = values
-
-        current = self.plan_template_var.get()
-        if current not in template_map:
-            self.plan_template_var.set(values[0] if values else "")
-
-        if show_status:
-            self.status_var.set(
-                f"模板刷新完成：可用 {valid_count} 个，跳过 {skipped_count} 个。目录：{self.plan_dir}"
-            )
+        return workflow_plan_workflow_ui.refresh_plan_template_list(self, show_status=show_status)
 
     def open_plan_dir(self):
         """打开程序真实目录下的 plan 模板目录。"""
