@@ -69,18 +69,13 @@ from plugin_runtime.scanner import scan_plugins
 from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
 from workflow.nodes.data_nodes import (
     apply_area_fill_node as workflow_apply_area_fill_node,
-    apply_copy_column_node as workflow_apply_copy_column_node,
-    apply_copy_row_node as workflow_apply_copy_row_node,
     apply_current_datetime_column_node as workflow_apply_current_datetime_column_node,
-    apply_delete_columns_node as workflow_apply_delete_columns_node,
-    apply_delete_rows_node as workflow_apply_delete_rows_node,
     apply_dedupe_node as workflow_apply_dedupe_node,
     apply_extract_node as workflow_apply_extract_node,
     apply_filter_node as workflow_apply_filter_node,
     apply_format_datetime_node as workflow_apply_format_datetime_node,
     apply_fill_value_node as workflow_apply_fill_value_node,
     apply_merge_node as workflow_apply_merge_node,
-    apply_move_columns_node as workflow_apply_move_columns_node,
     apply_new_columns_node as workflow_apply_new_columns_node,
     apply_match_value_output_field_name_node as workflow_apply_match_value_output_field_name_node,
     apply_numeric_column_node as workflow_apply_numeric_column_node,
@@ -146,7 +141,6 @@ from workflow.nodes.data_nodes import (
     parse_format_datetime_value as workflow_parse_format_datetime_value,
     parse_format_int as workflow_parse_format_int,
     parse_int as workflow_parse_int,
-    parse_row_spec_to_indexes as workflow_parse_row_spec_to_indexes,
     parse_time_auto_common as workflow_parse_time_auto_common,
     parse_time_delimited as workflow_parse_time_delimited,
     parse_time_fixed as workflow_parse_time_fixed,
@@ -11636,19 +11630,6 @@ class PlanWorkflowWindow:
     def should_write_cell(self, current_value, overwrite_rule):
         return workflow_should_write_cell(current_value, overwrite_rule)
 
-    def apply_copy_column_node(self, headers, rows, config):
-        return workflow_apply_copy_column_node(headers, rows, config)
-
-    def apply_copy_row_node(self, headers, rows, config):
-        return workflow_apply_copy_row_node(headers, rows, config)
-
-    def parse_row_spec_to_indexes(self, spec, max_rows):
-        """解析 1,3,5-8 这样的行号列表，返回 0 基下标集合。"""
-        return workflow_parse_row_spec_to_indexes(spec, max_rows)
-
-    def apply_delete_rows_node(self, headers, rows, config):
-        return workflow_apply_delete_rows_node(headers, rows, config)
-
     def apply_fill_value_node(self, headers, rows, config, context=None):
         node_context = dict(context or {})
         node_context.update({
@@ -12229,12 +12210,6 @@ class PlanWorkflowWindow:
     def make_unique_headers_for_append(self, existing_headers, new_headers):
         """给追加字段生成不重复字段名。"""
         return core_make_unique_headers_for_append(existing_headers, new_headers)
-
-    def apply_delete_columns_node(self, headers, rows, config):
-        return workflow_apply_delete_columns_node(headers, rows, config)
-
-    def apply_move_columns_node(self, headers, rows, config):
-        return workflow_apply_move_columns_node(headers, rows, config)
 
     def save_result_to_sqlite(self, headers, rows, table_name_raw, overwrite=False, backup=True, context=None):
         db_path = self.get_workflow_db_path(context)

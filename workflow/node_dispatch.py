@@ -1,6 +1,14 @@
 # -*- coding: utf-8 -*-
 """Regular node dispatch helpers for PlanWorkflowWindow.apply_node."""
 
+from workflow.nodes.data_nodes import (
+    apply_copy_column_node,
+    apply_copy_row_node,
+    apply_delete_columns_node,
+    apply_delete_rows_node,
+    apply_move_columns_node,
+)
+
 
 def apply_workflow_node(window, headers, rows, node, execute_actions=False, context=None):
     node_type = node.get("type")
@@ -38,11 +46,11 @@ def apply_workflow_node(window, headers, rows, node, execute_actions=False, cont
     if node_type == "插件节点":
         return window.apply_plugin_node(headers, rows, config, context=context, execute_actions=execute_actions)
     if node_type == "复制列":
-        return window.apply_copy_column_node(headers, rows, config)
+        return apply_copy_column_node(headers, rows, config)
     if node_type == "复制行":
-        return window.apply_copy_row_node(headers, rows, config)
+        return apply_copy_row_node(headers, rows, config)
     if node_type == "删除行":
-        return window.apply_delete_rows_node(headers, rows, config)
+        return apply_delete_rows_node(headers, rows, config)
     if node_type == "填充值":
         return window.apply_fill_value_node(headers, rows, config, context=context)
     if node_type == "序列填充":
@@ -60,9 +68,9 @@ def apply_workflow_node(window, headers, rows, node, execute_actions=False, cont
     if node_type == "高级筛选":
         return window.apply_filter_node(headers, rows, config, context=context)
     if node_type == "删除列":
-        return window.apply_delete_columns_node(headers, rows, config)
+        return apply_delete_columns_node(headers, rows, config)
     if node_type == "移动列":
-        return window.apply_move_columns_node(headers, rows, config)
+        return apply_move_columns_node(headers, rows, config)
     if node_type == "批量重命名":
         return window.apply_batch_rename_node(headers, rows, config, execute_actions=execute_actions, context=context)
     raise ValueError(f"未知节点类型：{node_type}")

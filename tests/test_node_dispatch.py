@@ -79,6 +79,62 @@ class NodeDispatchTests(unittest.TestCase):
 
         self.assertEqual(result, (["A"], [["a"]], "loop"))
 
+    def test_dispatch_direct_pure_data_nodes_without_window_methods(self):
+        class Window:
+            pass
+
+        headers, rows, stat = apply_workflow_node(
+            Window(),
+            ["A"],
+            [[" x "], [""]],
+            {
+                "type": "复制列",
+                "config": {
+                    "source_field": "A",
+                    "new_field": "B",
+                    "trim_value": True,
+                    "empty_default": "空",
+                },
+            },
+        )
+
+        self.assertEqual(headers, ["A", "B"])
+        self.assertEqual(rows, [[" x ", "x"], ["", "空"]])
+        self.assertEqual(stat, "复制列为新字段 B")
+
+        headers, rows, stat = apply_workflow_node(
+            Window(),
+            ["A"],
+            [["a1"], ["a2"]],
+            {"type": "复制行", "config": {"source_row": "2", "insert_mode": "表尾"}},
+        )
+        self.assertEqual(rows, [["a1"], ["a2"], ["a2"]])
+        self.assertEqual(stat, "复制第 2 行 1 次")
+
+        headers, rows, stat = apply_workflow_node(
+            Window(),
+            ["A", "B", "C"],
+            [["a", "b", "c"]],
+            {"type": "删除列", "config": {"fields": ["B"]}},
+        )
+        self.assertEqual((headers, rows, stat), (["A", "C"], [["a", "c"]], "删除 1 列"))
+
+        headers, rows, stat = apply_workflow_node(
+            Window(),
+            ["A", "B"],
+            [["a1", "b1"], ["a2", "b2"]],
+            {"type": "删除行", "config": {"delete_mode": "按行号列表", "row_spec": "1"}},
+        )
+        self.assertEqual((headers, rows, stat), (["A", "B"], [["a2", "b2"]], "删除 1 行"))
+
+        headers, rows, stat = apply_workflow_node(
+            Window(),
+            ["A", "B", "C"],
+            [["a", "b", "c"]],
+            {"type": "移动列", "config": {"order": ["C", "A"]}},
+        )
+        self.assertEqual((headers, rows, stat), (["C", "A", "B"], [["c", "a", "b"]], "已调整列顺序"))
+
     def test_dispatch_unknown_node_raises(self):
         with self.assertRaisesRegex(ValueError, "未知节点类型：不存在"):
             apply_workflow_node(None, [], [], {"type": "不存在", "config": {}})
