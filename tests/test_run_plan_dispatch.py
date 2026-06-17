@@ -97,29 +97,101 @@ class RunPlanDispatchTests(unittest.TestCase):
     def test_dispatch_conditional_jump_returns_target(self):
         class Window:
             def apply_conditional_jump_node(self, headers, rows, config, context=None, anchors_info=None, nodes=None):
-                self.seen = (context, anchors_info, nodes)
-                return list(headers), [list(row) for row in rows], "cond jump", {"jump_to": 3}
+                raise AssertionError("should dispatch to jump runtime helper")
 
         window = Window()
         context = {}
         anchors = {"all": []}
         node_list = [{"type": "条件跳转节点"}]
 
-        headers, rows, stat, jump_to = dispatch_run_plan_node(
-            window,
-            ["A"],
-            [["a"]],
-            {"type": "条件跳转节点", "config": {"flag_name": "flag"}},
-            context,
-            anchors_info=anchors,
-            node_list=node_list,
-        )
+        with mock.patch(
+            "workflow.run_plan_dispatch.apply_conditional_jump_node",
+            return_value=(["A"], [["a"]], "cond jump", {"jump_to": 3}),
+        ) as jump_helper:
+            headers, rows, stat, jump_to = dispatch_run_plan_node(
+                window,
+                ["A"],
+                [["a"]],
+                {"type": "条件跳转节点", "config": {"flag_name": "flag"}},
+                context,
+                anchors_info=anchors,
+                node_list=node_list,
+            )
 
         self.assertEqual(headers, ["A"])
         self.assertEqual(rows, [["a"]])
         self.assertEqual(stat, "cond jump")
         self.assertEqual(jump_to, 3)
-        self.assertEqual(window.seen, (context, anchors, node_list))
+        self.assertEqual(jump_helper.call_args.args[:4], (window, ["A"], [["a"]], {"flag_name": "flag"}))
+        self.assertEqual(jump_helper.call_args.kwargs, {"context": context, "anchors_info": anchors, "nodes": node_list})
+
+    def test_dispatch_jump_anchor_and_condition_check_use_runtime_helpers(self):
+        class Window:
+            def apply_jump_anchor_node(self, *_args, **_kwargs):
+                raise AssertionError("should dispatch to jump runtime helper")
+
+            def apply_condition_check_node(self, *_args, **_kwargs):
+                raise AssertionError("should dispatch to jump runtime helper")
+
+        context = {}
+        with mock.patch(
+            "workflow.run_plan_dispatch.apply_jump_anchor_node",
+            return_value=(["A"], [["a"]], "anchor"),
+        ) as anchor_helper, mock.patch(
+            "workflow.run_plan_dispatch.apply_condition_check_node",
+            return_value=(["A"], [["a"]], "condition"),
+        ) as condition_helper:
+            self.assertEqual(
+                dispatch_run_plan_node(
+                    Window(),
+                    ["A"],
+                    [["a"]],
+                    {"type": "跳转锚点节点", "config": {"anchor_id": "A1"}},
+                    context,
+                ),
+                (["A"], [["a"]], "anchor", None),
+            )
+            self.assertEqual(
+                dispatch_run_plan_node(
+                    Window(),
+                    ["A"],
+                    [["a"]],
+                    {"type": "条件判断节点", "config": {"flag_name": "ok"}},
+                    context,
+                ),
+                (["A"], [["a"]], "condition", None),
+            )
+
+        self.assertEqual(anchor_helper.call_args.args[:4], (mock.ANY, ["A"], [["a"]], {"anchor_id": "A1"}))
+        self.assertIs(anchor_helper.call_args.kwargs["context"], context)
+        self.assertEqual(condition_helper.call_args.args[:4], (mock.ANY, ["A"], [["a"]], {"flag_name": "ok"}))
+        self.assertIs(condition_helper.call_args.kwargs["context"], context)
+
+    def test_dispatch_unconditional_jump_uses_runtime_helper(self):
+        class Window:
+            def apply_unconditional_jump_node(self, *_args, **_kwargs):
+                raise AssertionError("should dispatch to jump runtime helper")
+
+        context = {}
+        anchors = {"all": []}
+        node_list = [{"type": "无条件跳转节点"}]
+        with mock.patch(
+            "workflow.run_plan_dispatch.apply_unconditional_jump_node",
+            return_value=(["A"], [["a"]], "jump", {"jump_to": 5}),
+        ) as jump_helper:
+            result = dispatch_run_plan_node(
+                Window(),
+                ["A"],
+                [["a"]],
+                {"type": "无条件跳转节点", "config": {"target_anchor_id": "A1"}},
+                context,
+                anchors_info=anchors,
+                node_list=node_list,
+            )
+
+        self.assertEqual(result, (["A"], [["a"]], "jump", 5))
+        self.assertEqual(jump_helper.call_args.args[:4], (mock.ANY, ["A"], [["a"]], {"target_anchor_id": "A1"}))
+        self.assertEqual(jump_helper.call_args.kwargs, {"context": context, "anchors_info": anchors, "nodes": node_list})
 
 
 if __name__ == "__main__":
