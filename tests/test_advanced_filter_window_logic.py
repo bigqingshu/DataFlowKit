@@ -10,14 +10,17 @@ from workflow.advanced_filter_window_logic import (
     add_advanced_filter_output_fields,
     add_all_advanced_filter_output_fields,
     build_advanced_filter_field_display_cache,
+    build_advanced_filter_preview_rows,
     build_advanced_filter_template_data,
     build_advanced_filter_result_records,
     clear_advanced_filter_items,
+    dedupe_advanced_filter_preview_rows,
     eval_advanced_filter_condition,
     eval_advanced_filter_conditions,
     eval_advanced_filter_join_rule,
     eval_advanced_filter_join_rules,
     filter_advanced_filter_valid_state,
+    get_advanced_filter_output_fields,
     load_advanced_filter_table_records,
     normalize_advanced_filter_template_data,
     parse_advanced_filter_number,
@@ -252,6 +255,36 @@ class AdvancedFilterWindowLogicTests(unittest.TestCase):
 
         join_rules = remove_advanced_filter_items_by_indexes(join_rules, [1, 0])
         self.assertEqual(join_rules, [])
+
+    def test_preview_output_helpers_build_rows_and_dedupe(self):
+        self.assertEqual(
+            get_advanced_filter_output_fields(["orders.id"], ["orders.id", "people.name"]),
+            ["orders.id"],
+        )
+        self.assertEqual(
+            get_advanced_filter_output_fields([], ["orders.id", "people.name"]),
+            ["orders.id", "people.name"],
+        )
+
+        rows = build_advanced_filter_preview_rows(
+            [
+                {"orders.id": "1", "people.name": "Alice"},
+                {"orders.id": "2"},
+            ],
+            ["orders.id", "people.name"],
+        )
+        self.assertEqual(rows, [["1", "Alice"], ["2", ""]])
+
+        result = dedupe_advanced_filter_preview_rows(
+            [
+                ["1", None],
+                ["1", ""],
+                ("2", "Bob"),
+                ["2", "Bob"],
+            ]
+        )
+        self.assertEqual(result["removed"], 2)
+        self.assertEqual(result["rows"], [["1", None], ["2", "Bob"]])
 
 
 if __name__ == "__main__":

@@ -358,6 +358,36 @@ def remove_advanced_filter_output_fields(output_fields, indexes):
     return remove_advanced_filter_items_by_indexes(output_fields, indexes)
 
 
+def get_advanced_filter_output_fields(output_fields, field_display_cache):
+    if output_fields:
+        return list(output_fields)
+    return list(field_display_cache or [])
+
+
+def build_advanced_filter_preview_rows(records, fields):
+    return [
+        [record.get(field, "") for field in fields]
+        for record in records or []
+    ]
+
+
+def dedupe_advanced_filter_preview_rows(rows):
+    seen = set()
+    new_rows = []
+    removed = 0
+    for row in rows or []:
+        key = tuple("" if value is None else str(value) for value in row)
+        if key in seen:
+            removed += 1
+            continue
+        seen.add(key)
+        new_rows.append(list(row))
+    return {
+        "rows": new_rows,
+        "removed": removed,
+    }
+
+
 def parse_positive_int_setting(value, default_value):
     try:
         parsed = int(str(value).strip())

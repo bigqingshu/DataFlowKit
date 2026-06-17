@@ -163,15 +163,18 @@ from workflow.advanced_filter_window_logic import (
     add_advanced_filter_output_fields as workflow_add_advanced_filter_output_fields,
     add_all_advanced_filter_output_fields as workflow_add_all_advanced_filter_output_fields,
     build_advanced_filter_field_display_cache as workflow_build_advanced_filter_field_display_cache,
+    build_advanced_filter_preview_rows as workflow_build_advanced_filter_preview_rows,
     build_advanced_filter_template_data as workflow_build_advanced_filter_template_data,
     build_advanced_filter_result_records as workflow_build_advanced_filter_result_records,
     clear_advanced_filter_items as workflow_clear_advanced_filter_items,
+    dedupe_advanced_filter_preview_rows as workflow_dedupe_advanced_filter_preview_rows,
     eval_advanced_filter_condition as workflow_eval_advanced_filter_condition,
     eval_advanced_filter_conditions as workflow_eval_advanced_filter_conditions,
     eval_advanced_filter_join_rule as workflow_eval_advanced_filter_join_rule,
     eval_advanced_filter_join_rules as workflow_eval_advanced_filter_join_rules,
     filter_advanced_filter_valid_state as workflow_filter_advanced_filter_valid_state,
     format_advanced_filter_db_value as workflow_format_advanced_filter_db_value,
+    get_advanced_filter_output_fields as workflow_get_advanced_filter_output_fields,
     load_advanced_filter_table_records as workflow_load_advanced_filter_table_records,
     normalize_advanced_filter_template_data as workflow_normalize_advanced_filter_template_data,
     parse_advanced_filter_number as workflow_parse_advanced_filter_number,
@@ -3914,10 +3917,10 @@ class AdvancedFilterWindow:
         )
 
     def get_output_fields(self):
-        if self.output_fields:
-            return self.output_fields
-
-        return self.field_display_cache
+        return workflow_get_advanced_filter_output_fields(
+            self.output_fields,
+            self.field_display_cache,
+        )
 
     def preview_result(self):
         try:
@@ -3929,10 +3932,7 @@ class AdvancedFilterWindow:
             records = self.build_result_records()
 
             self.preview_headers = fields
-            self.preview_rows = []
-
-            for record in records:
-                self.preview_rows.append([record.get(field, "") for field in fields])
+            self.preview_rows = workflow_build_advanced_filter_preview_rows(records, fields)
 
             self.refresh_preview_tree()
 
@@ -3961,21 +3961,11 @@ class AdvancedFilterWindow:
         if not self.preview_headers:
             return
 
-        seen = set()
-        new_rows = []
-        removed = 0
-        for row in self.preview_rows:
-            key = tuple("" if value is None else str(value) for value in row)
-            if key in seen:
-                removed += 1
-                continue
-            seen.add(key)
-            new_rows.append(list(row))
-
-        self.preview_rows = new_rows
+        result = workflow_dedupe_advanced_filter_preview_rows(self.preview_rows)
+        self.preview_rows = result["rows"]
         self.refresh_preview_tree()
         self.status_var.set(
-            f"已去除重复内容：删除 {removed} 行，剩余 {len(self.preview_rows)} 行。"
+            f"已去除重复内容：删除 {result['removed']} 行，剩余 {len(self.preview_rows)} 行。"
             " 判断规则：按当前预览输出整行内容去重，保留第一条。"
         )
 
