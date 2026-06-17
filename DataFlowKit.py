@@ -335,6 +335,7 @@ from workflow import group_config_ui as workflow_group_config_ui
 from workflow import group_runtime as workflow_group_runtime
 from workflow import group_template_ui as workflow_group_template_ui
 from workflow import jump_runtime as workflow_jump_runtime
+from workflow import run_plan_dispatch as workflow_run_plan_dispatch
 from workflow.row_data_mapping_config_ui import (
     build_row_data_mapping_config as workflow_build_row_data_mapping_config_ui,
 )
@@ -10760,50 +10761,18 @@ class PlanWorkflowWindow:
                             operation="write_current_table",
                         )
 
-                if node_type == "循环执行起点":
-                    headers, rows, stat, ctrl = self.apply_loop_start_node(headers, rows, config, context=context)
-                    if ctrl.get("no_pending"):
-                        judge_idx = self.find_loop_judge_index(config.get("loop_id", ""), idx, end, nodes=node_list)
-                        if judge_idx is not None:
-                            jump_to = judge_idx + 1
-                            stat += f"；无待执行项，跳过循环体到节点 {jump_to + 1 if jump_to <= end else '结束'}"
-                elif node_type == "循环判断回跳":
-                    headers, rows, stat, ctrl = self.apply_loop_judge_node(headers, rows, config, context=context)
-                    if ctrl.get("jump_to") is not None:
-                        if ctrl.get("jump_to") == "__LOOP_START__":
-                            jump_to = self.find_loop_start_index(config.get("loop_id", ""), idx, nodes=node_list)
-                            if jump_to is None:
-                                raise RuntimeError(f"未找到循环起点：{config.get('loop_id', '')}")
-                        else:
-                            jump_to = int(ctrl["jump_to"])
-                elif node_type == "跳转锚点节点":
-                    headers, rows, stat = self.apply_jump_anchor_node(headers, rows, config, context=context)
-                elif node_type == "无条件跳转节点":
-                    headers, rows, stat, ctrl = self.apply_unconditional_jump_node(
-                        headers,
-                        rows,
-                        config,
-                        context=context,
-                        anchors_info=anchors_info,
-                        nodes=node_list,
-                    )
-                    if ctrl.get("jump_to") is not None:
-                        jump_to = int(ctrl["jump_to"])
-                elif node_type == "条件判断节点":
-                    headers, rows, stat = self.apply_condition_check_node(headers, rows, config, context=context)
-                elif node_type == "条件跳转节点":
-                    headers, rows, stat, ctrl = self.apply_conditional_jump_node(
-                        headers,
-                        rows,
-                        config,
-                        context=context,
-                        anchors_info=anchors_info,
-                        nodes=node_list,
-                    )
-                    if ctrl.get("jump_to") is not None:
-                        jump_to = int(ctrl["jump_to"])
-                else:
-                    headers, rows, stat = self.apply_node(headers, rows, node, execute_actions=execute_actions, context=context)
+                headers, rows, stat, jump_to = workflow_run_plan_dispatch.dispatch_run_plan_node(
+                    self,
+                    headers,
+                    rows,
+                    node,
+                    context,
+                    execute_actions=execute_actions,
+                    anchors_info=anchors_info,
+                    node_list=node_list,
+                    idx=idx,
+                    end=end,
+                )
 
                 self.log_current_table_transform(
                     current_table_manager,
