@@ -335,6 +335,7 @@ from workflow import group_config_ui as workflow_group_config_ui
 from workflow import group_runtime as workflow_group_runtime
 from workflow import group_template_ui as workflow_group_template_ui
 from workflow import jump_runtime as workflow_jump_runtime
+from workflow import run_plan_context as workflow_run_plan_context
 from workflow import run_plan_dispatch as workflow_run_plan_dispatch
 from workflow.row_data_mapping_config_ui import (
     build_row_data_mapping_config as workflow_build_row_data_mapping_config_ui,
@@ -10669,42 +10670,28 @@ class PlanWorkflowWindow:
         这里从原来的简单 for 循环升级为 PC（程序计数器）模式，用于支持
         “循环执行起点 / 循环判断回跳”这类需要跳转的节点。
         """
-        snapshot = workflow_snapshot or {}
-        node_list = snapshot.get("nodes") if isinstance(snapshot, dict) and snapshot.get("nodes") is not None else self.nodes
-        if initial_headers is not None:
-            headers = list(initial_headers)
-        elif isinstance(snapshot, dict) and snapshot.get("headers") is not None:
-            headers = list(snapshot.get("headers") or [])
-        else:
-            headers = list(self.app.headers)
-        if initial_rows is not None:
-            rows = [list(row) for row in initial_rows]
-        elif isinstance(snapshot, dict) and snapshot.get("rows") is not None:
-            rows = [list(row) for row in (snapshot.get("rows") or [])]
-        else:
-            rows = [list(row) for row in self.app.rows]
-        logs = []
-        context = initial_context if initial_context is not None else {"transit_tables": {}, "loop_states": {}, "loop_results": {}}
-        context.setdefault("transit_tables", {})
-        context.setdefault("loop_states", {})
-        context.setdefault("loop_results", {})
-        context.setdefault("condition_flags", {})
-        context.setdefault("jump_logs", [])
-        if isinstance(snapshot, dict) and snapshot.get("table_access_policy") is not None:
-            context["table_access_policy"] = TableAccessManager.normalize_permission_policy(snapshot.get("table_access_policy"))
-        else:
-            context.setdefault("table_access_policy", self.normalize_table_access_policy())
-        if snapshot:
-            context["workflow_snapshot"] = snapshot
-        if progress_callback is not None:
-            context["progress_callback"] = progress_callback
-        if cancel_event is not None:
-            context["cancel_event"] = cancel_event
-        end = len(node_list) - 1 if stop_index is None else stop_index
-        pc = int(start_index or 0)
-        steps = 0
-        max_steps = max(1000, len(node_list) * 2000)
-        anchors_info = self.collect_jump_anchors(nodes=node_list)
+        initial_state = workflow_run_plan_context.build_run_plan_initial_state(
+            self,
+            stop_index=stop_index,
+            start_index=start_index,
+            initial_headers=initial_headers,
+            initial_rows=initial_rows,
+            initial_context=initial_context,
+            progress_callback=progress_callback,
+            cancel_event=cancel_event,
+            workflow_snapshot=workflow_snapshot,
+            normalize_policy=TableAccessManager.normalize_permission_policy,
+        )
+        node_list = initial_state["node_list"]
+        headers = initial_state["headers"]
+        rows = initial_state["rows"]
+        logs = initial_state["logs"]
+        context = initial_state["context"]
+        end = initial_state["end"]
+        pc = initial_state["pc"]
+        steps = initial_state["steps"]
+        max_steps = initial_state["max_steps"]
+        anchors_info = initial_state["anchors_info"]
 
         while pc < len(node_list) and pc <= end:
             if cancel_event is not None and cancel_event.is_set():
