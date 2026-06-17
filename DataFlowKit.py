@@ -337,6 +337,7 @@ from workflow import group_template_ui as workflow_group_template_ui
 from workflow import jump_runtime as workflow_jump_runtime
 from workflow import run_plan_context as workflow_run_plan_context
 from workflow import run_plan_dispatch as workflow_run_plan_dispatch
+from workflow import run_plan_loop as workflow_run_plan_loop
 from workflow import run_plan_step as workflow_run_plan_step
 from workflow.row_data_mapping_config_ui import (
     build_row_data_mapping_config as workflow_build_row_data_mapping_config_ui,
@@ -10694,21 +10695,15 @@ class PlanWorkflowWindow:
         max_steps = initial_state["max_steps"]
         anchors_info = initial_state["anchors_info"]
 
-        while pc < len(node_list) and pc <= end:
-            if cancel_event is not None and cancel_event.is_set():
-                logs.append("用户取消后台执行，工作流已安全停止。")
+        while workflow_run_plan_loop.should_continue_run_plan(pc, len(node_list), end):
+            if workflow_run_plan_loop.stop_if_cancelled(cancel_event, logs):
                 break
-            steps += 1
-            if steps > max_steps:
-                raise RuntimeError("工作流执行步数超过安全上限，疑似循环未正确结束。")
+            steps = workflow_run_plan_loop.advance_run_plan_step(steps, max_steps)
 
-            idx = pc
-            node = node_list[idx]
-            self.ensure_node_identity(node)
-            self.refresh_node_table_access(node)
-            if not node.get("enabled", True):
-                logs.append(f"跳过 {idx+1}.{node.get('type')}")
-                pc += 1
+            idx, node = workflow_run_plan_loop.prepare_run_plan_node(self, node_list, pc)
+            disabled_next_pc = workflow_run_plan_loop.disabled_node_next_pc(node, idx, logs)
+            if disabled_next_pc is not None:
+                pc = disabled_next_pc
                 continue
 
             node_type, config = workflow_run_plan_step.prepare_node_execution(
