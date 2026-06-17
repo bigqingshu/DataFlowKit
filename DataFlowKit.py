@@ -338,6 +338,7 @@ from workflow.filter_config_ui import (
     sync_filter_output_fields as workflow_sync_filter_output_fields_ui,
 )
 from workflow import group_config_ui as workflow_group_config_ui
+from workflow import group_template_ui as workflow_group_template_ui
 from workflow.row_data_mapping_config_ui import (
     build_row_data_mapping_config as workflow_build_row_data_mapping_config_ui,
 )
@@ -9681,195 +9682,46 @@ class PlanWorkflowWindow:
         return workflow_group_config_ui.build_group_node_config(self, config, headers, transit_context=transit_context)
 
     def merge_selected_nodes_to_group(self):
-        sels = sorted(int(i) for i in self.node_listbox.curselection())
-        if len(sels) < 2:
-            messagebox.showwarning("提示", "请先在节点列表中选择至少 2 个连续或多个节点，再合并为组。")
-            return
-        selected_nodes = [copy.deepcopy(self.nodes[i]) for i in sels]
-        for n in selected_nodes:
-            if n.get("type") in ("循环执行起点", "循环判断回跳"):
-                messagebox.showwarning("暂不支持", "第一版节点组不支持把循环执行起点 / 循环判断回跳合并进组。")
-                return
-        name = simpledialog.askstring("节点组名称", "请输入节点组名称：", initialvalue=f"节点组_{datetime.now().strftime('%H%M%S')}", parent=self.window)
-        if not name:
-            return
-        group_node = {
-            "enabled": True,
-            "type": "节点组 / 子工作流",
-            "name": name,
-            "config": {
-                "group_name": name,
-                "description": "由主工作流节点合并生成",
-                "input_source_type": "当前工作表",
-                "input_sqlite_table": "",
-                "input_transit_table": "",
-                # 合并为组时默认兼容旧版：入口字段留空，直接把当前工作表整表传入组内。
-                "input_fields": [],
-                "input_mapping": {},
-                "input_defaults": {},
-                "missing_input_policy": "缺失填空",
-                "nodes": selected_nodes,
-                "transit_scope": "组内中转私有",
-                "allow_loop_nodes": False,
-                "main_output_mode": "输出为当前工作表",
-                "save_to_transit": False,
-                "output_transit_name": name,
-                "output_transit_conflict_mode": "覆盖整表",
-                "save_to_sqlite": False,
-                "output_sqlite_table": name,
-                "output_sqlite_mode": "自动加时间戳新表",
-                "sqlite_save_in_preview": False,
-            }
-        }
-        insert_at = sels[0]
-        for i in reversed(sels):
-            del self.nodes[i]
-        self.nodes.insert(insert_at, group_node)
-        self.refresh_node_list(select_index=insert_at, reveal=True)
-        self.build_node_config(insert_at)
-        self.status_var.set(f"已合并 {len(selected_nodes)} 个节点为组：{name}")
+        return workflow_group_template_ui.merge_selected_nodes_to_group(
+            self,
+            messagebox_module=messagebox,
+            simpledialog_module=simpledialog,
+        )
 
     def expand_selected_group(self):
-        idx = self.get_selected_node_index()
-        if idx is None:
-            return
-        node = self.nodes[idx]
-        if node.get("type") != "节点组 / 子工作流":
-            messagebox.showwarning("提示", "当前选中的不是节点组。")
-            return
-        inner_nodes = copy.deepcopy(node.get("config", {}).get("nodes", []))
-        if not inner_nodes:
-            messagebox.showwarning("提示", "该节点组内部没有节点。")
-            return
-        if not messagebox.askyesno("确认展开", f"是否将节点组【{node.get('name','节点组')}】展开为 {len(inner_nodes)} 个普通节点？"):
-            return
-        self.nodes[idx:idx + 1] = inner_nodes
-        self.refresh_node_list(select_index=idx, reveal=True)
-        self.rebuild_current_config()
-        self.status_var.set(f"已展开节点组：{node.get('name','节点组')}")
+        return workflow_group_template_ui.expand_selected_group(self, messagebox_module=messagebox)
 
     def get_group_dir(self):
-        base_dir = getattr(self.app, "app_dir", get_app_dir())
-        group_dir = os.path.join(base_dir, "groups")
-        os.makedirs(group_dir, exist_ok=True)
-        return group_dir
+        return workflow_group_template_ui.get_group_dir(self, get_app_dir)
 
     def validate_group_template_data(self, data):
-        if not isinstance(data, dict):
-            return False, "组模板内容不是 JSON 对象。"
-        if data.get("template_type") != "workflow_group":
-            return False, "template_type 不是 workflow_group。"
-        if not isinstance(data.get("nodes"), list):
-            return False, "nodes 字段不存在或不是列表。"
-        return True, ""
+        return workflow_group_template_ui.validate_group_template_data(data)
 
     def build_group_template_data(self, config, group_name=None):
-        name = str(group_name or config.get("group_name") or "节点组").strip() or "节点组"
-        return {
-            "template_type": "workflow_group",
-            "version": "2.0",
-            "group_name": name,
-            "description": config.get("description", ""),
-            # 入口定义：用于把任意来源表映射为组内标准字段。
-            "input_source_type": config.get("input_source_type", "当前工作表"),
-            "input_sqlite_table": config.get("input_sqlite_table", ""),
-            "input_transit_table": config.get("input_transit_table", ""),
-            "input_fields": self.parse_group_input_fields(config),
-            "input_mapping": config.get("input_mapping", {}),
-            "input_defaults": config.get("input_defaults", {}),
-            "missing_input_policy": config.get("missing_input_policy", "缺失填空"),
-            # 执行与输出。
-            "transit_scope": config.get("transit_scope", "组内中转私有"),
-            "main_output_mode": config.get("main_output_mode", "输出为当前工作表"),
-            "save_to_transit": bool(config.get("save_to_transit", False)),
-            "output_transit_name": config.get("output_transit_name", name),
-            "output_transit_conflict_mode": config.get("output_transit_conflict_mode", "覆盖整表"),
-            "save_to_sqlite": bool(config.get("save_to_sqlite", False)),
-            "output_sqlite_table": config.get("output_sqlite_table", name),
-            "output_sqlite_mode": config.get("output_sqlite_mode", "自动加时间戳新表"),
-            "sqlite_save_in_preview": bool(config.get("sqlite_save_in_preview", False)),
-            "nodes": config.get("nodes", []),
-        }
+        return workflow_group_template_ui.build_group_template_data(config, group_name=group_name)
 
     def group_config_from_template_data(self, data):
-        ok, reason = self.validate_group_template_data(data)
-        if not ok:
-            raise ValueError(reason)
-        # 兼容旧版 1.0 组模板：没有入口/输出配置时，退回旧行为。
-        return {
-            "group_name": data.get("group_name", "节点组"),
-            "description": data.get("description", ""),
-            "input_source_type": data.get("input_source_type", "当前工作表"),
-            "input_sqlite_table": data.get("input_sqlite_table", ""),
-            "input_transit_table": data.get("input_transit_table", ""),
-            "input_fields": data.get("input_fields", []),
-            "input_mapping": data.get("input_mapping", {}),
-            "input_defaults": data.get("input_defaults", {}),
-            "missing_input_policy": data.get("missing_input_policy", "缺失填空"),
-            "transit_scope": data.get("transit_scope", "组内中转私有"),
-            "allow_loop_nodes": False,
-            "main_output_mode": data.get("main_output_mode", "输出为当前工作表"),
-            "save_to_transit": bool(data.get("save_to_transit", False)),
-            "output_transit_name": data.get("output_transit_name", data.get("group_name", "节点组结果")),
-            "output_transit_conflict_mode": data.get("output_transit_conflict_mode", "覆盖整表"),
-            "save_to_sqlite": bool(data.get("save_to_sqlite", False)),
-            "output_sqlite_table": data.get("output_sqlite_table", data.get("group_name", "节点组结果")),
-            "output_sqlite_mode": data.get("output_sqlite_mode", "自动加时间戳新表"),
-            "sqlite_save_in_preview": bool(data.get("sqlite_save_in_preview", False)),
-            "nodes": data.get("nodes", []),
-        }
+        return workflow_group_template_ui.group_config_from_template_data(data)
 
     def save_group_template_from_config(self, config):
-        os.makedirs(self.group_dir, exist_ok=True)
-        default_name = self.sanitize_plan_file_name(config.get("group_name") or "节点组") + ".group.json"
-        path = filedialog.asksaveasfilename(
-            title="保存节点组模板",
-            initialdir=self.group_dir,
-            initialfile=default_name,
-            defaultextension=".json",
-            filetypes=[("节点组模板", "*.json"), ("所有文件", "*.*")]
+        return workflow_group_template_ui.save_group_template_from_config(
+            self,
+            config,
+            atomic_write_json,
+            messagebox_module=messagebox,
+            filedialog_module=filedialog,
         )
-        if not path:
-            return
-        group_name = os.path.splitext(os.path.basename(path))[0].replace(".group", "").strip() or config.get("group_name") or "节点组"
-        data = self.build_group_template_data(config, group_name=group_name)
-        try:
-            atomic_write_json(path, data)
-            config["group_name"] = data.get("group_name", group_name)
-            self.status_var.set(f"节点组模板已保存：{path}")
-        except Exception as e:
-            messagebox.showerror("保存失败", str(e))
 
     def load_group_template_dialog(self):
-        os.makedirs(self.group_dir, exist_ok=True)
-        path = filedialog.askopenfilename(
-            title="载入节点组模板",
-            initialdir=self.group_dir,
-            filetypes=[("节点组模板", "*.json"), ("所有文件", "*.*")]
+        return workflow_group_template_ui.load_group_template_dialog(
+            self,
+            load_json_file_with_recovery,
+            messagebox_module=messagebox,
+            filedialog_module=filedialog,
         )
-        if not path:
-            return None
-        try:
-            data = load_json_file_with_recovery(path, parent=self.window)
-            ok, reason = self.validate_group_template_data(data)
-            if not ok:
-                raise ValueError(reason)
-            self.status_var.set(f"节点组模板已载入：{path}")
-            return data
-        except Exception as e:
-            messagebox.showerror("载入失败", str(e))
-            return None
 
     def open_group_dir(self):
-        os.makedirs(self.group_dir, exist_ok=True)
-        try:
-            if hasattr(os, "startfile"):
-                os.startfile(self.group_dir)
-            else:
-                messagebox.showinfo("groups目录", self.group_dir)
-        except Exception as e:
-            messagebox.showerror("打开失败", f"无法打开 groups 目录：\n{self.group_dir}\n\n{e}")
-
+        return workflow_group_template_ui.open_group_dir(self, messagebox_module=messagebox)
     def build_loop_start_config(self, config, headers, transit_context=None):
         return workflow_build_loop_start_config_ui(self, config, headers, transit_context=transit_context)
 

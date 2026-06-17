@@ -44,6 +44,12 @@ from workflow.nodes.group_nodes import (
     update_group_input_fields_config,
     use_source_headers_as_group_inputs,
 )
+from workflow.group_template_ui import (
+    build_group_node_from_selection,
+    build_group_template_data,
+    group_config_from_template_data,
+    validate_group_template_data,
+)
 
 
 class FakeVar:
@@ -161,6 +167,50 @@ class WorkflowGroupNodesTests(unittest.TestCase):
         self.assertFalse(state["save_to_sqlite"])
         self.assertEqual(state["output_sqlite_table"], "G")
         self.assertIn("SQLite 默认只在【执行计划】时保存", state["hint_text"])
+
+    def test_group_template_helpers_build_and_restore_config(self):
+        selected_nodes = [{"type": "新建列", "name": "n1", "config": {}}]
+        group_node = build_group_node_from_selection("组A", selected_nodes)
+
+        self.assertEqual(group_node["type"], "节点组 / 子工作流")
+        self.assertEqual(group_node["config"]["group_name"], "组A")
+        self.assertIs(group_node["config"]["nodes"], selected_nodes)
+        self.assertFalse(group_node["config"]["save_to_sqlite"])
+
+        config = {
+            "group_name": "组B",
+            "description": "desc",
+            "input_source_type": "SQLite表",
+            "input_sqlite_table": "sql",
+            "input_fields": "A,B,A",
+            "input_mapping": {"A": "src_a"},
+            "input_defaults": {"B": "empty"},
+            "save_to_transit": True,
+            "save_to_sqlite": True,
+            "nodes": selected_nodes,
+        }
+        data = build_group_template_data(config, group_name="另存名")
+
+        self.assertEqual(data["template_type"], "workflow_group")
+        self.assertEqual(data["version"], "2.0")
+        self.assertEqual(data["group_name"], "另存名")
+        self.assertEqual(data["input_fields"], ["A", "B"])
+        self.assertEqual(data["output_transit_name"], "另存名")
+        self.assertEqual(data["output_sqlite_table"], "另存名")
+        self.assertEqual(validate_group_template_data(data), (True, ""))
+        self.assertFalse(validate_group_template_data({"template_type": "bad", "nodes": []})[0])
+
+        restored = group_config_from_template_data({
+            "template_type": "workflow_group",
+            "group_name": "旧组",
+            "nodes": [],
+        })
+
+        self.assertEqual(restored["group_name"], "旧组")
+        self.assertEqual(restored["input_source_type"], "当前工作表")
+        self.assertEqual(restored["output_transit_name"], "旧组")
+        self.assertEqual(restored["output_sqlite_table"], "旧组")
+        self.assertFalse(restored["allow_loop_nodes"])
 
     def test_group_mapping_actions(self):
         config = {"input_fields": ["Name", "Code"], "input_mapping": {}, "input_defaults": {}}
