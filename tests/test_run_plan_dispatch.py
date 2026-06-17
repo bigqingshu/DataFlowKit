@@ -3,9 +3,39 @@ import unittest
 from unittest import mock
 
 from workflow.run_plan_dispatch import dispatch_run_plan_node
+from workflow.run_plan_dispatch import dispatch_jump_node
+from workflow.run_plan_dispatch import dispatch_loop_node
+from workflow.run_plan_dispatch import dispatch_regular_run_plan_node
 
 
 class RunPlanDispatchTests(unittest.TestCase):
+    def test_dispatch_loop_and_jump_helpers_return_none_for_unmatched_types(self):
+        class Window:
+            def apply_node(self, headers, rows, node, execute_actions=False, context=None):
+                return headers, rows, "fallback"
+
+        self.assertIsNone(dispatch_loop_node(Window(), ["A"], [["a"]], "新建列", {}, {}))
+        self.assertIsNone(dispatch_jump_node(Window(), ["A"], [["a"]], "新建列", {}, {}))
+
+    def test_dispatch_regular_helper_uses_window_apply_node(self):
+        class Window:
+            def apply_node(self, headers, rows, node, execute_actions=False, context=None):
+                return list(headers) + ["B"], [list(row) + ["b"] for row in rows], f"regular:{execute_actions}"
+
+        headers, rows, stat, jump_to = dispatch_regular_run_plan_node(
+            Window(),
+            ["A"],
+            [["a"]],
+            {"type": "新建列", "config": {}},
+            {},
+            execute_actions=True,
+        )
+
+        self.assertEqual(headers, ["A", "B"])
+        self.assertEqual(rows, [["a", "b"]])
+        self.assertEqual(stat, "regular:True")
+        self.assertIsNone(jump_to)
+
     def test_dispatch_falls_back_to_apply_node_for_regular_nodes(self):
         class Window:
             def apply_node(self, headers, rows, node, execute_actions=False, context=None):

@@ -65,6 +65,72 @@ def dispatch_conditional_jump_node(window, headers, rows, config, context, ancho
     return headers, rows, stat, jump_to
 
 
+def dispatch_loop_node(window, headers, rows, node_type, config, context, idx=0, end=None, node_list=None):
+    if node_type == "循环执行起点":
+        return dispatch_loop_start_node(
+            window,
+            headers,
+            rows,
+            config,
+            context,
+            idx=idx,
+            end=end,
+            node_list=node_list,
+        )
+    if node_type == "循环判断回跳":
+        return dispatch_loop_judge_node(
+            window,
+            headers,
+            rows,
+            config,
+            context,
+            idx=idx,
+            node_list=node_list,
+        )
+    return None
+
+
+def dispatch_jump_node(window, headers, rows, node_type, config, context, anchors_info=None, node_list=None):
+    if node_type == "跳转锚点节点":
+        headers, rows, stat = apply_jump_anchor_node(window, headers, rows, config, context=context)
+        return headers, rows, stat, None
+    if node_type == "无条件跳转节点":
+        return dispatch_unconditional_jump_node(
+            window,
+            headers,
+            rows,
+            config,
+            context,
+            anchors_info=anchors_info,
+            node_list=node_list,
+        )
+    if node_type == "条件判断节点":
+        headers, rows, stat = apply_condition_check_node(window, headers, rows, config, context=context)
+        return headers, rows, stat, None
+    if node_type == "条件跳转节点":
+        return dispatch_conditional_jump_node(
+            window,
+            headers,
+            rows,
+            config,
+            context,
+            anchors_info=anchors_info,
+            node_list=node_list,
+        )
+    return None
+
+
+def dispatch_regular_run_plan_node(window, headers, rows, node, context, execute_actions=False):
+    headers, rows, stat = window.apply_node(
+        headers,
+        rows,
+        node,
+        execute_actions=execute_actions,
+        context=context,
+    )
+    return headers, rows, stat, None
+
+
 def dispatch_run_plan_node(
     window,
     headers,
@@ -79,42 +145,39 @@ def dispatch_run_plan_node(
 ):
     node_type = node.get("type")
     config = node.get("config", {})
-    jump_to = None
 
-    if node_type == "循环执行起点":
-        headers, rows, stat, jump_to = dispatch_loop_start_node(
-            window,
-            headers,
-            rows,
-            config,
-            context,
-            idx=idx,
-            end=end,
-            node_list=node_list,
-        )
-    elif node_type == "循环判断回跳":
-        headers, rows, stat, jump_to = dispatch_loop_judge_node(
-            window,
-            headers,
-            rows,
-            config,
-            context,
-            idx=idx,
-            node_list=node_list,
-        )
-    elif node_type == "跳转锚点节点":
-        headers, rows, stat = apply_jump_anchor_node(window, headers, rows, config, context=context)
-    elif node_type == "无条件跳转节点":
-        headers, rows, stat, jump_to = dispatch_unconditional_jump_node(
-            window, headers, rows, config, context, anchors_info=anchors_info, node_list=node_list
-        )
-    elif node_type == "条件判断节点":
-        headers, rows, stat = apply_condition_check_node(window, headers, rows, config, context=context)
-    elif node_type == "条件跳转节点":
-        headers, rows, stat, jump_to = dispatch_conditional_jump_node(
-            window, headers, rows, config, context, anchors_info=anchors_info, node_list=node_list
-        )
-    else:
-        headers, rows, stat = window.apply_node(headers, rows, node, execute_actions=execute_actions, context=context)
+    loop_result = dispatch_loop_node(
+        window,
+        headers,
+        rows,
+        node_type,
+        config,
+        context,
+        idx=idx,
+        end=end,
+        node_list=node_list,
+    )
+    if loop_result is not None:
+        return loop_result
 
-    return headers, rows, stat, jump_to
+    jump_result = dispatch_jump_node(
+        window,
+        headers,
+        rows,
+        node_type,
+        config,
+        context,
+        anchors_info=anchors_info,
+        node_list=node_list,
+    )
+    if jump_result is not None:
+        return jump_result
+
+    return dispatch_regular_run_plan_node(
+        window,
+        headers,
+        rows,
+        node,
+        context,
+        execute_actions=execute_actions,
+    )
