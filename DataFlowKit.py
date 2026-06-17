@@ -8814,55 +8814,22 @@ class PlanWorkflowWindow:
             workflow_snapshot=workflow_snapshot,
             normalize_policy=TableAccessManager.normalize_permission_policy,
         )
-        node_list = initial_state["node_list"]
-        headers = initial_state["headers"]
-        rows = initial_state["rows"]
-        logs = initial_state["logs"]
-        context = initial_state["context"]
-        end = initial_state["end"]
-        pc = initial_state["pc"]
-        steps = initial_state["steps"]
-        max_steps = initial_state["max_steps"]
-        anchors_info = initial_state["anchors_info"]
-
-        while workflow_run_plan_loop.should_continue_run_plan(pc, len(node_list), end):
-            if workflow_run_plan_loop.stop_if_cancelled(cancel_event, logs):
-                break
-            steps = workflow_run_plan_loop.advance_run_plan_step(steps, max_steps)
-
-            idx, node = workflow_run_plan_loop.prepare_run_plan_node(self, node_list, pc)
-            disabled_next_pc = workflow_run_plan_loop.disabled_node_next_pc(node, idx, logs)
-            if disabled_next_pc is not None:
-                pc = disabled_next_pc
-                continue
-
-            headers, rows, pc, should_stop = workflow_run_plan_step.execute_run_plan_node(
-                self,
-                headers,
-                rows,
-                logs,
-                context,
-                node,
-                idx,
-                end,
-                len(node_list),
-                steps,
-                execute_actions=execute_actions,
-                anchors_info=anchors_info,
-                node_list=node_list,
-                progress_callback=progress_callback,
-                suppress_jump_at_stop=suppress_jump_at_stop,
-                raise_error=raise_error,
-            )
-            if should_stop:
-                break
+        final_state = workflow_run_plan_loop.execute_run_plan_loop(
+            self,
+            initial_state,
+            execute_actions=execute_actions,
+            progress_callback=progress_callback,
+            cancel_event=cancel_event,
+            suppress_jump_at_stop=suppress_jump_at_stop,
+            raise_error=raise_error,
+        )
 
         # 不在后台线程直接写 self.current_transit_tables；由 workflow_done 回到主线程后统一更新。
         return workflow_run_plan_loop.build_run_plan_result(
-            headers,
-            rows,
-            logs,
-            context,
+            final_state["headers"],
+            final_state["rows"],
+            final_state["logs"],
+            final_state["context"],
             return_context=return_context,
         )
 

@@ -47,6 +47,74 @@ def disabled_node_next_pc(node, idx, logs):
     return idx + 1
 
 
+def execute_run_plan_loop(
+    window,
+    initial_state,
+    execute_actions=False,
+    progress_callback=None,
+    cancel_event=None,
+    suppress_jump_at_stop=False,
+    raise_error=False,
+    step_executor=None,
+):
+    node_list = initial_state["node_list"]
+    headers = initial_state["headers"]
+    rows = initial_state["rows"]
+    logs = initial_state["logs"]
+    context = initial_state["context"]
+    end = initial_state["end"]
+    pc = initial_state["pc"]
+    steps = initial_state["steps"]
+    max_steps = initial_state["max_steps"]
+    anchors_info = initial_state["anchors_info"]
+
+    if step_executor is None:
+        from workflow.run_plan_step import execute_run_plan_node
+
+        step_executor = execute_run_plan_node
+
+    while should_continue_run_plan(pc, len(node_list), end):
+        if stop_if_cancelled(cancel_event, logs):
+            break
+        steps = advance_run_plan_step(steps, max_steps)
+
+        idx, node = prepare_run_plan_node(window, node_list, pc)
+        disabled_next_pc = disabled_node_next_pc(node, idx, logs)
+        if disabled_next_pc is not None:
+            pc = disabled_next_pc
+            continue
+
+        headers, rows, pc, should_stop = step_executor(
+            window,
+            headers,
+            rows,
+            logs,
+            context,
+            node,
+            idx,
+            end,
+            len(node_list),
+            steps,
+            execute_actions=execute_actions,
+            anchors_info=anchors_info,
+            node_list=node_list,
+            progress_callback=progress_callback,
+            suppress_jump_at_stop=suppress_jump_at_stop,
+            raise_error=raise_error,
+        )
+        if should_stop:
+            break
+
+    return {
+        "headers": headers,
+        "rows": rows,
+        "logs": logs,
+        "context": context,
+        "steps": steps,
+        "pc": pc,
+    }
+
+
 def build_run_plan_result(headers, rows, logs, context, return_context=False):
     if return_context:
         return headers, rows, logs, context
