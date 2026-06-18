@@ -39,7 +39,6 @@ from workflow.nodes.data_nodes import (
     get_plan_filter_output_header_conflicts as workflow_get_plan_filter_output_header_conflicts,
     get_plan_filter_output_headers as workflow_get_plan_filter_output_headers,
     get_required_columns_for_plan_table as workflow_get_required_columns_for_plan_table,
-    get_row_mapping_end_index as workflow_get_row_mapping_end_index,
     get_source_area_values_by_config as workflow_get_source_area_values_by_config,
     get_source_column_values_by_config as workflow_get_source_column_values_by_config,
     get_source_row_multi_field_values_by_config as workflow_get_source_row_multi_field_values_by_config,
@@ -87,6 +86,7 @@ from workflow.nodes.extract_nodes import (
     extract_one_value as workflow_extract_one_value,
     post_extract_result as workflow_post_extract_result,
 )
+from workflow.nodes.row_mapping_nodes import get_row_mapping_end_index as workflow_get_row_mapping_end_index
 from workflow.nodes.new_column_nodes import (
     parse_new_columns_specs as workflow_parse_new_columns_specs,
     render_current_datetime_template as workflow_render_current_datetime_template,
