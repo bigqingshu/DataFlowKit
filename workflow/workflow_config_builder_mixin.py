@@ -2,7 +2,7 @@
 """PlanWorkflowWindow mixin for workflow config builder wrappers."""
 
 from workflow import output_node_runtime as workflow_output_node_runtime
-from workflow.basic_data_config_ui import (
+from ui.workflow.config.basic_data_config_ui import (
     build_current_datetime_column_config as workflow_build_current_datetime_column_config_ui,
     build_extract_config as workflow_build_extract_config_ui,
     build_format_datetime_config as workflow_build_format_datetime_config_ui,
@@ -25,7 +25,7 @@ from ui.workflow.config.file_config_ui import (
     build_batch_rename_config as workflow_build_batch_rename_config_ui,
     build_file_list_config as workflow_build_file_list_config_ui,
 )
-from workflow.match_value_output_config_ui import (
+from ui.workflow.config.match_value_output_config_ui import (
     build_match_value_output_field_name_config as workflow_build_match_value_output_field_name_config_ui,
 )
 from ui.workflow.config.merge_config_ui import (
@@ -43,13 +43,13 @@ from ui.workflow.config.numeric_column_config_ui import (
 from ui.workflow.config.rename_columns_config_ui import (
     build_rename_columns_config as workflow_build_rename_columns_config_ui,
 )
-from workflow.row_data_mapping_config_ui import (
+from ui.workflow.config.row_data_mapping_config_ui import (
     build_row_data_mapping_config as workflow_build_row_data_mapping_config_ui,
 )
 from ui.workflow.config.save_transit_config_ui import (
     build_save_transit_config as workflow_build_save_transit_config_ui,
 )
-from workflow.selected_columns_write_config_ui import (
+from ui.workflow.config.selected_columns_write_config_ui import (
     build_selected_columns_write_config as workflow_build_selected_columns_write_config_ui,
 )
 from workflow.nodes.data_nodes import parse_separator_text as workflow_parse_separator_text
