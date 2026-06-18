@@ -20,8 +20,8 @@ from workflow.control_flow_config_ui import (
     jump_anchor_choices as workflow_jump_anchor_choices_ui,
     set_anchor_var_to_config as workflow_set_anchor_var_to_config_ui,
 )
-from workflow.dedupe_config_ui import build_dedupe_config as workflow_build_dedupe_config_ui
-from workflow.file_config_ui import (
+from ui.workflow.config.dedupe_config_ui import build_dedupe_config as workflow_build_dedupe_config_ui
+from ui.workflow.config.file_config_ui import (
     build_batch_rename_config as workflow_build_batch_rename_config_ui,
     build_file_list_config as workflow_build_file_list_config_ui,
 )
@@ -37,16 +37,16 @@ from workflow.merge_config_ui import (
     sep_value_to_display as workflow_sep_value_to_display,
     separator_to_input_text as workflow_separator_to_input_text,
 )
-from workflow.numeric_column_config_ui import (
+from ui.workflow.config.numeric_column_config_ui import (
     build_numeric_column_config as workflow_build_numeric_column_config_ui,
 )
-from workflow.rename_columns_config_ui import (
+from ui.workflow.config.rename_columns_config_ui import (
     build_rename_columns_config as workflow_build_rename_columns_config_ui,
 )
 from workflow.row_data_mapping_config_ui import (
     build_row_data_mapping_config as workflow_build_row_data_mapping_config_ui,
 )
-from workflow.save_transit_config_ui import (
+from ui.workflow.config.save_transit_config_ui import (
     build_save_transit_config as workflow_build_save_transit_config_ui,
 )
 from workflow.selected_columns_write_config_ui import (
