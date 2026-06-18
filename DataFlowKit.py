@@ -47,7 +47,10 @@ from datetime import datetime
 
 from db import PluginDatabaseAPI, TableAccessManager
 from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
-from workflow.default_configs import default_config_for_type as workflow_default_config_for_type
+from workflow.default_configs import (
+    default_config_for_type as workflow_default_config_for_type,
+    default_name_for_node as workflow_default_name_for_node,
+)
 from workflow.advanced_filter_window import AdvancedFilterWindow
 from workflow.batch_replace_window import BatchReplaceWindow
 from workflow.clipboard_table_edit_mixin import ClipboardTableEditMixin
@@ -471,33 +474,7 @@ class PlanWorkflowWindow(
         )
 
     def default_name_for_node(self, node_type):
-        return {
-            "节点组 / 子工作流": "节点组 / 子工作流",
-            "循环执行起点": "循环执行起点",
-            "循环判断回跳": "循环判断回跳",
-            "批量替换": "批量替换",
-            "数据提取": "数据提取",
-            "格式规范化 / 日期时间解析": "格式规范化 / 日期时间解析",
-            "新建日期时间列": "新建日期时间列",
-            "新建列": "新建列",
-            "合并列": "合并列",
-            "批量更改列名": "批量更改列名",
-            "去重 / 重复数据处理": "去重 / 重复数据处理",
-            "列数字运算": "列数字运算",
-            "匹配值输出列名": "匹配值输出列名",
-            "复制列": "复制列",
-            "复制行": "复制行",
-            "删除行": "删除行",
-            "填充值": "填充值",
-            "序列填充": "序列填充",
-            "区域填充": "区域填充",
-            "行数据映射填充": "行数据映射填充",
-            "保存中转数据": "保存中转数据",
-            "字段映射写入表": "字段映射写入表",
-            "高级筛选": "筛选数据",
-            "删除列": "删除列",
-            "移动列": "整理列顺序",
-        }.get(node_type, node_type)
+        return workflow_default_name_for_node(node_type)
 
     def add_node(self):
         node_type = self.node_type_var.get()

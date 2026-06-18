@@ -2,7 +2,7 @@
 import os
 import unittest
 
-from workflow.default_configs import default_config_for_type
+from workflow.default_configs import default_config_for_type, default_name_for_node
 
 
 class DefaultConfigsTests(unittest.TestCase):
@@ -75,6 +75,11 @@ class DefaultConfigsTests(unittest.TestCase):
 
     def test_unknown_node_returns_empty_config(self):
         self.assertEqual(default_config_for_type("不存在的节点", ["A"]), {})
+
+    def test_default_node_names_use_display_labels(self):
+        self.assertEqual(default_name_for_node("高级筛选"), "筛选数据")
+        self.assertEqual(default_name_for_node("移动列"), "整理列顺序")
+        self.assertEqual(default_name_for_node("未知节点"), "未知节点")
 
 
 if __name__ == "__main__":
