@@ -3,24 +3,26 @@
 
 from tkinter import messagebox
 
-from workflow.table_access_window_ui import (
+from workflow.table_access_window_logic import (
     add_table_access_entry,
     build_table_access_impact_preview,
     build_table_access_permission_check,
     clear_field_mapping,
-    collect_table_access_window_table_form,
-    current_table_access_window_node,
-    current_table_access_window_table_entry,
     delete_field_mapping_entry,
     delete_table_access_entry,
     rebuild_table_access,
-    refresh_table_access_window_field_tree,
-    refresh_table_access_window_table_tree,
     reset_field_form,
     save_table_access_entry,
     selected_field_key,
     table_access_preset_config,
     upsert_field_mapping_entry,
+)
+from workflow.table_access_window_ui import (
+    collect_table_access_window_table_form,
+    current_table_access_window_node,
+    current_table_access_window_table_entry,
+    refresh_table_access_window_field_tree,
+    refresh_table_access_window_table_tree,
 )
 
 

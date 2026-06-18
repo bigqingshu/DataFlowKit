@@ -4,6 +4,7 @@ import unittest
 from DataFlowKit import PlanWorkflowWindow
 from workflow import table_access_window_ui
 from workflow import table_access_window_actions
+from workflow import table_access_window_logic
 from workflow.table_access_window_callbacks import create_table_access_window_callbacks
 from workflow.table_access_window_ui import (
     add_table_access_entry,
@@ -158,6 +159,16 @@ class DummyWindow:
 
 
 class TableAccessWindowUiTests(unittest.TestCase):
+    def test_ui_logic_helpers_are_compatible_exports(self):
+        self.assertIs(
+            table_access_window_ui.table_access_preset_config,
+            table_access_window_logic.table_access_preset_config,
+        )
+        self.assertIs(
+            table_access_window_ui.save_table_access_entry,
+            table_access_window_logic.save_table_access_entry,
+        )
+
     def make_window_action_fixture(self):
         window = PlanWorkflowWindow.__new__(PlanWorkflowWindow)
         first_entry = {
