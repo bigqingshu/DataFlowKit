@@ -3,6 +3,7 @@ import unittest
 
 from DataFlowKit import PlanWorkflowWindow
 from workflow import table_access_window_ui
+from workflow import table_access_window_actions
 from workflow.table_access_window_callbacks import create_table_access_window_callbacks
 from workflow.table_access_window_ui import (
     add_table_access_entry,
@@ -659,6 +660,47 @@ class TableAccessWindowUiTests(unittest.TestCase):
         window.clear_table_access_window_fields(state, field_section, field_tree, status_var)
         self.assertEqual(entry["field_mapping"], {})
         self.assertEqual(status_var.get(), "字段映射已清空。")
+
+    def test_ui_action_wrapper_delegates_to_action_module(self):
+        calls = []
+        sentinel = object()
+        original = table_access_window_actions.save_table_access_window_table_entry
+
+        def fake_action(*args):
+            calls.append(args)
+            return sentinel
+
+        try:
+            table_access_window_actions.save_table_access_window_table_entry = fake_action
+            result = table_access_window_ui.save_table_access_window_table_entry(
+                "window",
+                "state",
+                "table_section",
+                "field_section",
+                "node_tree",
+                "table_tree",
+                "field_tree",
+                "status_var",
+            )
+        finally:
+            table_access_window_actions.save_table_access_window_table_entry = original
+
+        self.assertIs(result, sentinel)
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "window",
+                    "state",
+                    "table_section",
+                    "field_section",
+                    "node_tree",
+                    "table_tree",
+                    "field_tree",
+                    "status_var",
+                )
+            ],
+        )
 
     def test_callback_factories_delegate_to_window_methods(self):
         self.assertIs(
