@@ -78,6 +78,21 @@ from workflow.workflow_plugin_runtime_mixin import WorkflowPluginRuntimeMixin
 from workflow.workflow_table_runtime_mixin import WorkflowTableRuntimeMixin
 
 
+# Compatibility re-exports:
+# - Some tests and older scripts patch DataFlowKit.messagebox or import
+#   TableAccessManager / PluginDatabaseAPI from this entry module.
+# - The main implementation now lives in workflow/* and db/*; keep these
+#   names here until external callers have migrated to the new modules.
+__all__ = [
+    "ClipboardTableApp",
+    "PlanWorkflowWindow",
+    "get_app_dir",
+    "messagebox",
+    "TableAccessManager",
+    "PluginDatabaseAPI",
+]
+
+
 def get_app_dir():
     """
     返回程序真实工作目录。
