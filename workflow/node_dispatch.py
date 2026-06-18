@@ -3,11 +3,7 @@
 
 from workflow.nodes.data_nodes import (
     apply_area_fill_node,
-    apply_copy_column_node,
-    apply_copy_row_node,
     apply_current_datetime_column_node,
-    apply_delete_columns_node,
-    apply_delete_rows_node,
     apply_extract_node,
     apply_fill_value_node,
     apply_format_datetime_node,
@@ -15,12 +11,18 @@ from workflow.nodes.data_nodes import (
     apply_match_value_output_field_name_node,
     apply_merge_node,
     apply_numeric_column_node,
-    apply_move_columns_node,
     apply_new_columns_node,
     apply_rename_columns_node,
     apply_replace_node,
     apply_row_data_mapping_node,
     apply_sequence_fill_node,
+)
+from workflow.nodes.table_edit_nodes import (
+    apply_copy_column_node,
+    apply_copy_row_node,
+    apply_delete_columns_node,
+    apply_delete_rows_node,
+    apply_move_columns_node,
 )
 from workflow.file_node_runtime import (
     apply_batch_rename_node_for_window,
