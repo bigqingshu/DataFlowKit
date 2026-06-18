@@ -4,6 +4,7 @@ import unittest
 from DataFlowKit import PlanWorkflowWindow
 from workflow import table_access_window_ui
 from workflow import table_access_window_actions
+from workflow import table_access_window_launcher
 from workflow import table_access_window_logic
 from workflow import table_access_window_selection
 from workflow.table_access_window_callbacks import create_table_access_window_callbacks
@@ -44,6 +45,7 @@ class DummyTree:
         self.rows = {}
         self.selected = None
         self.focused = None
+        self.bindings = {}
 
     def delete(self, *items):
         if not items:
@@ -71,13 +73,23 @@ class DummyTree:
     def focus(self, iid):
         self.focused = str(iid)
 
+    def bind(self, event_name, callback):
+        self.bindings[event_name] = callback
+
 
 class DummyWidget:
     def __init__(self):
         self.configured = {}
+        self.bindings = {}
 
     def configure(self, **kwargs):
         self.configured.update(kwargs)
+
+    def bind(self, event_name, callback):
+        self.bindings[event_name] = callback
+
+    def pack(self, **kwargs):
+        self.configured["pack"] = kwargs
 
 
 class DummyVar:
@@ -157,6 +169,14 @@ class DummyWindow:
 
     def clear_table_access_window_fields(self, *args, **kwargs):
         self.calls.append(("clear_fields", True))
+
+
+class DummyWin:
+    def __init__(self):
+        self.destroyed = False
+
+    def destroy(self):
+        self.destroyed = True
 
 
 class TableAccessWindowUiTests(unittest.TestCase):
@@ -723,6 +743,160 @@ class TableAccessWindowUiTests(unittest.TestCase):
                 )
             ],
         )
+
+    def test_ui_open_window_wrapper_delegates_to_launcher(self):
+        calls = []
+        sentinel = object()
+        original = table_access_window_launcher.open_table_access_window
+
+        def fake_launcher(window, initial_index=None):
+            calls.append((window, initial_index))
+            return sentinel
+
+        try:
+            table_access_window_launcher.open_table_access_window = fake_launcher
+            result = table_access_window_ui.open_table_access_window("window", initial_index=3)
+        finally:
+            table_access_window_launcher.open_table_access_window = original
+
+        self.assertIs(result, sentinel)
+        self.assertEqual(calls, [("window", 3)])
+
+    def test_launcher_opens_window_and_initializes_selection(self):
+        class FakeVar(DummyVar):
+            pass
+
+        class FakeTk:
+            StringVar = FakeVar
+            X = "x"
+
+        class FakeLabel:
+            def __init__(self, parent, **kwargs):
+                self.parent = parent
+                self.kwargs = kwargs
+                self.packed = None
+
+            def pack(self, **kwargs):
+                self.packed = kwargs
+
+        class FakeTtk:
+            Label = FakeLabel
+
+        class LauncherWindow:
+            def __init__(self):
+                self.nodes = [{"type": "读取", "name": "源"}, {"type": "写入", "name": "保存"}]
+                self.calls = []
+                self.node_tree = DummyTree()
+                self.table_tree = DummyTree()
+                self.field_tree = DummyTree()
+                self.preset_combo = DummyWidget()
+                self.win = DummyWin()
+
+            def ensure_node_tree_identity(self, nodes):
+                self.calls.append(("ensure", len(nodes)))
+
+            def get_selected_node_index(self):
+                return 0
+
+            def build_table_access_window_shell(self):
+                self.calls.append(("shell", True))
+                return {"win": self.win, "left": "left", "middle": "middle", "right": "right"}
+
+            def build_table_access_list_section(self, parent):
+                self.calls.append(("list", parent))
+                return {"node_tree": self.node_tree}
+
+            def build_table_access_table_form_section(self, parent):
+                self.calls.append(("table_form", parent))
+                return {
+                    "table_tree": self.table_tree,
+                    "table_form": "table_form",
+                    "preset_combo": self.preset_combo,
+                }
+
+            def build_table_access_field_form_section(self, parent):
+                self.calls.append(("field_form", parent))
+                return {"field_tree": self.field_tree, "field_form": "field_form"}
+
+            def create_table_access_window_callbacks(
+                self,
+                win,
+                state,
+                table_section,
+                field_section,
+                node_tree,
+                table_tree,
+                field_tree,
+                status_var,
+            ):
+                self.state = state
+                self.status_var = status_var
+
+                def refresh_node_tree():
+                    self.calls.append(("refresh_node_tree", state.get("node_index")))
+
+                def on_node_selected(force=False, event=None):
+                    self.calls.append(("on_node_selected", force, state.get("node_index")))
+
+                return {
+                    "apply_table_preset": lambda event=None: self.calls.append(("preset", event)),
+                    "on_node_selected": on_node_selected,
+                    "on_table_selected": lambda event=None: self.calls.append(("table_selected", event)),
+                    "on_field_selected": lambda event=None: self.calls.append(("field_selected", event)),
+                    "add_table_entry": lambda: self.calls.append(("add_table", True)),
+                    "save_table_entry": lambda: self.calls.append(("save_table", True)),
+                    "delete_table_entry": lambda: self.calls.append(("delete_table", True)),
+                    "rebuild_default_access": lambda: self.calls.append(("rebuild", True)),
+                    "check_all_permissions": lambda: self.calls.append(("check", True)),
+                    "preview_impact": lambda: self.calls.append(("preview", True)),
+                    "add_field_entry": lambda: self.calls.append(("add_field", True)),
+                    "save_field_entry": lambda: self.calls.append(("save_field", True)),
+                    "delete_field_entry": lambda: self.calls.append(("delete_field", True)),
+                    "auto_match_fields": lambda: self.calls.append(("auto_name", True)),
+                    "auto_match_fields_by_order": lambda: self.calls.append(("auto_order", True)),
+                    "clear_fields": lambda: self.calls.append(("clear_fields", True)),
+                    "refresh_node_tree": refresh_node_tree,
+                    "refresh_table_tree": lambda select_index=None: self.calls.append(("refresh_table_tree", select_index)),
+                }
+
+            def build_table_access_table_action_buttons(self, table_form, commands):
+                self.table_commands = commands
+                self.calls.append(("table_buttons", sorted(commands)))
+
+            def build_table_access_field_action_buttons(self, field_form, commands):
+                self.field_commands = commands
+                self.calls.append(("field_buttons", sorted(commands)))
+
+            def build_table_access_bottom_buttons(self, win, commands):
+                self.bottom_commands = commands
+                self.calls.append(("bottom_buttons", sorted(commands)))
+
+            def open_table_access_precheck_window(self):
+                self.calls.append(("precheck", True))
+
+            def open_table_access_audit_window(self):
+                self.calls.append(("audit", True))
+
+        window = LauncherWindow()
+        original_tk = table_access_window_launcher.tk
+        original_ttk = table_access_window_launcher.ttk
+        try:
+            table_access_window_launcher.tk = FakeTk
+            table_access_window_launcher.ttk = FakeTtk
+            table_access_window_launcher.open_table_access_window(window, initial_index=1)
+        finally:
+            table_access_window_launcher.tk = original_tk
+            table_access_window_launcher.ttk = original_ttk
+
+        self.assertEqual(window.state["node_index"], 1)
+        self.assertEqual(window.node_tree.selected, "1")
+        self.assertEqual(window.node_tree.focused, "1")
+        self.assertIn("<<TreeviewSelect>>", window.node_tree.bindings)
+        self.assertIn("<<ComboboxSelected>>", window.preset_combo.bindings)
+        self.assertIn(("refresh_node_tree", 1), window.calls)
+        self.assertIn(("on_node_selected", True, 1), window.calls)
+        self.assertEqual(sorted(window.table_commands), ["add_table_entry", "check_all_permissions", "delete_table_entry", "preview_impact", "rebuild_default_access", "save_table_entry"])
+        self.assertEqual(sorted(window.bottom_commands), ["audit", "close", "precheck", "refresh"])
 
     def test_callback_factories_delegate_to_window_methods(self):
         self.assertIs(
