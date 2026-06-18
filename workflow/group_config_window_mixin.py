@@ -4,7 +4,7 @@
 import sys
 from tkinter import messagebox as tk_messagebox
 
-from workflow import group_config_ui
+from ui.workflow.config import group_config_ui
 from workflow.nodes.group_nodes import (
     add_group_inner_node,
     apply_group_inner_node_list_action,
