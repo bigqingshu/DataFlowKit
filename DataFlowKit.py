@@ -36,16 +36,15 @@
 """
 
 import tkinter as tk
+from tkinter import messagebox
 import os
 import sys
 import traceback
 import queue
 import time
 import uuid
-from datetime import datetime
 
 from db import PluginDatabaseAPI, TableAccessManager
-from workflow.default_configs import default_name_for_node as workflow_default_name_for_node
 from workflow.clipboard_table_actions_mixin import ClipboardTableActionsMixin
 from workflow.clipboard_table_edit_mixin import ClipboardTableEditMixin
 from workflow.clipboard_table_io_mixin import ClipboardTableIoMixin
@@ -66,6 +65,7 @@ from workflow.workflow_config_ui_helpers_mixin import WorkflowConfigUiHelpersMix
 from workflow.workflow_app_support_mixin import WorkflowAppSupportMixin
 from workflow.workflow_default_config_mixin import WorkflowDefaultConfigMixin
 from workflow.workflow_group_template_mixin import WorkflowGroupTemplateMixin
+from workflow.workflow_naming_mixin import WorkflowNamingMixin
 from workflow.workflow_node_list_mixin import WorkflowNodeListMixin
 from workflow.table_access_window_mixin import TableAccessWindowMixin
 from workflow.workflow_execution_mixin import WorkflowExecutionMixin
@@ -141,6 +141,7 @@ class PlanWorkflowWindow(
     WorkflowAppSupportMixin,
     WorkflowDefaultConfigMixin,
     WorkflowGroupTemplateMixin,
+    WorkflowNamingMixin,
     WorkflowNodeListMixin,
     PlanWorkflowUiMixin,
     PlanPreviewMixin,
@@ -305,13 +306,6 @@ class PlanWorkflowWindow(
         self.refresh_node_list()
         self.refresh_preview_tree(self.preview_headers, self.preview_rows)
         self.refresh_plan_template_list(show_status=False)
-
-    def make_default_output_table_name(self):
-        base = self.app.sanitize_sql_name(self.app.table_name_var.get(), "计划结果")
-        return f"{base}_计划结果_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-    def default_name_for_node(self, node_type):
-        return workflow_default_name_for_node(node_type)
 
     # ==================== 后台执行 / 进度条管理 ====================
 
