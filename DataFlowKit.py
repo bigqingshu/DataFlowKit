@@ -37,10 +37,8 @@
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
-import re
 import os
 import sys
-import json
 import traceback
 import queue
 import time
@@ -48,7 +46,6 @@ import uuid
 from datetime import datetime
 
 from db import PluginDatabaseAPI, TableAccessManager
-from plugin_runtime.scanner import scan_plugins
 from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
 from workflow.default_configs import default_config_for_type as workflow_default_config_for_type
 from workflow.advanced_filter_window import AdvancedFilterWindow
@@ -61,9 +58,16 @@ from workflow.data_extract_window import DataExtractWindow
 from workflow.merge_columns_window import MergeColumnsWindow
 from workflow.filter_config_window_mixin import FilterConfigWindowMixin
 from workflow.group_config_window_mixin import GroupConfigWindowMixin
+from workflow.plan_template_io_mixin import PlanTemplateIoMixin
 from workflow.plan_preview_mixin import PlanPreviewMixin
 from workflow.plan_workflow_window_mixin import PlanWorkflowUiMixin
 from workflow.plugin_config_window_mixin import PluginConfigWindowMixin
+from workflow.plugin_dirs_mixin import PluginDirsMixin
+from workflow.plugin_registry_mixin import PluginRegistryMixin
+from workflow.window_geometry_mixin import WindowGeometryMixin
+from workflow.workflow_config_preview_mixin import WorkflowConfigPreviewMixin
+from workflow.workflow_config_ui_helpers_mixin import WorkflowConfigUiHelpersMixin
+from workflow.workflow_app_support_mixin import WorkflowAppSupportMixin
 from workflow.table_access_window_mixin import TableAccessWindowMixin
 from workflow.workflow_execution_mixin import WorkflowExecutionMixin
 from workflow.workflow_node_execution_mixin import WorkflowNodeExecutionMixin
@@ -183,6 +187,13 @@ class ClipboardTableApp(ClipboardTableUiMixin, ClipboardTableEditMixin, Clipboar
         self.load_table_from_sqlite(table_name)
 
 class PlanWorkflowWindow(
+    PlanTemplateIoMixin,
+    PluginDirsMixin,
+    PluginRegistryMixin,
+    WindowGeometryMixin,
+    WorkflowConfigPreviewMixin,
+    WorkflowConfigUiHelpersMixin,
+    WorkflowAppSupportMixin,
     PlanWorkflowUiMixin,
     PlanPreviewMixin,
     WorkflowConfigBuilderMixin,
@@ -437,194 +448,6 @@ class PlanWorkflowWindow(
     # ------------------------------------------------------------------
     # 外部 Python 插件节点
     # ------------------------------------------------------------------
-    def get_plugins_dir(self):
-        path = os.path.join(getattr(self.app, "app_dir", get_app_dir()), "plugins")
-        os.makedirs(path, exist_ok=True)
-        return path
-
-    def get_plugin_data_dir(self, plugin_id=None):
-        base = os.path.join(getattr(self.app, "app_dir", get_app_dir()), "plugin_data")
-        if plugin_id:
-            base = os.path.join(base, self.app.sanitize_sql_name(plugin_id, "plugin"))
-        os.makedirs(base, exist_ok=True)
-        return base
-
-    def get_plugin_log_dir(self):
-        path = os.path.join(getattr(self.app, "app_dir", get_app_dir()), "logs", "plugins")
-        os.makedirs(path, exist_ok=True)
-        return path
-
-    def get_plugin_env_dir(self, plugin_id=None):
-        base = os.path.join(getattr(self.app, "app_dir", get_app_dir()), "plugin_envs")
-        if plugin_id:
-            base = os.path.join(base, self.app.sanitize_sql_name(plugin_id, "plugin"))
-        os.makedirs(base, exist_ok=True)
-        return base
-
-    def get_node_type_values(self):
-        values = list(self.NODE_TYPES)
-        values.extend(sorted(getattr(self, "plugin_display_map", {}).keys()))
-        return values
-
-    def refresh_plugins(self):
-        self.load_plugins(show_status=True)
-        if hasattr(self, "node_type_combo"):
-            self.node_type_combo["values"] = self.get_node_type_values()
-        if self.node_type_var.get() not in self.get_node_type_values():
-            self.node_type_var.set(self.NODE_TYPES[0])
-        self.rebuild_current_config()
-
-    def load_plugins(self, show_status=False):
-        """扫描 plugins 目录并注册插件。"""
-        self.plugin_registry = {}
-        self.plugin_display_map = {}
-        self.plugin_load_errors = []
-        plugins_dir = self.get_plugins_dir()
-        registry, errors = scan_plugins(plugins_dir)
-        self.plugin_registry = registry
-        self.plugin_load_errors = errors
-
-        used_names = {}
-        external_only_count = 0
-        for plugin_id, item in sorted(self.plugin_registry.items(), key=lambda kv: kv[1]["info"].get("name", kv[0])):
-            name = str(item["info"].get("name", plugin_id)).strip() or plugin_id
-            suffix = ""
-            if item.get("load_status") == "仅独立环境运行":
-                external_only_count += 1
-                suffix = " [仅独立]"
-            display = f"插件 / {name}{suffix}"
-            if display in used_names:
-                used_names[display] += 1
-                display = f"插件 / {name} ({plugin_id}){suffix}"
-            else:
-                used_names[display] = 1
-            self.plugin_display_map[display] = plugin_id
-
-        if show_status:
-            msg = f"插件刷新完成：已注册 {len(self.plugin_registry)} 个插件"
-            if external_only_count:
-                msg += f"，其中仅独立环境 {external_only_count} 个"
-            if self.plugin_load_errors:
-                msg += f"，加载失败 {len(self.plugin_load_errors)} 个"
-                first = self.plugin_load_errors[0]
-                msg += f"；示例：{first.get('file')} - {first.get('error')}"
-            self.status_var.set(msg)
-
-
-    def default_config_for_plugin(self, plugin_id):
-        item = self.plugin_registry.get(plugin_id, {})
-        schema = item.get("schema", [])
-        params = {}
-        for field in schema:
-            if not isinstance(field, dict):
-                continue
-            name = field.get("name")
-            if not name:
-                continue
-            default = field.get("default", "")
-            if field.get("type") == "multi_field_select" and default == "":
-                default = []
-            params[name] = default
-        info = item.get("info", {})
-        default_run_mode = info.get("run_mode") or item.get("run_mode_default") or "主程序内置环境"
-        if default_run_mode in ("external_python", "独立环境", "插件独立环境"):
-            default_run_mode = "插件独立环境"
-        else:
-            default_run_mode = "主程序内置环境"
-        return {
-            "plugin_id": plugin_id,
-            "params": params,
-            "input_tables": [],
-            "run_mode": default_run_mode,
-            "external_python": "",
-            "external_env_dir": self.get_plugin_env_dir(plugin_id),
-            "external_entry": item.get("external_entry", item.get("path", "")),
-            "external_timeout": "0",
-            "output_mode": "使用插件返回结果",
-            "save_output_as_transit": False,
-            "transit_name": item.get("info", {}).get("name", plugin_id),
-            "transit_conflict_mode": "覆盖",
-            "save_plugin_log_file": True,
-            "save_plugin_log_sqlite": False,
-            "save_plugin_log_transit": False,
-            "plugin_log_transit_name": f"{item.get('info', {}).get('name', plugin_id)}_日志",
-            "plugin_log_in_preview": False,
-            "plugin_failure_policy": "停止工作流",
-        }
-
-    def get_sqlite_table_names(self):
-        db_path = self.app.db_path_var.get().strip()
-        if not db_path or not os.path.exists(db_path):
-            return []
-        try:
-            return TableAccessManager(db_path).list_tables()
-        except Exception:
-            return []
-
-    def get_workflow_snapshot(self, context=None):
-        """返回后台任务快照。后台线程优先使用快照，避免直接读取 Tkinter 变量。"""
-        if isinstance(context, dict):
-            snapshot = context.get("workflow_snapshot") or {}
-            if isinstance(snapshot, dict):
-                return snapshot
-        return {}
-
-    def get_workflow_db_path(self, context=None):
-        """执行期统一获取 SQLite 路径：优先读 workflow_snapshot，兜底读主线程 UI 变量。"""
-        snapshot = self.get_workflow_snapshot(context)
-        db_path = str(snapshot.get("db_path") or "").strip()
-        if db_path:
-            return db_path
-        try:
-            return self.app.db_path_var.get().strip()
-        except Exception:
-            return ""
-
-    def make_node_id(self):
-        return "node_" + uuid.uuid4().hex[:12]
-
-    def center_toplevel(self, win, parent=None, width=None, height=None):
-        """把 Toplevel 放到父窗口中心；没有父窗口时放到屏幕中心。"""
-        try:
-            parent = parent or self.window
-            win.update_idletasks()
-            w = int(width or win.winfo_width() or win.winfo_reqwidth() or 600)
-            h = int(height or win.winfo_height() or win.winfo_reqheight() or 400)
-            if parent is not None and parent.winfo_exists():
-                parent.update_idletasks()
-                px = parent.winfo_rootx()
-                py = parent.winfo_rooty()
-                pw = parent.winfo_width()
-                ph = parent.winfo_height()
-                if pw <= 1 or ph <= 1:
-                    px = py = 0
-                    pw = win.winfo_screenwidth()
-                    ph = win.winfo_screenheight()
-            else:
-                px = py = 0
-                pw = win.winfo_screenwidth()
-                ph = win.winfo_screenheight()
-            x = max(0, px + (pw - w) // 2)
-            y = max(0, py + (ph - h) // 2)
-            win.geometry(f"{w}x{h}+{x}+{y}" if width or height else f"+{x}+{y}")
-        except Exception:
-            pass
-
-    def show_centered_toplevel(self, win, parent=None, width=None, height=None):
-        self.center_toplevel(win, parent, width, height)
-        try:
-            win.deiconify()
-        except Exception:
-            pass
-        try:
-            win.lift()
-        except Exception:
-            pass
-        try:
-            win.focus_set()
-        except Exception:
-            pass
-
     def default_config_for_type(self, node_type):
         table_names = []
         needs_sqlite_defaults = {"匹配值输出列名", "选定列写入指定表", "字段映射写入表"}
@@ -760,118 +583,6 @@ class PlanWorkflowWindow(
             self.nodes[idx]["name"] = name_var.get().strip() or self.nodes[idx]["type"]
             self.refresh_node_list(select_index=idx, reveal=True)
 
-    def make_config_preview_context(self):
-        """
-        配置界面专用的预运行上下文。
-
-        用途：刷新某个节点配置时，会临时运行它前面的节点，以便拿到“到当前节点为止”的字段列表和中转副表。
-        这里允许“选定列写入指定表”在配置预运行时写入【当前工作表】和【中转副表】，
-        这样后续高级筛选、匹配值输出列名、插件节点等配置界面才能看到这些临时字段。
-
-        注意：selected_columns_config_preview_only 会在该节点内部拦截 SQLite 写入，
-        防止只是切换/刷新配置界面时误改真实数据库。
-        """
-        return {
-            "transit_tables": {},
-            "loop_states": {},
-            "loop_results": {},
-            "is_config_probe": True,
-            "allow_selected_columns_write_in_preview": True,
-            "selected_columns_config_preview_only": True,
-        }
-
-    def get_headers_rows_before(self, idx):
-        return self.run_plan(
-            stop_index=idx - 1,
-            raise_error=True,
-            initial_context=self.make_config_preview_context(),
-        )[:2]
-
-    def get_transit_context_before(self, idx):
-        """运行到指定节点之前，取得已经保存的内存中转副表。配置界面用于列出可引用的中转表。"""
-        if idx is None or idx <= 0:
-            return self.make_config_preview_context()
-        try:
-            _, _, _, context = self.run_plan(
-                stop_index=idx - 1,
-                raise_error=False,
-                return_context=True,
-                initial_context=self.make_config_preview_context(),
-            )
-            return context
-        except Exception:
-            return self.make_config_preview_context()
-
-    def make_node_enabled_var(self, idx):
-        var = tk.BooleanVar(value=self.nodes[idx].get("enabled", True))
-        def on_change(*_):
-            if 0 <= idx < len(self.nodes):
-                self.nodes[idx]["enabled"] = bool(var.get())
-                self.refresh_node_list(select_index=idx, reveal=True)
-        var.trace_add("write", on_change)
-        return var
-
-    def add_labeled_entry(self, parent, label, value, row, col, width=20):
-        ttk.Label(parent, text=label).grid(row=row, column=col, sticky=tk.W, padx=4, pady=4)
-        var = tk.StringVar(value=value)
-        ttk.Entry(parent, textvariable=var, width=width).grid(row=row, column=col + 1, sticky=tk.W, padx=4, pady=4)
-        return var
-
-    def add_labeled_combo(self, parent, label, value, values, row, col, width=20, readonly=True):
-        ttk.Label(parent, text=label).grid(row=row, column=col, sticky=tk.W, padx=4, pady=4)
-        var = tk.StringVar(value=value if value in values or not readonly else (values[0] if values else value))
-        state = "readonly" if readonly else "normal"
-        ttk.Combobox(parent, textvariable=var, values=values, width=width, state=state).grid(row=row, column=col + 1, sticky=tk.W, padx=4, pady=4)
-        return var
-
-    def add_labeled_combo_control(self, parent, label, value, values, row, col, width=20, readonly=True):
-        ttk.Label(parent, text=label).grid(row=row, column=col, sticky=tk.W, padx=4, pady=4)
-        var = tk.StringVar(value=value if value in values or not readonly else (values[0] if values else value))
-        state = "readonly" if readonly else "normal"
-        combo = ttk.Combobox(parent, textvariable=var, values=values, width=width, state=state)
-        combo.grid(row=row, column=col + 1, sticky=tk.W, padx=4, pady=4)
-        return var, combo
-
-    def refresh_combo_values(self, combo, var, values, keep_custom=True, fallback=""):
-        values = [str(v) for v in (values or [])]
-        current = str(var.get() or "")
-        display_values = list(values)
-        if current and current not in display_values and keep_custom:
-            display_values = [current] + display_values
-        combo.configure(values=display_values)
-        if not current:
-            var.set(fallback if fallback in values else (values[0] if values else fallback))
-        elif current not in values and not keep_custom:
-            var.set(fallback if fallback in values else (values[0] if values else fallback))
-
-    def refresh_listbox_values(self, listbox, values, selected_values=None):
-        selected_values = set(selected_values or [])
-        listbox.delete(0, tk.END)
-        selected_indices = []
-        for i, value in enumerate(values or []):
-            listbox.insert(tk.END, value)
-            if value in selected_values:
-                selected_indices.append(i)
-        for i in selected_indices:
-            listbox.selection_set(i)
-        return selected_indices
-
-    def sync_var_to_config(self, var, config, key, cast=str):
-        def on_change(*_):
-            try:
-                config[key] = cast(var.get())
-            except Exception:
-                config[key] = var.get()
-        var.trace_add("write", on_change)
-        return var
-
-    def sync_bool_to_config(self, var, config, key):
-        def on_change(*_):
-            config[key] = bool(var.get())
-        var.trace_add("write", on_change)
-        return var
-
-
     # ------------------------------
     # 节点组 / 子工作流
     # ------------------------------
@@ -917,204 +628,7 @@ class PlanWorkflowWindow(
     def open_group_dir(self):
         return workflow_group_template_ui.open_group_dir(self, messagebox_module=messagebox)
 
-    def get_plan_dir(self):
-        """返回程序真实目录下的 plan 模板目录，并确保目录存在。"""
-        base_dir = getattr(self.app, "app_dir", get_app_dir())
-        plan_dir = os.path.join(base_dir, "plan")
-        os.makedirs(plan_dir, exist_ok=True)
-        return plan_dir
-
-    def sanitize_plan_file_name(self, name):
-        """生成适合作为文件名的计划模板名称。"""
-        name = str(name or "工作流计划").strip()
-        name = re.sub(r'[\\/:*?"<>|]+', "_", name)
-        name = re.sub(r"\s+", "_", name)
-        return name or "工作流计划"
-
-    def build_plan_template_data(self, plan_name=None):
-        """
-        收集当前计划模板数据。新版模板必须带 template_type。
-
-        plan_name 优先由保存时选择的 JSON 文件名传入，
-        这样模板下拉菜单中的计划名会和实际保存文件名保持一致。
-        """
-        plan_name = str(plan_name or "").strip()
-        if not plan_name:
-            plan_name = self.output_table_var.get().strip() or "工作流计划"
-
-        self.refresh_node_tree_table_access(self.nodes)
-        return {
-            "template_type": "workflow_plan",
-            "version": "1.0",
-            "plan_name": plan_name,
-            "nodes": self.nodes,
-            "output_mode": self.output_mode_var.get(),
-            "output_table": self.output_table_var.get(),
-            "backup_before_overwrite": self.backup_before_overwrite_var.get(),
-            "table_access_policy": self.normalize_table_access_policy(),
-        }
-
-    def validate_plan_template_data(self, data):
-        """
-        只识别新版计划模板：
-        - 必须是 dict
-        - template_type 必须等于 workflow_plan
-        - nodes 必须是 list
-        """
-        if not isinstance(data, dict):
-            return False, "模板内容不是 JSON 对象。"
-        if data.get("template_type") != "workflow_plan":
-            return False, "template_type 不是 workflow_plan。"
-        if not isinstance(data.get("nodes"), list):
-            return False, "nodes 字段不存在或不是列表。"
-        return True, ""
-
-    def apply_plan_template_data(self, data, source_path=""):
-        """把已验证的计划模板应用到当前计划窗口。"""
-        ok, reason = self.validate_plan_template_data(data)
-        if not ok:
-            raise ValueError(reason)
-
-        self.nodes = data.get("nodes", [])
-        self.ensure_node_tree_identity(self.nodes)
-        self.output_mode_var.set(data.get("output_mode", "输出到主界面预览区"))
-        self.output_table_var.set(data.get("output_table", self.make_default_output_table_name()))
-        self.backup_before_overwrite_var.set(bool(data.get("backup_before_overwrite", True)))
-        self.set_table_access_policy(data.get("table_access_policy", "audit"))
-        self.refresh_node_list()
-        self.rebuild_current_config()
-
-        if source_path:
-            self.status_var.set(f"计划模板已载入：{source_path}")
-        else:
-            self.status_var.set("计划模板已载入。")
-
-    def open_plan_dir(self):
-        """打开程序真实目录下的 plan 模板目录。"""
-        os.makedirs(self.plan_dir, exist_ok=True)
-        try:
-            if hasattr(os, "startfile"):
-                os.startfile(self.plan_dir)
-            else:
-                messagebox.showinfo("plan目录", self.plan_dir)
-        except Exception as e:
-            messagebox.showerror("打开失败", f"无法打开 plan 目录：\n{self.plan_dir}\n\n{e}")
-
-    def save_plan_template(self):
-        os.makedirs(self.plan_dir, exist_ok=True)
-        default_name = self.sanitize_plan_file_name(self.output_table_var.get() or "工作流计划") + ".json"
-        path = filedialog.asksaveasfilename(
-            title="保存计划模板",
-            initialdir=self.plan_dir,
-            initialfile=default_name,
-            defaultextension=".json",
-            filetypes=[("JSON模板", "*.json"), ("所有文件", "*.*")]
-        )
-        if not path:
-            return
-
-        # 使用用户实际保存的 JSON 文件名作为 plan_name。
-        # 例如保存为“PDF批量重命名.json”，则 JSON 内部写入：
-        # "plan_name": "PDF批量重命名"。
-        saved_file_name = os.path.basename(path)
-        saved_plan_name = os.path.splitext(saved_file_name)[0].strip() or "工作流计划"
-
-        data = self.build_plan_template_data(plan_name=saved_plan_name)
-        try:
-            atomic_write_json(path, data)
-            self.status_var.set(f"计划模板已保存：{path}；plan_name 已同步为：{saved_plan_name}")
-            self.refresh_plan_template_list(show_status=False)
-
-            # 保存后尽量自动选中刚保存的模板，便于确认和后续快速载入。
-            if hasattr(self, "plan_template_combo") and hasattr(self, "plan_template_map"):
-                abs_saved_path = os.path.abspath(path)
-                for display_name, template_path in self.plan_template_map.items():
-                    if os.path.abspath(template_path) == abs_saved_path:
-                        self.plan_template_var.set(display_name)
-                        break
-        except Exception as e:
-            messagebox.showerror("保存失败", str(e))
-
-    def load_plan_template_from_path(self, path):
-        if not path:
-            return
-        if self.nodes:
-            ok = messagebox.askyesno(
-                "确认载入模板",
-                "当前计划已有节点，载入模板会覆盖当前计划。\n是否继续？"
-            )
-            if not ok:
-                return
-        try:
-            data = load_json_file_with_recovery(path, parent=self.window)
-            self.apply_plan_template_data(data, source_path=path)
-        except Exception as e:
-            messagebox.showerror("载入失败", str(e))
-
-    def load_plan_template(self):
-        path = filedialog.askopenfilename(
-            title="载入计划模板",
-            initialdir=self.plan_dir,
-            filetypes=[("JSON模板", "*.json"), ("所有文件", "*.*")]
-        )
-        if not path:
-            return
-        self.load_plan_template_from_path(path)
-
-    def load_selected_plan_template(self):
-        display = self.plan_template_var.get()
-        if not display:
-            messagebox.showwarning("提示", "请先从下拉菜单选择一个计划模板。")
-            return
-
-        path = self.plan_template_map.get(display)
-        if not path:
-            self.refresh_plan_template_list(show_status=False)
-            path = self.plan_template_map.get(display)
-
-        if not path:
-            messagebox.showwarning("提示", "选中的计划模板不存在或已失效，请刷新模板列表。")
-            return
-
-        self.load_plan_template_from_path(path)
-
-
     # ==================== 后台执行 / 进度条管理 ====================
-    def get_workflow_log_dir(self):
-        log_dir = os.path.join(getattr(self.app, "app_dir", get_app_dir()), "logs", "workflow")
-        os.makedirs(log_dir, exist_ok=True)
-        return log_dir
-
-    def write_workflow_error_log(self, mode, message, traceback_text="", logs=None, snapshot=None):
-        """后台线程错误日志。只写文件，不直接操作 Tkinter。"""
-        try:
-            log_dir = self.get_workflow_log_dir()
-            path = os.path.join(log_dir, f"workflow_error_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.log")
-            snapshot = snapshot or {}
-            node_count = len(snapshot.get("nodes", self.nodes) or [])
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(f"任务模式：{mode}\n")
-                f.write(f"时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"节点数量：{node_count}\n")
-                if snapshot.get("db_path"):
-                    f.write(f"数据库：{snapshot.get('db_path')}\n")
-                if snapshot.get("workflow_name"):
-                    f.write(f"工作流/输出名：{snapshot.get('workflow_name')}\n")
-                f.write(f"错误信息：{message}\n\n")
-                if logs:
-                    f.write("执行日志：\n")
-                    for item in logs:
-                        f.write(f"- {item}\n")
-                    f.write("\n")
-                if traceback_text:
-                    f.write("Traceback：\n")
-                    f.write(traceback_text)
-            return path
-        except Exception:
-            return ""
-
-
-
 if __name__ == "__main__":
     # 预留给后续子进程 Worker / PyInstaller 打包使用。当前版本后台执行采用线程 Worker。
     try:
