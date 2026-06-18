@@ -36,7 +36,6 @@
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox
 import os
 import sys
 import traceback
@@ -47,14 +46,11 @@ from datetime import datetime
 
 from db import PluginDatabaseAPI, TableAccessManager
 from workflow.default_configs import default_name_for_node as workflow_default_name_for_node
-from workflow.advanced_filter_window import AdvancedFilterWindow
-from workflow.batch_replace_window import BatchReplaceWindow
+from workflow.clipboard_table_actions_mixin import ClipboardTableActionsMixin
 from workflow.clipboard_table_edit_mixin import ClipboardTableEditMixin
 from workflow.clipboard_table_io_mixin import ClipboardTableIoMixin
 from workflow.clipboard_table_preview_mixin import ClipboardTablePreviewMixin
 from workflow.clipboard_table_ui_mixin import ClipboardTableUiMixin
-from workflow.data_extract_window import DataExtractWindow
-from workflow.merge_columns_window import MergeColumnsWindow
 from workflow.filter_config_window_mixin import FilterConfigWindowMixin
 from workflow.group_config_window_mixin import GroupConfigWindowMixin
 from workflow.plan_template_io_mixin import PlanTemplateIoMixin
@@ -98,7 +94,13 @@ def get_app_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
-class ClipboardTableApp(ClipboardTableUiMixin, ClipboardTableEditMixin, ClipboardTablePreviewMixin, ClipboardTableIoMixin):
+class ClipboardTableApp(
+    ClipboardTableActionsMixin,
+    ClipboardTableUiMixin,
+    ClipboardTableEditMixin,
+    ClipboardTablePreviewMixin,
+    ClipboardTableIoMixin,
+):
     def __init__(self, root):
         self.root = root
         self.root.title("剪贴板表格解析器 - SQLite保存版")
@@ -127,55 +129,6 @@ class ClipboardTableApp(ClipboardTableUiMixin, ClipboardTableEditMixin, Clipboar
         self.edit_btn_text = tk.StringVar(value="修改模式:关")
 
         self.build_ui()
-
-    def open_plan_workflow(self):
-        if not self.headers:
-            messagebox.showwarning("提示", "当前没有可处理的数据，请先读取剪贴板或加载数据库表。")
-            return
-
-        PlanWorkflowWindow(self)
-
-    def open_advanced_filter(self):
-        db_path = self.db_path_var.get().strip()
-        if not db_path:
-            messagebox.showwarning("提示", "请先设置 SQLite 数据库路径。")
-            return
-
-        if not os.path.exists(db_path):
-            messagebox.showwarning("提示", "当前 SQLite 数据库不存在，请先保存数据或选择已有数据库。")
-            return
-
-        AdvancedFilterWindow(self)
-
-
-    def open_batch_replace(self):
-        if not self.headers:
-            messagebox.showwarning("提示", "当前没有可处理的数据，请先读取剪贴板或加载数据库表。")
-            return
-
-        BatchReplaceWindow(self)
-
-    def open_data_extract(self):
-        if not self.headers:
-            messagebox.showwarning("提示", "当前没有可处理的数据，请先读取剪贴板或加载数据库表。")
-            return
-
-        DataExtractWindow(self)
-
-    def open_merge_columns(self):
-        if not self.headers:
-            messagebox.showwarning("提示", "当前没有可处理的数据，请先读取剪贴板或加载数据库表。")
-            return
-
-        MergeColumnsWindow(self)
-
-    def on_table_selected(self, event=None):
-        table_name = self.table_name_var.get().strip()
-
-        if not table_name:
-            return
-
-        self.load_table_from_sqlite(table_name)
 
 class PlanWorkflowWindow(
     PlanTemplateIoMixin,
@@ -361,6 +314,11 @@ class PlanWorkflowWindow(
         return workflow_default_name_for_node(node_type)
 
     # ==================== 后台执行 / 进度条管理 ====================
+
+
+ClipboardTableApp.workflow_window_class = PlanWorkflowWindow
+
+
 if __name__ == "__main__":
     # 预留给后续子进程 Worker / PyInstaller 打包使用。当前版本后台执行采用线程 Worker。
     try:
