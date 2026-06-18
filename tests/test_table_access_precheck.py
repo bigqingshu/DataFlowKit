@@ -3,6 +3,7 @@ import unittest
 
 from workflow import table_access_precheck
 from workflow import table_access_precheck_display
+from workflow import table_access_precheck_fields
 from workflow.table_access_precheck import (
     evaluate_expected_table_access,
     evaluate_field_access,
@@ -42,6 +43,16 @@ class TableAccessPrecheckHelperTests(unittest.TestCase):
         self.assertIs(
             table_access_precheck.iter_nodes_for_table_access_precheck,
             table_access_precheck_display.iter_nodes_for_table_access_precheck,
+        )
+
+    def test_field_helpers_are_compatible_exports(self):
+        self.assertIs(
+            table_access_precheck.table_access_field_items,
+            table_access_precheck_fields.table_access_field_items,
+        )
+        self.assertIs(
+            table_access_precheck.evaluate_field_mapping_access,
+            table_access_precheck_fields.evaluate_field_mapping_access,
         )
 
     def test_issue_summary_actionable_blocking_and_sorting(self):
