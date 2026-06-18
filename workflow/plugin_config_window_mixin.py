@@ -2,15 +2,15 @@
 """PlanWorkflowWindow mixin for plugin configuration UI wrappers."""
 
 from workflow.plugin_config_helpers import plugin_config_transit_reuse_note
-from workflow import plugin_dynamic_config_ui
-from workflow.plugin_config_ui import (
+from ui.workflow.config import plugin_dynamic_config_ui
+from ui.workflow.config.plugin_config_ui import (
     build_plugin_input_tables_section as build_plugin_input_tables_section_ui,
     build_plugin_node_config as build_plugin_node_config_ui,
     build_plugin_run_environment_section as build_plugin_run_environment_section_ui,
     open_plugin_input_spec_editor as open_plugin_input_spec_editor_ui,
     refresh_plugin_input_listbox as refresh_plugin_input_listbox_ui,
 )
-from workflow.plugin_schema_config_ui import (
+from ui.workflow.config.plugin_schema_config_ui import (
     build_plugin_output_and_log_section as build_plugin_output_and_log_section_ui,
     build_plugin_schema_parameter_controls as build_plugin_schema_parameter_controls_ui,
 )
