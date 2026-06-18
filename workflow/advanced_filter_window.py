@@ -2,41 +2,19 @@
 """Advanced filter / data matching window."""
 
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox
 from datetime import datetime
 
 from db import TableAccessManager
-from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
 from workflow import advanced_filter_window_actions as advanced_filter_actions
 from workflow.advanced_filter_window_logic import (
     build_advanced_filter_field_display_cache as workflow_build_advanced_filter_field_display_cache,
-    build_advanced_filter_main_preview_snapshot as workflow_build_advanced_filter_main_preview_snapshot,
-    build_advanced_filter_preview_rows as workflow_build_advanced_filter_preview_rows,
-    build_advanced_filter_template_data as workflow_build_advanced_filter_template_data,
-    build_advanced_filter_result_records as workflow_build_advanced_filter_result_records,
-    dedupe_advanced_filter_preview_rows as workflow_dedupe_advanced_filter_preview_rows,
-    eval_advanced_filter_condition as workflow_eval_advanced_filter_condition,
-    eval_advanced_filter_conditions as workflow_eval_advanced_filter_conditions,
-    eval_advanced_filter_join_rule as workflow_eval_advanced_filter_join_rule,
-    eval_advanced_filter_join_rules as workflow_eval_advanced_filter_join_rules,
-    format_advanced_filter_db_value as workflow_format_advanced_filter_db_value,
-    get_advanced_filter_output_fields as workflow_get_advanced_filter_output_fields,
-    load_advanced_filter_table_records as workflow_load_advanced_filter_table_records,
-    normalize_advanced_filter_template_data as workflow_normalize_advanced_filter_template_data,
-    normalize_advanced_filter_save_table_name as workflow_normalize_advanced_filter_save_table_name,
-    parse_advanced_filter_number as workflow_parse_advanced_filter_number,
-    parse_positive_int_setting as workflow_parse_positive_int_setting,
     select_advanced_filter_combo_defaults as workflow_select_advanced_filter_combo_defaults,
-    select_advanced_filter_template_tables as workflow_select_advanced_filter_template_tables,
 )
 
 
 def load_json_file_with_recovery(path, parent=None):
-    data, info = load_json_with_backup(path)
-    warning = info.get("warning", "")
-    if warning:
-        messagebox.showwarning("配置已从备份恢复", warning, parent=parent)
-    return data
+    return advanced_filter_actions.load_json_file_with_recovery(path, parent=parent)
 
 
 class AdvancedFilterWindow:
@@ -546,237 +524,58 @@ class AdvancedFilterWindow:
         return advanced_filter_actions.refresh_output_fields_listbox(self)
 
     def format_db_value(self, value):
-        return workflow_format_advanced_filter_db_value(self.app, value)
+        return advanced_filter_actions.format_db_value(self, value)
 
     def load_table_records(self, table_name):
-        columns = self.columns_cache.get(table_name)
-        if columns is None:
-            columns = self.app.get_table_columns(table_name)
-            self.columns_cache[table_name] = columns
-        return workflow_load_advanced_filter_table_records(self.app.get_db_path(), table_name, columns)
+        return advanced_filter_actions.load_table_records(self, table_name)
 
     def parse_number(self, value):
-        return workflow_parse_advanced_filter_number(value)
+        return advanced_filter_actions.parse_number(value)
 
     def eval_condition(self, record, cond):
-        return workflow_eval_advanced_filter_condition(record, cond)
+        return advanced_filter_actions.eval_condition(record, cond)
 
     def eval_join_rule(self, record, rule):
-        return workflow_eval_advanced_filter_join_rule(record, rule)
+        return advanced_filter_actions.eval_join_rule(record, rule)
 
     def eval_conditions(self, record):
-        return workflow_eval_advanced_filter_conditions(record, self.conditions, self.logic_var.get())
+        return advanced_filter_actions.eval_conditions(self, record)
 
     def eval_join_rules(self, record):
-        return workflow_eval_advanced_filter_join_rules(record, self.join_rules, self.join_logic_var.get())
+        return advanced_filter_actions.eval_join_rules(self, record)
 
     def get_int_setting(self, var, default_value):
-        return workflow_parse_positive_int_setting(var.get(), default_value)
+        return advanced_filter_actions.get_int_setting(var, default_value)
 
     def build_result_records(self):
-        selected_tables = self.get_selected_tables()
-
-        result_limit = self.get_int_setting(self.result_limit_var, 5000)
-        max_intermediate = self.get_int_setting(self.max_intermediate_var, 200000)
-
-        table_records_map = {}
-        for table in selected_tables:
-            table_records_map[table] = self.load_table_records(table)
-
-        return workflow_build_advanced_filter_result_records(
-            selected_tables,
-            table_records_map,
-            conditions=self.conditions,
-            condition_logic=self.logic_var.get(),
-            join_rules=self.join_rules,
-            join_logic=self.join_logic_var.get(),
-            result_limit=result_limit,
-            max_intermediate=max_intermediate,
-        )
+        return advanced_filter_actions.build_result_records(self)
 
     def get_output_fields(self):
-        return workflow_get_advanced_filter_output_fields(
-            self.output_fields,
-            self.field_display_cache,
-        )
+        return advanced_filter_actions.get_output_fields(self)
 
     def preview_result(self):
-        try:
-            fields = self.get_output_fields()
-            if not fields:
-                messagebox.showwarning("提示", "没有可输出字段，请先选择数据源。")
-                return
-
-            records = self.build_result_records()
-
-            self.preview_headers = fields
-            self.preview_rows = workflow_build_advanced_filter_preview_rows(records, fields)
-
-            self.refresh_preview_tree()
-
-            self.status_var.set(
-                f"预览完成：{len(self.preview_rows)} 行 × {len(self.preview_headers)} 列。"
-                f" 当前预览行数受“预览最大行数”限制。"
-            )
-
-        except Exception as e:
-            messagebox.showerror("预览失败", str(e))
+        return advanced_filter_actions.preview_result(self)
 
     def refresh_preview_tree(self):
-        self.preview_tree.delete(*self.preview_tree.get_children())
-        self.preview_tree["columns"] = self.preview_headers
-
-        for col in self.preview_headers:
-            self.preview_tree.heading(col, text=col)
-            self.preview_tree.column(col, width=150, minwidth=80, anchor=tk.W, stretch=False)
-
-        for row in self.preview_rows:
-            self.preview_tree.insert("", tk.END, values=row)
+        return advanced_filter_actions.refresh_preview_tree(self)
 
     def remove_duplicate_preview_rows(self):
-        if not self.preview_headers:
-            self.preview_result()
-        if not self.preview_headers:
-            return
-
-        result = workflow_dedupe_advanced_filter_preview_rows(self.preview_rows)
-        self.preview_rows = result["rows"]
-        self.refresh_preview_tree()
-        self.status_var.set(
-            f"已去除重复内容：删除 {result['removed']} 行，剩余 {len(self.preview_rows)} 行。"
-            " 判断规则：按当前预览输出整行内容去重，保留第一条。"
-        )
+        return advanced_filter_actions.remove_duplicate_preview_rows(self)
 
     def load_preview_to_main(self):
-        if not self.preview_headers:
-            messagebox.showwarning("提示", "请先预览结果。")
-            return
-
-        snapshot = workflow_build_advanced_filter_main_preview_snapshot(
-            self.preview_headers,
-            self.preview_rows,
-        )
-        self.app.headers = snapshot["headers"]
-        self.app.rows = snapshot["rows"]
-        self.app.raw_data = snapshot["raw_data"]
-        self.app.refresh_tree()
-        self.app.info_var.set(
-            f"已从高级筛选载入预览结果：{len(self.app.rows)} 行 × {len(self.app.headers)} 列。"
-        )
+        return advanced_filter_actions.load_preview_to_main(self)
 
     def save_result_to_table(self):
-        if not self.preview_headers:
-            self.preview_result()
-
-        if not self.preview_headers:
-            return
-
-        save_name = workflow_normalize_advanced_filter_save_table_name(self.save_table_var.get())
-        if not save_name:
-            messagebox.showwarning("提示", "请填写保存的新表名。")
-            return
-
-        try:
-            table_name, row_count = self.app.save_rows_to_sqlite_table(
-                table_name_raw=save_name,
-                headers=self.preview_headers,
-                rows=self.preview_rows,
-                recreate=False
-            )
-
-            self.status_var.set(f"保存成功：{table_name}，{row_count} 行。")
-            messagebox.showinfo(
-                "保存成功",
-                f"筛选结果已保存到新表。\n\n表名：{table_name}\n行数：{row_count}"
-            )
-
-            self.refresh_tables()
-
-        except Exception as e:
-            messagebox.showerror("保存失败", str(e))
+        return advanced_filter_actions.save_result_to_table(self)
 
     def export_template_data(self):
-        return workflow_build_advanced_filter_template_data(
-            self.main_table_var.get(),
-            self.get_selected_tables(),
-            self.conditions,
-            self.logic_var.get(),
-            self.join_logic_var.get(),
-            self.join_rules,
-            self.output_fields,
-            self.result_limit_var.get(),
-            self.max_intermediate_var.get(),
-            self.save_table_var.get(),
-        )
+        return advanced_filter_actions.export_template_data(self)
 
     def apply_template_data(self, data):
-        main_table = data.get("main_table", "")
-
-        if main_table:
-            self.main_table_var.set(main_table)
-
-        self.selected_tables_listbox.delete(0, tk.END)
-        for table in workflow_select_advanced_filter_template_tables(data, self.tables_cache):
-            self.selected_tables_listbox.insert(tk.END, table)
-
-        self.refresh_fields()
-
-        state = workflow_normalize_advanced_filter_template_data(
-            data,
-            self.tables_cache,
-            self.field_display_cache,
-            current_save_table=self.save_table_var.get(),
-        )
-        self.conditions = state["conditions"]
-        self.join_rules = state["join_rules"]
-        self.output_fields = state["output_fields"]
-        self.logic_var.set(state["logic"])
-        self.join_logic_var.set(state["join_logic"])
-        self.result_limit_var.set(state["result_limit"])
-        self.max_intermediate_var.set(state["max_intermediate"])
-        self.save_table_var.set(state["save_table"])
-
-        self.refresh_conditions_tree()
-        self.refresh_join_tree()
-        self.refresh_output_fields_listbox()
+        return advanced_filter_actions.apply_template_data(self, data)
 
     def save_template(self):
-        path = filedialog.asksaveasfilename(
-            title="保存筛选模板",
-            defaultextension=".json",
-            filetypes=[
-                ("JSON 文件", "*.json"),
-                ("所有文件", "*.*")
-            ]
-        )
-        if not path:
-            return
-
-        try:
-            data = self.export_template_data()
-            atomic_write_json(path, data)
-
-            self.status_var.set(f"筛选模板已保存：{path}")
-
-        except Exception as e:
-            messagebox.showerror("保存模板失败", str(e))
+        return advanced_filter_actions.save_template(self)
 
     def load_template(self):
-        path = filedialog.askopenfilename(
-            title="载入筛选模板",
-            filetypes=[
-                ("JSON 文件", "*.json"),
-                ("所有文件", "*.*")
-            ]
-        )
-        if not path:
-            return
-
-        try:
-            data = load_json_file_with_recovery(path, parent=self.window)
-
-            self.apply_template_data(data)
-            self.status_var.set(f"筛选模板已载入：{path}")
-
-        except Exception as e:
-            messagebox.showerror("载入模板失败", str(e))
+        return advanced_filter_actions.load_template(self)

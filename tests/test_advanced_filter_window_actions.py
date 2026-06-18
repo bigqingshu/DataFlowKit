@@ -57,23 +57,57 @@ class FakeTree:
     def insert(self, parent, index, values=None):
         self.rows.append(tuple(values or ()))
 
+    def heading(self, col, text=""):
+        pass
+
+    def column(self, col, **kwargs):
+        pass
+
+    def __setitem__(self, key, value):
+        setattr(self, key, value)
+
 
 class FakeWindow:
     def __init__(self):
+        self.app = type("FakeApp", (), {})()
+        self.app.headers = []
+        self.app.rows = []
+        self.app.raw_data = ""
+        self.app.info_var = FakeVar()
+        self.app.refresh_tree_called = False
+        self.app.refresh_tree = lambda: setattr(self.app, "refresh_tree_called", True)
+        self.app.save_rows_to_sqlite_table = lambda **kwargs: ("saved_table", len(kwargs["rows"]))
+        self.app.format_db_value = lambda value: "" if value is None else str(value)
+        self.app.get_db_path = lambda: "fake.db"
+        self.app.get_table_columns = lambda table: ["id", "name"]
+
         self.conditions = []
         self.join_rules = []
         self.output_fields = []
         self.field_display_cache = ["orders.id", "orders.person_id", "people.id", "people.name"]
+        self.tables_cache = ["orders", "people"]
+        self.columns_cache = {}
+        self.preview_headers = []
+        self.preview_rows = []
         self.filter_field_var = FakeVar("orders.id")
         self.filter_operator_var = FakeVar("包含")
         self.filter_value_var = FakeVar("A")
+        self.logic_var = FakeVar("AND")
         self.join_left_var = FakeVar("orders.person_id")
         self.join_operator_var = FakeVar("等于")
         self.join_right_var = FakeVar("people.id")
+        self.join_logic_var = FakeVar("AND")
+        self.result_limit_var = FakeVar("5000")
+        self.max_intermediate_var = FakeVar("200000")
+        self.save_table_var = FakeVar("out")
+        self.main_table_var = FakeVar("")
+        self.status_var = FakeVar()
         self.conditions_tree = FakeTree()
         self.join_tree = FakeTree()
+        self.preview_tree = FakeTree()
         self.available_fields_listbox = FakeListbox(selection=(1, 3))
         self.output_fields_listbox = FakeListbox(selection=(0,))
+        self.selected_tables_listbox = FakeListbox(values=["orders"])
 
     def refresh_conditions_tree(self):
         return actions.refresh_conditions_tree(self)
@@ -83,6 +117,39 @@ class FakeWindow:
 
     def refresh_output_fields_listbox(self):
         return actions.refresh_output_fields_listbox(self)
+
+    def refresh_preview_tree(self):
+        return actions.refresh_preview_tree(self)
+
+    def preview_result(self):
+        return actions.preview_result(self)
+
+    def get_output_fields(self):
+        return actions.get_output_fields(self)
+
+    def build_result_records(self):
+        return actions.build_result_records(self)
+
+    def load_table_records(self, table_name):
+        return [{"orders.id": "1", "orders.name": "Alpha"}, {"orders.id": "2", "orders.name": "Beta"}]
+
+    def get_int_setting(self, var, default_value):
+        return actions.get_int_setting(var, default_value)
+
+    def get_selected_tables(self):
+        return list(self.selected_tables_listbox.values)
+
+    def refresh_fields(self):
+        self.field_display_cache = ["orders.id", "orders.name", "people.id"]
+
+    def refresh_tables(self):
+        self.refresh_tables_called = True
+
+    def export_template_data(self):
+        return actions.export_template_data(self)
+
+    def apply_template_data(self, data):
+        return actions.apply_template_data(self, data)
 
 
 class AdvancedFilterWindowActionsTests(unittest.TestCase):
@@ -148,6 +215,61 @@ class AdvancedFilterWindowActionsTests(unittest.TestCase):
         self.assertEqual(window.conditions_tree.rows, [("orders.id", "等于", "1")])
         self.assertEqual(window.join_tree.rows, [("orders.person_id", "等于", "people.id")])
         self.assertEqual(window.output_fields_listbox.values, ["people.name"])
+
+    def test_preview_dedupe_and_load_to_main_actions(self):
+        window = FakeWindow()
+        window.output_fields = ["orders.id", "orders.name"]
+
+        actions.preview_result(window)
+        self.assertEqual(window.preview_headers, ["orders.id", "orders.name"])
+        self.assertEqual(window.preview_rows, [["1", "Alpha"], ["2", "Beta"]])
+        self.assertIn("预览完成：2 行", window.status_var.get())
+
+        window.preview_rows = [["1", "Alpha"], ["1", "Alpha"], ["2", "Beta"]]
+        actions.remove_duplicate_preview_rows(window)
+        self.assertEqual(window.preview_rows, [["1", "Alpha"], ["2", "Beta"]])
+        self.assertIn("删除 1 行", window.status_var.get())
+
+        actions.load_preview_to_main(window)
+        self.assertEqual(window.app.headers, ["orders.id", "orders.name"])
+        self.assertEqual(window.app.rows, [["1", "Alpha"], ["2", "Beta"]])
+        self.assertTrue(window.app.refresh_tree_called)
+
+    def test_save_result_and_template_actions(self):
+        window = FakeWindow()
+        window.preview_headers = ["orders.id"]
+        window.preview_rows = [["1"], ["2"]]
+
+        with patch.object(actions.messagebox, "showinfo") as showinfo:
+            actions.save_result_to_table(window)
+        showinfo.assert_called_once()
+        self.assertEqual(window.status_var.get(), "保存成功：saved_table，2 行。")
+        self.assertTrue(window.refresh_tables_called)
+
+        data = actions.export_template_data(window)
+        self.assertEqual(data["main_table"], "")
+        self.assertEqual(data["selected_tables"], ["orders"])
+        self.assertEqual(data["save_table"], "out")
+
+        actions.apply_template_data(window, {
+            "main_table": "orders",
+            "selected_tables": ["orders", "missing"],
+            "conditions": [{"field": "orders.id", "op": "等于", "value": "1"}],
+            "join_rules": [],
+            "output_fields": ["orders.name", "missing"],
+            "logic": "OR",
+            "join_logic": "AND",
+            "result_limit": "12",
+            "max_intermediate": "34",
+            "save_table": "templated",
+        })
+
+        self.assertEqual(window.selected_tables_listbox.values, ["orders"])
+        self.assertEqual(window.conditions, [{"field": "orders.id", "op": "等于", "value": "1"}])
+        self.assertEqual(window.output_fields, ["orders.name"])
+        self.assertEqual(window.logic_var.get(), "OR")
+        self.assertEqual(window.result_limit_var.get(), "12")
+        self.assertEqual(window.save_table_var.get(), "templated")
 
 
 if __name__ == "__main__":
