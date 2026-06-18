@@ -3,7 +3,6 @@
 
 from workflow.nodes.data_nodes import (
     apply_area_fill_node,
-    apply_extract_node,
     apply_fill_value_node,
     apply_dedupe_node,
     apply_match_value_output_field_name_node,
@@ -18,6 +17,7 @@ from workflow.nodes.new_column_nodes import (
     apply_new_columns_node,
 )
 from workflow.nodes.datetime_format_nodes import apply_format_datetime_node
+from workflow.nodes.extract_nodes import apply_extract_node
 from workflow.nodes.numeric_column_nodes import apply_numeric_column_node
 from workflow.nodes.table_edit_nodes import (
     apply_copy_column_node,
