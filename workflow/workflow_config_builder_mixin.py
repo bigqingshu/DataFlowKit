@@ -52,7 +52,7 @@ from ui.workflow.config.save_transit_config_ui import (
 from ui.workflow.config.selected_columns_write_config_ui import (
     build_selected_columns_write_config as workflow_build_selected_columns_write_config_ui,
 )
-from workflow.nodes.data_nodes import parse_separator_text as workflow_parse_separator_text
+from workflow.nodes.data_common import parse_separator_text as workflow_parse_separator_text
 from workflow.nodes.selected_columns_nodes import (
     apply_selected_columns_to_memory_table as workflow_apply_selected_columns_to_memory_table,
     get_selected_columns_write_selected_fields as workflow_get_selected_columns_write_selected_fields,
