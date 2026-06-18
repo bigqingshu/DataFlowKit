@@ -3,7 +3,7 @@
 
 import re
 
-from workflow.nodes.data_nodes import normalize_filter_condition_value_source
+from workflow.nodes.filter_plan_nodes import normalize_filter_condition_value_source
 from workflow.nodes.group_nodes import unique_keep_order
 
 

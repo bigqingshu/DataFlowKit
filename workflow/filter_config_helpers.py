@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Pure helpers for advanced filter node configuration UI."""
 
-from workflow.nodes.data_nodes import (
+from workflow.nodes.filter_plan_nodes import (
     get_plan_filter_output_header_conflicts,
     get_plan_filter_output_headers,
     normalize_filter_condition_value_source,
