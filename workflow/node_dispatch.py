@@ -1,9 +1,7 @@
 # -*- coding: utf-8 -*-
 """Regular node dispatch helpers for PlanWorkflowWindow.apply_node."""
 
-from workflow.nodes.data_nodes import (
-    apply_match_value_output_field_name_node,
-)
+from workflow.nodes.match_value_output_nodes import apply_match_value_output_field_name_node
 from workflow.nodes.new_column_nodes import (
     apply_current_datetime_column_node,
     apply_new_columns_node,

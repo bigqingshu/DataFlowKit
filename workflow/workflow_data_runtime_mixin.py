@@ -38,7 +38,6 @@ from workflow.nodes.data_nodes import (
     iter_plan_filter_join_candidates as workflow_iter_plan_filter_join_candidates,
     make_current_table_records as workflow_make_current_table_records,
     make_unique_plan_headers as workflow_make_unique_plan_headers,
-    match_value_output_column_match as workflow_match_value_output_column_match,
     normalize_filter_condition_value_source as workflow_normalize_filter_condition_value_source,
     normalize_plan_filter_config_field_references as workflow_normalize_plan_filter_config_field_references,
     normalize_plan_filter_field_reference as workflow_normalize_plan_filter_field_reference,
@@ -48,6 +47,9 @@ from workflow.nodes.data_nodes import (
     record_passes_plan_join_rules as workflow_record_passes_plan_join_rules,
     record_survives_available_plan_conditions as workflow_record_survives_available_plan_conditions,
     resolve_plan_condition_value as workflow_resolve_plan_condition_value,
+)
+from workflow.nodes.match_value_output_nodes import (
+    match_value_output_column_match as workflow_match_value_output_column_match,
 )
 from workflow.nodes.datetime_format_nodes import (
     apply_unmatched_format_value as workflow_apply_unmatched_format_value,
