@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import unittest
 
+from workflow.clipboard_table_edit_mixin import ClipboardTableEditMixin
 from workflow.clipboard_table_preview_mixin import ClipboardTablePreviewMixin
 
 
@@ -80,8 +81,60 @@ class FakeTree:
     def see(self, iid):
         self.seen = iid
 
+    def bbox(self, row_id, col_id):
+        return (10, 20, 30, 40)
 
-class ClipboardTablePreviewFakeApp(ClipboardTablePreviewMixin):
+    def identify(self, kind, x, y):
+        if kind == "region":
+            return "cell"
+        return None
+
+    def identify_row(self, y):
+        return self.order[0] if self.order else ""
+
+    def identify_column(self, x):
+        return "#1"
+
+    def index(self, iid):
+        return self.order.index(iid)
+
+
+class FakeEntry:
+    instances = []
+
+    def __init__(self, parent):
+        self.parent = parent
+        self.value = ""
+        self.destroyed = False
+        self.bindings = {}
+        self.placed = None
+        self.selected = None
+        self.focused = False
+        FakeEntry.instances.append(self)
+
+    def place(self, **kwargs):
+        self.placed = kwargs
+
+    def insert(self, index, value):
+        self.value = value
+
+    def select_range(self, start, end):
+        self.selected = (start, end)
+
+    def focus(self):
+        self.focused = True
+
+    def bind(self, event, callback):
+        self.bindings[event] = callback
+
+    def get(self):
+        return self.value
+
+    def destroy(self):
+        self.destroyed = True
+
+
+class ClipboardTablePreviewFakeApp(ClipboardTableEditMixin, ClipboardTablePreviewMixin):
     def __init__(self):
         self.raw_data = ""
         self.headers = []
@@ -93,6 +146,8 @@ class ClipboardTablePreviewFakeApp(ClipboardTablePreviewMixin):
         self.search_index = -1
         self.edit_entry = None
         self.tree = FakeTree()
+        self.edit_mode = False
+        self.edit_btn_text = FakeVar("")
 
 
 class ClipboardTablePreviewMixinTests(unittest.TestCase):
@@ -158,6 +213,45 @@ class ClipboardTablePreviewMixinTests(unittest.TestCase):
         self.assertEqual(app.rows, [])
         self.assertEqual(app.tree["columns"], [])
         self.assertEqual(app.info_var.get(), "已清空预览。")
+
+    def test_toggle_and_double_click_edit_saves_value(self):
+        from unittest import mock
+
+        app = ClipboardTablePreviewFakeApp()
+        app.headers = ["姓名"]
+        app.rows = [["Alice"]]
+        app.refresh_tree()
+        app.toggle_edit_mode()
+        self.assertTrue(app.edit_mode)
+        self.assertEqual(app.edit_btn_text.get(), "修改模式:开")
+
+        event = type("Evt", (), {"x": 1, "y": 1})()
+
+        with mock.patch("workflow.clipboard_table_edit_mixin.ttk.Entry", side_effect=FakeEntry):
+            app.on_tree_double_click(event)
+
+        self.assertIsNotNone(app.edit_entry)
+        editor = app.edit_entry
+        editor.value = "Alicia"
+        editor.bindings["<Return>"](None)
+
+        self.assertEqual(app.rows, [["Alicia"]])
+        self.assertEqual(app.tree.item(app.tree.get_children()[0], "values"), ["Alicia"])
+        self.assertIn("已修改：第 1 行，第 1 列", app.info_var.get())
+        self.assertIsNone(app.edit_entry)
+        self.assertTrue(editor.destroyed)
+
+    def test_toggle_edit_mode_closes_open_editor(self):
+        app = ClipboardTablePreviewFakeApp()
+        fake = FakeEntry(None)
+        app.edit_entry = fake
+
+        app.toggle_edit_mode()
+        app.toggle_edit_mode()
+
+        self.assertFalse(app.edit_mode)
+        self.assertTrue(fake.destroyed)
+        self.assertIsNone(app.edit_entry)
 
 
 if __name__ == "__main__":

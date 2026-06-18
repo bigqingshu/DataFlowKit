@@ -53,6 +53,7 @@ from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
 from workflow.default_configs import default_config_for_type as workflow_default_config_for_type
 from workflow.advanced_filter_window import AdvancedFilterWindow
 from workflow.batch_replace_window import BatchReplaceWindow
+from workflow.clipboard_table_edit_mixin import ClipboardTableEditMixin
 from workflow.clipboard_table_io_mixin import ClipboardTableIoMixin
 from workflow.clipboard_table_preview_mixin import ClipboardTablePreviewMixin
 from workflow.data_extract_window import DataExtractWindow
@@ -101,7 +102,7 @@ def load_json_file_with_recovery(path, parent=None):
 
 
 
-class ClipboardTableApp(ClipboardTablePreviewMixin, ClipboardTableIoMixin):
+class ClipboardTableApp(ClipboardTableEditMixin, ClipboardTablePreviewMixin, ClipboardTableIoMixin):
     def __init__(self, root):
         self.root = root
         self.root.title("剪贴板表格解析器 - SQLite保存版")
@@ -358,101 +359,6 @@ class ClipboardTableApp(ClipboardTablePreviewMixin, ClipboardTableIoMixin):
             return
 
         self.load_table_from_sqlite(table_name)
-
-    def toggle_edit_mode(self):
-        self.edit_mode = not self.edit_mode
-
-        if self.edit_mode:
-            self.edit_btn_text.set("修改模式:开")
-            self.info_var.set("修改模式已开启：双击预览表格中的单元格即可修改。")
-        else:
-            self.edit_btn_text.set("修改模式:关")
-            self.info_var.set("修改模式已关闭。")
-
-            if self.edit_entry is not None:
-                self.edit_entry.destroy()
-                self.edit_entry = None
-
-    def on_tree_double_click(self, event):
-        if not self.edit_mode:
-            return
-
-        region = self.tree.identify("region", event.x, event.y)
-        if region != "cell":
-            return
-
-        row_id = self.tree.identify_row(event.y)
-        col_id = self.tree.identify_column(event.x)
-
-        if not row_id or not col_id:
-            return
-
-        try:
-            col_index = int(col_id.replace("#", "")) - 1
-            row_index = self.tree.index(row_id)
-        except Exception:
-            return
-
-        if row_index < 0 or row_index >= len(self.rows):
-            return
-
-        if col_index < 0 or col_index >= len(self.headers):
-            return
-
-        bbox = self.tree.bbox(row_id, col_id)
-        if not bbox:
-            return
-
-        x, y, width, height = bbox
-
-        old_value = ""
-        if col_index < len(self.rows[row_index]):
-            old_value = self.rows[row_index][col_index]
-
-        if self.edit_entry is not None:
-            self.edit_entry.destroy()
-            self.edit_entry = None
-
-        entry = ttk.Entry(self.tree)
-        entry.place(x=x, y=y, width=width, height=height)
-        entry.insert(0, old_value)
-        entry.select_range(0, tk.END)
-        entry.focus()
-
-        closed = {"done": False}
-
-        def close_editor(save=True):
-            if closed["done"]:
-                return
-
-            closed["done"] = True
-
-            if save:
-                new_value = entry.get()
-
-                while len(self.rows[row_index]) < len(self.headers):
-                    self.rows[row_index].append("")
-
-                self.rows[row_index][col_index] = new_value
-
-                values = list(self.tree.item(row_id, "values"))
-
-                while len(values) < len(self.headers):
-                    values.append("")
-
-                values[col_index] = new_value
-                self.tree.item(row_id, values=values)
-
-                self.info_var.set(f"已修改：第 {row_index + 1} 行，第 {col_index + 1} 列。")
-
-            entry.destroy()
-            self.edit_entry = None
-
-        entry.bind("<Return>", lambda e: close_editor(save=True))
-        entry.bind("<FocusOut>", lambda e: close_editor(save=True))
-        entry.bind("<Escape>", lambda e: close_editor(save=False))
-
-        self.edit_entry = entry
 
 class PlanWorkflowWindow(
     PlanWorkflowUiMixin,
