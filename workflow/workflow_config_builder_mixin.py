@@ -9,7 +9,7 @@ from ui.workflow.config.basic_data_config_ui import (
     build_new_columns_config as workflow_build_new_columns_config_ui,
     build_replace_config as workflow_build_replace_config_ui,
 )
-from workflow.control_flow_config_ui import (
+from ui.workflow.config.control_flow_config_ui import (
     anchor_id_from_choice as workflow_anchor_id_from_choice_ui,
     build_condition_check_config as workflow_build_condition_check_config_ui,
     build_conditional_jump_config as workflow_build_conditional_jump_config_ui,
