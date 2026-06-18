@@ -47,10 +47,7 @@ from datetime import datetime
 
 from db import PluginDatabaseAPI, TableAccessManager
 from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
-from workflow.default_configs import (
-    default_config_for_type as workflow_default_config_for_type,
-    default_name_for_node as workflow_default_name_for_node,
-)
+from workflow.default_configs import default_name_for_node as workflow_default_name_for_node
 from workflow.advanced_filter_window import AdvancedFilterWindow
 from workflow.batch_replace_window import BatchReplaceWindow
 from workflow.clipboard_table_edit_mixin import ClipboardTableEditMixin
@@ -72,6 +69,7 @@ from workflow.workflow_config_preview_mixin import WorkflowConfigPreviewMixin
 from workflow.workflow_config_area_mixin import WorkflowConfigAreaMixin
 from workflow.workflow_config_ui_helpers_mixin import WorkflowConfigUiHelpersMixin
 from workflow.workflow_app_support_mixin import WorkflowAppSupportMixin
+from workflow.workflow_default_config_mixin import WorkflowDefaultConfigMixin
 from workflow.workflow_node_list_mixin import WorkflowNodeListMixin
 from workflow.table_access_window_mixin import TableAccessWindowMixin
 from workflow.workflow_execution_mixin import WorkflowExecutionMixin
@@ -200,6 +198,7 @@ class PlanWorkflowWindow(
     WorkflowConfigAreaMixin,
     WorkflowConfigUiHelpersMixin,
     WorkflowAppSupportMixin,
+    WorkflowDefaultConfigMixin,
     WorkflowNodeListMixin,
     PlanWorkflowUiMixin,
     PlanPreviewMixin,
@@ -368,31 +367,6 @@ class PlanWorkflowWindow(
     def make_default_output_table_name(self):
         base = self.app.sanitize_sql_name(self.app.table_name_var.get(), "计划结果")
         return f"{base}_计划结果_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-    # ------------------------------------------------------------------
-    # 外部 Python 插件节点
-    # ------------------------------------------------------------------
-    def default_config_for_type(self, node_type):
-        table_names = []
-        needs_sqlite_defaults = {"匹配值输出列名", "选定列写入指定表", "字段映射写入表"}
-        if node_type in needs_sqlite_defaults:
-            try:
-                table_names = self.app.get_table_names()
-            except Exception:
-                pass
-        table_columns = {}
-        for table in table_names[:1]:
-            try:
-                table_columns[table] = self.app.get_table_columns(table)
-            except Exception:
-                table_columns[table] = []
-        return workflow_default_config_for_type(
-            node_type,
-            preview_headers=self.preview_headers,
-            table_names=table_names,
-            table_columns=table_columns,
-            app_dir=getattr(self.app, "app_dir", get_app_dir()),
-        )
 
     def default_name_for_node(self, node_type):
         return workflow_default_name_for_node(node_type)
