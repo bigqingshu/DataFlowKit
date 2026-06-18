@@ -5,6 +5,7 @@ from DataFlowKit import PlanWorkflowWindow
 from workflow import table_access_window_ui
 from workflow import table_access_window_actions
 from workflow import table_access_window_logic
+from workflow import table_access_window_selection
 from workflow.table_access_window_callbacks import create_table_access_window_callbacks
 from workflow.table_access_window_ui import (
     add_table_access_entry,
@@ -167,6 +168,16 @@ class TableAccessWindowUiTests(unittest.TestCase):
         self.assertIs(
             table_access_window_ui.save_table_access_entry,
             table_access_window_logic.save_table_access_entry,
+        )
+
+    def test_ui_selection_helpers_are_compatible_exports(self):
+        self.assertIs(
+            table_access_window_ui.refresh_table_access_window_table_tree,
+            table_access_window_selection.refresh_table_access_window_table_tree,
+        )
+        self.assertIs(
+            table_access_window_ui.on_table_access_window_node_selected,
+            table_access_window_selection.on_table_access_window_node_selected,
         )
 
     def make_window_action_fixture(self):

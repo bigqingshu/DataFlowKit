@@ -17,7 +17,7 @@ from workflow.table_access_window_logic import (
     table_access_preset_config,
     upsert_field_mapping_entry,
 )
-from workflow.table_access_window_ui import (
+from workflow.table_access_window_selection import (
     collect_table_access_window_table_form,
     current_table_access_window_node,
     current_table_access_window_table_entry,
