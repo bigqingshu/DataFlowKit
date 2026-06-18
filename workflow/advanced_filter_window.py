@@ -2,15 +2,10 @@
 """Advanced filter / data matching window."""
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk
 from datetime import datetime
 
-from db import TableAccessManager
 from workflow import advanced_filter_window_actions as advanced_filter_actions
-from workflow.advanced_filter_window_logic import (
-    build_advanced_filter_field_display_cache as workflow_build_advanced_filter_field_display_cache,
-    select_advanced_filter_combo_defaults as workflow_select_advanced_filter_combo_defaults,
-)
 
 
 def load_json_file_with_recovery(path, parent=None):
@@ -314,172 +309,31 @@ class AdvancedFilterWindow:
         preview_frame.columnconfigure(0, weight=1)
 
     def refresh_tables(self):
-        try:
-            self.tables_cache = self.app.get_table_names()
-
-            self.main_table_combo["values"] = self.tables_cache
-            self.add_table_combo["values"] = self.tables_cache
-
-            if self.tables_cache and not self.main_table_var.get():
-                self.main_table_var.set(self.tables_cache[0])
-                self.reset_selected_tables_to_main()
-
-            self.columns_cache = {}
-            for table in self.tables_cache:
-                try:
-                    self.columns_cache[table] = self.app.get_table_columns(table)
-                except Exception:
-                    self.columns_cache[table] = []
-
-            self.refresh_fields()
-            self.status_var.set(f"已读取数据库表：{len(self.tables_cache)} 个。")
-
-        except Exception as e:
-            messagebox.showerror("刷新失败", str(e))
+        return advanced_filter_actions.refresh_tables(self)
 
     def on_main_table_selected(self, event=None):
-        self.reset_selected_tables_to_main()
-        self.refresh_fields()
+        return advanced_filter_actions.on_main_table_selected(self, event=event)
 
     def reset_selected_tables_to_main(self):
-        table = self.main_table_var.get().strip()
-        self.selected_tables_listbox.delete(0, tk.END)
-        if table:
-            self.selected_tables_listbox.insert(tk.END, table)
+        return advanced_filter_actions.reset_selected_tables_to_main(self)
 
     def get_selected_tables(self):
-        return list(self.selected_tables_listbox.get(0, tk.END))
+        return advanced_filter_actions.get_selected_tables(self)
 
     def get_current_selected_source_table(self):
-        """
-        获取“1. 数据源选择”区域中当前要预览的表。
-        优先使用列表框中选中的表；如果没有选中，则使用主表。
-        """
-        selections = list(self.selected_tables_listbox.curselection())
-        if selections:
-            return self.selected_tables_listbox.get(selections[0])
-
-        table = self.main_table_var.get().strip()
-        if table:
-            return table
-
-        table = self.add_table_var.get().strip()
-        if table:
-            return table
-
-        return ""
+        return advanced_filter_actions.get_current_selected_source_table(self)
 
     def preview_selected_source_table(self):
-        """
-        在右侧“筛选结果预览”区域预览数据源列表中当前选中的表。
-        这个预览不会改变筛选条件，也不会执行多表匹配，只是快速查看原表内容。
-        """
-        table_name = self.get_current_selected_source_table()
-
-        if not table_name:
-            messagebox.showwarning("提示", "请先选择一个需要预览的数据表。")
-            return
-
-        try:
-            columns = self.columns_cache.get(table_name)
-            if columns is None:
-                columns = self.app.get_table_columns(table_name)
-                self.columns_cache[table_name] = columns
-
-            if not columns:
-                messagebox.showwarning("提示", f"表没有字段：{table_name}")
-                return
-
-            limit = self.get_int_setting(self.result_limit_var, 5000)
-            data = TableAccessManager(
-                self.app.get_db_path(),
-                node_type="高级筛选窗口预览",
-            ).read_table(
-                table_name,
-                limit=limit,
-            )
-
-            self.preview_headers = list(data.get("headers", columns))
-            self.preview_rows = [list(row) for row in data.get("rows", [])]
-
-            self.refresh_preview_tree()
-
-            self.status_var.set(
-                f"已预览选中表格：{table_name}，"
-                f"{len(self.preview_rows)} 行 × {len(self.preview_headers)} 列。"
-                f" 当前预览行数受“预览最大行数”限制。"
-            )
-
-        except Exception as e:
-            messagebox.showerror("预览表格失败", str(e))
+        return advanced_filter_actions.preview_selected_source_table(self)
 
     def add_selected_table(self):
-        table = self.add_table_var.get().strip()
-        if not table:
-            return
-
-        current = self.get_selected_tables()
-        if table not in current:
-            self.selected_tables_listbox.insert(tk.END, table)
-
-        self.refresh_fields()
+        return advanced_filter_actions.add_selected_table(self)
 
     def remove_selected_table(self):
-        selections = list(self.selected_tables_listbox.curselection())
-        if not selections:
-            return
-
-        main_table = self.main_table_var.get().strip()
-
-        for index in reversed(selections):
-            value = self.selected_tables_listbox.get(index)
-            if value == main_table:
-                messagebox.showwarning("提示", "主表不能从数据源列表中移除。")
-                continue
-            self.selected_tables_listbox.delete(index)
-
-        self.remove_invalid_rules_and_outputs()
-        self.refresh_fields()
+        return advanced_filter_actions.remove_selected_table(self)
 
     def refresh_fields(self):
-        selected_tables = self.get_selected_tables()
-
-        for table in selected_tables:
-            columns = self.columns_cache.get(table)
-            if columns is None:
-                try:
-                    columns = self.app.get_table_columns(table)
-                    self.columns_cache[table] = columns
-                except Exception:
-                    columns = []
-
-        self.field_display_cache = workflow_build_advanced_filter_field_display_cache(
-            selected_tables,
-            self.columns_cache,
-        )
-
-        for combo in [
-            self.filter_field_combo,
-            self.join_left_combo,
-            self.join_right_combo
-        ]:
-            combo["values"] = self.field_display_cache
-
-        self.available_fields_listbox.delete(0, tk.END)
-        for field in self.field_display_cache:
-            self.available_fields_listbox.insert(tk.END, field)
-
-        defaults = workflow_select_advanced_filter_combo_defaults(
-            self.field_display_cache,
-            self.filter_field_var.get(),
-            self.join_left_var.get(),
-            self.join_right_var.get(),
-        )
-        self.filter_field_var.set(defaults["filter_field"])
-        self.join_left_var.set(defaults["join_left"])
-        self.join_right_var.set(defaults["join_right"])
-
-        self.remove_invalid_rules_and_outputs()
+        return advanced_filter_actions.refresh_fields(self)
 
     def remove_invalid_rules_and_outputs(self):
         return advanced_filter_actions.remove_invalid_rules_and_outputs(self)

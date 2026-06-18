@@ -36,6 +36,17 @@ class FakeListbox:
     def insert(self, index, value):
         self.values.append(value)
 
+    def get(self, start, end=None):
+        if end is None:
+            return self.values[start]
+        return tuple(self.values[start:])
+
+
+class FakeCombo(dict):
+    def __init__(self):
+        super().__init__()
+        self["values"] = []
+
 
 class FakeTree:
     def __init__(self, rows=None, selection=None):
@@ -80,6 +91,7 @@ class FakeWindow:
         self.app.format_db_value = lambda value: "" if value is None else str(value)
         self.app.get_db_path = lambda: "fake.db"
         self.app.get_table_columns = lambda table: ["id", "name"]
+        self.app.get_table_names = lambda: ["orders", "people"]
 
         self.conditions = []
         self.join_rules = []
@@ -101,7 +113,13 @@ class FakeWindow:
         self.max_intermediate_var = FakeVar("200000")
         self.save_table_var = FakeVar("out")
         self.main_table_var = FakeVar("")
+        self.add_table_var = FakeVar("people")
         self.status_var = FakeVar()
+        self.main_table_combo = FakeCombo()
+        self.add_table_combo = FakeCombo()
+        self.filter_field_combo = FakeCombo()
+        self.join_left_combo = FakeCombo()
+        self.join_right_combo = FakeCombo()
         self.conditions_tree = FakeTree()
         self.join_tree = FakeTree()
         self.preview_tree = FakeTree()
@@ -137,13 +155,22 @@ class FakeWindow:
         return actions.get_int_setting(var, default_value)
 
     def get_selected_tables(self):
-        return list(self.selected_tables_listbox.values)
+        return actions.get_selected_tables(self)
+
+    def get_current_selected_source_table(self):
+        return actions.get_current_selected_source_table(self)
+
+    def reset_selected_tables_to_main(self):
+        return actions.reset_selected_tables_to_main(self)
 
     def refresh_fields(self):
-        self.field_display_cache = ["orders.id", "orders.name", "people.id"]
+        return actions.refresh_fields(self)
 
     def refresh_tables(self):
         self.refresh_tables_called = True
+
+    def remove_invalid_rules_and_outputs(self):
+        return actions.remove_invalid_rules_and_outputs(self)
 
     def export_template_data(self):
         return actions.export_template_data(self)
@@ -153,6 +180,56 @@ class FakeWindow:
 
 
 class AdvancedFilterWindowActionsTests(unittest.TestCase):
+    def test_source_table_actions_refresh_select_and_fields(self):
+        window = FakeWindow()
+
+        actions.refresh_tables(window)
+        self.assertEqual(window.tables_cache, ["orders", "people"])
+        self.assertEqual(window.main_table_combo["values"], ["orders", "people"])
+        self.assertEqual(window.main_table_var.get(), "orders")
+        self.assertEqual(window.selected_tables_listbox.values, ["orders"])
+        self.assertEqual(window.field_display_cache, ["orders.id", "orders.name"])
+        self.assertIn("已读取数据库表：2 个", window.status_var.get())
+
+        window.add_table_var.set("people")
+        actions.add_selected_table(window)
+        self.assertEqual(window.selected_tables_listbox.values, ["orders", "people"])
+        self.assertEqual(window.field_display_cache, ["orders.id", "orders.name", "people.id", "people.name"])
+
+        window.selected_tables_listbox._selection = (1,)
+        actions.remove_selected_table(window)
+        self.assertEqual(window.selected_tables_listbox.values, ["orders"])
+
+        window.selected_tables_listbox._selection = (0,)
+        with patch.object(actions.messagebox, "showwarning") as showwarning:
+            actions.remove_selected_table(window)
+        showwarning.assert_called_once()
+        self.assertEqual(window.selected_tables_listbox.values, ["orders"])
+
+    def test_preview_selected_source_table_reads_table_manager(self):
+        window = FakeWindow()
+        window.main_table_var.set("orders")
+        window.columns_cache["orders"] = ["id", "name"]
+
+        class FakeManager:
+            def __init__(self, db_path, node_type=""):
+                self.db_path = db_path
+                self.node_type = node_type
+
+            def read_table(self, table_name, limit=None):
+                return {
+                    "headers": ["id", "name"],
+                    "rows": [["1", "Alpha"]],
+                }
+
+        with patch.object(actions, "TableAccessManager", FakeManager):
+            actions.preview_selected_source_table(window)
+
+        self.assertEqual(window.preview_headers, ["id", "name"])
+        self.assertEqual(window.preview_rows, [["1", "Alpha"]])
+        self.assertEqual(window.preview_tree.rows, [("1", "Alpha")])
+        self.assertIn("已预览选中表格：orders", window.status_var.get())
+
     def test_condition_actions_update_state_and_tree(self):
         window = FakeWindow()
 

@@ -4,12 +4,14 @@
 import tkinter as tk
 from tkinter import messagebox, filedialog
 
+from db import TableAccessManager
 from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
 from workflow.advanced_filter_window_logic import (
     add_advanced_filter_condition,
     add_advanced_filter_join_rule,
     add_advanced_filter_output_fields,
     add_all_advanced_filter_output_fields,
+    build_advanced_filter_field_display_cache,
     build_advanced_filter_main_preview_snapshot,
     build_advanced_filter_preview_rows,
     build_advanced_filter_result_records,
@@ -30,8 +32,178 @@ from workflow.advanced_filter_window_logic import (
     parse_positive_int_setting,
     remove_advanced_filter_items_by_indexes,
     remove_advanced_filter_output_fields,
+    select_advanced_filter_combo_defaults,
     select_advanced_filter_template_tables,
 )
+
+
+def refresh_tables(window):
+    try:
+        window.tables_cache = window.app.get_table_names()
+
+        window.main_table_combo["values"] = window.tables_cache
+        window.add_table_combo["values"] = window.tables_cache
+
+        if window.tables_cache and not window.main_table_var.get():
+            window.main_table_var.set(window.tables_cache[0])
+            window.reset_selected_tables_to_main()
+
+        window.columns_cache = {}
+        for table in window.tables_cache:
+            try:
+                window.columns_cache[table] = window.app.get_table_columns(table)
+            except Exception:
+                window.columns_cache[table] = []
+
+        window.refresh_fields()
+        window.status_var.set(f"已读取数据库表：{len(window.tables_cache)} 个。")
+
+    except Exception as e:
+        messagebox.showerror("刷新失败", str(e))
+
+
+def on_main_table_selected(window, event=None):
+    window.reset_selected_tables_to_main()
+    window.refresh_fields()
+
+
+def reset_selected_tables_to_main(window):
+    table = window.main_table_var.get().strip()
+    window.selected_tables_listbox.delete(0, tk.END)
+    if table:
+        window.selected_tables_listbox.insert(tk.END, table)
+
+
+def get_selected_tables(window):
+    return list(window.selected_tables_listbox.get(0, tk.END))
+
+
+def get_current_selected_source_table(window):
+    selections = list(window.selected_tables_listbox.curselection())
+    if selections:
+        return window.selected_tables_listbox.get(selections[0])
+
+    table = window.main_table_var.get().strip()
+    if table:
+        return table
+
+    table = window.add_table_var.get().strip()
+    if table:
+        return table
+
+    return ""
+
+
+def preview_selected_source_table(window):
+    table_name = window.get_current_selected_source_table()
+
+    if not table_name:
+        messagebox.showwarning("提示", "请先选择一个需要预览的数据表。")
+        return
+
+    try:
+        columns = window.columns_cache.get(table_name)
+        if columns is None:
+            columns = window.app.get_table_columns(table_name)
+            window.columns_cache[table_name] = columns
+
+        if not columns:
+            messagebox.showwarning("提示", f"表没有字段：{table_name}")
+            return
+
+        limit = window.get_int_setting(window.result_limit_var, 5000)
+        data = TableAccessManager(
+            window.app.get_db_path(),
+            node_type="高级筛选窗口预览",
+        ).read_table(
+            table_name,
+            limit=limit,
+        )
+
+        window.preview_headers = list(data.get("headers", columns))
+        window.preview_rows = [list(row) for row in data.get("rows", [])]
+
+        window.refresh_preview_tree()
+
+        window.status_var.set(
+            f"已预览选中表格：{table_name}，"
+            f"{len(window.preview_rows)} 行 × {len(window.preview_headers)} 列。"
+            f" 当前预览行数受“预览最大行数”限制。"
+        )
+
+    except Exception as e:
+        messagebox.showerror("预览表格失败", str(e))
+
+
+def add_selected_table(window):
+    table = window.add_table_var.get().strip()
+    if not table:
+        return
+
+    current = window.get_selected_tables()
+    if table not in current:
+        window.selected_tables_listbox.insert(tk.END, table)
+
+    window.refresh_fields()
+
+
+def remove_selected_table(window):
+    selections = list(window.selected_tables_listbox.curselection())
+    if not selections:
+        return
+
+    main_table = window.main_table_var.get().strip()
+
+    for index in reversed(selections):
+        value = window.selected_tables_listbox.get(index)
+        if value == main_table:
+            messagebox.showwarning("提示", "主表不能从数据源列表中移除。")
+            continue
+        window.selected_tables_listbox.delete(index)
+
+    window.remove_invalid_rules_and_outputs()
+    window.refresh_fields()
+
+
+def refresh_fields(window):
+    selected_tables = window.get_selected_tables()
+
+    for table in selected_tables:
+        columns = window.columns_cache.get(table)
+        if columns is None:
+            try:
+                columns = window.app.get_table_columns(table)
+                window.columns_cache[table] = columns
+            except Exception:
+                columns = []
+
+    window.field_display_cache = build_advanced_filter_field_display_cache(
+        selected_tables,
+        window.columns_cache,
+    )
+
+    for combo in [
+        window.filter_field_combo,
+        window.join_left_combo,
+        window.join_right_combo
+    ]:
+        combo["values"] = window.field_display_cache
+
+    window.available_fields_listbox.delete(0, tk.END)
+    for field in window.field_display_cache:
+        window.available_fields_listbox.insert(tk.END, field)
+
+    defaults = select_advanced_filter_combo_defaults(
+        window.field_display_cache,
+        window.filter_field_var.get(),
+        window.join_left_var.get(),
+        window.join_right_var.get(),
+    )
+    window.filter_field_var.set(defaults["filter_field"])
+    window.join_left_var.set(defaults["join_left"])
+    window.join_right_var.set(defaults["join_right"])
+
+    window.remove_invalid_rules_and_outputs()
 
 
 def remove_invalid_rules_and_outputs(window):
