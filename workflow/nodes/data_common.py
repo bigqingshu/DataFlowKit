@@ -3,7 +3,7 @@
 
 import re
 
-from core.data_utils import normalize_rows
+from core.data_utils import normalize_rows, safe_cell
 
 
 MAX_EXPANDED_ROWS = 200000
@@ -167,3 +167,17 @@ def compare_values(text, op, value, case_sensitive=True):
         if op == "小于等于":
             return a <= b
     return False
+
+
+def row_is_empty(row, col_count):
+    fixed = list(row) + [""] * max(0, col_count - len(row))
+    return all(str(value).strip() == "" for value in fixed[:col_count])
+
+
+def last_non_empty_row_index_by_field(headers, rows, field_name):
+    idx = field_index(headers, field_name)
+    normalized = normalize_rows(rows, len(headers))
+    for row_idx in range(len(normalized) - 1, -1, -1):
+        if safe_cell(normalized[row_idx], idx).strip() != "":
+            return row_idx
+    return -1
