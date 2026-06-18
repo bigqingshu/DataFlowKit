@@ -2,12 +2,13 @@
 import unittest
 
 from DataFlowKit import PlanWorkflowWindow
+from workflow import table_access_window_ui
+from workflow.table_access_window_callbacks import create_table_access_window_callbacks
 from workflow.table_access_window_ui import (
     add_table_access_entry,
     apply_auto_field_mapping_by_name,
     apply_auto_field_mapping_by_order,
     build_table_access_impact_preview,
-    create_table_access_window_callbacks,
     build_table_access_permission_check,
     clear_field_mapping,
     delete_table_access_entry,
@@ -660,6 +661,10 @@ class TableAccessWindowUiTests(unittest.TestCase):
         self.assertEqual(status_var.get(), "字段映射已清空。")
 
     def test_callback_factories_delegate_to_window_methods(self):
+        self.assertIs(
+            table_access_window_ui.create_table_access_window_callbacks,
+            create_table_access_window_callbacks,
+        )
         window = DummyWindow()
         state = {"node_index": 0, "table_index": 0, "field_keys": []}
         table_section = {}
