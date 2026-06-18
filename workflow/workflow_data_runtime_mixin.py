@@ -38,7 +38,7 @@ from workflow.nodes.filter_plan_nodes import (
     normalize_plan_filter_field_reference as workflow_normalize_plan_filter_field_reference,
     plan_filter_field_belongs_to_table as workflow_plan_filter_field_belongs_to_table,
 )
-from workflow.nodes.data_nodes import (
+from workflow.nodes.filter_execution_nodes import (
     build_plan_filter_right_index as workflow_build_plan_filter_right_index,
     eval_plan_condition_record as workflow_eval_plan_condition_record,
     eval_plan_join_rule_record as workflow_eval_plan_join_rule_record,

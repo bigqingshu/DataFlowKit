@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Window adapters for advanced filter workflow node execution."""
 
-from workflow.nodes.data_nodes import apply_filter_node as apply_filter_node_core
+from workflow.nodes.filter_execution_nodes import apply_filter_node as apply_filter_node_core
 from workflow.nodes.filter_plan_nodes import (
     build_filter_config_probe_result,
     build_filter_runtime_plan,
