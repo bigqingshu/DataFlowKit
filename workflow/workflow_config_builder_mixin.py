@@ -28,7 +28,7 @@ from ui.workflow.config.file_config_ui import (
 from workflow.match_value_output_config_ui import (
     build_match_value_output_field_name_config as workflow_build_match_value_output_field_name_config_ui,
 )
-from workflow.merge_config_ui import (
+from ui.workflow.config.merge_config_ui import (
     build_merge_config as workflow_build_merge_config_ui,
     display_to_sep_value as workflow_display_to_sep_value,
     ensure_separator_count as workflow_ensure_separator_count_ui,
@@ -60,7 +60,7 @@ from workflow.nodes.selected_columns_nodes import (
     normalize_selected_columns_write_mode as workflow_normalize_selected_columns_write_mode,
     selected_columns_should_write as workflow_selected_columns_should_write,
 )
-from workflow.table_edit_config_ui import (
+from ui.workflow.config.table_edit_config_ui import (
     build_area_fill_config as workflow_build_area_fill_config_ui,
     build_copy_column_config as workflow_build_copy_column_config_ui,
     build_copy_row_config as workflow_build_copy_row_config_ui,
@@ -70,7 +70,7 @@ from workflow.table_edit_config_ui import (
     build_move_columns_config as workflow_build_move_columns_config_ui,
     build_sequence_fill_config as workflow_build_sequence_fill_config_ui,
 )
-from workflow.writeback_config_ui import (
+from ui.workflow.config.writeback_config_ui import (
     build_writeback_config as workflow_build_writeback_config_ui,
 )
 
