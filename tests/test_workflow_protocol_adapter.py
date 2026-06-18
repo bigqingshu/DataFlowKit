@@ -21,6 +21,8 @@ class WorkflowProtocolAdapterTests(unittest.TestCase):
             display_type_for_node({"node_type_id": "plugin.demo", "config": {"plugin_id": "demo"}}),
             "插件节点",
         )
+        self.assertEqual(stable_node_type_id({"node_type_id": "core.new_columns", "config": {}}), "core.new_columns")
+        self.assertEqual(display_type_for_node({"node_type_id": "core.new_columns", "config": {}}), "新建列")
 
     def test_upgrade_node_preserves_config_and_adds_protocol_fields(self):
         calls = []

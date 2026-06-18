@@ -25,16 +25,29 @@ class HeadlessWorkflowEngineApiTests(unittest.TestCase):
         engine = self.make_engine()
 
         self.assertIn("新建列", engine.list_node_types(include_unsupported=False))
+        self.assertIn("core.new_columns", engine.list_node_type_ids(include_unsupported=False))
         self.assertNotIn("插件节点", engine.list_node_types(include_unsupported=False))
+        self.assertNotIn("core.plugin", engine.list_node_type_ids(include_unsupported=False))
 
-        schema = engine.get_node_schema("新建列", preview_headers=["A"])
+        schema = engine.get_node_schema("core.new_columns", preview_headers=["A"])
         node = engine.make_default_node("新建列", preview_headers=["A"])
+        protocol_node = engine.make_default_node(
+            "core.new_columns",
+            preview_headers=["A"],
+            include_legacy_type=False,
+        )
 
+        self.assertEqual(schema["node_type_id"], "core.new_columns")
+        self.assertEqual(schema["display_name"], "新建列")
         self.assertTrue(schema["supported"])
         self.assertIn("columns_text", schema["default_config"])
         self.assertEqual(node["node_id"], "n1")
+        self.assertEqual(node["node_type_id"], "core.new_columns")
         self.assertEqual(node["type"], "新建列")
         self.assertTrue(node["enabled"])
+        self.assertEqual(protocol_node["node_id"], "n2")
+        self.assertEqual(protocol_node["node_type_id"], "core.new_columns")
+        self.assertNotIn("type", protocol_node)
 
     def test_validate_plan_reports_unsupported_nodes_without_running(self):
         engine = self.make_engine()
@@ -95,6 +108,45 @@ class HeadlessWorkflowEngineApiTests(unittest.TestCase):
         self.assertIn("新建列完成", result.logs[0])
         self.assertIn("修改 2 处", result.logs[1])
 
+    def test_preview_plan_runs_node_type_id_only_nodes(self):
+        engine = self.make_engine()
+        plan = {
+            "nodes": [
+                {
+                    "node_type_id": "core.new_columns",
+                    "enabled": True,
+                    "config": {
+                        "columns_text": "B=b",
+                        "value_mode": "按列配置值",
+                    },
+                },
+                {
+                    "node_type_id": "core.replace",
+                    "enabled": True,
+                    "config": {
+                        "target_field": "B",
+                        "match_mode": "包含",
+                        "replace_mode": "局部替换匹配字符串",
+                        "match_value": "b",
+                        "replace_value": "c",
+                    },
+                },
+            ],
+        }
+
+        events = []
+        result = engine.preview_plan(
+            plan,
+            input_table={"type": "table", "headers": ["A"], "rows": [["a"]]},
+            progress_callback=events.append,
+        )
+
+        self.assertEqual(result.headers, ["A", "B"])
+        self.assertEqual(result.rows, [["a", "c"]])
+        self.assertEqual(result.context["current_node_info"]["node_type_id"], "core.replace")
+        self.assertEqual(events[1]["node_type_id"], "core.new_columns")
+        self.assertIn("新建列", result.logs[0])
+
     def test_stop_index_previews_prefix_only(self):
         engine = self.make_engine()
         plan = {
@@ -117,7 +169,7 @@ class HeadlessWorkflowEngineApiTests(unittest.TestCase):
         plan = {
             "nodes": [
                 {
-                    "type": "条件判断节点",
+                    "node_type_id": "core.condition_check",
                     "config": {
                         "flag_name": "has_rows",
                         "condition_type": "表行数",
@@ -128,15 +180,15 @@ class HeadlessWorkflowEngineApiTests(unittest.TestCase):
                     },
                 },
                 {
-                    "type": "条件跳转节点",
+                    "node_type_id": "core.conditional_jump",
                     "config": {
                         "flag_name": "has_rows",
                         "jump_rules": [{"value": "TRUE", "target_anchor_id": "end"}],
                     },
                 },
-                {"type": "新建列", "config": {"columns_text": "Skipped=x", "value_mode": "按列配置值"}},
-                {"type": "跳转锚点节点", "config": {"anchor_id": "end", "anchor_name": "结束"}},
-                {"type": "新建列", "config": {"columns_text": "Done=y", "value_mode": "按列配置值"}},
+                {"node_type_id": "core.new_columns", "config": {"columns_text": "Skipped=x", "value_mode": "按列配置值"}},
+                {"node_type_id": "core.jump_anchor", "config": {"anchor_id": "end", "anchor_name": "结束"}},
+                {"node_type_id": "core.new_columns", "config": {"columns_text": "Done=y", "value_mode": "按列配置值"}},
             ],
             "headers": ["A"],
             "rows": [["a"]],

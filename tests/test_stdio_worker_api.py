@@ -20,20 +20,29 @@ class StdioWorkerApiTests(unittest.TestCase):
         worker = StdioWorker()
 
         listed = worker.handle_request(request("list_node_types", {"include_unsupported": False}))
-        node_type = worker.handle_request(request("get_node_type", {"node_type": "新建列", "preview_headers": ["A"]}))
+        node_type = worker.handle_request(request("get_node_type", {"node_type_id": "core.new_columns", "preview_headers": ["A"]}))
 
         self.assertTrue(listed["ok"])
         self.assertIn("新建列", listed["result"]["node_types"])
+        self.assertIn("core.new_columns", listed["result"]["node_type_ids"])
+        self.assertEqual(listed["result"]["node_catalog"][0]["node_type_id"], "core.jump_anchor")
         self.assertNotIn("插件节点", listed["result"]["node_types"])
+        self.assertNotIn("core.plugin", listed["result"]["node_type_ids"])
         self.assertTrue(node_type["ok"])
+        self.assertEqual(node_type["result"]["node_type_id"], "core.new_columns")
         self.assertEqual(node_type["result"]["node_type"], "新建列")
+        self.assertEqual(node_type["result"]["display_name"], "新建列")
         self.assertTrue(node_type["result"]["supported"])
         self.assertIn("columns_text", node_type["result"]["default_config"])
 
     def test_make_default_node_and_validate_plan(self):
         worker = StdioWorker()
 
-        made = worker.handle_request(request("make_default_node", {"node_type": "新建列", "preview_headers": ["A"]}))
+        made = worker.handle_request(request("make_default_node", {
+            "node_type_id": "core.new_columns",
+            "preview_headers": ["A"],
+            "include_legacy_type": False,
+        }))
         validation = worker.handle_request(request("validate_plan", {
             "plan": {
                 "nodes": [
@@ -44,7 +53,8 @@ class StdioWorkerApiTests(unittest.TestCase):
         }))
 
         self.assertTrue(made["ok"])
-        self.assertEqual(made["result"]["node"]["type"], "新建列")
+        self.assertEqual(made["result"]["node"]["node_type_id"], "core.new_columns")
+        self.assertNotIn("type", made["result"]["node"])
         self.assertTrue(validation["ok"])
         self.assertFalse(validation["result"]["ok"])
         self.assertEqual(validation["result"]["issues"][0]["code"], "unsupported_node")
@@ -55,7 +65,7 @@ class StdioWorkerApiTests(unittest.TestCase):
             "plan": {
                 "nodes": [
                     {
-                        "type": "新建列",
+                        "node_type_id": "core.new_columns",
                         "enabled": True,
                         "config": {"columns_text": "B=b", "value_mode": "按列配置值"},
                     }

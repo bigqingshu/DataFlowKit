@@ -68,7 +68,13 @@ class StdioWorker:
             return {
                 "node_types": self.engine.list_node_types(
                     include_unsupported=bool(payload.get("include_unsupported", True))
-                )
+                ),
+                "node_type_ids": self.engine.list_node_type_ids(
+                    include_unsupported=bool(payload.get("include_unsupported", True))
+                ),
+                "node_catalog": self.engine.list_node_catalog(
+                    include_unsupported=bool(payload.get("include_unsupported", True))
+                ),
             }
         if action == "get_node_type":
             node_type = payload.get("node_type") or payload.get("type") or payload.get("node_type_id")
@@ -87,6 +93,7 @@ class StdioWorker:
                     table_names=payload.get("table_names"),
                     table_columns=payload.get("table_columns"),
                     name=payload.get("name"),
+                    include_legacy_type=bool(payload.get("include_legacy_type", True)),
                 )
             }
         if action == "validate_plan":

@@ -42,37 +42,35 @@ from workflow.nodes.data_nodes import (
     apply_row_data_mapping_node,
     apply_sequence_fill_node,
 )
-from workflow.workflow_constants import WorkflowConstantsMixin
+from workflow.protocol_nodes import (
+    DEFAULT_NODE_VERSION,
+    HEADLESS_CONTROL_NODE_TYPE_IDS,
+    HEADLESS_DATA_NODE_TYPE_IDS,
+    HEADLESS_NODE_TYPE_IDS,
+    display_type_for_node,
+    display_type_for_node_type_id,
+    is_headless_supported_node_type,
+    list_node_type_definitions,
+    list_node_type_ids,
+    normalize_node_type_id,
+    stable_node_type_id_for_node,
+)
 
 
+SUPPORTED_DATA_NODE_TYPE_IDS = set(HEADLESS_DATA_NODE_TYPE_IDS)
+SUPPORTED_CONTROL_NODE_TYPE_IDS = set(HEADLESS_CONTROL_NODE_TYPE_IDS)
+SUPPORTED_HEADLESS_NODE_TYPE_IDS = set(HEADLESS_NODE_TYPE_IDS)
+
+# Backward-compatible display-name sets for older callers/tests that imported
+# these module constants directly.  New code should use the *_NODE_TYPE_IDS sets.
 SUPPORTED_DATA_NODES = {
-    "批量替换",
-    "数据提取",
-    "格式规范化 / 日期时间解析",
-    "新建日期时间列",
-    "新建列",
-    "合并列",
-    "批量更改列名",
-    "去重 / 重复数据处理",
-    "列数字运算",
-    "复制列",
-    "复制行",
-    "删除行",
-    "填充值",
-    "序列填充",
-    "区域填充",
-    "行数据映射填充",
-    "删除列",
-    "移动列",
+    display_type_for_node_type_id(node_type_id)
+    for node_type_id in SUPPORTED_DATA_NODE_TYPE_IDS
 }
-
 SUPPORTED_CONTROL_NODES = {
-    "跳转锚点节点",
-    "无条件跳转节点",
-    "条件判断节点",
-    "条件跳转节点",
+    display_type_for_node_type_id(node_type_id)
+    for node_type_id in SUPPORTED_CONTROL_NODE_TYPE_IDS
 }
-
 SUPPORTED_HEADLESS_NODES = SUPPORTED_DATA_NODES | SUPPORTED_CONTROL_NODES
 
 
@@ -93,21 +91,33 @@ class HeadlessWorkflowEngine:
         self.now_factory = now_factory or datetime.now
 
     def list_node_types(self, include_unsupported=True):
-        node_types = list(WorkflowConstantsMixin.NODE_TYPES)
-        if include_unsupported:
-            return node_types
-        return [node_type for node_type in node_types if node_type in SUPPORTED_HEADLESS_NODES]
+        return [
+            item["display_name"]
+            for item in list_node_type_definitions(include_unsupported=include_unsupported)
+        ]
+
+    def list_node_type_ids(self, include_unsupported=True):
+        return list_node_type_ids(include_unsupported=include_unsupported)
+
+    def list_node_catalog(self, include_unsupported=True):
+        return list_node_type_definitions(include_unsupported=include_unsupported)
 
     def is_node_supported(self, node_type):
-        return node_type in SUPPORTED_HEADLESS_NODES
+        return is_headless_supported_node_type(node_type)
 
     def get_node_schema(self, node_type, preview_headers=None, table_names=None, table_columns=None):
+        node_type_id = self._node_type_id_from_value(node_type)
+        display_name = display_type_for_node_type_id(node_type_id)
         return {
-            "node_type": node_type,
-            "supported": self.is_node_supported(node_type),
-            "default_name": default_name_for_node(node_type),
+            "node_type_id": node_type_id,
+            "node_version": DEFAULT_NODE_VERSION,
+            "display_name": display_name,
+            "node_type": display_name,
+            "type": display_name,
+            "supported": self.is_node_supported(node_type_id),
+            "default_name": default_name_for_node(display_name),
             "default_config": default_config_for_type(
-                node_type,
+                display_name,
                 preview_headers=preview_headers,
                 table_names=table_names,
                 table_columns=table_columns,
@@ -124,19 +134,34 @@ class HeadlessWorkflowEngine:
             table_columns=table_columns,
         )
 
-    def make_default_node(self, node_type, preview_headers=None, table_names=None, table_columns=None, *, name=None):
-        return {
+    def make_default_node(
+        self,
+        node_type,
+        preview_headers=None,
+        table_names=None,
+        table_columns=None,
+        *,
+        name=None,
+        include_legacy_type=True,
+    ):
+        node_type_id = self._node_type_id_from_value(node_type)
+        display_name = display_type_for_node_type_id(node_type_id)
+        node = {
             "node_id": self.node_id_factory(),
-            "type": node_type,
-            "name": name or default_name_for_node(node_type),
+            "node_type_id": node_type_id,
+            "node_version": DEFAULT_NODE_VERSION,
+            "name": name or default_name_for_node(display_name),
             "enabled": True,
             "config": default_config_for_type(
-                node_type,
+                display_name,
                 preview_headers=preview_headers,
                 table_names=table_names,
                 table_columns=table_columns,
             ),
         }
+        if include_legacy_type:
+            node["type"] = display_name
+        return node
 
     def validate_plan(self, plan, *, stop_index=None, start_index=0):
         issues = []
@@ -154,40 +179,57 @@ class HeadlessWorkflowEngine:
             if not isinstance(node, dict):
                 issues.append(self._issue("error", "invalid_node", idx, "", "节点必须是 dict"))
                 continue
-            node_type = str(node.get("type", "") or "").strip()
-            if not node_type:
-                issues.append(self._issue("error", "missing_node_type", idx, "", "节点缺少 type"))
+            node_type_id = self._node_type_id_from_node(node)
+            node_label = self._node_label(node, node_type_id)
+            if not node_type_id:
+                issues.append(self._issue(
+                    "error",
+                    "missing_node_type",
+                    idx,
+                    "",
+                    "节点缺少 node_type_id/type",
+                ))
                 continue
             enabled = bool(node.get("enabled", True))
-            if enabled and not self.is_node_supported(node_type):
+            if enabled and not self.is_node_supported(node_type_id):
                 issues.append(self._issue(
                     "error",
                     "unsupported_node",
                     idx,
-                    node_type,
-                    f"HeadlessWorkflowEngine 第一版暂不支持节点：{node_type}",
+                    node_label,
+                    f"HeadlessWorkflowEngine 第一版暂不支持节点：{node_label}",
+                    node_type_id=node_type_id,
                 ))
-            elif not enabled and not self.is_node_supported(node_type):
+            elif not enabled and not self.is_node_supported(node_type_id):
                 issues.append(self._issue(
                     "warning",
                     "disabled_unsupported_node",
                     idx,
-                    node_type,
-                    f"禁用节点暂不支持但执行时会跳过：{node_type}",
+                    node_label,
+                    f"禁用节点暂不支持但执行时会跳过：{node_label}",
+                    node_type_id=node_type_id,
                 ))
 
             config = node.get("config", {})
-            if node_type == "跳转锚点节点":
+            if node_type_id == "core.jump_anchor":
                 anchor_id = str((config or {}).get("anchor_id", "") or "").strip()
                 if not anchor_id:
-                    issues.append(self._issue("error", "missing_anchor_id", idx, node_type, "跳转锚点缺少 anchor_id"))
+                    issues.append(self._issue(
+                        "error",
+                        "missing_anchor_id",
+                        idx,
+                        node_label,
+                        "跳转锚点缺少 anchor_id",
+                        node_type_id=node_type_id,
+                    ))
                 elif anchor_id in anchor_ids:
                     issues.append(self._issue(
                         "error",
                         "duplicate_anchor_id",
                         idx,
-                        node_type,
+                        node_label,
                         f"锚点 ID 重复：{anchor_id}，首次出现在节点 {anchor_ids[anchor_id] + 1}",
+                        node_type_id=node_type_id,
                     ))
                 else:
                     anchor_ids[anchor_id] = idx
@@ -197,6 +239,7 @@ class HeadlessWorkflowEngine:
             "ok": ok,
             "issues": issues,
             "node_count": len(nodes),
+            "supported_node_type_ids": sorted(SUPPORTED_HEADLESS_NODE_TYPE_IDS),
             "supported_node_types": sorted(SUPPORTED_HEADLESS_NODES),
         }
 
@@ -256,9 +299,10 @@ class HeadlessWorkflowEngine:
 
             idx = pc
             node = nodes[idx]
-            node_type = str(node.get("type", "") or "")
+            node_type_id = self._node_type_id_from_node(node)
+            node_label = self._node_label(node, node_type_id)
             if not node.get("enabled", True):
-                logs.append(f"跳过 {idx + 1}.{node_type}")
+                logs.append(f"跳过 {idx + 1}.{node_label}")
                 pc = idx + 1
                 continue
 
@@ -270,8 +314,9 @@ class HeadlessWorkflowEngine:
                 "node_index": idx,
                 "node_total": len(nodes),
                 "step": steps,
-                "node_name": node_type,
-                "message": f"开始执行节点 {idx + 1}.{node_type}",
+                "node_name": node_label,
+                "node_type_id": node_type_id,
+                "message": f"开始执行节点 {idx + 1}.{node_label}",
             })
 
             try:
@@ -290,25 +335,27 @@ class HeadlessWorkflowEngine:
                     "type": "node_error",
                     "node_index": idx,
                     "node_total": len(nodes),
-                    "node_name": node_type,
-                    "message": f"节点 {idx + 1}.{node_type} 执行失败：{exc}",
+                    "node_name": node_label,
+                    "node_type_id": node_type_id,
+                    "message": f"节点 {idx + 1}.{node_label} 执行失败：{exc}",
                 })
                 if raise_error:
-                    raise RuntimeError(f"第 {idx + 1} 个节点【{node_type}】执行失败：{exc}") from exc
-                logs.append(f"失败 {idx + 1}.{node_type}：{exc}")
+                    raise RuntimeError(f"第 {idx + 1} 个节点【{node_label}】执行失败：{exc}") from exc
+                logs.append(f"失败 {idx + 1}.{node_label}：{exc}")
                 pc = idx + 1
                 continue
 
-            logs.append(self._build_node_log(idx, node_type, before_shape, headers, rows, stat))
+            logs.append(self._build_node_log(idx, node_label, before_shape, headers, rows, stat))
             self._emit(progress_callback, {
                 "type": "node_done",
                 "node_index": idx,
                 "node_total": len(nodes),
                 "step": steps,
-                "node_name": node_type,
+                "node_name": node_label,
+                "node_type_id": node_type_id,
                 "rows": len(rows),
                 "cols": len(headers),
-                "message": f"完成节点 {idx + 1}.{node_type}：{len(rows)} 行 × {len(headers)} 列",
+                "message": f"完成节点 {idx + 1}.{node_label}：{len(rows)} 行 × {len(headers)} 列",
             })
             pc = self._resolve_next_pc(idx, jump_to, len(nodes))
 
@@ -330,66 +377,67 @@ class HeadlessWorkflowEngine:
         return result
 
     def _apply_node(self, headers, rows, node, context, anchors, nodes, *, execute_actions=False, cancel_event=None):
-        node_type = str(node.get("type", "") or "")
+        node_type_id = self._node_type_id_from_node(node)
+        node_label = self._node_label(node, node_type_id)
         config = node.get("config", {}) or {}
-        if node_type in SUPPORTED_DATA_NODES:
-            h, r, stat = self._apply_data_node(headers, rows, node_type, config, context, cancel_event)
+        if node_type_id in SUPPORTED_DATA_NODE_TYPE_IDS:
+            h, r, stat = self._apply_data_node(headers, rows, node_type_id, config, context, cancel_event)
             return h, r, stat, None
-        if node_type == "跳转锚点节点":
+        if node_type_id == "core.jump_anchor":
             stat = self._append_jump_log(context, "anchor", config, "定位锚点：" + str(config.get("anchor_id", "") or "未命名"))
             return list(headers), [list(row) for row in rows], stat, None
-        if node_type == "无条件跳转节点":
+        if node_type_id == "core.unconditional_jump":
             target = str(config.get("target_anchor_id", "") or "").strip()
             jump_to, message = self._resolve_anchor(target, anchors)
             self._append_jump_log(context, "unconditional_jump", config, message, target_index=jump_to)
             return list(headers), [list(row) for row in rows], "无条件跳转：" + message, jump_to
-        if node_type == "条件判断节点":
+        if node_type_id == "core.condition_check":
             h, r, stat = self._apply_condition_check(headers, rows, config, context)
             return h, r, stat, None
-        if node_type == "条件跳转节点":
+        if node_type_id == "core.conditional_jump":
             headers, rows, stat, jump_to = self._apply_conditional_jump(headers, rows, config, context, anchors)
             return headers, rows, stat, jump_to
-        raise ValueError(f"HeadlessWorkflowEngine 暂不支持节点：{node_type}")
+        raise ValueError(f"HeadlessWorkflowEngine 暂不支持节点：{node_label}")
 
-    def _apply_data_node(self, headers, rows, node_type, config, context, cancel_event):
+    def _apply_data_node(self, headers, rows, node_type_id, config, context, cancel_event):
         node_context = self._make_node_context(context, cancel_event)
-        if node_type == "批量替换":
+        if node_type_id == "core.replace":
             return apply_replace_node(headers, rows, config, context=node_context)
-        if node_type == "数据提取":
+        if node_type_id == "core.extract":
             return apply_extract_node(headers, rows, config)
-        if node_type == "格式规范化 / 日期时间解析":
+        if node_type_id == "core.datetime_format":
             return apply_format_datetime_node(headers, rows, config)
-        if node_type == "新建日期时间列":
+        if node_type_id == "core.current_datetime_column":
             return apply_current_datetime_column_node(headers, rows, config)
-        if node_type == "新建列":
+        if node_type_id == "core.new_columns":
             return apply_new_columns_node(headers, rows, config)
-        if node_type == "合并列":
+        if node_type_id == "core.merge_columns":
             return apply_merge_node(headers, rows, config, context=node_context)
-        if node_type == "批量更改列名":
+        if node_type_id == "core.rename_columns":
             return apply_rename_columns_node(headers, rows, config)
-        if node_type == "去重 / 重复数据处理":
+        if node_type_id == "core.dedupe":
             return apply_dedupe_node(headers, rows, config, context=node_context)
-        if node_type == "列数字运算":
+        if node_type_id == "core.numeric_column":
             return apply_numeric_column_node(headers, rows, config, context=node_context)
-        if node_type == "复制列":
+        if node_type_id == "core.copy_column":
             return apply_copy_column_node(headers, rows, config)
-        if node_type == "复制行":
+        if node_type_id == "core.copy_row":
             return apply_copy_row_node(headers, rows, config)
-        if node_type == "删除行":
+        if node_type_id == "core.delete_rows":
             return apply_delete_rows_node(headers, rows, config)
-        if node_type == "填充值":
+        if node_type_id == "core.fill_value":
             return apply_fill_value_node(headers, rows, config, context=node_context)
-        if node_type == "序列填充":
+        if node_type_id == "core.sequence_fill":
             return apply_sequence_fill_node(headers, rows, config, context=node_context)
-        if node_type == "区域填充":
+        if node_type_id == "core.area_fill":
             return apply_area_fill_node(headers, rows, config, context=node_context)
-        if node_type == "行数据映射填充":
+        if node_type_id == "core.row_data_mapping":
             return apply_row_data_mapping_node(headers, rows, config)
-        if node_type == "删除列":
+        if node_type_id == "core.delete_columns":
             return apply_delete_columns_node(headers, rows, config)
-        if node_type == "移动列":
+        if node_type_id == "core.move_columns":
             return apply_move_columns_node(headers, rows, config)
-        raise ValueError(f"HeadlessWorkflowEngine 暂不支持节点：{node_type}")
+        raise ValueError(f"HeadlessWorkflowEngine 暂不支持节点：{display_type_for_node_type_id(node_type_id)}")
 
     def _apply_condition_check(self, headers, rows, config, context):
         flag_name = str(config.get("flag_name", "") or "").strip()
@@ -549,7 +597,7 @@ class HeadlessWorkflowEngine:
     def _collect_jump_anchors(self, nodes):
         result = {}
         for idx, node in enumerate(nodes or []):
-            if not isinstance(node, dict) or node.get("type") != "跳转锚点节点":
+            if not isinstance(node, dict) or self._node_type_id_from_node(node) != "core.jump_anchor":
                 continue
             anchor_id = str((node.get("config") or {}).get("anchor_id", "") or "").strip()
             if anchor_id and anchor_id not in result:
@@ -578,11 +626,30 @@ class HeadlessWorkflowEngine:
             node["node_id"] = self.node_id_factory()
         return node["node_id"]
 
+    def _node_type_id_from_value(self, value):
+        return normalize_node_type_id(value)
+
+    def _node_type_id_from_node(self, node):
+        return stable_node_type_id_for_node(node)
+
+    def _node_label(self, node, node_type_id=None):
+        if isinstance(node, dict):
+            label = display_type_for_node(node)
+            if label:
+                return label
+        if node_type_id:
+            return display_type_for_node_type_id(node_type_id)
+        return ""
+
     def _set_current_node_info(self, context, node, idx):
+        node_type_id = self._node_type_id_from_node(node)
+        node_label = self._node_label(node, node_type_id)
         context["current_node_info"] = {
             "node_id": node.get("node_id", ""),
             "node_name": node.get("name", ""),
-            "node_type": node.get("type", ""),
+            "node_type": node_label,
+            "node_type_id": node_type_id,
+            "display_name": node_label,
             "node_index": idx,
             "table_access": copy.deepcopy(node.get("table_access", {})),
         }
@@ -617,11 +684,12 @@ class HeadlessWorkflowEngine:
             callback(payload)
         return payload
 
-    def _issue(self, severity, code, node_index, node_type, message):
+    def _issue(self, severity, code, node_index, node_type, message, *, node_type_id=""):
         return {
             "severity": severity,
             "code": code,
             "node_index": node_index,
             "node_type": node_type,
+            "node_type_id": node_type_id,
             "message": message,
         }

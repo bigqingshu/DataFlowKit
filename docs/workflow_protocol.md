@@ -284,6 +284,20 @@ Recommended actions:
 - `get_job_status`
 - `list_plugins`
 
+Runtime identity rules:
+
+- New clients should create and execute nodes by `node_type_id`.
+- Legacy `type` is accepted for old templates and current Tkinter display
+  compatibility, but headless execution must resolve it to `node_type_id`
+  before validation and dispatch.
+- `get_node_type` and `make_default_node` accept `node_type_id`, `node_type`,
+  or legacy `type`.
+- `list_node_types` keeps returning legacy display names in `node_types` and
+  should also expose stable ids in `node_type_ids` plus full metadata in
+  `node_catalog`.
+- Clients that do not need old template compatibility may omit legacy `type`
+  when creating nodes.
+
 ## 8. Runtime Responses
 
 ```json
