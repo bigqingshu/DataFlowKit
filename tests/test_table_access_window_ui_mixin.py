@@ -2,10 +2,22 @@
 import unittest
 
 from workflow.table_access_window_mixin import TableAccessWindowMixin
+from workflow.table_access_precheck_mixin import TableAccessPrecheckMixin
 from workflow.table_access_window_ui_mixin import TableAccessWindowUiMixin
 
 
 class TableAccessWindowUiMixinTests(unittest.TestCase):
+    def test_table_access_window_mixin_inherits_precheck_wrappers(self):
+        self.assertTrue(issubclass(TableAccessWindowMixin, TableAccessPrecheckMixin))
+        self.assertIs(
+            TableAccessWindowMixin.build_table_access_precheck,
+            TableAccessPrecheckMixin.build_table_access_precheck,
+        )
+        self.assertIs(
+            TableAccessWindowMixin.confirm_table_access_precheck,
+            TableAccessPrecheckMixin.confirm_table_access_precheck,
+        )
+
     def test_table_access_window_mixin_inherits_ui_wrappers(self):
         self.assertTrue(issubclass(TableAccessWindowMixin, TableAccessWindowUiMixin))
         self.assertIs(
