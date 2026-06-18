@@ -56,6 +56,7 @@ from workflow.batch_replace_window import BatchReplaceWindow
 from workflow.clipboard_table_edit_mixin import ClipboardTableEditMixin
 from workflow.clipboard_table_io_mixin import ClipboardTableIoMixin
 from workflow.clipboard_table_preview_mixin import ClipboardTablePreviewMixin
+from workflow.clipboard_table_ui_mixin import ClipboardTableUiMixin
 from workflow.data_extract_window import DataExtractWindow
 from workflow.merge_columns_window import MergeColumnsWindow
 from workflow.filter_config_window_mixin import FilterConfigWindowMixin
@@ -102,7 +103,7 @@ def load_json_file_with_recovery(path, parent=None):
 
 
 
-class ClipboardTableApp(ClipboardTableEditMixin, ClipboardTablePreviewMixin, ClipboardTableIoMixin):
+class ClipboardTableApp(ClipboardTableUiMixin, ClipboardTableEditMixin, ClipboardTablePreviewMixin, ClipboardTableIoMixin):
     def __init__(self, root):
         self.root = root
         self.root.title("剪贴板表格解析器 - SQLite保存版")
@@ -131,185 +132,6 @@ class ClipboardTableApp(ClipboardTableEditMixin, ClipboardTablePreviewMixin, Cli
         self.edit_btn_text = tk.StringVar(value="修改模式:关")
 
         self.build_ui()
-
-    def build_ui(self):
-        top_frame = ttk.Frame(self.root, padding=8)
-        top_frame.pack(fill=tk.X)
-
-        ttk.Button(
-            top_frame,
-            text="读取剪贴板并解析",
-            command=self.load_clipboard
-        ).pack(side=tk.LEFT, padx=4)
-
-        ttk.Button(
-            top_frame,
-            text="清空预览",
-            command=self.clear_preview
-        ).pack(side=tk.LEFT, padx=4)
-
-        ttk.Button(
-            top_frame,
-            text="删除字段名，并用下一行作为字段名",
-            command=self.delete_header_and_promote_next_row
-        ).pack(side=tk.LEFT, padx=4)
-
-        ttk.Button(
-            top_frame,
-            textvariable=self.edit_btn_text,
-            command=self.toggle_edit_mode
-        ).pack(side=tk.LEFT, padx=4)
-
-        ttk.Button(
-            top_frame,
-            text="计划 / 工作流处理",
-            command=self.open_plan_workflow
-        ).pack(side=tk.LEFT, padx=4)
-
-        ttk.Button(
-            top_frame,
-            text="批量替换 / 数据处理",
-            command=self.open_batch_replace
-        ).pack(side=tk.LEFT, padx=4)
-
-        ttk.Button(
-            top_frame,
-            text="数据提取 / 字段生成",
-            command=self.open_data_extract
-        ).pack(side=tk.LEFT, padx=4)
-
-        ttk.Button(
-            top_frame,
-            text="合并列 / 生成新列",
-            command=self.open_merge_columns
-        ).pack(side=tk.LEFT, padx=4)
-
-        ttk.Button(
-            top_frame,
-            text="高级筛选 / 数据匹配",
-            command=self.open_advanced_filter
-        ).pack(side=tk.LEFT, padx=4)
-
-        ttk.Button(
-            top_frame,
-            text="导出为 xlsx",
-            command=self.export_current_preview_to_xlsx
-        ).pack(side=tk.LEFT, padx=4)
-
-        ttk.Button(
-            top_frame,
-            text="保存到 SQLite",
-            command=self.save_to_sqlite
-        ).pack(side=tk.LEFT, padx=4)
-
-        ttk.Button(
-            top_frame,
-            text="删除当前表",
-            command=self.delete_current_sqlite_table
-        ).pack(side=tk.LEFT, padx=4)
-
-        ttk.Separator(self.root, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=4)
-
-        # 主界面选项区拆成独立行，避免不同 row 共用同一个 grid 列宽互相影响。
-        # 之前搜索按钮通过较大的 padx 放在 option_frame 的 column=1，
-        # 会把数据库路径输入框所在列撑宽，导致“选择 / 刷新表名”整体右移。
-        option_frame = ttk.Frame(self.root, padding=8)
-        option_frame.pack(fill=tk.X)
-
-        # 第1行：数据库路径设置
-        db_frame = ttk.Frame(option_frame)
-        db_frame.pack(fill=tk.X, anchor=tk.W)
-
-        ttk.Label(db_frame, text="数据库：").pack(side=tk.LEFT, padx=(4, 4))
-
-        ttk.Entry(
-            db_frame,
-            textvariable=self.db_path_var,
-            width=80
-        ).pack(side=tk.LEFT, padx=(4, 4))
-
-        ttk.Button(
-            db_frame,
-            text="选择",
-            command=self.choose_db
-        ).pack(side=tk.LEFT, padx=(4, 4))
-
-        ttk.Button(
-            db_frame,
-            text="刷新表名",
-            command=self.refresh_table_list
-        ).pack(side=tk.LEFT, padx=(4, 4))
-
-        # 第2行：表名与保存选项
-        table_option_frame = ttk.Frame(option_frame)
-        table_option_frame.pack(fill=tk.X, anchor=tk.W, pady=(6, 0))
-
-        ttk.Label(table_option_frame, text="表名：").pack(side=tk.LEFT, padx=(4, 4))
-
-        self.table_combo = ttk.Combobox(
-            table_option_frame,
-            textvariable=self.table_name_var,
-            width=32,
-            state="normal"
-        )
-        self.table_combo.pack(side=tk.LEFT, padx=(4, 18))
-
-        self.table_combo.configure(postcommand=self.refresh_table_list)
-        self.table_combo.bind("<<ComboboxSelected>>", self.on_table_selected)
-
-        ttk.Checkbutton(
-            table_option_frame,
-            text="第一行作为字段名",
-            variable=self.first_row_header_var,
-            command=self.reparse_current_raw
-        ).pack(side=tk.LEFT, padx=(12, 12))
-
-        ttk.Checkbutton(
-            table_option_frame,
-            text="保存时重建同名表",
-            variable=self.recreate_table_var
-        ).pack(side=tk.LEFT, padx=(12, 12))
-
-        # 第3行：搜索区。搜索按钮保留你指定的 padx=330，但只影响 search_frame 自身，
-        # 不再影响上方数据库行和表名行的布局。
-        search_frame = ttk.Frame(option_frame)
-        search_frame.pack(fill=tk.X, anchor=tk.W, pady=(6, 0))
-
-        ttk.Label(search_frame, text="搜索：").grid(row=0, column=0, sticky=tk.W, padx=(4, 4), pady=4)
-        search_entry = ttk.Entry(search_frame, textvariable=self.search_var, width=38)
-        search_entry.grid(row=0, column=1, sticky=tk.W, padx=(4, 4), pady=4)
-        search_entry.bind("<Return>", lambda e: self.search_main_preview(reset=True))
-        ttk.Button(search_frame, text="搜索", command=lambda: self.search_main_preview(reset=True)).grid(row=0, column=2, sticky=tk.W, padx=(12, 8), pady=4)
-        ttk.Button(search_frame, text="上一个", command=self.search_main_prev).grid(row=0, column=3, sticky=tk.W, padx=(12, 8), pady=4)
-        ttk.Button(search_frame, text="下一个", command=self.search_main_next).grid(row=0, column=4, sticky=tk.W, padx=(12, 8), pady=4)
-
-        self.info_var = tk.StringVar(value="等待读取剪贴板数据。")
-        ttk.Label(self.root, textvariable=self.info_var, padding=8).pack(fill=tk.X)
-
-        table_frame = ttk.Frame(self.root)
-        table_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
-
-        self.tree = ttk.Treeview(table_frame, show="headings")
-
-        y_scroll = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        x_scroll = ttk.Scrollbar(table_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
-
-        self.tree.configure(
-            yscrollcommand=y_scroll.set,
-            xscrollcommand=x_scroll.set
-        )
-
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        y_scroll.grid(row=0, column=1, sticky="ns")
-        x_scroll.grid(row=1, column=0, sticky="ew")
-
-        table_frame.rowconfigure(0, weight=1)
-        table_frame.columnconfigure(0, weight=1)
-
-        self.tree.bind("<Double-1>", self.on_tree_double_click)
-
-        # 程序启动时尝试刷新表名
-        self.refresh_table_list()
 
     def open_plan_workflow(self):
         if not self.headers:
