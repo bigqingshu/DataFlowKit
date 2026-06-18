@@ -7,23 +7,18 @@ from datetime import datetime
 
 from db import TableAccessManager
 from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
+from workflow import advanced_filter_window_actions as advanced_filter_actions
 from workflow.advanced_filter_window_logic import (
-    add_advanced_filter_condition as workflow_add_advanced_filter_condition,
-    add_advanced_filter_join_rule as workflow_add_advanced_filter_join_rule,
-    add_advanced_filter_output_fields as workflow_add_advanced_filter_output_fields,
-    add_all_advanced_filter_output_fields as workflow_add_all_advanced_filter_output_fields,
     build_advanced_filter_field_display_cache as workflow_build_advanced_filter_field_display_cache,
     build_advanced_filter_main_preview_snapshot as workflow_build_advanced_filter_main_preview_snapshot,
     build_advanced_filter_preview_rows as workflow_build_advanced_filter_preview_rows,
     build_advanced_filter_template_data as workflow_build_advanced_filter_template_data,
     build_advanced_filter_result_records as workflow_build_advanced_filter_result_records,
-    clear_advanced_filter_items as workflow_clear_advanced_filter_items,
     dedupe_advanced_filter_preview_rows as workflow_dedupe_advanced_filter_preview_rows,
     eval_advanced_filter_condition as workflow_eval_advanced_filter_condition,
     eval_advanced_filter_conditions as workflow_eval_advanced_filter_conditions,
     eval_advanced_filter_join_rule as workflow_eval_advanced_filter_join_rule,
     eval_advanced_filter_join_rules as workflow_eval_advanced_filter_join_rules,
-    filter_advanced_filter_valid_state as workflow_filter_advanced_filter_valid_state,
     format_advanced_filter_db_value as workflow_format_advanced_filter_db_value,
     get_advanced_filter_output_fields as workflow_get_advanced_filter_output_fields,
     load_advanced_filter_table_records as workflow_load_advanced_filter_table_records,
@@ -31,8 +26,6 @@ from workflow.advanced_filter_window_logic import (
     normalize_advanced_filter_save_table_name as workflow_normalize_advanced_filter_save_table_name,
     parse_advanced_filter_number as workflow_parse_advanced_filter_number,
     parse_positive_int_setting as workflow_parse_positive_int_setting,
-    remove_advanced_filter_items_by_indexes as workflow_remove_advanced_filter_items_by_indexes,
-    remove_advanced_filter_output_fields as workflow_remove_advanced_filter_output_fields,
     select_advanced_filter_combo_defaults as workflow_select_advanced_filter_combo_defaults,
     select_advanced_filter_template_tables as workflow_select_advanced_filter_template_tables,
 )
@@ -511,158 +504,46 @@ class AdvancedFilterWindow:
         self.remove_invalid_rules_and_outputs()
 
     def remove_invalid_rules_and_outputs(self):
-        state = workflow_filter_advanced_filter_valid_state(
-            self.conditions,
-            self.join_rules,
-            self.output_fields,
-            self.field_display_cache,
-        )
-        self.conditions = state["conditions"]
-        self.join_rules = state["join_rules"]
-        self.output_fields = state["output_fields"]
-
-        self.refresh_conditions_tree()
-        self.refresh_join_tree()
-        self.refresh_output_fields_listbox()
+        return advanced_filter_actions.remove_invalid_rules_and_outputs(self)
 
     def add_condition(self):
-        field = self.filter_field_var.get().strip()
-        op = self.filter_operator_var.get().strip()
-        value = self.filter_value_var.get()
-
-        if not field:
-            messagebox.showwarning("提示", "请选择筛选字段。")
-            return
-
-        if op not in ["为空", "不为空"] and value == "":
-            if not messagebox.askyesno("确认", "当前条件值为空，是否继续添加？"):
-                return
-
-        self.conditions = workflow_add_advanced_filter_condition(
-            self.conditions,
-            field,
-            op,
-            value,
-        )
-
-        self.refresh_conditions_tree()
-        self.filter_value_var.set("")
+        return advanced_filter_actions.add_condition(self)
 
     def delete_selected_condition(self):
-        selections = list(self.conditions_tree.selection())
-        if not selections:
-            return
-
-        indexes = [self.conditions_tree.index(item) for item in selections]
-        self.conditions = workflow_remove_advanced_filter_items_by_indexes(
-            self.conditions,
-            indexes,
-        )
-
-        self.refresh_conditions_tree()
+        return advanced_filter_actions.delete_selected_condition(self)
 
     def clear_conditions(self):
-        self.conditions = workflow_clear_advanced_filter_items()
-        self.refresh_conditions_tree()
+        return advanced_filter_actions.clear_conditions(self)
 
     def refresh_conditions_tree(self):
-        self.conditions_tree.delete(*self.conditions_tree.get_children())
-        for cond in self.conditions:
-            self.conditions_tree.insert(
-                "",
-                tk.END,
-                values=(cond["field"], cond["op"], cond["value"])
-            )
+        return advanced_filter_actions.refresh_conditions_tree(self)
 
     def add_join_rule(self):
-        left = self.join_left_var.get().strip()
-        op = self.join_operator_var.get().strip()
-        right = self.join_right_var.get().strip()
-
-        if not left or not right:
-            messagebox.showwarning("提示", "请选择左右匹配字段。")
-            return
-
-        if left == right:
-            if not messagebox.askyesno("确认", "左右字段相同，是否仍然添加？"):
-                return
-
-        self.join_rules = workflow_add_advanced_filter_join_rule(
-            self.join_rules,
-            left,
-            op,
-            right,
-        )
-
-        self.refresh_join_tree()
+        return advanced_filter_actions.add_join_rule(self)
 
     def delete_selected_join_rule(self):
-        selections = list(self.join_tree.selection())
-        if not selections:
-            return
-
-        indexes = [self.join_tree.index(item) for item in selections]
-        self.join_rules = workflow_remove_advanced_filter_items_by_indexes(
-            self.join_rules,
-            indexes,
-        )
-
-        self.refresh_join_tree()
+        return advanced_filter_actions.delete_selected_join_rule(self)
 
     def clear_join_rules(self):
-        self.join_rules = workflow_clear_advanced_filter_items()
-        self.refresh_join_tree()
+        return advanced_filter_actions.clear_join_rules(self)
 
     def refresh_join_tree(self):
-        self.join_tree.delete(*self.join_tree.get_children())
-        for rule in self.join_rules:
-            self.join_tree.insert(
-                "",
-                tk.END,
-                values=(rule["left"], rule["op"], rule["right"])
-            )
+        return advanced_filter_actions.refresh_join_tree(self)
 
     def add_output_fields(self):
-        selections = list(self.available_fields_listbox.curselection())
-        if not selections:
-            return
-
-        self.output_fields = workflow_add_advanced_filter_output_fields(
-            self.output_fields,
-            self.field_display_cache,
-            selections,
-        )
-
-        self.refresh_output_fields_listbox()
+        return advanced_filter_actions.add_output_fields(self)
 
     def add_all_output_fields(self):
-        self.output_fields = workflow_add_all_advanced_filter_output_fields(
-            self.output_fields,
-            self.field_display_cache,
-        )
-
-        self.refresh_output_fields_listbox()
+        return advanced_filter_actions.add_all_output_fields(self)
 
     def remove_output_fields(self):
-        selections = list(self.output_fields_listbox.curselection())
-        if not selections:
-            return
-
-        self.output_fields = workflow_remove_advanced_filter_output_fields(
-            self.output_fields,
-            selections,
-        )
-
-        self.refresh_output_fields_listbox()
+        return advanced_filter_actions.remove_output_fields(self)
 
     def clear_output_fields(self):
-        self.output_fields = []
-        self.refresh_output_fields_listbox()
+        return advanced_filter_actions.clear_output_fields(self)
 
     def refresh_output_fields_listbox(self):
-        self.output_fields_listbox.delete(0, tk.END)
-        for field in self.output_fields:
-            self.output_fields_listbox.insert(tk.END, field)
+        return advanced_filter_actions.refresh_output_fields_listbox(self)
 
     def format_db_value(self, value):
         return workflow_format_advanced_filter_db_value(self.app, value)
