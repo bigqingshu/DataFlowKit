@@ -65,7 +65,6 @@ from workflow.nodes.data_nodes import (
     parse_date_fixed as workflow_parse_date_fixed,
     parse_format_datetime_value as workflow_parse_format_datetime_value,
     parse_format_int as workflow_parse_format_int,
-    parse_new_columns_specs as workflow_parse_new_columns_specs,
     plan_filter_condition_dependencies as workflow_plan_filter_condition_dependencies,
     plan_filter_field_belongs_to_table as workflow_plan_filter_field_belongs_to_table,
     parse_time_auto_common as workflow_parse_time_auto_common,
@@ -75,7 +74,6 @@ from workflow.nodes.data_nodes import (
     record_passes_plan_conditions as workflow_record_passes_plan_conditions,
     record_passes_plan_join_rules as workflow_record_passes_plan_join_rules,
     record_survives_available_plan_conditions as workflow_record_survives_available_plan_conditions,
-    render_current_datetime_template as workflow_render_current_datetime_template,
     render_format_template as workflow_render_format_template,
     resolve_area_end_row_index as workflow_resolve_area_end_row_index,
     resolve_plan_condition_value as workflow_resolve_plan_condition_value,
@@ -84,6 +82,10 @@ from workflow.nodes.data_nodes import (
     should_write_cell as workflow_should_write_cell,
     slice_by_position as workflow_slice_by_position,
     split_by_config_delimiter as workflow_split_by_config_delimiter,
+)
+from workflow.nodes.new_column_nodes import (
+    parse_new_columns_specs as workflow_parse_new_columns_specs,
+    render_current_datetime_template as workflow_render_current_datetime_template,
 )
 from workflow.nodes.numeric_column_nodes import (
     format_numeric_column_result as workflow_format_numeric_column_result,
