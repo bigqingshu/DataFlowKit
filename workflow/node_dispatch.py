@@ -4,7 +4,6 @@
 from workflow.nodes.data_nodes import (
     apply_area_fill_node,
     apply_fill_value_node,
-    apply_dedupe_node,
     apply_match_value_output_field_name_node,
     apply_row_data_mapping_node,
     apply_sequence_fill_node,
@@ -13,6 +12,7 @@ from workflow.nodes.new_column_nodes import (
     apply_current_datetime_column_node,
     apply_new_columns_node,
 )
+from workflow.nodes.dedupe_nodes import apply_dedupe_node
 from workflow.nodes.datetime_format_nodes import apply_format_datetime_node
 from workflow.nodes.extract_nodes import apply_extract_node
 from workflow.nodes.merge_rename_nodes import apply_merge_node, apply_rename_columns_node
