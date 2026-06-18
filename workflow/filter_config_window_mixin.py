@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """PlanWorkflowWindow mixin for advanced filter configuration UI wrappers."""
 
-from workflow.filter_config_ui import (
+from ui.workflow.config.filter_config_ui import (
     build_filter_condition_action_buttons as build_filter_condition_action_buttons_ui,
     build_filter_condition_section as build_filter_condition_section_ui,
     build_filter_config as build_filter_config_ui,
