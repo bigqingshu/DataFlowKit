@@ -36,7 +36,7 @@
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog, simpledialog
+from tkinter import ttk, messagebox
 import os
 import sys
 import traceback
@@ -46,7 +46,6 @@ import uuid
 from datetime import datetime
 
 from db import PluginDatabaseAPI, TableAccessManager
-from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
 from workflow.default_configs import default_name_for_node as workflow_default_name_for_node
 from workflow.advanced_filter_window import AdvancedFilterWindow
 from workflow.batch_replace_window import BatchReplaceWindow
@@ -70,11 +69,11 @@ from workflow.workflow_config_area_mixin import WorkflowConfigAreaMixin
 from workflow.workflow_config_ui_helpers_mixin import WorkflowConfigUiHelpersMixin
 from workflow.workflow_app_support_mixin import WorkflowAppSupportMixin
 from workflow.workflow_default_config_mixin import WorkflowDefaultConfigMixin
+from workflow.workflow_group_template_mixin import WorkflowGroupTemplateMixin
 from workflow.workflow_node_list_mixin import WorkflowNodeListMixin
 from workflow.table_access_window_mixin import TableAccessWindowMixin
 from workflow.workflow_execution_mixin import WorkflowExecutionMixin
 from workflow.workflow_node_execution_mixin import WorkflowNodeExecutionMixin
-from workflow import group_template_ui as workflow_group_template_ui
 from workflow.workflow_config_builder_mixin import WorkflowConfigBuilderMixin
 from workflow.workflow_control_runtime_mixin import WorkflowControlRuntimeMixin
 from workflow.workflow_data_runtime_mixin import WorkflowDataRuntimeMixin
@@ -97,17 +96,6 @@ def get_app_dir():
     if getattr(sys, "frozen", False):
         return os.path.dirname(os.path.abspath(sys.executable))
     return os.path.dirname(os.path.abspath(__file__))
-
-
-def load_json_file_with_recovery(path, parent=None):
-    data, info = load_json_with_backup(path)
-    warning = info.get("warning", "")
-    if warning:
-        messagebox.showwarning("配置已从备份恢复", warning, parent=parent)
-    return data
-
-
-
 
 
 class ClipboardTableApp(ClipboardTableUiMixin, ClipboardTableEditMixin, ClipboardTablePreviewMixin, ClipboardTableIoMixin):
@@ -199,6 +187,7 @@ class PlanWorkflowWindow(
     WorkflowConfigUiHelpersMixin,
     WorkflowAppSupportMixin,
     WorkflowDefaultConfigMixin,
+    WorkflowGroupTemplateMixin,
     WorkflowNodeListMixin,
     PlanWorkflowUiMixin,
     PlanPreviewMixin,
@@ -370,51 +359,6 @@ class PlanWorkflowWindow(
 
     def default_name_for_node(self, node_type):
         return workflow_default_name_for_node(node_type)
-
-    # ------------------------------
-    # 节点组 / 子工作流
-    # ------------------------------
-    def merge_selected_nodes_to_group(self):
-        return workflow_group_template_ui.merge_selected_nodes_to_group(
-            self,
-            messagebox_module=messagebox,
-            simpledialog_module=simpledialog,
-        )
-
-    def expand_selected_group(self):
-        return workflow_group_template_ui.expand_selected_group(self, messagebox_module=messagebox)
-
-    def get_group_dir(self):
-        return workflow_group_template_ui.get_group_dir(self, get_app_dir)
-
-    def validate_group_template_data(self, data):
-        return workflow_group_template_ui.validate_group_template_data(data)
-
-    def build_group_template_data(self, config, group_name=None):
-        return workflow_group_template_ui.build_group_template_data(config, group_name=group_name)
-
-    def group_config_from_template_data(self, data):
-        return workflow_group_template_ui.group_config_from_template_data(data)
-
-    def save_group_template_from_config(self, config):
-        return workflow_group_template_ui.save_group_template_from_config(
-            self,
-            config,
-            atomic_write_json,
-            messagebox_module=messagebox,
-            filedialog_module=filedialog,
-        )
-
-    def load_group_template_dialog(self):
-        return workflow_group_template_ui.load_group_template_dialog(
-            self,
-            load_json_file_with_recovery,
-            messagebox_module=messagebox,
-            filedialog_module=filedialog,
-        )
-
-    def open_group_dir(self):
-        return workflow_group_template_ui.open_group_dir(self, messagebox_module=messagebox)
 
     # ==================== 后台执行 / 进度条管理 ====================
 if __name__ == "__main__":
