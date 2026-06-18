@@ -466,6 +466,30 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         ), (2026, 6, 13))
         with self.assertRaises(ValueError):
             parse_date_value("2026-06-31")
+        with self.assertRaisesRegex(ValueError, "日期顺序存在歧义"):
+            parse_date_value(
+                "03/06/26",
+                {
+                    "input_structure": "分隔符",
+                    "date_delimiter": "自动识别",
+                    "date_order": "月-日-年",
+                    "year_rule": "20xx",
+                    "ambiguous_date_policy": "报错",
+                },
+            )
+        self.assertEqual(
+            parse_date_value(
+                "03/06/26",
+                {
+                    "input_structure": "分隔符",
+                    "date_delimiter": "自动识别",
+                    "date_order": "月-日-年",
+                    "year_rule": "20xx",
+                    "ambiguous_date_policy": "允许",
+                },
+            ),
+            (2026, 3, 6),
+        )
 
     def test_output_row_preserves_meta_json_without_shifting_legacy_columns(self):
         rec = visual._normalize_doc_record(

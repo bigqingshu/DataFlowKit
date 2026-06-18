@@ -203,7 +203,16 @@ def build_format_datetime_config(window, config, headers):
     order_var = window.add_labeled_combo(sep_frame, "日期顺序：", config.get("date_order", "年-月-日"), window.FORMAT_DATE_ORDERS, 2, 0, 12)
     year_rule_var = window.add_labeled_combo(sep_frame, "两位年份：", config.get("year_rule", "20xx"), window.FORMAT_YEAR_RULES, 2, 2, 12)
     pivot_var = window.add_labeled_entry(sep_frame, "自动窗口分界：", config.get("auto_window_pivot", "80"), 2, 4, 8)
-    ttk.Label(sep_frame, text="自动窗口示例：00-79→2000-2079，80-99→1980-1999。", foreground="gray").grid(row=3, column=0, columnspan=6, sticky=tk.W, padx=4, pady=(2, 4))
+    ambiguous_policy_var = window.add_labeled_combo(
+        sep_frame,
+        "月日歧义：",
+        config.get("ambiguous_date_policy", "警告"),
+        window.DATE_AMBIGUOUS_POLICIES,
+        3,
+        0,
+        12,
+    )
+    ttk.Label(sep_frame, text="自动窗口示例：00-79→2000-2079，80-99→1980-1999。", foreground="gray").grid(row=4, column=0, columnspan=6, sticky=tk.W, padx=4, pady=(2, 4))
 
     out_frame = ttk.LabelFrame(frame, text="输出设置", padding=6)
     out_frame.grid(row=5, column=0, columnspan=8, sticky="ew", padx=4, pady=(8, 4))
@@ -248,6 +257,7 @@ def build_format_datetime_config(window, config, headers):
         (custom_date_var, "custom_date_delimiter"),
         (custom_time_var, "custom_time_delimiter"),
         (order_var, "date_order"),
+        (ambiguous_policy_var, "ambiguous_date_policy"),
         (year_rule_var, "year_rule"),
         (pivot_var, "auto_window_pivot"),
         (output_mode_var, "output_mode"),

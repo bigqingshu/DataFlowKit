@@ -46,6 +46,7 @@ class WorkflowConstantsMixin:
     FORMAT_INPUT_STRUCTURES = ["固定位置", "分隔符", "自动识别常见格式"]
     FORMAT_YEAR_RULES = ["20xx", "19xx", "自动窗口", "不补全"]
     FORMAT_DATE_ORDERS = ["年-月-日", "月-日-年", "日-月-年"]
+    DATE_AMBIGUOUS_POLICIES = ["警告", "报错", "允许"]
     FORMAT_OUTPUT_MODES = ["生成新字段", "覆盖源字段", "生成多个字段"]
     CURRENT_DATETIME_OUTPUT_MODES = ["生成新字段", "覆盖已有字段"]
     CURRENT_DATETIME_TIME_MODES = ["整次运行固定同一时间", "逐行实时获取"]

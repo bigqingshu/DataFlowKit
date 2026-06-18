@@ -212,6 +212,7 @@ def default_config_for_type(node_type, preview_headers=None, table_names=None, t
             "custom_date_delimiter": "-",
             "custom_time_delimiter": ":",
             "date_order": "年-月-日",
+            "ambiguous_date_policy": "警告",
             "year_rule": "20xx",
             "auto_window_pivot": "80",
             "output_template": "{YYYY}-{MM}-{DD}",

@@ -19,6 +19,7 @@ class WorkflowConstantsTests(unittest.TestCase):
         self.assertIn("按匹配行号", WorkflowConstantsMixin.REPLACE_ROW_POLICIES)
         self.assertIn("timestamp_new", WorkflowConstantsMixin.STANDARD_WRITE_MODE_CHOICES)
         self.assertIn("自定义", WorkflowConstantsMixin.SEPARATOR_OPTIONS)
+        self.assertEqual(WorkflowConstantsMixin.DATE_AMBIGUOUS_POLICIES, ["警告", "报错", "允许"])
 
 
 if __name__ == "__main__":

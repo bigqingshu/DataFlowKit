@@ -1634,6 +1634,37 @@ class WorkflowDataNodesTests(unittest.TestCase):
         self.assertEqual(rows, [["2026-03-06", "成功但存在歧义：月和日均不超过12，请确认月日顺序"]])
         self.assertEqual(message, "格式规范化完成：写入 1 行，失败 0 行，跳过 0 行")
 
+    def test_format_datetime_node_can_reject_or_allow_ambiguous_delimited_date(self):
+        base_config = {
+            "source_field": "Raw",
+            "parse_type": "日期",
+            "input_structure": "分隔符",
+            "date_delimiter": "自动识别",
+            "date_order": "月-日-年",
+            "year_rule": "20xx",
+            "output_mode": "覆盖源字段",
+            "output_template": "{YYYY}-{MM}-{DD}",
+            "output_status": True,
+        }
+
+        headers, rows, message = apply_format_datetime_node(
+            ["Raw"],
+            [["03/06/26"]],
+            {**base_config, "ambiguous_date_policy": "报错", "unmatched_mode": "保留原值"},
+        )
+        self.assertEqual(headers, ["Raw", "格式解析状态"])
+        self.assertEqual(rows, [["03/06/26", "日期顺序存在歧义：月和日均不超过12，请确认月日顺序"]])
+        self.assertEqual(message, "格式规范化完成：写入 1 行，失败 1 行，跳过 0 行")
+
+        headers, rows, message = apply_format_datetime_node(
+            ["Raw"],
+            [["03/06/26"]],
+            {**base_config, "ambiguous_date_policy": "允许"},
+        )
+        self.assertEqual(headers, ["Raw", "格式解析状态"])
+        self.assertEqual(rows, [["2026-03-06", "成功"]])
+        self.assertEqual(message, "格式规范化完成：写入 1 行，失败 0 行，跳过 0 行")
+
     def test_format_datetime_node_outputs_component_columns_for_separate_time_field(self):
         headers, rows, message = apply_format_datetime_node(
             ["Date", "Time"],

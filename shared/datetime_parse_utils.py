@@ -8,6 +8,7 @@ from datetime import datetime
 DATE_INPUT_STRUCTURES = ["固定位置", "分隔符", "自动识别常见格式"]
 DATE_YEAR_RULES = ["20xx", "19xx", "自动窗口", "不补全"]
 DATE_ORDERS = ["年-月-日", "月-日-年", "日-月-年"]
+DATE_AMBIGUOUS_POLICIES = ["警告", "报错", "允许"]
 
 
 def normalize_datetime_text(value):
@@ -63,6 +64,31 @@ def build_date_parts(year, month, day, config=None):
         "month": parsed_month,
         "day": parsed_day,
     }
+
+
+def ambiguous_delimited_date_warning(parts, order):
+    if order not in ("月-日-年", "日-月-年") or len(parts) < 2:
+        return ""
+    try:
+        first = int(str(parts[0]).strip())
+        second = int(str(parts[1]).strip())
+    except Exception:
+        return ""
+    if 1 <= first <= 12 and 1 <= second <= 12:
+        return "月和日均不超过12，请确认月日顺序"
+    return ""
+
+
+def ambiguous_date_policy(config=None):
+    value = str((config or {}).get("ambiguous_date_policy", "警告") or "警告").strip()
+    return value if value in DATE_AMBIGUOUS_POLICIES else "警告"
+
+
+def check_ambiguous_delimited_date(parts, order, config=None):
+    warning = ambiguous_delimited_date_warning(parts, order)
+    if warning and ambiguous_date_policy(config) == "报错":
+        raise ValueError(f"日期顺序存在歧义：{warning}")
+    return warning
 
 
 def _parse_positive_int(value, name, allow_zero=False):
@@ -140,6 +166,7 @@ def parse_date_delimited(text, config=None):
         day, month, year = parts[:3]
     else:
         year, month, day = parts[:3]
+    check_ambiguous_delimited_date(parts, order, config)
     return build_date_parts(year, month, day, config)
 
 
@@ -190,6 +217,7 @@ def default_date_parser_config():
         "date_delimiter": "自动识别",
         "custom_date_delimiter": "-",
         "date_order": "年-月-日",
+        "ambiguous_date_policy": "警告",
         "year_rule": "20xx",
         "auto_window_pivot": "80",
     }

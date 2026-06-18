@@ -8,6 +8,9 @@ from decimal import Decimal, InvalidOperation
 
 from core.data_utils import make_unique_headers, make_unique_headers_for_append, normalize_rows, safe_cell
 from shared.datetime_parse_utils import (
+    ambiguous_date_policy,
+    ambiguous_delimited_date_warning,
+    check_ambiguous_delimited_date,
     complete_year,
     normalize_datetime_text,
     parse_date_auto_common as shared_parse_date_auto_common,
@@ -2647,6 +2650,7 @@ def parse_date_delimited(text, config):
         day, month, year = parts[0], parts[1], parts[2]
     else:
         year, month, day = parts[0], parts[1], parts[2]
+    check_ambiguous_delimited_date(parts, order, config)
     return build_date_parts(year, month, day, config)
 
 
@@ -2789,14 +2793,9 @@ def get_datetime_parse_warning(original, config, parts):
             if str(item).strip()
         ]
         order = config.get("date_order", "年-月-日")
-        if order in ("月-日-年", "日-月-年") and len(values) >= 2:
-            try:
-                first = int(values[0])
-                second = int(values[1])
-                if 1 <= first <= 12 and 1 <= second <= 12:
-                    warnings.append("月和日均不超过12，请确认月日顺序")
-            except Exception:
-                pass
+        warning = ambiguous_delimited_date_warning(values, order)
+        if warning and ambiguous_date_policy(config) != "允许":
+            warnings.append(warning)
     if config.get("year_rule") == "不补全":
         year = parts.get("year")
         if year is not None and int(year) < 1000:
