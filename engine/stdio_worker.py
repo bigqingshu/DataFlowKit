@@ -1,0 +1,199 @@
+# -*- coding: utf-8 -*-
+"""JSON-lines stdio worker API for non-Python DataFlowKit frontends."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import traceback
+
+from engine.errors import PlanValidationError
+from engine.headless import HeadlessWorkflowEngine
+
+
+SUPPORTED_API_VERSION = "1.0"
+
+
+class StdioWorker:
+    """Handle protocol request envelopes using a HeadlessWorkflowEngine."""
+
+    def __init__(self, engine=None):
+        self.engine = engine or HeadlessWorkflowEngine()
+
+    def handle_request(self, request):
+        request_id = ""
+        try:
+            if not isinstance(request, dict):
+                return self._response("", False, "请求必须是 JSON object", errors=[self._error("invalid_request", "请求必须是 JSON object")])
+            request_id = str(request.get("request_id", "") or "")
+            api_version = str(request.get("api_version", SUPPORTED_API_VERSION) or "")
+            if api_version != SUPPORTED_API_VERSION:
+                return self._response(
+                    request_id,
+                    False,
+                    f"不支持的 api_version：{api_version}",
+                    errors=[self._error("unsupported_api_version", f"当前支持 {SUPPORTED_API_VERSION}")],
+                )
+
+            action = str(request.get("action", "") or "")
+            payload = request.get("payload", {})
+            if not isinstance(payload, dict):
+                return self._response(
+                    request_id,
+                    False,
+                    "payload 必须是 object",
+                    errors=[self._error("invalid_payload", "payload 必须是 object")],
+                )
+
+            result = self._dispatch(action, payload)
+            return self._response(request_id, True, "完成", result=result)
+        except PlanValidationError as exc:
+            return self._response(
+                request_id,
+                False,
+                str(exc),
+                errors=[self._error("plan_validation_error", str(exc), issues=exc.issues)],
+            )
+        except Exception as exc:
+            return self._response(
+                request_id,
+                False,
+                str(exc),
+                errors=[self._error("runtime_error", str(exc), traceback=traceback.format_exc())],
+            )
+
+    def _dispatch(self, action, payload):
+        if action == "list_node_types":
+            return {
+                "node_types": self.engine.list_node_types(
+                    include_unsupported=bool(payload.get("include_unsupported", True))
+                )
+            }
+        if action == "get_node_type":
+            node_type = payload.get("node_type") or payload.get("type") or payload.get("node_type_id")
+            return self.engine.get_node_type(
+                node_type,
+                preview_headers=payload.get("preview_headers"),
+                table_names=payload.get("table_names"),
+                table_columns=payload.get("table_columns"),
+            )
+        if action == "make_default_node":
+            node_type = payload.get("node_type") or payload.get("type") or payload.get("node_type_id")
+            return {
+                "node": self.engine.make_default_node(
+                    node_type,
+                    preview_headers=payload.get("preview_headers"),
+                    table_names=payload.get("table_names"),
+                    table_columns=payload.get("table_columns"),
+                    name=payload.get("name"),
+                )
+            }
+        if action == "validate_plan":
+            return self.engine.validate_plan(
+                payload.get("plan", {}),
+                stop_index=self._optional_int(payload.get("stop_at", payload.get("stop_index"))),
+                start_index=int(payload.get("start_index", 0) or 0),
+            )
+        if action == "preview_plan":
+            result = self.engine.preview_plan(
+                payload.get("plan", {}),
+                input_table=payload.get("input_data", payload.get("input_table")),
+                stop_index=self._optional_int(payload.get("stop_at", payload.get("stop_index"))),
+                start_index=int(payload.get("start_index", 0) or 0),
+                initial_context=payload.get("context"),
+                return_context=bool(payload.get("return_context", True)),
+            )
+            return result.to_dict(include_context=bool(payload.get("return_context", True)))
+        if action == "run_plan":
+            result = self.engine.run_plan(
+                payload.get("plan", {}),
+                input_table=payload.get("input_data", payload.get("input_table")),
+                execute_actions=bool(payload.get("execute_actions", True)),
+                stop_index=self._optional_int(payload.get("stop_at", payload.get("stop_index"))),
+                start_index=int(payload.get("start_index", 0) or 0),
+                initial_context=payload.get("context"),
+                return_context=bool(payload.get("return_context", True)),
+            )
+            return result.to_dict(include_context=bool(payload.get("return_context", True)))
+        if action == "cancel_job":
+            return {
+                "cancelled": False,
+                "message": "stdio worker 第一版按请求同步执行，暂不维护后台 job。",
+            }
+        if action == "get_job_status":
+            return {
+                "status": "unsupported",
+                "message": "stdio worker 第一版按请求同步执行，暂不维护后台 job。",
+            }
+        if action == "list_plugins":
+            return {
+                "plugins": [],
+                "message": "stdio worker 第一版未加载插件注册表。",
+            }
+        if action == "preview_node":
+            raise ValueError("preview_node 暂未实现，请使用单节点 plan 调用 preview_plan。")
+        raise ValueError(f"未知 action：{action}")
+
+    @staticmethod
+    def _optional_int(value):
+        if value is None or value == "":
+            return None
+        return int(value)
+
+    @staticmethod
+    def _error(code, message, **extra):
+        payload = {"code": code, "message": message}
+        payload.update(extra)
+        return payload
+
+    @staticmethod
+    def _response(request_id, ok, message, result=None, logs=None, errors=None):
+        return {
+            "request_id": request_id,
+            "ok": bool(ok),
+            "message": message,
+            "result": result,
+            "logs": list(logs or []),
+            "errors": list(errors or []),
+        }
+
+
+def iter_json_lines(input_stream, output_stream, worker=None):
+    """Read one JSON request per line and write one JSON response per line."""
+
+    worker = worker or StdioWorker()
+    for raw_line in input_stream:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            request = json.loads(line)
+        except json.JSONDecodeError as exc:
+            response = StdioWorker._response(
+                "",
+                False,
+                f"JSON 解析失败：{exc}",
+                errors=[StdioWorker._error("invalid_json", str(exc))],
+            )
+        else:
+            response = worker.handle_request(request)
+        output_stream.write(json.dumps(response, ensure_ascii=False, separators=(",", ":")) + "\n")
+        try:
+            output_stream.flush()
+        except Exception:
+            pass
+
+
+def main(argv=None, input_stream=None, output_stream=None):
+    parser = argparse.ArgumentParser(description="DataFlowKit headless stdio worker")
+    parser.add_argument("--stdio", action="store_true", help="Run JSON-lines stdio loop")
+    args = parser.parse_args(argv)
+    if not args.stdio:
+        parser.error("stdio worker currently requires --stdio")
+    iter_json_lines(input_stream or sys.stdin, output_stream or sys.stdout)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

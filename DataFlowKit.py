@@ -64,6 +64,7 @@ from workflow.workflow_config_ui_helpers_mixin import WorkflowConfigUiHelpersMix
 from workflow.workflow_app_support_mixin import WorkflowAppSupportMixin
 from workflow.workflow_default_config_mixin import WorkflowDefaultConfigMixin
 from workflow.workflow_group_template_mixin import WorkflowGroupTemplateMixin
+from workflow.workflow_headless_adapter_mixin import WorkflowHeadlessAdapterMixin
 from workflow.workflow_naming_mixin import WorkflowNamingMixin
 from workflow.workflow_node_list_mixin import WorkflowNodeListMixin
 from workflow.table_access_window_mixin import TableAccessWindowMixin
@@ -131,6 +132,7 @@ class PlanWorkflowWindow(
     WorkflowConfigUiHelpersMixin,
     WorkflowAppSupportMixin,
     WorkflowDefaultConfigMixin,
+    WorkflowHeadlessAdapterMixin,
     WorkflowGroupTemplateMixin,
     WorkflowNamingMixin,
     WorkflowNodeListMixin,

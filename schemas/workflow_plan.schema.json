@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://dataflowkit.local/schemas/workflow_plan.schema.json",
+  "title": "DataFlowKit Workflow Plan",
+  "type": "object",
+  "required": ["template_type", "version", "plan_name", "nodes"],
+  "properties": {
+    "template_type": {
+      "const": "workflow_plan"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$"
+    },
+    "plan_name": {
+      "type": "string"
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "workflow_node.schema.json"
+      }
+    },
+    "output_mode": {
+      "type": "string"
+    },
+    "output_table": {
+      "type": "string"
+    },
+    "backup_before_overwrite": {
+      "type": "boolean"
+    },
+    "table_access_policy": {
+      "type": "string",
+      "enum": ["audit", "prompt", "strict", "off", "只审计", "预检确认", "强制拦截", "关闭"]
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "ui": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "extensions": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

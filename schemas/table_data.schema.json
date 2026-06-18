@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://dataflowkit.local/schemas/table_data.schema.json",
+  "title": "DataFlowKit Table Data",
+  "type": "object",
+  "required": ["type", "headers", "rows"],
+  "properties": {
+    "type": {
+      "const": "table"
+    },
+    "headers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": {
+          "type": ["string", "number", "integer", "boolean", "null"]
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "extensions": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

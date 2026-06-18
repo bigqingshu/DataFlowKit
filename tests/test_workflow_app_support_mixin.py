@@ -40,6 +40,9 @@ class FakeWindow(WorkflowAppSupportMixin, WorkflowTaskSnapshotMixin, WindowGeome
     def normalize_table_access_policy(self):
         return "audit"
 
+    def ensure_node_identity(self, node):
+        node.setdefault("node_id", "node_1")
+
     def winfo_exists(self):
         return False
 
@@ -86,6 +89,9 @@ class WorkflowAppSupportMixinTests(unittest.TestCase):
         self.assertEqual(snapshot["app_dir"], tmp)
         self.assertEqual(snapshot["db_path"], os.path.join(tmp, "demo.db"))
         self.assertEqual(snapshot["workflow_name"], "结果")
+        self.assertEqual(snapshot["workflow_plan"]["template_type"], "workflow_plan")
+        self.assertEqual(snapshot["workflow_plan"]["nodes"][0]["node_type_id"], "core.replace")
+        self.assertEqual(snapshot["workflow_plan"]["headers"], ["A"])
         self.assertEqual(window.get_workflow_db_path({"workflow_snapshot": {"db_path": "x"}}), "x")
         self.assertEqual(window.get_sqlite_table_names(), [])
 

@@ -1,0 +1,120 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://dataflowkit.local/schemas/workflow_node.schema.json",
+  "title": "DataFlowKit Workflow Node Instance",
+  "type": "object",
+  "required": ["enabled", "config"],
+  "properties": {
+    "node_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "node_type_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "node_version": {
+      "type": "string"
+    },
+    "type": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "table_access": {
+      "$ref": "#/definitions/tableAccess"
+    },
+    "ui": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "extensions": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "anyOf": [
+    {
+      "required": ["type"]
+    },
+    {
+      "required": ["node_type_id"]
+    }
+  ],
+  "additionalProperties": true,
+  "definitions": {
+    "tableAccess": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": ["integer", "string"]
+        },
+        "auto_generated": {
+          "type": "boolean"
+        },
+        "tables": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/tableAccessEntry"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "tableAccessEntry": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "table": {
+          "type": "string"
+        },
+        "table_pattern": {
+          "type": "string"
+        },
+        "pattern_type": {
+          "type": "string",
+          "enum": ["glob", "prefix", "regex"]
+        },
+        "declared_by": {
+          "type": "string"
+        },
+        "source_type": {
+          "type": "string"
+        },
+        "is_current_table": {
+          "type": "boolean"
+        },
+        "permissions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          }
+        },
+        "write_mode": {
+          "type": "string"
+        },
+        "field_mapping_mode": {
+          "type": "string"
+        },
+        "field_mapping": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "log_only": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

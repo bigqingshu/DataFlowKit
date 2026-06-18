@@ -1,0 +1,120 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://dataflowkit.local/schemas/runtime_message.schema.json",
+  "title": "DataFlowKit Runtime Message",
+  "oneOf": [
+    {
+      "$ref": "#/definitions/request"
+    },
+    {
+      "$ref": "#/definitions/response"
+    },
+    {
+      "$ref": "#/definitions/event"
+    }
+  ],
+  "definitions": {
+    "request": {
+      "type": "object",
+      "required": ["request_id", "api_version", "action", "payload"],
+      "properties": {
+        "request_id": {
+          "type": "string"
+        },
+        "api_version": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "list_node_types",
+            "get_node_type",
+            "make_default_node",
+            "validate_plan",
+            "preview_plan",
+            "preview_node",
+            "run_plan",
+            "cancel_job",
+            "get_job_status",
+            "list_plugins"
+          ]
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "response": {
+      "type": "object",
+      "required": ["request_id", "ok"],
+      "properties": {
+        "request_id": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "result": {},
+        "logs": {
+          "type": "array"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "event": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "workflow_start",
+            "workflow_done",
+            "workflow_error",
+            "workflow_cancelled",
+            "node_start",
+            "node_progress",
+            "node_done",
+            "node_error",
+            "node_log",
+            "log"
+          ]
+        },
+        "job_id": {
+          "type": "string"
+        },
+        "node_id": {
+          "type": "string"
+        },
+        "node_name": {
+          "type": "string"
+        },
+        "current": {
+          "type": "number"
+        },
+        "total": {
+          "type": "number"
+        },
+        "message": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}
