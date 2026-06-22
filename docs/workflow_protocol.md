@@ -356,6 +356,10 @@ Runtime identity rules:
   even when the client also sends `execute_actions = true`.
 - Results that include context expose `context.safety_policy` so UIs can display
   the effective mode.
+- `core.save_transit` is the first state/output node supported by the headless
+  runtime. It writes workflow memory transit tables during preview/run, and uses
+  `WorkflowServices` for SQLite/xlsx side effects only when `execute_actions`
+  is true.
 - Clients that need progress, cancellation, or polling should use
   `start_job`, `get_job_status`, `get_job_events`, and `cancel_job`.
   `start_job` accepts `job_action = preview_plan | run_plan` and stores emitted

@@ -76,6 +76,7 @@ HEADLESS_DATA_NODE_TYPE_IDS = {
     "core.row_data_mapping",
     "core.delete_columns",
     "core.move_columns",
+    "core.save_transit",
 }
 
 HEADLESS_CONTROL_NODE_TYPE_IDS = {

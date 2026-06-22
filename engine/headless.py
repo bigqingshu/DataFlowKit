@@ -56,6 +56,7 @@ from workflow.nodes.data_nodes import (
     apply_row_data_mapping_node,
     apply_sequence_fill_node,
 )
+from workflow.nodes.transit_nodes import apply_save_transit_node
 from workflow.protocol_nodes import (
     DEFAULT_NODE_VERSION,
     HEADLESS_CONTROL_NODE_TYPE_IDS,
@@ -654,6 +655,9 @@ class HeadlessWorkflowEngine:
         node_label = self._node_label(node, node_type_id)
         config = node.get("config", {}) or {}
         if node_type_id in SUPPORTED_DATA_NODE_TYPE_IDS:
+            if node_type_id == "core.save_transit":
+                h, r, stat = self._apply_save_transit_node(headers, rows, config, context, execute_actions)
+                return h, r, stat, None
             h, r, stat = self._apply_data_node(headers, rows, node_type_id, config, context, cancel_event)
             return h, r, stat, None
         if node_type_id == "core.jump_anchor":
@@ -711,6 +715,77 @@ class HeadlessWorkflowEngine:
         if node_type_id == "core.move_columns":
             return apply_move_columns_node(headers, rows, config)
         raise ValueError(f"HeadlessWorkflowEngine 暂不支持节点：{display_type_for_node_type_id(node_type_id)}")
+
+    def _apply_save_transit_node(self, headers, rows, config, context, execute_actions):
+        context.setdefault("transit_tables", {})
+        result_headers, result_rows, stat = apply_save_transit_node(
+            headers,
+            rows,
+            config,
+            context=context,
+            execute_actions=execute_actions,
+        )
+        options = context.get("save_transit_options", {}) or {}
+        headers_copy = context.get("save_transit_headers") or list(headers)
+        rows_copy = context.get("save_transit_rows") or [list(row) for row in rows]
+        saved_parts = stat.split("；") if stat else []
+        memory_part = self._apply_save_transit_memory_plan(context, headers_copy, rows_copy)
+        if memory_part and memory_part not in saved_parts:
+            saved_parts.insert(0, memory_part)
+        if execute_actions and options.get("save_sqlite"):
+            saved_parts.append(self._execute_save_transit_sqlite(options, headers_copy, rows_copy))
+        if execute_actions and options.get("save_xlsx"):
+            saved_parts.append(self._execute_save_transit_xlsx(options, headers_copy, rows_copy))
+        if not saved_parts:
+            saved_parts.append("未选择保存位置，仅透传数据")
+        return result_headers, result_rows, "；".join(saved_parts)
+
+    def _apply_save_transit_memory_plan(self, context, headers_copy, rows_copy):
+        memory_plan = context.get("save_transit_memory_plan")
+        if not memory_plan:
+            return ""
+        table_name = memory_plan["table_name"]
+        context.setdefault("transit_tables", {})[table_name] = {
+            "headers": list(memory_plan.get("headers", headers_copy)),
+            "rows": [list(row) for row in memory_plan.get("rows", rows_copy)],
+            "source": memory_plan.get("source", "保存中转数据:覆盖"),
+        }
+        context.setdefault("table_access_logs", []).append({
+            "time": self.now_factory().strftime("%Y-%m-%d %H:%M:%S"),
+            "operation": memory_plan.get("operation", "write_transit_table"),
+            "table_name": table_name,
+            "status": "ok",
+            "source_type": "中转副表",
+            "write_mode": memory_plan.get("write_mode", ""),
+            "message": memory_plan.get("log_message", ""),
+        })
+        return memory_plan.get("status", "")
+
+    def _execute_save_transit_sqlite(self, options, headers, rows):
+        mode_text = str(options.get("sqlite_mode", "自动加时间戳") or "")
+        if mode_text == "覆盖同名表":
+            mode = "replace"
+        elif mode_text == "追加写入":
+            mode = "append"
+        elif mode_text == "报错停止":
+            mode = "fail"
+        else:
+            mode = "timestamp"
+        result = self.services.write_table(
+            options.get("sqlite_table_raw") or options.get("base_name") or "中转数据",
+            {"headers": headers, "rows": rows},
+            mode=mode,
+            backup=True,
+        )
+        suffix = "（追加写入）" if mode == "append" else ""
+        return f"SQLite表：{result.get('table_name', '')}{suffix}"
+
+    def _execute_save_transit_xlsx(self, options, headers, rows):
+        path = str(options.get("xlsx_path", "") or "").strip()
+        if not path:
+            path = f"{options.get('base_name', '中转数据')}.xlsx"
+        result = self.services.export_xlsx(path, {"headers": headers, "rows": rows}, sheet_name=options.get("base_name", "中转数据"))
+        return f"xlsx：{result.get('path', path)}"
 
     def _apply_condition_check(self, headers, rows, config, context):
         flag_name = str(config.get("flag_name", "") or "").strip()

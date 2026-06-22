@@ -771,7 +771,7 @@ class QtWorkflowMainWindow:
             copy.deepcopy(self.current_plan),
             input_table=input_table,
             title="执行结果",
-            execute_actions=False,
+            execute_actions=True,
             status_prefix="执行",
         )
 
