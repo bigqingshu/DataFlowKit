@@ -94,22 +94,22 @@ class FilterConfigHelpersTests(unittest.TestCase):
             {"left": "当前表.B", "right": "t.B"},
         ])
 
-        self.assertEqual(rows, [("当前表.A", "等于", "t.A"), ("当前表.B", "等于", "t.B")])
+        self.assertEqual(rows, [("当前表.A", "等于", "t", "A"), ("当前表.B", "等于", "t", "B")])
         self.assertEqual(
             filter_join_rules_from_rows(rows),
             [
-                {"left": "当前表.A", "op": "等于", "right": "t.A"},
-                {"left": "当前表.B", "op": "等于", "right": "t.B"},
+                {"left": "当前表.A", "op": "等于", "right_table": "t", "right": "t.A"},
+                {"left": "当前表.B", "op": "等于", "right_table": "t", "right": "t.B"},
             ],
         )
         self.assertEqual(filter_join_rule_from_row(("L",)), {"left": "L", "op": "", "right": ""})
 
     def test_join_rule_row_actions_append_and_delete(self):
-        rows = [("当前表.A", "等于", "t.A")]
+        rows = [("当前表.A", "等于", "t", "A")]
 
         rows = append_filter_join_rule_row(rows, "当前表.B", "", "t.B")
 
-        self.assertEqual(rows, [("当前表.A", "等于", "t.A"), ("当前表.B", "", "t.B")])
+        self.assertEqual(rows, [("当前表.A", "等于", "t", "A"), ("当前表.B", "", "t", "B")])
         self.assertEqual(delete_filter_rows_by_indexes(rows, [1, 0]), [])
 
     def test_treeview_cell_edit_helpers(self):

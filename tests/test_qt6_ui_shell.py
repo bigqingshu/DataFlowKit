@@ -1198,6 +1198,55 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(choices_for_field("target_field", headers=["A", "B"]), ["A", "B"])
         self.assertIn("按列配置值", choices_for_field("value_mode"))
         self.assertEqual(config_layout_for_node("core.new_columns")[0]["title"], "字段定义")
+
+    def test_config_form_splits_legacy_join_rule_and_preserves_runtime_shape(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+
+        schema = get_node_ui_schema(
+            "core.filter",
+            table_names=["orders", "people"],
+            table_columns={"orders": ["id", "name"], "people": ["code", "title"]},
+        )
+        form = NodeConfigForm(qt)
+        form.set_node(
+            {
+                "node_type_id": "core.filter",
+                "node_id": "n1",
+                "name": "高级筛选",
+                "enabled": True,
+                "node_version": "1.0.0",
+                "config": {
+                    "source_table": "orders",
+                    "extra_tables": ["people"],
+                    "join_rules": [{"left": "id", "op": "等于", "right": "people.code"}],
+                },
+            },
+            table_names=["orders", "people"],
+            table_columns={"orders": ["id", "name"], "people": ["code", "title"]},
+            schema=schema,
+        )
+
+        frame = form.config_fields["join_rules"]["editor"]
+        table = frame.structured_state["table"]
+        right_table_column = next(i for i, col in enumerate(frame.structured_state["columns"]) if col.get("key") == "right_table")
+        right_column = next(i for i, col in enumerate(frame.structured_state["columns"]) if col.get("key") == "right")
+        right_table_combo = table.cellWidget(0, right_table_column).findChild(qt.QtWidgets.QComboBox)
+        right_combo = table.cellWidget(0, right_column).findChild(qt.QtWidgets.QComboBox)
+
+        self.assertEqual(right_table_combo.currentText(), "people")
+        self.assertEqual(right_combo.currentText(), "code")
+
+        right_table_combo.setCurrentText("people")
+        app.processEvents()
+        self.assertEqual([right_combo.itemText(i) for i in range(right_combo.count())], ["code", "title"])
+
+        right_combo.setCurrentText("title")
+        node = form.to_node()
+        self.assertEqual(node["config"]["join_rules"], [{"left": "id", "op": "等于", "right_table": "people", "right": "people.title"}])
         self.assertEqual(config_layout_for_node("批量替换")[0]["title"], "目标与匹配")
         self.assertIn("每行一个新字段", field_help_text("columns_text"))
         self.assertIn("添加字段", node_summary("core.new_columns"))

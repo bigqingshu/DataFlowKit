@@ -17,6 +17,7 @@ from ui_qt.node_ui_metadata import (
     plan_reference_choices,
     runtime_reference_choices,
 )
+from workflow.filter_config_helpers import filter_join_rule_from_row, filter_join_rule_to_row
 
 
 def value_kind(value):
@@ -211,6 +212,17 @@ class NodeConfigForm:
                 config[key] = str(editor.currentText())
             elif kind == "structured_list":
                 config[key] = self._structured_list_value(field)
+                if key == "join_rules":
+                    config[key] = [
+                        filter_join_rule_from_row((
+                            item.get("left", ""),
+                            item.get("op", ""),
+                            item.get("right_table", ""),
+                            item.get("right", ""),
+                        ))
+                        for item in (config[key] or [])
+                        if isinstance(item, dict)
+                    ]
             elif kind == "long_text":
                 config[key] = str(editor.toPlainText())
             elif kind == "json":
@@ -568,6 +580,7 @@ class NodeConfigForm:
             },
         }
         frame.structured_state = state
+        frame.field_key = key
 
         add_button.clicked.connect(lambda checked=False: self._structured_list_add_row(frame))
         remove_button.clicked.connect(lambda checked=False: self._structured_list_remove_row(frame))
@@ -588,6 +601,14 @@ class NodeConfigForm:
         columns = state.get("columns") or []
         if table is None:
             return
+        if getattr(frame, "field_key", "") == "join_rules" and isinstance(item, dict):
+            left, op, right_table, right = filter_join_rule_to_row(item)
+            item = {
+                "left": left,
+                "op": op,
+                "right_table": right_table,
+                "right": right,
+            }
         row = table.rowCount()
         table.insertRow(row)
         for column_index, column in enumerate(columns):
@@ -807,6 +828,7 @@ class NodeConfigForm:
         state = getattr(editor, "structured_state", {})
         table = state.get("table")
         columns = state.get("columns") or []
+        field_key = str(field.get("key") or "")
         rows = []
         if table is None:
             return rows
@@ -837,6 +859,13 @@ class NodeConfigForm:
                 if value not in ("", None, False):
                     has_value = True
             if has_value:
+                if field_key == "join_rules":
+                    item = filter_join_rule_from_row((
+                        item.get("left", ""),
+                        item.get("op", ""),
+                        item.get("right_table", ""),
+                        item.get("right", ""),
+                    ))
                 rows.append(item)
         return rows
 

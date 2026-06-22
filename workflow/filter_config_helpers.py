@@ -122,10 +122,15 @@ def apply_treeview_cell_edit(values, column_index, new_value, column_count):
 
 def filter_join_rule_to_row(rule):
     rule = rule or {}
+    right_table = rule.get("right_table", "")
+    right = rule.get("right", "")
+    if not right_table and "." in str(right or ""):
+        right_table, _, right = str(right).partition(".")
     return (
         rule.get("left", ""),
         rule.get("op", "等于"),
-        rule.get("right", ""),
+        right_table,
+        right,
     )
 
 
@@ -135,10 +140,15 @@ def filter_join_rules_to_rows(join_rules):
 
 def filter_join_rule_from_row(row):
     values = list(row or [])
-    while len(values) < 3:
+    while len(values) < 4:
         values.append("")
-    left, op, right = values[:3]
-    return {"left": left, "op": op, "right": right}
+    left, op, right_table, right = values[:4]
+    payload = {"left": left, "op": op, "right": right}
+    if right_table:
+        payload["right_table"] = right_table
+        if right and "." not in str(right):
+            payload["right"] = f"{right_table}.{right}"
+    return payload
 
 
 def filter_join_rules_from_rows(rows):
@@ -147,8 +157,8 @@ def filter_join_rules_from_rows(rows):
 
 def append_filter_join_rule_row(rows, left, op, right):
     result = [tuple(row) for row in (rows or [])]
-    rule = filter_join_rule_from_row((left, op, right))
-    result.append((rule["left"], rule["op"], rule["right"]))
+    rule = filter_join_rule_from_row((left, op, "", right))
+    result.append(filter_join_rule_to_row(rule))
     return result
 
 

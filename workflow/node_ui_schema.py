@@ -303,7 +303,7 @@ STRUCTURED_COLUMN_TABLE_FIELD_RULES = {
     "match_rules.target_field": {"table_field": "target_table"},
     "conditions.field": {"table_field": "source_table"},
     "join_rules.left": {"table_field": "source_table"},
-    "join_rules.right": {"table_field": "source_table"},
+    "join_rules.right": {"table_field": "right_table"},
 }
 
 TABLE_PICKER_KEYS = {
@@ -365,6 +365,7 @@ STRUCTURED_LIST_FIELD_COLUMNS = {
     "join_rules": [
         {"key": "left", "label": "左字段", "type": "field_select"},
         {"key": "op", "label": "操作", "type": "select", "choices": FIELD_CHOICES.get("op", [])},
+        {"key": "right_table", "label": "右侧表", "type": "table_select", "options_source": {"type": "table_names"}},
         {"key": "right", "label": "右字段", "type": "field_select"},
     ],
     "match_rules": [
@@ -521,7 +522,7 @@ FIELD_HELP_TEXTS = {
     "source_table": "作为主要字段来源的数据表。表字段候选项会随之切换。",
     "extra_tables": "需要参与联合筛选的附加数据表。",
     "join_logic": "多条关联规则之间的组合关系。",
-    "join_rules": "定义主表与附加表之间的字段关联条件。",
+    "join_rules": "定义主表与附加表之间的字段关联条件。左字段来自主表，右侧表建议选择已勾选的附加表。",
     "output_fields": "筛选后保留输出的字段列表。为空时通常表示保留全部字段。",
     "result_limit": "限制最终输出结果的最大行数。",
     "max_intermediate": "限制中间计算过程允许展开的最大记录数。",
