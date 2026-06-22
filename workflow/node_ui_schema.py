@@ -1180,6 +1180,9 @@ def build_node_detail_payload(node_type_id, *, display_name="", category="", sup
     config_groups = config_form_groups_for_node(stable_id, default_config)
 
     config_lines = []
+    required_fields = []
+    dynamic_fields = []
+    action_fields = []
     for group in config_groups:
         fields = group.get("fields") or []
         labels = []
@@ -1190,12 +1193,16 @@ def build_node_detail_payload(node_type_id, *, display_name="", category="", sup
             tags = []
             if item.get("required"):
                 tags.append("必填")
+                required_fields.append(label)
             if item.get("visible_when"):
                 tags.append("动态显示")
+                dynamic_fields.append(label)
             if item.get("enabled_when"):
                 tags.append("动态启用")
+                dynamic_fields.append(label)
             if (item.get("action") or {}).get("key"):
                 tags.append("可选取")
+                action_fields.append(label)
             labels.append(label + (f"({','.join(tags)})" if tags else ""))
         if labels:
             config_lines.append(f"{group.get('title', '参数')}：" + "、".join(labels[:6]))
@@ -1234,6 +1241,11 @@ def build_node_detail_payload(node_type_id, *, display_name="", category="", sup
         "badges": list(meta.get("badges") or []),
         "warnings": warnings,
         "config_summary": config_lines,
+        "config_capabilities": {
+            "required_fields": list(dict.fromkeys(required_fields)),
+            "dynamic_fields": list(dict.fromkeys(dynamic_fields)),
+            "action_fields": list(dict.fromkeys(action_fields)),
+        },
         "risk": meta.get("risk", "unknown"),
         "supported_headless": bool(supported),
         "sections": sections,

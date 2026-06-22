@@ -510,6 +510,68 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(combo.currentText(), "B")
         app.processEvents()
 
+    def test_structured_list_cells_support_table_picker_actions(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        schema = {
+            "form": {
+                "groups": [
+                    {
+                        "title": "参数",
+                        "fields": [
+                            {
+                                "key": "rules",
+                                "type": "structured_list",
+                                "item_schema": {
+                                    "columns": [
+                                        {
+                                            "key": "table_name",
+                                            "label": "目标表",
+                                            "type": "table_select",
+                                            "options_source": {"type": "table_names"},
+                                        }
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+        node = {
+            "node_type_id": "demo.table_picker",
+            "node_id": "n1",
+            "name": "表格选择",
+            "enabled": True,
+            "node_version": "1.0.0",
+            "config": {
+                "rules": [{"table_name": "源表"}],
+            },
+        }
+        calls = []
+
+        def action_handler(payload):
+            calls.append(payload)
+            return {"value": "结果表"}
+
+        form = NodeConfigForm(qt, table_names=["源表", "结果表"], action_handler=action_handler)
+        form.set_node(node, table_names=["源表", "结果表"], schema=schema)
+        editor = form.config_fields["rules"]["editor"]
+        table = editor.structured_state["table"]
+        cell_container = table.cellWidget(0, 0)
+        button = cell_container.findChild(qt.QtWidgets.QPushButton)
+        combo = cell_container.findChild(qt.QtWidgets.QComboBox)
+        self.assertIsNotNone(button)
+        self.assertIsNotNone(combo)
+        button.click()
+        self.assertEqual(calls[0]["action"]["key"], "pick_table_name")
+        self.assertEqual(calls[0]["table_names"], ["源表", "结果表"])
+        self.assertEqual(combo.currentText(), "结果表")
+        app.processEvents()
+
     def test_node_ui_metadata_maps_protocol_to_chinese_ui(self):
         self.assertEqual(node_display_label("core.new_columns"), "新建列")
         self.assertEqual(category_label("数据处理"), "数据处理")
@@ -531,6 +593,9 @@ class Qt6UiShellTests(unittest.TestCase):
         detail_payload_supported = build_node_detail_payload("core.replace", supported_headless=True)
         self.assertIn("必填", "\n".join(detail_payload_supported["config_summary"]))
         self.assertIn("动态显示", "\n".join(detail_payload_supported["config_summary"]))
+        self.assertIn("目标字段", detail_payload_supported["config_capabilities"]["required_fields"])
+        self.assertIn("匹配值字段", detail_payload_supported["config_capabilities"]["dynamic_fields"])
+        self.assertIn("目标字段", detail_payload_supported["config_capabilities"]["action_fields"])
         schema = get_node_ui_schema("core.new_columns", preview_headers=["A"])
         self.assertEqual(schema["schema_version"], "2.0")
         self.assertEqual(schema["form"]["schema_version"], "2.0")

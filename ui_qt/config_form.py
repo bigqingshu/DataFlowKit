@@ -87,9 +87,10 @@ def structured_item_default(columns):
 class NodeConfigForm:
     """Build editable Qt widgets for a workflow node dict."""
 
-    def __init__(self, qt, parent=None, headers=None, action_handler=None):
+    def __init__(self, qt, parent=None, headers=None, table_names=None, action_handler=None):
         self.qt = qt
         self.headers = list(headers or [])
+        self.table_names = list(table_names or [])
         self.action_handler = action_handler
         self.widget = qt.QtWidgets.QWidget(parent)
         self.root_layout = qt.QtWidgets.QVBoxLayout(self.widget)
@@ -108,6 +109,9 @@ class NodeConfigForm:
     def set_headers(self, headers):
         self.headers = list(headers or [])
         self._refresh_dynamic_options()
+
+    def set_table_names(self, table_names):
+        self.table_names = list(table_names or [])
 
     def set_validation_issues(self, issues=None):
         self.validation_issues = list(issues or [])
@@ -131,9 +135,11 @@ class NodeConfigForm:
             "issues": list(self.validation_issues or []),
         }
 
-    def set_node(self, node, headers=None, schema=None):
+    def set_node(self, node, headers=None, table_names=None, schema=None):
         if headers is not None:
             self.set_headers(headers)
+        if table_names is not None:
+            self.set_table_names(table_names)
         self.node = copy.deepcopy(node) if isinstance(node, dict) else None
         self.schema = copy.deepcopy(schema) if isinstance(schema, dict) else {}
         self.node_fields = {}
@@ -547,20 +553,15 @@ class NodeConfigForm:
 
     def _structured_cell_editor(self, column, value):
         choices = list(column.get("choices") or [])
-        if not choices and (column.get("options_source") or {}).get("type") == "preview_headers":
+        options_source = column.get("options_source") or {}
+        if not choices and options_source.get("type") == "preview_headers":
             choices = list(self.headers)
         kind = self._structured_column_kind(column)
         key = str(column.get("key") or "")
         editor = self._editor_for_field(key, kind, value, choices)
         action = column.get("action") or {}
-        if not action and (column.get("options_source") or {}).get("type") == "preview_headers" and kind in {"choice", "field_multi_select"}:
-            action = {
-                "key": "pick_preview_headers" if kind == "field_multi_select" else "pick_preview_header",
-                "label": "选择字段",
-                "style": "picker",
-                "source": "preview_headers",
-                "multiple": kind == "field_multi_select",
-            }
+        if not action:
+            action = self._default_action_for_structured_column(kind, options_source)
         if not action:
             return editor
 
@@ -584,6 +585,25 @@ class NodeConfigForm:
         layout.addWidget(button)
         return container
 
+    def _default_action_for_structured_column(self, kind, options_source):
+        source_type = str((options_source or {}).get("type") or "")
+        if source_type == "preview_headers":
+            return {
+                "key": "pick_preview_headers" if kind == "field_multi_select" else "pick_preview_header",
+                "label": "选择字段",
+                "style": "picker",
+                "source": "preview_headers",
+                "multiple": kind == "field_multi_select",
+            }
+        if source_type == "table_names":
+            return {
+                "key": "pick_table_name",
+                "label": "选择表",
+                "style": "picker",
+                "source": "table_names",
+            }
+        return {}
+
     def _trigger_structured_cell_action(self, editor, kind, column_key, column_schema, action):
         if not callable(self.action_handler):
             return
@@ -593,6 +613,7 @@ class NodeConfigForm:
             "action": copy.deepcopy(action or {}),
             "value": self._structured_editor_value(editor, kind),
             "headers": list(self.headers or []),
+            "table_names": list(getattr(self, "table_names", []) or []),
             "context": {"kind": "structured_cell"},
         }
         result = self.action_handler(payload) or {}
@@ -627,6 +648,8 @@ class NodeConfigForm:
 
     def _structured_column_kind(self, column):
         column_type = str((column or {}).get("type") or "text")
+        if column_type == "field_multi_select":
+            return "field_multi_select"
         if column_type in {"select", "field_select", "table_select"}:
             return "choice"
         if column_type == "bool":
