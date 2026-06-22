@@ -536,8 +536,12 @@ class QtWorkflowMainWindow:
             **self._table_context(),
         )
         if not result.get("ok"):
-            self.issue_text.setPlainText(self._format_issues(result.get("issues", [])))
-            self.status_bar.showMessage("计划编辑失败")
+            self._apply_feedback(self.engine_client.describe_plan_command_feedback(
+                result,
+                success_status=status_message,
+                success_title="计划编辑",
+                failure_status="计划编辑失败",
+            ))
             return None
         self.current_plan = result.get("plan") or self.current_plan
         self.refresh_node_list()
@@ -545,7 +549,11 @@ class QtWorkflowMainWindow:
         if selected is not None and self.node_list.count():
             self.node_list.setCurrentRow(max(0, min(int(selected), self.node_list.count() - 1)))
         if status_message:
-            self.status_bar.showMessage(status_message)
+            self._apply_feedback(self.engine_client.describe_plan_command_feedback(
+                result,
+                success_status=status_message,
+                success_title="计划编辑",
+            ))
         self.refresh_action_states()
         return result
 
@@ -1161,8 +1169,10 @@ class QtWorkflowMainWindow:
         try:
             loaded = self.engine_client.load_plan_template(path)
             if not loaded.get("ok"):
-                self.issue_text.setPlainText(self._format_issues(loaded.get("issues", [])))
-                self.status_bar.showMessage("打开失败：计划模板校验未通过")
+                self._apply_feedback(self.engine_client.describe_plan_file_failure(
+                    action="打开计划",
+                    issues=loaded.get("issues") or [],
+                ))
                 return
             state = self.engine_client.build_loaded_plan_state(loaded).get("state") or {}
             self._apply_loaded_plan_state(state)
@@ -1189,8 +1199,10 @@ class QtWorkflowMainWindow:
                 output_path=self.output_path_edit.text(),
             )
             if not saved.get("ok"):
-                self.issue_text.setPlainText(self._format_issues(saved.get("issues", [])))
-                self.status_bar.showMessage("保存失败：计划模板校验未通过")
+                self._apply_feedback(self.engine_client.describe_plan_file_failure(
+                    action="保存计划",
+                    issues=saved.get("issues") or [],
+                ))
                 return
             state = self.engine_client.build_saved_plan_state(saved, self.current_plan).get("state") or {}
             self._apply_saved_plan_state(state)

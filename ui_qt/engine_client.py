@@ -99,6 +99,12 @@ class QtHeadlessEngineClient:
     def describe_confirmation_prompt(self, **kwargs):
         return self.facade.describe_confirmation_prompt(**kwargs)
 
+    def describe_plan_command_feedback(self, result, **kwargs):
+        return self.facade.describe_plan_command_feedback(copy.deepcopy(result), **kwargs)
+
+    def describe_plan_file_failure(self, **kwargs):
+        return self.facade.describe_plan_file_failure(**kwargs)
+
     def describe_node_detail(self, node_type_id, *, preview_headers=None, table_names=None, table_columns=None):
         return self.facade.describe_node_detail(
             node_type_id,

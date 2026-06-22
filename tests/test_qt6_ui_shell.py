@@ -329,6 +329,23 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertIn("将写回数据库", "\n".join(run_prompt["prompt"]["details"]))
         self.assertIn("自动备份", "\n".join(run_prompt["prompt"]["details"]))
 
+    def test_facade_describes_plan_command_and_file_failures(self):
+        client = QtHeadlessEngineClient()
+
+        plan_command_feedback = client.describe_plan_command_feedback({
+            "ok": False,
+            "issues": [{"severity": "warning", "code": "demo", "message": "不能删除最后一个节点"}],
+        })
+        self.assertEqual(plan_command_feedback["feedback"]["status_message"], "计划编辑失败")
+        self.assertIn("不能删除最后一个节点", plan_command_feedback["feedback"]["message_panel"]["issue_body"])
+
+        file_failure = client.describe_plan_file_failure(
+            action="打开计划",
+            issues=[{"severity": "error", "code": "schema", "message": "计划格式无效"}],
+        )
+        self.assertEqual(file_failure["feedback"]["status_message"], "打开计划失败：计划模板校验未通过")
+        self.assertIn("计划格式无效", file_failure["feedback"]["message_panel"]["issue_body"])
+
     def test_facade_describes_file_actions_and_state_payloads(self):
         client = QtHeadlessEngineClient()
 

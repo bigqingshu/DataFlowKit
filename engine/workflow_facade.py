@@ -167,6 +167,37 @@ class WorkflowFacade:
     def apply_plan_command(self, plan, command, **kwargs):
         return apply_workflow_plan_command(copy.deepcopy(plan), command, **kwargs)
 
+    def describe_plan_command_feedback(self, result, *, success_status="", success_title="计划编辑", failure_status="计划编辑失败"):
+        result = copy.deepcopy(result or {})
+        issues = copy.deepcopy(result.get("issues") or [])
+        if result.get("ok"):
+            return self.build_user_feedback(
+                level="success",
+                code="plan_command_applied",
+                title=str(success_title or "计划编辑"),
+                status_message=str(success_status or "计划编辑已完成。"),
+            )
+        return self.build_user_feedback(
+            level="warning",
+            code="plan_command_failed",
+            title=str(success_title or "计划编辑"),
+            status_message=str(failure_status or "计划编辑失败"),
+            issue_message=self.format_issues_text(issues),
+            issues=issues,
+        )
+
+    def describe_plan_file_failure(self, *, action="", issues=None):
+        action_text = str(action or "计划操作")
+        issues = copy.deepcopy(issues or [])
+        return self.build_user_feedback(
+            level="warning",
+            code="plan_file_invalid",
+            title=action_text,
+            status_message=f"{action_text}失败：计划模板校验未通过",
+            issue_message=self.format_issues_text(issues),
+            issues=issues,
+        )
+
     def build_user_feedback(self, *,
         status_message="",
         issue_message="",
