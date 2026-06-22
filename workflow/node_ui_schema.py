@@ -825,6 +825,32 @@ def options_source_for_field(key):
     return None
 
 
+def action_for_field(key):
+    if key in FIELD_PICKER_KEYS:
+        return {
+            "key": "pick_preview_header",
+            "label": "选择字段",
+            "style": "picker",
+            "source": "preview_headers",
+        }
+    if key in FIELD_MULTI_PICKER_KEYS:
+        return {
+            "key": "pick_preview_headers",
+            "label": "选择字段",
+            "style": "picker",
+            "source": "preview_headers",
+            "multiple": True,
+        }
+    if key in TABLE_PICKER_KEYS:
+        return {
+            "key": "pick_table_name",
+            "label": "选择表",
+            "style": "picker",
+            "source": "table_names",
+        }
+    return None
+
+
 def validation_for_field(key):
     return dict(FIELD_VALIDATION_RULES.get(key, {}))
 
@@ -922,6 +948,9 @@ def config_field_schema(key, value=None, *, headers=None, table_names=None, tabl
     options_source = options_source_for_field(key)
     if options_source:
         schema["options_source"] = options_source
+    action = action_for_field(key)
+    if action:
+        schema["action"] = action
     validation = validation_for_field(key)
     if validation:
         schema["validation"] = validation

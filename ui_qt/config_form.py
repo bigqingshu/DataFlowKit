@@ -70,9 +70,10 @@ def structured_item_default(columns):
 class NodeConfigForm:
     """Build editable Qt widgets for a workflow node dict."""
 
-    def __init__(self, qt, parent=None, headers=None):
+    def __init__(self, qt, parent=None, headers=None, action_handler=None):
         self.qt = qt
         self.headers = list(headers or [])
+        self.action_handler = action_handler
         self.widget = qt.QtWidgets.QWidget(parent)
         self.root_layout = qt.QtWidgets.QVBoxLayout(self.widget)
         self.root_layout.setContentsMargins(0, 0, 0, 0)
@@ -105,6 +106,8 @@ class NodeConfigForm:
                     "enabled": bool(field.get("editor").isEnabled()) if field.get("editor") is not None else False,
                     "issues": list(field.get("issues") or []),
                     "action": copy.deepcopy((field.get("schema") or {}).get("action") or {}),
+                    "action_visible": bool(field.get("action_button").isVisible()) if field.get("action_button") is not None else False,
+                    "action_enabled": bool(field.get("action_button").isEnabled()) if field.get("action_button") is not None else False,
                 }
                 for key, field in self.config_fields.items()
             },
@@ -287,19 +290,99 @@ class NodeConfigForm:
         self.config_fields[key] = {
             "kind": kind,
             "editor": None,
+            "editor_container": None,
             "schema": field_schema,
             "visible_when": field_schema.get("visible_when"),
             "enabled_when": field_schema.get("enabled_when"),
             "depends_on": list(field_schema.get("depends_on") or []),
             "issues": [],
+            "action_button": None,
         }
         editor = self._editor_for_field(key, kind, value, choices)
+        container = self._wrap_editor_with_action(key, editor)
         self.config_fields[key]["editor"] = editor
+        self.config_fields[key]["editor_container"] = container
         help_text = self._field_tooltip(key, field_schema)
         if help_text:
             editor.setToolTip(help_text)
         self._connect_dynamic_refresh(editor, kind)
-        return editor
+        return container
+
+    def _wrap_editor_with_action(self, key, editor):
+        field = self.config_fields.get(key) or {}
+        action = (field.get("schema") or {}).get("action") or {}
+        if not action:
+            return editor
+
+        container = self.qt.QtWidgets.QWidget()
+        layout = self.qt.QtWidgets.QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addWidget(editor, 1)
+
+        button = self.qt.QtWidgets.QPushButton(str(action.get("label") or "操作"))
+        button.setMaximumWidth(76)
+        button.setToolTip(self._field_action_tooltip(key, action))
+        button.clicked.connect(lambda checked=False, field_key=key: self._trigger_field_action(field_key))
+        layout.addWidget(button)
+        field["action_button"] = button
+        self.config_fields[key] = field
+        return container
+
+    def _field_action_tooltip(self, key, action):
+        label = str(action.get("label") or "")
+        if label:
+            return label
+        return f"操作：{config_field_label(key)}"
+
+    def _trigger_field_action(self, key):
+        if not callable(self.action_handler):
+            return
+        field = self.config_fields.get(key) or {}
+        schema = copy.deepcopy(field.get("schema") or {})
+        action = copy.deepcopy(schema.get("action") or {})
+        if not action:
+            return
+        payload = {
+            "field_key": key,
+            "schema": schema,
+            "action": action,
+            "value": self._field_value_for_action(field),
+            "headers": list(self.headers or []),
+        }
+        result = self.action_handler(payload) or {}
+        if "value" in result:
+            self._set_field_value(field, result.get("value"))
+            self._apply_dynamic_state()
+
+    def _field_value_for_action(self, field):
+        editor = field.get("editor")
+        kind = field.get("kind")
+        if editor is None:
+            return None
+        if kind == "bool":
+            return bool(editor.isChecked())
+        if kind == "choice":
+            return str(editor.currentText())
+        if kind == "structured_list":
+            return self._structured_list_value(field)
+        if kind in {"long_text", "json"}:
+            return str(editor.toPlainText())
+        return str(editor.text())
+
+    def _set_field_value(self, field, value):
+        editor = field.get("editor")
+        kind = field.get("kind")
+        if editor is None:
+            return
+        if kind == "bool":
+            editor.setChecked(bool(value))
+        elif kind == "choice":
+            editor.setCurrentText(format_form_value(value))
+        elif kind in {"long_text", "json"}:
+            editor.setPlainText(format_form_value(value))
+        elif kind != "structured_list":
+            editor.setText(format_form_value(value))
 
     def _refresh_dynamic_options(self):
         for key, field in self.config_fields.items():
@@ -612,14 +695,18 @@ class NodeConfigForm:
         for field in self.config_fields.values():
             label = field.get("label")
             editor = field.get("editor")
+            container = field.get("editor_container") or editor
+            action_button = field.get("action_button")
             if editor is None:
                 continue
             visible = self._condition_matches(field.get("visible_when"), values)
             enabled = visible and self._condition_matches(field.get("enabled_when"), values)
             if label is not None:
                 label.setVisible(visible)
-            editor.setVisible(visible)
+            container.setVisible(visible)
             editor.setEnabled(enabled)
+            if action_button is not None:
+                action_button.setEnabled(enabled)
         self._apply_validation_state()
 
     def _apply_validation_state(self):

@@ -394,6 +394,47 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(state["fields"]["target_field"]["issues"][0]["message"], "目标字段不存在")
         app.processEvents()
 
+    def test_config_form_exposes_schema_action_buttons(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        schema = get_node_ui_schema("core.replace", preview_headers=["A", "B"])
+        node = {
+            "node_type_id": "core.replace",
+            "node_id": "n1",
+            "name": "批量替换",
+            "enabled": True,
+            "node_version": "1.0.0",
+            "config": {
+                "target_field": "A",
+                "match_mode": "包含",
+                "match_value": "x",
+                "replace_mode": "整格替换为新值",
+                "replace_value": "y",
+                "match_value_source": "手动输入",
+                "replace_value_source": "手动输入",
+            },
+        }
+        calls = []
+
+        def action_handler(payload):
+            calls.append(payload)
+            return {"value": "B"}
+
+        form = NodeConfigForm(qt, headers=["A", "B"], action_handler=action_handler)
+        form.set_node(node, headers=["A", "B"], schema=schema)
+        form.widget.show()
+        app.processEvents()
+        state = form.describe_state()
+        self.assertEqual(state["fields"]["target_field"]["action"]["key"], "pick_preview_header")
+        self.assertTrue(state["fields"]["target_field"]["action_visible"])
+        form.config_fields["target_field"]["action_button"].click()
+        self.assertEqual(calls[0]["field_key"], "target_field")
+        self.assertEqual(form.config_fields["target_field"]["editor"].currentText(), "B")
+        app.processEvents()
+
     def test_node_ui_metadata_maps_protocol_to_chinese_ui(self):
         self.assertEqual(node_display_label("core.new_columns"), "新建列")
         self.assertEqual(category_label("数据处理"), "数据处理")
@@ -506,6 +547,8 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(controller.output_mode_combo.currentText(), "输出到主界面预览区")
         self.assertEqual(controller.output_db_path_edit.text(), "")
         self.assertEqual(controller.output_path_edit.text(), "")
+        self.assertEqual(controller.node_detail_title_label.text(), "新建列")
+        self.assertIn("说明", controller.node_detail_sections.toPlainText())
         self.assertFalse(controller.output_form_fields["backup_before_overwrite"]["editor"].isVisible())
         self.assertTrue(controller.add_node_button.isEnabled())
         self.assertTrue(controller.apply_config_button.isEnabled())
@@ -514,10 +557,14 @@ class Qt6UiShellTests(unittest.TestCase):
         with patch("ui_qt.main_window.QtWorkflowMainWindow._confirm_prompt", return_value=True):
             controller.add_node_by_type("core.replace")
             self.assertEqual(len(controller.current_plan["nodes"]), 2)
+            self.assertEqual(controller.config_form.config_fields["target_field"]["action_button"].text(), "选择字段")
             self.assertTrue(controller.config_form.config_fields["match_value_field"]["label"].isHidden())
             controller.config_form.config_fields["match_value_source"]["editor"].setCurrentText("列字段")
             app.processEvents()
             self.assertFalse(controller.config_form.config_fields["match_value_field"]["label"].isHidden())
+            controller.show_node_detail("core.replace")
+            self.assertEqual(controller.node_detail_title_label.text(), "批量替换")
+            self.assertIn("注意", controller.node_detail_sections.toPlainText())
             controller.copy_selected_node()
             self.assertEqual(len(controller.current_plan["nodes"]), 3)
             copied_node = controller.current_plan["nodes"][controller.selected_node_index()]

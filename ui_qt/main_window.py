@@ -225,12 +225,32 @@ class QtWorkflowMainWindow:
         config_layout = qt.QtWidgets.QVBoxLayout(config_group)
         self.config_header_label = qt.QtWidgets.QLabel("未选择节点")
         self.config_header_label.setWordWrap(True)
-        self.config_form = NodeConfigForm(qt, headers=self.current_headers)
+        self.config_form = NodeConfigForm(qt, headers=self.current_headers, action_handler=self._handle_config_field_action)
         self.apply_config_button = qt.QtWidgets.QPushButton("应用节点配置")
         self.apply_config_button.clicked.connect(lambda checked=False: self.apply_node_config())
         config_layout.addWidget(self.config_header_label)
         config_layout.addWidget(self.config_form.widget, 1)
         config_layout.addWidget(self.apply_config_button)
+
+        detail_group = qt.QtWidgets.QGroupBox("节点说明")
+        detail_layout = qt.QtWidgets.QVBoxLayout(detail_group)
+        detail_layout.setContentsMargins(8, 8, 8, 8)
+        detail_layout.setSpacing(6)
+        self.node_detail_title_label = qt.QtWidgets.QLabel("未选择节点")
+        self.node_detail_title_label.setWordWrap(True)
+        self.node_detail_title_label.setStyleSheet("font-weight: 600;")
+        self.node_detail_meta_label = qt.QtWidgets.QLabel("")
+        self.node_detail_meta_label.setWordWrap(True)
+        self.node_detail_badges_label = qt.QtWidgets.QLabel("")
+        self.node_detail_badges_label.setWordWrap(True)
+        self.node_detail_sections = qt.QtWidgets.QTextBrowser()
+        self.node_detail_sections.setOpenExternalLinks(False)
+        self.node_detail_sections.setReadOnly(True)
+        self.node_detail_sections.setMaximumHeight(190)
+        detail_layout.addWidget(self.node_detail_title_label)
+        detail_layout.addWidget(self.node_detail_meta_label)
+        detail_layout.addWidget(self.node_detail_badges_label)
+        detail_layout.addWidget(self.node_detail_sections)
 
         action_row = qt.QtWidgets.QHBoxLayout()
         for text, callback in [
@@ -365,6 +385,7 @@ class QtWorkflowMainWindow:
         preview_layout.addWidget(self.message_tabs)
 
         layout.addWidget(config_group, 2)
+        layout.addWidget(detail_group)
         layout.addLayout(action_row)
         layout.addWidget(progress_group)
         layout.addWidget(output_group)
@@ -768,16 +789,95 @@ class QtWorkflowMainWindow:
         detail = described.get("detail") or {}
         if not schema and not detail:
             return
-        self._apply_message_panel(self.engine_client.build_message_panel_state(
-            mode="info",
-            title=str(detail.get("title") or schema.get("display_name") or "节点说明"),
-            body=str(detail.get("text") or format_node_detail(
-            node_type_id,
-            display_name=schema.get("display_name", ""),
-            category=schema.get("category", ""),
-            supported_headless=schema.get("capabilities", {}).get("headless_preview"),
-        )),
-        ).get("panel") or {})
+        self._apply_node_detail_panel(detail, schema)
+
+    def _apply_node_detail_panel(self, detail, schema=None):
+        detail = detail or {}
+        schema = schema or {}
+        title = str(detail.get("title") or schema.get("display_name") or "节点说明")
+        category = str(detail.get("category") or schema.get("category_label") or schema.get("category") or "")
+        node_type_id = str(detail.get("node_type_id") or schema.get("node_type_id") or "")
+        risk = str(detail.get("risk") or schema.get("risk") or "")
+        supported = detail.get("supported_headless")
+        badges = [str(item) for item in (detail.get("badges") or []) if str(item).strip()]
+        sections = detail.get("sections") or []
+
+        self.node_detail_title_label.setText(title)
+        meta_parts = []
+        if category:
+            meta_parts.append(f"分类：{category}")
+        if node_type_id:
+            meta_parts.append(f"类型：{node_type_id}")
+        if risk:
+            meta_parts.append(f"风险：{risk}")
+        if supported is not None:
+            meta_parts.append("执行层：支持 headless" if supported else "执行层：仅旧执行链")
+        self.node_detail_meta_label.setText(" | ".join(meta_parts))
+        self.node_detail_badges_label.setText(("标签：" + " / ".join(badges)) if badges else "")
+
+        blocks = []
+        summary = str(detail.get("summary") or "").strip()
+        if summary:
+            blocks.append(f"<p><b>摘要</b><br>{summary}</p>")
+        for section in sections:
+            section_title = str((section or {}).get("title") or "").strip()
+            lines = [str(item) for item in ((section or {}).get("lines") or []) if str(item).strip()]
+            if not section_title and not lines:
+                continue
+            body = "<br>".join(lines)
+            if section_title:
+                blocks.append(f"<p><b>{section_title}</b><br>{body}</p>")
+            elif body:
+                blocks.append(f"<p>{body}</p>")
+        self.node_detail_sections.setHtml("".join(blocks) or "<p>暂无说明</p>")
+
+    def _handle_config_field_action(self, payload):
+        payload = payload or {}
+        field_key = str(payload.get("field_key") or "")
+        action = payload.get("action") or {}
+        action_key = str(action.get("key") or "")
+        if action_key in {"pick_preview_header", "pick_table_name"}:
+            return self._pick_single_value_for_field(field_key, payload)
+        if action_key == "pick_preview_headers":
+            return self._pick_multi_values_for_field(field_key, payload)
+        return {}
+
+    def _pick_single_value_for_field(self, field_key, payload):
+        candidates = [str(item) for item in (payload.get("headers") or []) if str(item).strip()]
+        if not candidates:
+            self.status_bar.showMessage("当前没有可选字段。")
+            return {}
+        current = str(payload.get("value") or "")
+        value, accepted = self.qt.QtWidgets.QInputDialog.getItem(
+            self.window,
+            f"选择{field_key}",
+            "可用字段：",
+            candidates,
+            max(0, candidates.index(current)) if current in candidates else 0,
+            False,
+        )
+        if not accepted:
+            return {}
+        return {"value": value}
+
+    def _pick_multi_values_for_field(self, field_key, payload):
+        candidates = [str(item) for item in (payload.get("headers") or []) if str(item).strip()]
+        if not candidates:
+            self.status_bar.showMessage("当前没有可选字段。")
+            return {}
+        current_value = str(payload.get("value") or "")
+        current_items = [item.strip() for item in current_value.split(",") if item.strip()]
+        text, accepted = self.qt.QtWidgets.QInputDialog.getText(
+            self.window,
+            f"选择{field_key}",
+            "请输入字段名，多个字段用逗号分隔：\n" + "、".join(candidates),
+            text=", ".join(current_items),
+        )
+        if not accepted:
+            return {}
+        selected = [item.strip() for item in str(text).split(",") if item.strip()]
+        selected = [item for item in selected if item in candidates]
+        return {"value": ", ".join(selected)}
 
     def _apply_output_form_settings(self, settings):
         mode = str((settings or {}).get("mode") or "").strip()
