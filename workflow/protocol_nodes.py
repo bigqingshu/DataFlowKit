@@ -67,6 +67,7 @@ HEADLESS_DATA_NODE_TYPE_IDS = {
     "core.rename_columns",
     "core.dedupe",
     "core.numeric_column",
+    "core.match_value_output",
     "core.copy_column",
     "core.copy_row",
     "core.delete_rows",
@@ -77,6 +78,7 @@ HEADLESS_DATA_NODE_TYPE_IDS = {
     "core.delete_columns",
     "core.move_columns",
     "core.save_transit",
+    "core.filter",
 }
 
 HEADLESS_CONTROL_NODE_TYPE_IDS = {

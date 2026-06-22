@@ -48,6 +48,7 @@ from workflow.nodes.data_nodes import (
     apply_fill_value_node,
     apply_format_datetime_node,
     apply_merge_node,
+    apply_match_value_output_field_name_node,
     apply_move_columns_node,
     apply_new_columns_node,
     apply_numeric_column_node,
@@ -55,6 +56,12 @@ from workflow.nodes.data_nodes import (
     apply_replace_node,
     apply_row_data_mapping_node,
     apply_sequence_fill_node,
+)
+from workflow.nodes.filter_execution_nodes import apply_filter_node
+from workflow.nodes.filter_plan_nodes import (
+    build_filter_config_probe_result,
+    build_filter_runtime_plan,
+    get_required_columns_for_plan_table,
 )
 from workflow.nodes.transit_nodes import apply_save_transit_node
 from workflow.protocol_nodes import (
@@ -696,6 +703,9 @@ class HeadlessWorkflowEngine:
             return apply_dedupe_node(headers, rows, config, context=node_context)
         if node_type_id == "core.numeric_column":
             return apply_numeric_column_node(headers, rows, config, context=node_context)
+        if node_type_id == "core.match_value_output":
+            match_context = self._make_match_value_output_context(config, context, cancel_event)
+            return apply_match_value_output_field_name_node(headers, rows, config, context=match_context)
         if node_type_id == "core.copy_column":
             return apply_copy_column_node(headers, rows, config)
         if node_type_id == "core.copy_row":
@@ -714,7 +724,126 @@ class HeadlessWorkflowEngine:
             return apply_delete_columns_node(headers, rows, config)
         if node_type_id == "core.move_columns":
             return apply_move_columns_node(headers, rows, config)
+        if node_type_id == "core.filter":
+            return self._apply_filter_node(headers, rows, config, context, cancel_event)
         raise ValueError(f"HeadlessWorkflowEngine 暂不支持节点：{display_type_for_node_type_id(node_type_id)}")
+
+    def _make_match_value_output_context(self, config, context, cancel_event):
+        lookup_source_type = str(config.get("lookup_source_type", "SQLite表") or "SQLite表").strip()
+        lookup_table = str(config.get("lookup_table", "") or "").strip()
+        if not lookup_table:
+            raise ValueError("请选择匹配表或中转副表。")
+
+        if lookup_source_type == "中转副表":
+            lookup_columns, lookup_rows = self._load_transit_table(context, lookup_table)
+        else:
+            lookup_columns, lookup_rows = self._load_named_table(lookup_table, context)
+
+        lookup_records = []
+        normalized_rows = normalize_rows(lookup_rows, len(lookup_columns))
+        for index, row in enumerate(normalized_rows, start=1):
+            record = {"__rowid__": "", "__row_index__": index}
+            for col_index, col in enumerate(lookup_columns):
+                record[col] = safe_cell(row, col_index)
+            lookup_records.append(record)
+
+        node_context = self._make_node_context(context, cancel_event)
+        node_context["lookup_columns"] = lookup_columns
+        node_context["lookup_records"] = lookup_records
+        return node_context
+
+    def _apply_filter_node(self, headers, rows, config, context, cancel_event):
+        extra_tables = list((config or {}).get("extra_tables", []) or [])
+        available_fields = self._filter_available_fields(headers, extra_tables, context) if extra_tables else None
+        runtime_plan = build_filter_runtime_plan(headers, config, available_fields=available_fields)
+        if context.get("is_config_probe") and extra_tables:
+            return build_filter_config_probe_result(runtime_plan["output_headers"])
+
+        table_records = {}
+        for table in runtime_plan["extra_tables"]:
+            table_records[table] = self._load_plan_table_records(
+                table,
+                context,
+                runtime_plan["table_required"].get(table),
+            )
+
+        node_context = self._make_node_context(context, cancel_event)
+        node_context.update({
+            "lookup_fields": runtime_plan["lookup_fields"],
+            "output_headers": runtime_plan["output_headers"],
+            "current_required": runtime_plan["current_required"],
+            "table_required": runtime_plan["table_required"],
+            "table_records": table_records,
+        })
+        return apply_filter_node(headers, rows, runtime_plan["runtime_config"], context=node_context)
+
+    def _filter_available_fields(self, headers, extra_tables, context):
+        fields = [f"当前表.{header}" for header in headers]
+        for table in extra_tables:
+            try:
+                table_headers, _table_rows = self._load_table_for_filter_source(table, context)
+            except Exception:
+                continue
+            for col in table_headers:
+                fields.append(f"{table}.{col}")
+        return fields
+
+    def _load_plan_table_records(self, table_name, context, required_fields=None):
+        all_columns, table_rows = self._load_table_for_filter_source(table_name, context)
+        columns = get_required_columns_for_plan_table(table_name, all_columns, required_fields)
+        column_indexes = [(all_columns.index(col), col) for col in columns if col in all_columns]
+        records = []
+        for row in normalize_rows(table_rows, len(all_columns)):
+            record = {}
+            for index, col in column_indexes:
+                record[f"{table_name}.{col}"] = safe_cell(row, index)
+            records.append(record)
+        return records
+
+    def _load_table_for_filter_source(self, table_name, context):
+        text = str(table_name or "").strip()
+        if text.startswith("中转:"):
+            return self._load_transit_table(context, text.split(":", 1)[1])
+        return self._load_named_table(text, context)
+
+    def _load_transit_table(self, context, table_name):
+        name = str(table_name or "").strip()
+        transit_tables = (context or {}).get("transit_tables", {}) or {}
+        if name not in transit_tables:
+            raise ValueError(f"中转副表不存在或尚未生成：{name}")
+        item = transit_tables.get(name) or {}
+        return list(item.get("headers", []) or []), [list(row) for row in (item.get("rows", []) or [])]
+
+    def _load_named_table(self, table_name, context):
+        name = str(table_name or "").strip()
+        table_sources = (context or {}).get("table_sources", {}) or {}
+        inline_tables = (context or {}).get("tables", {}) or {}
+        source = None
+        if isinstance(table_sources, dict):
+            source = table_sources.get(name)
+        if source is None and isinstance(inline_tables, dict):
+            source = inline_tables.get(name)
+
+        if source is None:
+            loaded = self.tables.load_sqlite_table(name)
+        else:
+            loaded = self._load_context_table_source(source)
+        if not loaded.get("ok"):
+            issues = loaded.get("issues") or []
+            if issues:
+                raise ValueError(issues[0].get("message") or "读取表失败。")
+            raise ValueError(f"读取表失败：{name}")
+        table = TableData.from_payload(loaded.get("table") or {})
+        return list(table.headers), [list(row) for row in table.rows]
+
+    def _load_context_table_source(self, source):
+        if isinstance(source, dict) and str(source.get("type") or "").strip() == "handle":
+            return self.tables.get_table_handle_page(
+                source.get("handle") or source.get("id"),
+                limit=source.get("limit"),
+                offset=source.get("offset", 0),
+            )
+        return self.tables.load_table(source)
 
     def _apply_save_transit_node(self, headers, rows, config, context, execute_actions):
         context.setdefault("transit_tables", {})

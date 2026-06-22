@@ -360,6 +360,9 @@ Runtime identity rules:
   runtime. It writes workflow memory transit tables during preview/run, and uses
   `WorkflowServices` for SQLite/xlsx side effects only when `execute_actions`
   is true.
+- `core.match_value_output` and `core.filter` can run headlessly with external
+  tables supplied through `initial_context.table_sources`, `initial_context.tables`,
+  SQLite `WorkflowServices.db_path`, or prior transit tables.
 - Clients that need progress, cancellation, or polling should use
   `start_job`, `get_job_status`, `get_job_events`, and `cancel_job`.
   `start_job` accepts `job_action = preview_plan | run_plan` and stores emitted
