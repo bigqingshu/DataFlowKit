@@ -5,6 +5,8 @@ import copy
 import os
 import sys
 
+from workflow.protocol_adapter import build_workflow_plan_payload
+
 
 def get_workflow_task_app_dir(window):
     app = getattr(window, "app", None)
@@ -24,8 +26,25 @@ def get_workflow_task_app_dir(window):
 class WorkflowTaskSnapshotMixin:
     """Compatibility methods for capturing workflow state before background execution."""
 
+    def build_workflow_protocol_plan(self, plan_name=None, include_input=False):
+        plan_name = str(plan_name or "").strip() or self.output_table_var.get().strip() or "工作流计划"
+        headers = copy.deepcopy(self.app.headers) if include_input else None
+        rows = copy.deepcopy(self.app.rows) if include_input else None
+        return build_workflow_plan_payload(
+            plan_name=plan_name,
+            nodes=self.nodes,
+            output_mode=self.output_mode_var.get(),
+            output_table=self.output_table_var.get().strip(),
+            backup_before_overwrite=bool(self.backup_before_overwrite_var.get()),
+            table_access_policy=self.normalize_table_access_policy(),
+            headers=headers,
+            rows=rows,
+            metadata={"client": "tkinter"},
+            ensure_node_id=self.ensure_node_identity,
+        )
+
     def build_workflow_task_snapshot(self, mode, stop_index=None, execute_actions=False):
-        return {
+        snapshot = {
             "mode": mode,
             "stop_index": stop_index,
             "execute_actions": bool(execute_actions),
@@ -44,3 +63,8 @@ class WorkflowTaskSnapshotMixin:
             "manual_loop_headers": copy.deepcopy(self.manual_loop_headers) if self.manual_loop_headers is not None else None,
             "manual_loop_rows": copy.deepcopy(self.manual_loop_rows) if self.manual_loop_rows is not None else None,
         }
+        snapshot["workflow_plan"] = self.build_workflow_protocol_plan(
+            plan_name=snapshot["workflow_name"],
+            include_input=True,
+        )
+        return snapshot

@@ -49,12 +49,20 @@ class FakePlanWindow(PlanTemplateIoMixin):
 
     def refresh_node_tree_table_access(self, nodes):
         self.refreshed_access = True
+        for index, node in enumerate(nodes, start=1):
+            node.setdefault("node_id", f"node_{index}")
+            node.setdefault("table_access", {"version": 1, "tables": []})
 
     def normalize_table_access_policy(self):
         return "prompt"
 
     def ensure_node_tree_identity(self, nodes):
         self.ensured_identity = True
+        for index, node in enumerate(nodes, start=1):
+            node.setdefault("node_id", f"node_{index}")
+
+    def ensure_node_identity(self, node):
+        node.setdefault("node_id", "node_1")
 
     def make_default_output_table_name(self):
         return "默认计划结果"
@@ -82,6 +90,9 @@ class PlanTemplateIoMixinTests(unittest.TestCase):
         self.assertEqual(data["template_type"], "workflow_plan")
         self.assertEqual(data["plan_name"], "默认输出表")
         self.assertEqual(data["table_access_policy"], "prompt")
+        self.assertEqual(data["nodes"][0]["node_type_id"], "core.replace")
+        self.assertEqual(data["nodes"][0]["node_version"], "1.0.0")
+        self.assertNotIn("node_type_id", window.nodes[0])
         self.assertEqual(window.validate_plan_template_data(data), (True, ""))
         self.assertEqual(window.validate_plan_template_data({"template_type": "old"}), (False, "template_type 不是 workflow_plan。"))
 

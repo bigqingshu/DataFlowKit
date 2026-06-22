@@ -1,0 +1,62 @@
+# -*- coding: utf-8 -*-
+"""Headless DataFlowKit workflow API.
+
+This package is intentionally UI-free.  It is the first stable surface for
+future PyQt, stdio-worker, HTTP, or other frontends to call into the existing
+workflow core without importing Tkinter windows.
+"""
+
+from engine.errors import (
+    EngineCancelled,
+    HeadlessEngineError,
+    PlanValidationError,
+    UnsupportedNodeError,
+)
+from engine.access_policy_service import AccessPolicyService
+from engine.headless import HeadlessWorkflowEngine
+from engine.issue_schema import (
+    has_error_issues,
+    is_error_issue,
+    make_issue,
+    normalize_issue,
+    normalize_issues,
+)
+from engine.jump_analysis_service import JumpAnalysisService
+from engine.job_service import JobService
+from engine.models import EngineRunResult, TableData
+from engine.output_service import OutputService, OutputSettings
+from engine.plan_templates import PlanTemplateService
+from engine.plugin_service import PluginService
+from engine.safety_policy import SafetyPolicy, resolve_safety_policy
+from engine.stdio_worker import StdioWorker
+from engine.table_data_service import TableDataService
+from engine.workflow_facade import WorkflowFacade
+from engine.workflow_services import WorkflowServices
+
+__all__ = [
+    "AccessPolicyService",
+    "EngineCancelled",
+    "EngineRunResult",
+    "HeadlessEngineError",
+    "HeadlessWorkflowEngine",
+    "JumpAnalysisService",
+    "JobService",
+    "OutputService",
+    "OutputSettings",
+    "PlanValidationError",
+    "PlanTemplateService",
+    "PluginService",
+    "SafetyPolicy",
+    "StdioWorker",
+    "TableDataService",
+    "WorkflowFacade",
+    "WorkflowServices",
+    "TableData",
+    "UnsupportedNodeError",
+    "has_error_issues",
+    "is_error_issue",
+    "make_issue",
+    "normalize_issue",
+    "normalize_issues",
+    "resolve_safety_policy",
+]

@@ -1,0 +1,1777 @@
+# -*- coding: utf-8 -*-
+import copy
+import unittest
+import time
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+from ui_qt import app as qt_app
+from ui_qt.config_form import NodeConfigForm, coerce_form_value, format_form_value, value_kind
+from ui_qt.engine_client import QtHeadlessEngineClient, SAMPLE_HEADERS, SAMPLE_PLAN
+from ui_qt.main_window import QtWorkflowMainWindow, build_main_window
+from ui_qt.node_ui_metadata import (
+    category_label,
+    choices_for_field,
+    config_layout_for_node,
+    config_field_label,
+    field_help_text,
+    format_node_detail,
+    node_badges,
+    node_display_label,
+    node_field_label,
+    node_summary,
+    node_warnings,
+)
+from ui_qt.qt_compat import QtBindingUnavailable
+from workflow.node_ui_schema import build_node_detail_payload, get_node_ui_schema
+
+
+class Qt6UiShellTests(unittest.TestCase):
+    def wait_for_controller_job(self, app, controller, timeout=2.0):
+        deadline = time.time() + timeout
+        while controller.current_job_id and time.time() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        app.processEvents()
+        self.assertFalse(controller.current_job_id)
+
+    def test_engine_client_previews_sample_plan_by_node_type_id(self):
+        client = QtHeadlessEngineClient()
+
+        validation, result = client.validate_and_preview(SAMPLE_PLAN, input_table={
+            "type": "table",
+            "headers": SAMPLE_PLAN["headers"],
+            "rows": SAMPLE_PLAN["rows"],
+        })
+
+        self.assertTrue(validation["ok"])
+        self.assertIsNotNone(result)
+        self.assertEqual(result.headers[-1], "status")
+        self.assertEqual(result.rows[0][-1], "ready")
+
+    def test_make_default_node_can_omit_legacy_type(self):
+        client = QtHeadlessEngineClient()
+
+        node = client.make_default_node("core.new_columns", preview_headers=["A"])
+
+        self.assertEqual(node["node_type_id"], "core.new_columns")
+        self.assertNotIn("type", node)
+        self.assertIn("columns_text", node["config"])
+
+    def test_facade_builds_output_settings_and_combined_validation(self):
+        client = QtHeadlessEngineClient()
+
+        settings = client.build_output_settings(
+            output_mode="保存为SQLite新表",
+            output_table="结果表",
+            db_path="demo.db",
+        )
+        validation = client.validate_workflow_request(
+            SAMPLE_PLAN,
+            execute_actions=True,
+            output_settings=settings["settings"],
+        )
+
+        self.assertTrue(settings["ok"])
+        self.assertEqual(settings["settings"]["mode"], "保存为SQLite新表")
+        self.assertEqual(settings["settings"]["target"], "结果表")
+        self.assertIn("validation", validation)
+        self.assertIn("jump_validation", validation)
+        self.assertIn("access_precheck", validation)
+
+    def test_facade_lists_node_ui_catalog_and_preview_sources(self):
+        client = QtHeadlessEngineClient()
+
+        catalog = client.list_node_ui_catalog(preview_headers=["A", "B"])
+        self.assertTrue(catalog["ok"])
+        self.assertEqual(catalog["catalog"]["schema_version"], "2.0")
+        first_group = catalog["catalog"]["groups"][0]
+        self.assertIn("group", first_group)
+        self.assertTrue(first_group["items"])
+        first_item = first_group["items"][0]
+        self.assertIn("submenu", first_item)
+        self.assertIn("supported_headless", first_item)
+
+        preview_sources = client.list_preview_sources(
+            current_headers=["A"],
+            current_rows=[["a"]],
+            preview_headers=["A", "B"],
+            preview_rows=[["a", "b"]],
+        )
+        self.assertTrue(preview_sources["sources"])
+        self.assertEqual(preview_sources["sources"][0]["source"]["table_role"], "input")
+
+        preview_loaded = client.load_preview_source(
+            {"type": "memory", "table_role": "preview"},
+            current_headers=["A"],
+            current_rows=[["a"]],
+            preview_headers=["A", "B"],
+            preview_rows=[["a", "b"]],
+        )
+        self.assertTrue(preview_loaded["ok"])
+        self.assertEqual(preview_loaded["table"]["headers"], ["A", "B"])
+        self.assertEqual(preview_loaded["title"], "Headless 预览结果")
+        self.assertEqual(preview_loaded["view_state"]["table_kind"], "preview")
+        self.assertEqual(preview_loaded["view_state"]["table_title"], "Headless 预览结果")
+        self.assertEqual(preview_loaded["message_panel"]["title"], "预览来源")
+
+        preview_panel = client.build_preview_panel_state(
+            current_source={"type": "memory", "table_role": "preview"},
+            current_headers=["A"],
+            current_rows=[["a"]],
+            preview_headers=["A", "B"],
+            preview_rows=[["a", "b"]],
+        )
+        self.assertEqual(preview_panel["selected_key"], "memory:preview:")
+        self.assertEqual(preview_panel["title"], "Headless 预览结果")
+
+        panel_state = client.build_workflow_panel_state(
+            plan=SAMPLE_PLAN,
+            current_headers=SAMPLE_PLAN["headers"],
+            current_rows=SAMPLE_PLAN["rows"],
+            selected_index=0,
+        )
+        self.assertTrue(panel_state["ok"])
+        self.assertEqual(panel_state["input_summary"], "当前输入：3 行 x 4 列")
+        self.assertEqual(panel_state["selected_node"]["node_type_id"], "core.new_columns")
+        self.assertTrue(panel_state["node_items"])
+
+        output_form = client.describe_output_form({"output_mode": "覆盖当前表"})
+        self.assertTrue(output_form["ok"])
+        self.assertEqual(output_form["settings"]["mode"], "覆盖当前表")
+        output_fields = {field["key"]: field for field in output_form["form"]["fields"]}
+        self.assertEqual(output_fields["backup_before_overwrite"]["visible_when"], {"field": "mode", "equals": "覆盖当前表"})
+
+        output_panel = client.build_output_panel_state({"output_mode": "导出为xlsx"})
+        output_panel_fields = {field["key"]: field for field in output_panel["fields"]}
+        self.assertTrue(output_panel_fields["path"]["visible"])
+        self.assertFalse(output_panel_fields["db_path"]["visible"])
+        self.assertEqual(output_panel_fields["path"]["action"]["key"], "browse_output_path")
+        self.assertFalse(output_panel["view_state"]["refresh_preview_sources"])
+
+        sqlite_output_panel = client.build_output_panel_state({"output_mode": "保存为SQLite新表"})
+        self.assertTrue(sqlite_output_panel["view_state"]["refresh_preview_sources"])
+        self.assertIn("db_path", sqlite_output_panel["view_state"]["visible_field_keys"])
+
+        node_detail = client.describe_node_detail("core.new_columns", preview_headers=["A"])
+        self.assertTrue(node_detail["ok"])
+        self.assertEqual(node_detail["detail"]["node_type_id"], "core.new_columns")
+        self.assertTrue(node_detail["detail"]["sections"])
+
+    def test_facade_describes_workflow_actions_and_progress(self):
+        client = QtHeadlessEngineClient()
+
+        idle_actions = client.describe_workflow_actions(
+            plan=SAMPLE_PLAN,
+            selected_indexes=[0],
+            is_running=False,
+        )
+        self.assertTrue(idle_actions["ok"])
+        self.assertTrue(idle_actions["actions"]["delete_nodes"]["enabled"])
+        self.assertFalse(idle_actions["actions"]["move_node_up"]["enabled"])
+        self.assertFalse(idle_actions["actions"]["move_node_down"]["enabled"])
+        self.assertTrue(idle_actions["actions"]["apply_node_config"]["enabled"])
+        self.assertFalse(idle_actions["actions"]["cancel_job"]["enabled"])
+
+        running_actions = client.describe_workflow_actions(
+            plan=SAMPLE_PLAN,
+            selected_indexes=[0],
+            is_running=True,
+        )
+        self.assertFalse(running_actions["actions"]["delete_nodes"]["enabled"])
+        self.assertFalse(running_actions["actions"]["execute_plan"]["enabled"])
+        self.assertTrue(running_actions["actions"]["cancel_job"]["enabled"])
+
+        start_progress = client.build_job_progress_state(
+            current_job_id="job-1",
+            title="预览结果",
+            running=True,
+        )
+        self.assertEqual(start_progress["progress"]["workflow_label"], "任务已启动：job-1")
+        self.assertEqual(start_progress["progress"]["workflow_value"], 0)
+
+        node_progress = client.build_job_progress_state(
+            current_job_id="job-1",
+            title="预览结果",
+            event={
+                "type": "node_progress",
+                "message": "处理中 5/10",
+                "current": 5,
+                "total": 10,
+            },
+            running=True,
+        )
+        self.assertEqual(node_progress["progress"]["node_label"], "处理中 5/10")
+        self.assertEqual(node_progress["progress"]["node_value"], 50)
+
+        final_progress = client.build_job_progress_state(
+            title="执行结果",
+            final={
+                "table": {
+                    "headers": ["A", "B"],
+                    "rows": [["a", "b"]],
+                },
+                "steps": 3,
+            },
+        )
+        self.assertEqual(final_progress["progress"]["workflow_label"], "执行结果完成：1 行 x 2 列")
+        self.assertEqual(final_progress["progress"]["node_label"], "执行步数：3")
+
+    def test_finalize_job_result_includes_message_panel(self):
+        client = QtHeadlessEngineClient()
+
+        final = client.finalize_job_result({
+            "status": "completed",
+            "message": "任务完成",
+            "result": {
+                "table": {"headers": ["A"], "rows": [["a"]]},
+                "logs": ["done"],
+                "steps": 1,
+            },
+        }, job_action="preview_plan")
+
+        self.assertEqual(final["message_panel"]["title"], "任务结果")
+        self.assertIn("任务完成", final["message_panel"]["body"])
+        self.assertEqual(final["view_state"]["table_title"], "执行结果")
+        self.assertTrue(final["view_state"]["should_refresh_preview_sources"])
+
+    def test_facade_builds_standard_feedback_payloads(self):
+        client = QtHeadlessEngineClient()
+
+        selection_feedback = client.describe_selection_feedback(selected_index=None, purpose="预览")
+        self.assertEqual(selection_feedback["feedback"]["status_message"], "预览前需要先选择节点")
+        self.assertEqual(selection_feedback["feedback"]["issues"][0]["code"], "selection_required")
+
+        conflict_feedback = client.describe_job_run_conflict(current_job_id="job-42")
+        self.assertEqual(conflict_feedback["feedback"]["status_message"], "后台任务运行中")
+        self.assertIn("job-42", conflict_feedback["feedback"]["logs"][0])
+
+        failure_feedback = client.describe_job_start_failure(status_prefix="执行", error="boom")
+        self.assertFalse(failure_feedback["ok"])
+        self.assertEqual(failure_feedback["feedback"]["status_message"], "执行启动失败")
+        self.assertEqual(failure_feedback["feedback"]["issue_message"], "boom")
+
+        started = client.facade.describe_job_started(status_prefix="预览")
+        self.assertEqual(started["status_message"], "预览已启动")
+        self.assertEqual(started["message_panel"]["title"], "预览")
+
+        cancel_failure = client.facade.describe_job_cancel_failure(error="stop failed")
+        self.assertEqual(cancel_failure["status_message"], "取消任务失败")
+        self.assertIn("stop failed", cancel_failure["message_panel"]["body"])
+
+        poll_failure = client.facade.describe_job_poll_failure(error="poll failed")
+        self.assertEqual(poll_failure["status_message"], "后台任务状态读取失败")
+        self.assertIn("poll failed", poll_failure["message_panel"]["body"])
+
+        validation = client.validate_workflow_request(SAMPLE_PLAN, execute_actions=True)
+        validation_feedback = client.describe_validation_feedback(validation)
+        self.assertEqual(validation_feedback["feedback"]["status_message"], "校验通过")
+        self.assertIn("OK: true", validation_feedback["feedback"]["issue_message"])
+        self.assertEqual(validation_feedback["feedback"]["sections"][0]["title"], "基础校验")
+        self.assertIn("校验通过", validation_feedback["feedback"]["summary_lines"])
+        self.assertEqual(validation_feedback["feedback"]["message_panel"]["preferred_tab"], "info")
+        self.assertIn("基础校验", validation_feedback["feedback"]["message_panel"]["info_body"])
+
+        message_panel = client.build_message_panel_state(
+            mode="warning",
+            title="测试",
+            issues=[{"severity": "warning", "code": "demo", "message": "hello"}],
+            logs=["log-1"],
+        )
+        self.assertEqual(message_panel["panel"]["mode"], "warning")
+        self.assertIn("hello", message_panel["panel"]["body"])
+        self.assertEqual(message_panel["panel"]["preferred_tab"], "issues")
+        self.assertIn("hello", message_panel["panel"]["issue_body"])
+
+        picker_feedback = client.describe_picker_feedback(
+            action_key="pick_table_field",
+            field_key="lookup_field",
+            table_field="lookup_table",
+            table_name="",
+            candidates=[],
+        )
+        self.assertEqual(picker_feedback["feedback"]["status_message"], "请先选择关联数据表。")
+        self.assertIn("lookup_table", picker_feedback["feedback"]["issue_message"])
+        self.assertEqual(picker_feedback["feedback"]["issues"][0]["code"], "table_context_required")
+
+        plan_ref_feedback = client.describe_picker_feedback(
+            action_key="pick_plan_ref",
+            field_key="loop_id",
+            ref_kind="loop_id",
+            candidates=[],
+        )
+        self.assertEqual(plan_ref_feedback["feedback"]["status_message"], "当前计划没有可用循环。")
+        self.assertIn("请先添加对应节点或填写自定义值", plan_ref_feedback["feedback"]["issue_message"])
+        self.assertEqual(plan_ref_feedback["feedback"]["issues"][0]["code"], "plan_refs_missing")
+
+        runtime_ref_feedback = client.describe_picker_feedback(
+            action_key="pick_runtime_ref",
+            field_key="transit_table",
+            ref_kind="transit_table",
+            candidates=[],
+        )
+        self.assertEqual(runtime_ref_feedback["feedback"]["status_message"], "当前计划没有可用中转表。")
+        self.assertIn("请先配置相关节点或填写自定义值", runtime_ref_feedback["feedback"]["issue_message"])
+        self.assertEqual(runtime_ref_feedback["feedback"]["issues"][0]["code"], "runtime_refs_missing")
+
+    def test_facade_applies_node_config_state(self):
+        client = QtHeadlessEngineClient()
+
+        invalid_node = copy.deepcopy(SAMPLE_PLAN["nodes"][0])
+        invalid_node["config"] = dict(invalid_node.get("config") or {})
+        invalid_node["config"]["columns_text"] = "status=ready\n=broken"
+        invalid_result = client.apply_node_config_state(
+            SAMPLE_PLAN,
+            index=0,
+            node=invalid_node,
+            preview_headers=SAMPLE_HEADERS,
+        )
+        self.assertFalse(invalid_result["ok"])
+        self.assertEqual(invalid_result["feedback"]["title"], "节点配置校验失败")
+
+        valid_node = copy.deepcopy(SAMPLE_PLAN["nodes"][0])
+        valid_node["config"] = dict(valid_node.get("config") or {})
+        valid_node["config"]["columns_text"] = "status=updated"
+        valid_result = client.apply_node_config_state(
+            SAMPLE_PLAN,
+            index=0,
+            node=valid_node,
+            preview_headers=SAMPLE_HEADERS,
+        )
+        self.assertTrue(valid_result["ok"])
+        self.assertEqual(valid_result["feedback"]["status_message"], "节点配置已应用。")
+        applied_plan = valid_result["apply_result"]["plan"]
+        self.assertEqual(applied_plan["nodes"][0]["config"]["columns_text"], "status=updated")
+
+    def test_facade_describes_confirmation_prompts(self):
+        client = QtHeadlessEngineClient()
+
+        clear_prompt = client.describe_confirmation_prompt(action="clear_nodes", plan=SAMPLE_PLAN)
+        self.assertTrue(clear_prompt["prompt"]["required"])
+        self.assertEqual(clear_prompt["prompt"]["code"], "confirm_clear_nodes")
+
+        run_prompt = client.describe_confirmation_prompt(
+            action="run_plan",
+            plan=SAMPLE_PLAN,
+            output_settings={
+                "mode": "覆盖当前表",
+                "backup_before_overwrite": True,
+            },
+            access_precheck={"issues": [], "summary": "将写回数据库"},
+        )
+        self.assertTrue(run_prompt["prompt"]["required"])
+        self.assertEqual(run_prompt["prompt"]["code"], "confirm_run_plan")
+        self.assertIn("将写回数据库", "\n".join(run_prompt["prompt"]["details"]))
+        self.assertIn("自动备份", "\n".join(run_prompt["prompt"]["details"]))
+
+    def test_facade_describes_plan_command_and_file_failures(self):
+        client = QtHeadlessEngineClient()
+
+        plan_command_feedback = client.describe_plan_command_feedback({
+            "ok": False,
+            "issues": [{"severity": "warning", "code": "demo", "message": "不能删除最后一个节点"}],
+        })
+        self.assertEqual(plan_command_feedback["feedback"]["status_message"], "计划编辑失败")
+        self.assertIn("不能删除最后一个节点", plan_command_feedback["feedback"]["message_panel"]["issue_body"])
+
+        file_failure = client.describe_plan_file_failure(
+            action="打开计划",
+            issues=[{"severity": "error", "code": "schema", "message": "计划格式无效"}],
+        )
+        self.assertEqual(file_failure["feedback"]["status_message"], "打开计划失败：计划模板校验未通过")
+        self.assertIn("计划格式无效", file_failure["feedback"]["message_panel"]["issue_body"])
+
+    def test_facade_describes_file_actions_and_state_payloads(self):
+        client = QtHeadlessEngineClient()
+
+        open_action = client.describe_file_action("open_plan", plan_dir="plan")
+        self.assertEqual(open_action["file_dialog"]["dialog"], "open_file")
+        self.assertEqual(open_action["file_dialog"]["title"], "打开 workflow_plan")
+
+        save_action = client.describe_file_action("save_plan", plan_dir="plan", current_plan_path="")
+        self.assertEqual(save_action["file_dialog"]["dialog"], "save_file")
+        self.assertIn("工作流计划.json", save_action["file_dialog"]["initial_path"])
+
+        imported_state = client.build_import_table_state({
+            "path": "demo.csv",
+            "table": {"headers": ["A"], "rows": [["a"]]},
+        })
+        self.assertEqual(imported_state["state"]["table_title"], "输入表格")
+        self.assertIn("demo.csv", imported_state["state"]["status_message"])
+        self.assertEqual(imported_state["state"]["message_panel"]["title"], "导入输入表格")
+
+        loaded_state = client.build_loaded_plan_state({
+            "path": "plan\\demo.json",
+            "plan": SAMPLE_PLAN,
+            "warning": "已迁移旧字段",
+        })
+        self.assertEqual(loaded_state["state"]["plan_path"], "plan\\demo.json")
+        self.assertEqual(loaded_state["state"]["issue_message"], "已迁移旧字段")
+        self.assertEqual(loaded_state["state"]["message_panel"]["mode"], "warning")
+
+        saved_state = client.build_saved_plan_state({
+            "path": "plan\\saved.json",
+            "plan": SAMPLE_PLAN,
+        }, SAMPLE_PLAN)
+        self.assertEqual(saved_state["state"]["plan_path"], "plan\\saved.json")
+        self.assertIn("已保存", saved_state["state"]["status_message"])
+        self.assertEqual(saved_state["state"]["message_panel"]["title"], "保存计划")
+
+        template_state = client.build_template_list_state({
+            "templates": [
+                {"name": "示例模板A", "path": "plan\\a.json"},
+                {"name": "示例模板B", "path": "plan\\b.json"},
+            ]
+        }, show_status=True)
+        self.assertEqual(template_state["state"]["template_count"], 2)
+        self.assertEqual(template_state["state"]["status_message"], "模板刷新完成：2 个。")
+        self.assertEqual(template_state["state"]["message_panel"]["title"], "计划模板")
+        self.assertIn("示例模板A", template_state["state"]["message_panel"]["info_body"])
+
+    def test_config_form_value_helpers_preserve_types(self):
+        self.assertEqual(value_kind(True), "bool")
+        self.assertEqual(value_kind(3), "int")
+        self.assertEqual(value_kind(1.5), "float")
+        self.assertEqual(value_kind(["A"]), "json")
+        self.assertEqual(value_kind({"A": 1}), "json")
+        self.assertEqual(value_kind("3"), "text")
+
+        self.assertEqual(format_form_value({"A": 1}), '{\n  "A": 1\n}')
+        self.assertEqual(coerce_form_value("int", "7"), 7)
+        self.assertEqual(coerce_form_value("float", "1.25"), 1.25)
+        self.assertEqual(coerce_form_value("json", '["A", "B"]'), ["A", "B"])
+        self.assertEqual(coerce_form_value("text", "7"), "7")
+
+    def test_config_form_supports_structured_list_fields(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        schema = get_node_ui_schema("批量更改列名", preview_headers=["A", "B"])
+        node = {
+            "node_type_id": "core.rename_columns",
+            "node_id": "n1",
+            "name": "批量更改列名",
+            "enabled": True,
+            "node_version": "1.0.0",
+            "config": {
+                "mode": "手动映射改名",
+                "mappings": [{"old": "A", "new": "AA"}],
+            },
+        }
+        form = NodeConfigForm(qt, headers=["A", "B"])
+        form.set_node(node, headers=["A", "B"], schema=schema)
+        self.assertEqual(form.config_fields["mappings"]["kind"], "structured_list")
+        editor = form.config_fields["mappings"]["editor"]
+        table = editor.structured_state["table"]
+        self.assertEqual(table.rowCount(), 1)
+        self.assertEqual(table.columnCount(), 2)
+        self.assertIsNotNone(table.cellWidget(0, 0))
+        self.assertIsNotNone(table.cellWidget(0, 1))
+        first_combo = table.cellWidget(0, 0).findChild(qt.QtWidgets.QComboBox)
+        second_widget = table.cellWidget(0, 1)
+        second_line = second_widget if hasattr(second_widget, "text") else second_widget.findChild(qt.QtWidgets.QLineEdit)
+        self.assertEqual(first_combo.currentText(), "A")
+        self.assertEqual(second_line.text(), "AA")
+        form._structured_list_add_row(editor)
+        table.setCurrentCell(1, 0)
+        table.cellWidget(1, 0).findChild(qt.QtWidgets.QComboBox).setCurrentText("B")
+        second_widget = table.cellWidget(1, 1)
+        second_line = second_widget if hasattr(second_widget, "text") else second_widget.findChild(qt.QtWidgets.QLineEdit)
+        second_line.setText("BB")
+        converted = form.to_node()
+        self.assertEqual(converted["config"]["mappings"], [{"old": "A", "new": "AA"}, {"old": "B", "new": "BB"}])
+        app.processEvents()
+
+    def test_config_form_refreshes_dynamic_options_and_validation_state(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        schema = get_node_ui_schema("core.replace", preview_headers=["A", "B"])
+        node = {
+            "node_type_id": "core.replace",
+            "node_id": "n1",
+            "name": "批量替换",
+            "enabled": True,
+            "node_version": "1.0.0",
+            "config": {
+                "target_field": "A",
+                "match_mode": "包含",
+                "match_value": "x",
+                "replace_mode": "整格替换为新值",
+                "replace_value": "y",
+                "match_value_source": "手动输入",
+                "replace_value_source": "手动输入",
+            },
+        }
+        form = NodeConfigForm(qt, headers=["A", "B"])
+        form.set_node(node, headers=["A", "B"], schema=schema)
+        form.set_headers(["C", "D"])
+        target_editor = form.config_fields["target_field"]["editor"]
+        self.assertIn("C", [target_editor.itemText(i) for i in range(target_editor.count())])
+        form.set_validation_issues([{"path": "config.target_field", "message": "目标字段不存在"}])
+        state = form.describe_state()
+        self.assertIn("目标字段不存在", form.config_fields["target_field"]["editor"].toolTip())
+        self.assertEqual(state["fields"]["target_field"]["issues"][0]["message"], "目标字段不存在")
+        app.processEvents()
+
+    def test_config_form_exposes_schema_action_buttons(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        schema = get_node_ui_schema("core.replace", preview_headers=["A", "B"])
+        node = {
+            "node_type_id": "core.replace",
+            "node_id": "n1",
+            "name": "批量替换",
+            "enabled": True,
+            "node_version": "1.0.0",
+            "config": {
+                "target_field": "A",
+                "match_mode": "包含",
+                "match_value": "x",
+                "replace_mode": "整格替换为新值",
+                "replace_value": "y",
+                "match_value_source": "手动输入",
+                "replace_value_source": "手动输入",
+            },
+        }
+        calls = []
+
+        def action_handler(payload):
+            calls.append(payload)
+            return {"value": "B"}
+
+        form = NodeConfigForm(qt, headers=["A", "B"], action_handler=action_handler)
+        form.set_node(node, headers=["A", "B"], schema=schema)
+        form.widget.show()
+        app.processEvents()
+        state = form.describe_state()
+        self.assertEqual(state["fields"]["target_field"]["action"]["key"], "pick_preview_header")
+        self.assertTrue(state["fields"]["target_field"]["action_visible"])
+        form.config_fields["target_field"]["action_button"].click()
+        self.assertEqual(calls[0]["field_key"], "target_field")
+        self.assertEqual(form.config_fields["target_field"]["editor"].currentText(), "B")
+        app.processEvents()
+
+    def test_config_form_supports_multi_select_field_values(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        schema = get_node_ui_schema("core.merge_columns", preview_headers=["A", "B", "C"])
+        node = {
+            "node_type_id": "core.merge_columns",
+            "node_id": "n1",
+            "name": "合并列",
+            "enabled": True,
+            "node_version": "1.0.0",
+            "config": {
+                "fields": ["A", "B"],
+                "separators": ["-"],
+                "output_field": "合并结果",
+                "skip_empty": True,
+                "trim_value": True,
+                "empty_placeholder": "",
+            },
+        }
+        form = NodeConfigForm(qt, headers=["A", "B", "C"])
+        form.set_node(node, headers=["A", "B", "C"], schema=schema)
+        editor = form.config_fields["fields"]["editor"]
+        self.assertEqual(editor.text(), "A、B")
+        self.assertEqual(form.to_node()["config"]["fields"], ["A", "B"])
+        form._set_field_value(form.config_fields["fields"], ["B", "C"])
+        self.assertEqual(editor.text(), "B、C")
+        self.assertEqual(form.to_node()["config"]["fields"], ["B", "C"])
+        app.processEvents()
+
+    def test_config_form_refreshes_table_column_choices_from_selected_table(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        schema = {
+            "form": {
+                "groups": [
+                    {
+                        "title": "参数",
+                        "fields": [
+                            {
+                                "key": "lookup_table",
+                                "type": "table_select",
+                                "options_source": {"type": "table_names"},
+                            },
+                            {
+                                "key": "lookup_field",
+                                "type": "field_select",
+                                "options_source": {"type": "table_columns", "table_field": "lookup_table"},
+                            },
+                        ],
+                    }
+                ]
+            }
+        }
+        node = {
+            "node_type_id": "demo.lookup_field",
+            "node_id": "n1",
+            "name": "表字段选择",
+            "enabled": True,
+            "node_version": "1.0.0",
+            "config": {
+                "lookup_table": "orders",
+                "lookup_field": "id",
+            },
+        }
+        form = NodeConfigForm(
+            qt,
+            table_names=["orders", "logs"],
+            table_columns={"orders": ["id", "name"], "logs": ["row_id"]},
+        )
+        form.set_node(
+            node,
+            table_names=["orders", "logs"],
+            table_columns={"orders": ["id", "name"], "logs": ["row_id"]},
+            schema=schema,
+        )
+        table_editor = form.config_fields["lookup_table"]["editor"]
+        field_editor = form.config_fields["lookup_field"]["editor"]
+        self.assertIn("name", [field_editor.itemText(i) for i in range(field_editor.count())])
+        table_editor.setCurrentText("logs")
+        app.processEvents()
+        self.assertIn("row_id", [field_editor.itemText(i) for i in range(field_editor.count())])
+        app.processEvents()
+
+    def test_structured_list_cells_support_schema_actions(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        schema = get_node_ui_schema("批量更改列名", preview_headers=["A", "B"])
+        node = {
+            "node_type_id": "core.rename_columns",
+            "node_id": "n1",
+            "name": "批量更改列名",
+            "enabled": True,
+            "node_version": "1.0.0",
+            "config": {
+                "mode": "手动映射改名",
+                "mappings": [{"old": "A", "new": "AA"}],
+            },
+        }
+        calls = []
+
+        def action_handler(payload):
+            calls.append(payload)
+            return {"value": "B"}
+
+        form = NodeConfigForm(qt, headers=["A", "B"], action_handler=action_handler)
+        form.set_node(node, headers=["A", "B"], schema=schema)
+        editor = form.config_fields["mappings"]["editor"]
+        table = editor.structured_state["table"]
+        cell_container = table.cellWidget(0, 0)
+        button = cell_container.findChild(qt.QtWidgets.QPushButton)
+        combo = cell_container.findChild(qt.QtWidgets.QComboBox)
+        self.assertIsNotNone(button)
+        self.assertIsNotNone(combo)
+        button.click()
+        self.assertEqual(calls[0]["context"]["kind"], "structured_cell")
+        self.assertEqual(combo.currentText(), "B")
+        app.processEvents()
+
+    def test_structured_list_cells_support_table_picker_actions(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        schema = {
+            "form": {
+                "groups": [
+                    {
+                        "title": "参数",
+                        "fields": [
+                            {
+                                "key": "rules",
+                                "type": "structured_list",
+                                "item_schema": {
+                                    "columns": [
+                                        {
+                                            "key": "table_name",
+                                            "label": "目标表",
+                                            "type": "table_select",
+                                            "options_source": {"type": "table_names"},
+                                        }
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+        node = {
+            "node_type_id": "demo.table_picker",
+            "node_id": "n1",
+            "name": "表格选择",
+            "enabled": True,
+            "node_version": "1.0.0",
+            "config": {
+                "rules": [{"table_name": "源表"}],
+            },
+        }
+        calls = []
+
+        def action_handler(payload):
+            calls.append(payload)
+            return {"value": "结果表"}
+
+        form = NodeConfigForm(qt, table_names=["源表", "结果表"], action_handler=action_handler)
+        form.set_node(node, table_names=["源表", "结果表"], schema=schema)
+        editor = form.config_fields["rules"]["editor"]
+        table = editor.structured_state["table"]
+        cell_container = table.cellWidget(0, 0)
+        button = cell_container.findChild(qt.QtWidgets.QPushButton)
+        combo = cell_container.findChild(qt.QtWidgets.QComboBox)
+        self.assertIsNotNone(button)
+        self.assertIsNotNone(combo)
+        button.click()
+        self.assertEqual(calls[0]["action"]["key"], "pick_table_name")
+        self.assertEqual(calls[0]["table_names"], ["源表", "结果表"])
+        self.assertEqual(combo.currentText(), "结果表")
+        app.processEvents()
+
+    def test_structured_list_cells_support_multi_select_picker_actions(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        schema = {
+            "form": {
+                "groups": [
+                    {
+                        "title": "参数",
+                        "fields": [
+                            {
+                                "key": "rules",
+                                "type": "structured_list",
+                                "item_schema": {
+                                    "columns": [
+                                        {
+                                            "key": "fields",
+                                            "label": "字段列表",
+                                            "type": "field_multi_select",
+                                            "options_source": {"type": "preview_headers"},
+                                        }
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+        node = {
+            "node_type_id": "demo.multi_field_picker",
+            "node_id": "n1",
+            "name": "多字段选择",
+            "enabled": True,
+            "node_version": "1.0.0",
+            "config": {
+                "rules": [{"fields": ["A"]}],
+            },
+        }
+        calls = []
+
+        def action_handler(payload):
+            calls.append(payload)
+            return {"value": ["B", "C"]}
+
+        form = NodeConfigForm(qt, headers=["A", "B", "C"], action_handler=action_handler)
+        form.set_node(node, headers=["A", "B", "C"], schema=schema)
+        editor = form.config_fields["rules"]["editor"]
+        table = editor.structured_state["table"]
+        cell_container = table.cellWidget(0, 0)
+        button = cell_container.findChild(qt.QtWidgets.QPushButton)
+        line_edit = cell_container.findChild(qt.QtWidgets.QLineEdit)
+        self.assertIsNotNone(button)
+        self.assertIsNotNone(line_edit)
+        button.click()
+        self.assertEqual(calls[0]["action"]["key"], "pick_preview_headers")
+        self.assertEqual(calls[0]["headers"], ["A", "B", "C"])
+        self.assertEqual(line_edit.text(), "B、C")
+        self.assertEqual(form.to_node()["config"]["rules"], [{"fields": ["B", "C"]}])
+        app.processEvents()
+
+    def test_structured_list_refreshes_table_column_choices_per_row(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        schema = {
+            "form": {
+                "groups": [
+                    {
+                        "title": "参数",
+                        "fields": [
+                            {
+                                "key": "rules",
+                                "type": "structured_list",
+                                "item_schema": {
+                                    "columns": [
+                                        {
+                                            "key": "table_name",
+                                            "label": "目标表",
+                                            "type": "table_select",
+                                            "options_source": {"type": "table_names"},
+                                        },
+                                        {
+                                            "key": "field_name",
+                                            "label": "目标字段",
+                                            "type": "field_select",
+                                            "options_source": {"type": "table_columns", "table_field": "table_name"},
+                                        },
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+        node = {
+            "node_type_id": "demo.structured_table_field",
+            "node_id": "n1",
+            "name": "结构化表字段",
+            "enabled": True,
+            "node_version": "1.0.0",
+            "config": {
+                "rules": [{"table_name": "orders", "field_name": "id"}],
+            },
+        }
+        form = NodeConfigForm(
+            qt,
+            table_names=["orders", "logs"],
+            table_columns={"orders": ["id", "name"], "logs": ["row_id"]},
+        )
+        form.set_node(
+            node,
+            table_names=["orders", "logs"],
+            table_columns={"orders": ["id", "name"], "logs": ["row_id"]},
+            schema=schema,
+        )
+        editor = form.config_fields["rules"]["editor"]
+        table = editor.structured_state["table"]
+        table_name_editor = table.cellWidget(0, 0).findChild(qt.QtWidgets.QComboBox)
+        field_editor = table.cellWidget(0, 1).findChild(qt.QtWidgets.QComboBox)
+        self.assertIn("name", [field_editor.itemText(i) for i in range(field_editor.count())])
+        table_name_editor.setCurrentText("logs")
+        app.processEvents()
+        self.assertIn("row_id", [field_editor.itemText(i) for i in range(field_editor.count())])
+        app.processEvents()
+
+    def test_structured_list_cells_support_single_table_field_picker_actions(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        schema = {
+            "form": {
+                "groups": [
+                    {
+                        "title": "参数",
+                        "fields": [
+                            {
+                                "key": "rules",
+                                "type": "structured_list",
+                                "item_schema": {
+                                    "columns": [
+                                        {
+                                            "key": "table_name",
+                                            "label": "目标表",
+                                            "type": "table_select",
+                                            "options_source": {"type": "table_names"},
+                                        },
+                                        {
+                                            "key": "field_name",
+                                            "label": "目标字段",
+                                            "type": "field_select",
+                                            "options_source": {"type": "table_columns", "table_field": "table_name"},
+                                        },
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+        node = {
+            "node_type_id": "demo.structured_table_field",
+            "node_id": "n1",
+            "name": "结构化表字段",
+            "enabled": True,
+            "node_version": "1.0.0",
+            "config": {
+                "rules": [{"table_name": "orders", "field_name": "id"}],
+            },
+        }
+        calls = []
+
+        def action_handler(payload):
+            calls.append(payload)
+            return {"value": "name"}
+
+        form = NodeConfigForm(
+            qt,
+            table_names=["orders", "logs"],
+            table_columns={"orders": ["id", "name"], "logs": ["row_id"]},
+            action_handler=action_handler,
+        )
+        form.set_node(
+            node,
+            table_names=["orders", "logs"],
+            table_columns={"orders": ["id", "name"], "logs": ["row_id"]},
+            schema=schema,
+        )
+        editor = form.config_fields["rules"]["editor"]
+        table = editor.structured_state["table"]
+        cell_container = table.cellWidget(0, 1)
+        button = cell_container.findChild(qt.QtWidgets.QPushButton)
+        combo = cell_container.findChild(qt.QtWidgets.QComboBox)
+        self.assertIsNotNone(button)
+        self.assertIsNotNone(combo)
+        button.click()
+        self.assertEqual(calls[0]["action"]["key"], "pick_table_field")
+        self.assertEqual(calls[0]["table_columns"], {"orders": ["id", "name"], "logs": ["row_id"]})
+        self.assertEqual(combo.currentText(), "name")
+        self.assertEqual(form.to_node()["config"]["rules"], [{"table_name": "orders", "field_name": "name"}])
+        app.processEvents()
+
+    def test_controller_handles_single_table_field_picker_actions(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+
+        controller.config_form.set_node(
+            {
+                "node_type_id": "demo.lookup_field_picker",
+                "node_id": "n1",
+                "name": "表字段选择",
+                "enabled": True,
+                "node_version": "1.0.0",
+                "config": {
+                    "lookup_table": "orders",
+                    "lookup_field": "id",
+                },
+            },
+            table_names=["orders"],
+            table_columns={"orders": ["id", "name"]},
+            schema={
+                "form": {
+                    "groups": [
+                        {
+                            "title": "参数",
+                            "fields": [
+                                {
+                                    "key": "lookup_table",
+                                    "type": "table_select",
+                                    "options_source": {"type": "table_names"},
+                                },
+                                {
+                                    "key": "lookup_field",
+                                    "type": "field_select",
+                                    "options_source": {"type": "table_columns", "table_field": "lookup_table"},
+                                    "action": {"key": "pick_table_field", "table_field": "lookup_table"},
+                                },
+                            ],
+                        }
+                    ]
+                }
+            },
+        )
+
+        with patch.object(controller.qt.QtWidgets.QInputDialog, "getItem", return_value=("name", True)):
+            result = controller._pick_single_table_field_for_field(
+                "lookup_field",
+                {
+                    "action": {"key": "pick_table_field", "table_field": "lookup_table"},
+                    "schema": {"options_source": {"type": "table_columns", "table_field": "lookup_table"}},
+                    "table_columns": {"orders": ["id", "name"]},
+                    "value": "id",
+                },
+            )
+
+        self.assertEqual(result["value"], "name")
+        window.close()
+        app.processEvents()
+
+    def test_controller_uses_shared_picker_feedback_for_missing_candidates(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+
+        result = controller._pick_single_value_for_field("target_field", {"headers": [], "value": ""})
+        self.assertEqual(result, {})
+        self.assertEqual(controller.status_bar.currentMessage(), "当前没有可选字段。")
+        self.assertEqual(controller.current_message_panel.get("title"), "字段选择")
+        self.assertIn("当前没有可选字段", controller.issue_text.toPlainText())
+
+        controller.config_form.set_node(
+            {
+                "node_type_id": "demo.lookup_field_picker",
+                "node_id": "n1",
+                "name": "表字段选择",
+                "enabled": True,
+                "node_version": "1.0.0",
+                "config": {
+                    "lookup_table": "",
+                    "lookup_field": "",
+                },
+            },
+            table_names=["orders"],
+            table_columns={"orders": ["id", "name"]},
+            schema={
+                "form": {
+                    "groups": [
+                        {
+                            "title": "参数",
+                            "fields": [
+                                {"key": "lookup_table", "type": "table_select", "options_source": {"type": "table_names"}},
+                                {"key": "lookup_field", "type": "field_select", "options_source": {"type": "table_columns", "table_field": "lookup_table"}},
+                            ],
+                        }
+                    ]
+                }
+            },
+        )
+        result = controller._pick_single_table_field_for_field(
+            "lookup_field",
+            {
+                "action": {"key": "pick_table_field", "table_field": "lookup_table"},
+                "schema": {"options_source": {"type": "table_columns", "table_field": "lookup_table"}},
+                "table_columns": {"orders": ["id", "name"]},
+                "value": "",
+            },
+        )
+        self.assertEqual(result, {})
+        self.assertEqual(controller.status_bar.currentMessage(), "请先选择关联数据表。")
+        self.assertIn("lookup_table", controller.issue_text.toPlainText())
+
+        window.close()
+        app.processEvents()
+
+    def test_node_ui_metadata_maps_protocol_to_chinese_ui(self):
+        self.assertEqual(node_display_label("core.new_columns"), "新建列")
+        self.assertEqual(category_label("数据处理"), "数据处理")
+        self.assertEqual(node_field_label("enabled"), "启用")
+        self.assertEqual(config_field_label("columns_text"), "新字段列表")
+        self.assertEqual(choices_for_field("target_field", headers=["A", "B"]), ["A", "B"])
+        self.assertIn("按列配置值", choices_for_field("value_mode"))
+        self.assertEqual(config_layout_for_node("core.new_columns")[0]["title"], "字段定义")
+        self.assertEqual(config_layout_for_node("批量替换")[0]["title"], "目标与匹配")
+        self.assertIn("每行一个新字段", field_help_text("columns_text"))
+        self.assertIn("添加字段", node_summary("core.new_columns"))
+        self.assertIn("可预览", node_badges("core.replace", supported_headless=True))
+        self.assertTrue(node_warnings("core.delete_columns"))
+        self.assertIn("暂不支持", format_node_detail("core.filter", supported_headless=False))
+        detail_payload = build_node_detail_payload("core.filter", supported_headless=False)
+        self.assertEqual(detail_payload["category"], "数据处理")
+        self.assertIn("兼容性", [section["title"] for section in detail_payload["sections"]])
+        self.assertTrue(detail_payload["config_summary"])
+        self.assertTrue(detail_payload["compatibility"]["legacy_ui_required"])
+        self.assertEqual(detail_payload["meta_items"][0]["label"], "分类")
+        self.assertIn("执行层：仅旧执行链", detail_payload["meta_text"])
+        detail_payload_supported = build_node_detail_payload("core.replace", supported_headless=True)
+        self.assertIn("必填", "\n".join(detail_payload_supported["config_summary"]))
+        self.assertIn("动态显示", "\n".join(detail_payload_supported["config_summary"]))
+        self.assertIn("目标字段", detail_payload_supported["config_capabilities"]["required_fields"])
+        self.assertIn("匹配值字段", detail_payload_supported["config_capabilities"]["dynamic_fields"])
+        self.assertIn("目标字段", detail_payload_supported["config_capabilities"]["action_fields"])
+        self.assertTrue(detail_payload_supported["compatibility"]["headless_preview"])
+        self.assertIn("表单能力", [section["title"] for section in detail_payload_supported["sections"]])
+        self.assertIn("兼容性：可直接预览/执行", detail_payload_supported["meta_text"])
+        schema = get_node_ui_schema("core.new_columns", preview_headers=["A"])
+        self.assertEqual(schema["schema_version"], "2.0")
+        self.assertEqual(schema["form"]["schema_version"], "2.0")
+        self.assertTrue(schema["form"]["dynamic_rules"])
+        self.assertEqual(schema["menu"]["path"], ["数据处理", "新建列"])
+        self.assertEqual(schema["menu"]["group"], "数据处理")
+        self.assertEqual(schema["menu"]["submenu"], ["新建列"])
+        self.assertEqual(schema["form"]["groups"][0]["fields"][0]["key"], "columns_text")
+        new_column_fields = {
+            field["key"]: field
+            for group in schema["form"]["groups"]
+            for field in group["fields"]
+        }
+        self.assertTrue(new_column_fields["columns_text"]["required"])
+        self.assertEqual(
+            new_column_fields["default_value"]["visible_when"],
+            {"field": "value_mode", "equals": "统一默认值"},
+        )
+        replace_schema = get_node_ui_schema("core.replace", preview_headers=["A", "B"])
+        replace_fields = {
+            field["key"]: field
+            for group in replace_schema["form"]["groups"]
+            for field in group["fields"]
+        }
+        self.assertEqual(replace_fields["target_field"]["options_source"], {"type": "preview_headers"})
+        self.assertEqual(
+            replace_fields["match_value_field"]["visible_when"],
+            {"field": "match_value_source", "equals": "列字段"},
+        )
+        self.assertEqual(replace_fields["replace_count"]["validation"], {"integer": True, "min": 0})
+        writeback_schema = get_node_ui_schema(
+            "字段映射写入表",
+            table_names=["orders", "result"],
+            table_columns={"orders": ["id", "name"], "result": ["row_id", "status"]},
+        )
+        writeback_fields = {
+            field["key"]: field
+            for group in writeback_schema["form"]["groups"]
+            for field in group["fields"]
+        }
+        mapping_columns = {
+            item["key"]: item
+            for item in writeback_fields["field_mappings"]["item_schema"]["columns"]
+        }
+        self.assertEqual(mapping_columns["source_field"]["options_source"], {"type": "table_columns", "table_field": "source_table"})
+        self.assertEqual(mapping_columns["target_field"]["action"]["key"], "pick_table_field")
+
+    def test_qt6_loader_rejects_qt5_binding(self):
+        with self.assertRaises(QtBindingUnavailable):
+            qt_app.load_qt6("PyQt5")
+
+    def test_parse_args_supports_smoke_and_offscreen(self):
+        args = qt_app.parse_args(["--smoke", "--offscreen", "--binding", "PySide6"])
+
+        self.assertTrue(args.smoke)
+        self.assertTrue(args.offscreen)
+        self.assertEqual(args.binding, "PySide6")
+
+    def test_qt6_loader_tries_pyside6_then_pyqt6(self):
+        calls = []
+
+        def fake_get_qt(binding):
+            calls.append(binding)
+            if binding == "PySide6":
+                raise QtBindingUnavailable("missing")
+            return object()
+
+        with patch("ui_qt.app.get_qt", side_effect=fake_get_qt):
+            result = qt_app.load_qt6()
+
+        self.assertIsNotNone(result)
+        self.assertEqual(calls, ["PySide6", "PyQt6"])
+
+    def test_table_io_loads_json_rows_and_csv(self):
+        client = QtHeadlessEngineClient()
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            json_path = root / "rows.json"
+            csv_path = root / "rows.csv"
+            json_path.write_text('[{"A": "a", "B": 1}, {"A": "b", "B": 2}]', encoding="utf-8")
+            csv_path.write_text("A,B\na,1\nb,2\n", encoding="utf-8")
+
+            imported = client.import_table_file(json_path)
+            self.assertEqual(imported["table"]["headers"], ["A", "B"])
+            self.assertEqual(imported["table"]["rows"], [["a", 1], ["b", 2]])
+
+            imported = client.import_table_file(csv_path)
+            self.assertEqual(imported["table"]["headers"], ["A", "B"])
+            self.assertEqual(imported["table"]["rows"], [["a", "1"], ["b", "2"]])
+
+    def test_original_style_workflow_panel_controller_operations(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+        window.show()
+        app.processEvents()
+
+        self.assertEqual(controller.input_summary_label.text(), "当前输入：3 行 x 4 列")
+        self.assertEqual(controller.config_header_label.text().startswith("节点类型："), True)
+        self.assertGreater(controller.node_type_combo.count(), 0)
+        self.assertGreater(controller.catalog_tree.topLevelItemCount(), 0)
+        self.assertEqual(controller.node_list.count(), 1)
+        self.assertIn("未保存", controller.status_bar.currentMessage())
+        self.assertEqual(controller.output_mode_combo.itemText(0), "输出到主界面预览区")
+        self.assertEqual(controller.output_mode_combo.currentText(), "输出到主界面预览区")
+        self.assertEqual(controller.output_db_path_edit.text(), "")
+        self.assertEqual(controller.output_path_edit.text(), "")
+        self.assertEqual(controller.node_tabs.count(), 2)
+        self.assertEqual(controller.node_tabs.tabText(0), "节点配置")
+        self.assertEqual(controller.node_tabs.tabText(1), "节点说明")
+        self.assertEqual(controller.node_tabs.currentIndex(), 0)
+        self.assertEqual(controller.result_tabs.count(), 3)
+        self.assertEqual(controller.result_tabs.tabText(0), "预览")
+        self.assertEqual(controller.result_tabs.tabText(1), "输出")
+        self.assertEqual(controller.result_tabs.tabText(2), "消息")
+        self.assertEqual(controller.result_tabs.currentIndex(), 0)
+        self.assertEqual(controller.node_detail_title_label.text(), "新建列")
+        self.assertIn("说明", controller.node_detail_sections.toPlainText())
+        self.assertFalse(controller.output_form_fields["backup_before_overwrite"]["editor"].isVisible())
+        self.assertTrue(controller.add_node_button.isEnabled())
+        self.assertTrue(controller.apply_config_button.isEnabled())
+        self.assertFalse(controller.cancel_job_button.isEnabled())
+
+        with patch("ui_qt.main_window.QtWorkflowMainWindow._confirm_prompt", return_value=True):
+            controller.show_input_table()
+            self.assertEqual(controller.current_table_kind, "input")
+            controller.add_node_by_type("core.replace")
+            self.assertEqual(len(controller.current_plan["nodes"]), 2)
+            self.assertEqual(controller.config_form.config_fields["target_field"]["action_button"].text(), "选择字段")
+            self.assertTrue(controller.config_form.config_fields["match_value_field"]["label"].isHidden())
+            controller.config_form.config_fields["match_value_source"]["editor"].setCurrentText("列字段")
+            app.processEvents()
+            self.assertFalse(controller.config_form.config_fields["match_value_field"]["label"].isHidden())
+            controller.node_tabs.setCurrentIndex(1)
+            controller.show_node_detail("core.replace")
+            self.assertEqual(controller.node_tabs.currentIndex(), 1)
+            self.assertEqual(controller.node_detail_title_label.text(), "批量替换")
+            self.assertIn("注意", controller.node_detail_sections.toPlainText())
+            self.assertIn("配置项", controller.node_detail_sections.toPlainText())
+            self.assertIn("动态显示", controller.node_detail_sections.toPlainText())
+            controller.copy_selected_node()
+            self.assertEqual(len(controller.current_plan["nodes"]), 3)
+            copied_node = controller.current_plan["nodes"][controller.selected_node_index()]
+            self.assertTrue(copied_node.get("node_id"))
+            self.assertTrue(copied_node.get("name", "").endswith("_复制"))
+            controller.config_form.config_fields["target_field"]["editor"].setCurrentText("Missing")
+            before_config = dict(controller.current_plan["nodes"][controller.selected_node_index()].get("config", {}))
+            controller.apply_node_config()
+            self.assertEqual(controller.current_plan["nodes"][controller.selected_node_index()].get("config", {}), before_config)
+            self.assertIn("目标字段不存在", controller.issue_text.toPlainText())
+            self.assertEqual(controller.result_tabs.tabText(controller.result_tabs.currentIndex()), "消息")
+            self.assertEqual(controller.message_tabs.tabText(controller.message_tabs.currentIndex()), "问题")
+            self.assertIn("节点配置校验失败", controller.info_text.toPlainText())
+            controller.toggle_selected_node_enabled()
+            self.assertFalse(controller.current_plan["nodes"][controller.selected_node_index()].get("enabled", True))
+            controller.toggle_selected_node_enabled()
+            controller.node_list.setCurrentRow(0)
+            controller.refresh_action_states(is_running=True)
+            self.assertFalse(controller.add_node_button.isEnabled())
+            self.assertFalse(controller.node_action_buttons["删除"].isEnabled())
+            self.assertFalse(controller.run_action_buttons["执行计划"].isEnabled())
+            self.assertTrue(controller.cancel_job_button.isEnabled())
+            controller.refresh_action_states(is_running=False)
+            controller.node_list.setCurrentRow(-1)
+            controller.preview_to_selected_node()
+            self.assertIn("请先选择一个节点。", controller.issue_text.toPlainText())
+            self.assertEqual(controller.status_bar.currentMessage(), "预览前需要先选择节点")
+            self.assertEqual(controller.result_tabs.tabText(controller.result_tabs.currentIndex()), "消息")
+            controller.node_list.setCurrentRow(0)
+            controller.preview_to_selected_node()
+            self.wait_for_controller_job(app, controller)
+            self.assertEqual(controller.result_tabs.tabText(controller.result_tabs.currentIndex()), "预览")
+            self.assertEqual(controller.current_table_kind, "preview")
+            self.assertIn("status", controller.last_preview_headers)
+            self.assertEqual(controller.workflow_progress.value(), 100)
+            self.assertFalse(controller.cancel_job_button.isEnabled())
+            controller.execute_plan()
+            self.wait_for_controller_job(app, controller)
+            self.assertEqual(controller.result_tabs.tabText(controller.result_tabs.currentIndex()), "预览")
+            self.assertEqual(controller.current_table_kind, "preview")
+            self.assertIn("status", controller.last_preview_headers)
+            self.assertTrue(controller.table_title.text().startswith("执行结果"))
+            controller.show_preview_table()
+            self.assertEqual(controller.current_table_kind, "preview")
+            controller.output_mode_combo.setCurrentText("保存为SQLite新表")
+            app.processEvents()
+            window.show()
+            app.processEvents()
+            controller.result_tabs.setCurrentIndex(1)
+            app.processEvents()
+            self.assertTrue(controller.output_form_fields["target"]["editor"].isVisible())
+            self.assertTrue(controller.output_form_fields["db_path"]["editor"].isVisible())
+            self.assertTrue(controller.output_form_fields["db_path"]["action_button"].isVisible())
+            controller.execute_plan()
+            self.wait_for_controller_job(app, controller)
+            self.assertTrue(controller.table_title.text().startswith("执行结果（输出未落地）"))
+            self.assertIn("missing_db_path", controller.issue_text.toPlainText())
+            self.assertEqual(controller.result_tabs.tabText(controller.result_tabs.currentIndex()), "预览")
+            controller.show_log_text()
+            self.assertEqual(controller.result_tabs.tabText(controller.result_tabs.currentIndex()), "消息")
+            self.assertEqual(controller.message_tabs.tabText(controller.message_tabs.currentIndex()), "日志")
+            self.assertIn("输出设置校验失败", controller.status_bar.currentMessage())
+            settings = controller.current_output_settings()
+            self.assertEqual(settings["mode"], "保存为SQLite新表")
+
+    def test_controller_feedback_uses_structured_validation_sections(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        controller = QtWorkflowMainWindow(qt)
+
+        feedback = controller.engine_client.describe_validation_feedback({
+            "ok": True,
+            "validation": {"ok": True, "node_count": 1, "issues": []},
+            "jump_validation": {"issues": [], "summary": "跳转链路正常"},
+            "access_precheck": {
+                "issues": [{"severity": "warning", "code": "demo", "message": "将写回数据库"}],
+                "summary": "存在写回风险，请确认目标表",
+            },
+        })
+
+        controller._apply_feedback(feedback)
+
+        self.assertIn("校验发现提示", controller.info_text.toPlainText())
+        self.assertIn("基础校验", controller.info_text.toPlainText())
+        self.assertIn("存在写回风险，请确认目标表", controller.info_text.toPlainText())
+        self.assertIn("将写回数据库", controller.issue_text.toPlainText())
+        self.assertEqual(controller.result_tabs.tabText(controller.result_tabs.currentIndex()), "消息")
+        self.assertEqual(controller.message_tabs.tabText(controller.message_tabs.currentIndex()), "问题")
+
+    def test_controller_uses_confirmation_prompts_for_clear_and_run(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+        window.show()
+        app.processEvents()
+
+        with patch("ui_qt.main_window.QtWorkflowMainWindow._confirm_prompt", return_value=False) as mock_confirm:
+            controller.clear_nodes()
+            self.assertEqual(len(controller.current_plan["nodes"]), 1)
+            self.assertTrue(mock_confirm.called)
+
+        with patch("ui_qt.main_window.QtWorkflowMainWindow._confirm_prompt", return_value=False) as mock_confirm:
+            controller.output_mode_combo.setCurrentText("覆盖当前表")
+            app.processEvents()
+            controller.execute_plan()
+            self.assertTrue(mock_confirm.called)
+            self.assertEqual(controller.status_bar.currentMessage(), "已取消执行")
+
+        with patch.object(controller, "refresh_preview_table_combo") as mock_refresh:
+            controller.output_mode_combo.setCurrentText("保存为SQLite新表")
+            app.processEvents()
+            self.assertTrue(mock_refresh.called)
+
+        window.close()
+        app.processEvents()
+
+    def test_controller_passes_table_context_to_forms_and_detail(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+        controller.output_db_path_edit.setText("demo.db")
+
+        with patch.object(controller.engine_client, "list_tables", return_value={
+            "tables": [
+                {"name": "orders", "headers": ["id", "name"]},
+                {"name": "logs", "headers": ["row_id"]},
+            ]
+        }) as mock_list_tables, patch.object(controller.engine_client, "describe_node_detail", wraps=controller.engine_client.describe_node_detail) as mock_describe_detail:
+            controller.refresh_catalog()
+            controller.show_node_detail("core.replace")
+            controller.show_node_config(0)
+
+        self.assertTrue(mock_list_tables.called)
+        self.assertEqual(controller.config_form.table_names, ["orders", "logs"])
+        self.assertEqual(controller.config_form.plan.get("nodes"), controller.current_plan.get("nodes"))
+        self.assertEqual(mock_describe_detail.call_args.kwargs["table_names"], ["orders", "logs"])
+        self.assertEqual(mock_describe_detail.call_args.kwargs["table_columns"], {"orders": ["id", "name"], "logs": ["row_id"]})
+        window.close()
+        app.processEvents()
+
+    def test_controller_handles_table_field_picker_actions(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+
+        controller.config_form.set_node(
+            {
+                "node_type_id": "demo.lookup_field_picker",
+                "node_id": "n1",
+                "name": "表字段选择",
+                "enabled": True,
+                "node_version": "1.0.0",
+                "config": {
+                    "lookup_table": "orders",
+                    "lookup_fields": ["id"],
+                },
+            },
+            table_names=["orders"],
+            table_columns={"orders": ["id", "name"]},
+            schema={
+                "form": {
+                    "groups": [
+                        {
+                            "title": "参数",
+                            "fields": [
+                                {
+                                    "key": "lookup_table",
+                                    "type": "table_select",
+                                    "options_source": {"type": "table_names"},
+                                },
+                                {
+                                    "key": "lookup_fields",
+                                    "type": "field_multi_select",
+                                    "options_source": {"type": "table_columns", "table_field": "lookup_table"},
+                                },
+                            ],
+                        }
+                    ]
+                }
+            },
+        )
+
+        with patch.object(controller.qt.QtWidgets.QDialog, "exec", return_value=int(controller.qt.QtWidgets.QDialog.DialogCode.Accepted)):
+            result = controller._pick_multi_table_fields_for_field(
+                "lookup_fields",
+                {
+                    "action": {"key": "pick_table_fields", "table_field": "lookup_table"},
+                    "schema": {"options_source": {"type": "table_columns", "table_field": "lookup_table"}},
+                    "table_columns": {"orders": ["id", "name"]},
+                    "value": ["id"],
+                },
+            )
+
+        self.assertEqual(result["value"], ["id"])
+        window.close()
+        app.processEvents()
+
+    def test_config_form_uses_plan_reference_choices(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+
+        form = NodeConfigForm(qt, plan={
+            "nodes": [
+                {"node_type_id": "core.loop_start", "config": {"loop_id": "Loop_A"}},
+                {"node_type_id": "core.jump_anchor", "config": {"anchor_id": "ANCHOR_END"}},
+            ]
+        })
+        schema = {
+            "form": {
+                "groups": [
+                    {
+                        "title": "参数",
+                        "fields": [
+                            {
+                                "key": "loop_id",
+                                "label": "循环 ID",
+                                "type": "select",
+                                "options_source": {"type": "plan_refs", "ref_kind": "loop_id"},
+                                "action": {"key": "pick_plan_ref", "label": "选择循环", "ref_kind": "loop_id"},
+                            },
+                            {
+                                "key": "jump_rules",
+                                "label": "跳转规则",
+                                "type": "structured_list",
+                                "item_schema": {
+                                    "type": "object",
+                                    "columns": [
+                                        {"key": "value", "label": "值", "type": "text"},
+                                        {
+                                            "key": "target_anchor_id",
+                                            "label": "目标锚点",
+                                            "type": "select",
+                                            "options_source": {"type": "plan_refs", "ref_kind": "anchor_id"},
+                                            "action": {"key": "pick_plan_ref", "label": "选择锚点", "ref_kind": "anchor_id"},
+                                        },
+                                    ],
+                                },
+                            },
+                        ],
+                    }
+                ]
+            }
+        }
+        form.set_node(
+            {
+                "node_type_id": "core.loop_judge",
+                "node_id": "n1",
+                "name": "循环判断",
+                "enabled": True,
+                "node_version": "1.0.0",
+                "config": {
+                    "loop_id": "",
+                    "jump_rules": [{"value": "TRUE", "target_anchor_id": ""}],
+                },
+            },
+            schema=schema,
+        )
+
+        loop_editor = form.config_fields["loop_id"]["editor"]
+        loop_values = [loop_editor.itemText(i) for i in range(loop_editor.count())]
+        self.assertIn("Loop_A", loop_values)
+
+        jump_editor = form.config_fields["jump_rules"]["editor"]
+        table = jump_editor.structured_state["table"]
+        cell_widget = form._structured_cell_widget(
+            table.cellWidget(0, 1),
+            {"key": "target_anchor_id", "type": "select"},
+        )
+        anchor_values = [cell_widget.itemText(i) for i in range(cell_widget.count())]
+        self.assertIn("ANCHOR_END", anchor_values)
+        app.processEvents()
+
+    def test_config_form_uses_runtime_reference_choices(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+
+        form = NodeConfigForm(qt, plan={
+            "nodes": [
+                {"node_type_id": "core.save_transit", "config": {"transit_name": "中转A"}},
+                {"node_type_id": "core.group", "config": {"save_to_transit": True, "output_transit_name": "组输出B"}},
+            ]
+        })
+        schema = {
+            "form": {
+                "groups": [
+                    {
+                        "title": "参数",
+                        "fields": [
+                            {
+                                "key": "transit_table",
+                                "label": "中转表",
+                                "type": "select",
+                                "options_source": {"type": "runtime_refs", "ref_kind": "transit_table"},
+                                "action": {"key": "pick_runtime_ref", "label": "选择中转表", "ref_kind": "transit_table"},
+                            },
+                            {
+                                "key": "links",
+                                "label": "关联",
+                                "type": "structured_list",
+                                "item_schema": {
+                                    "type": "object",
+                                    "columns": [
+                                        {
+                                            "key": "target_transit_table",
+                                            "label": "目标中转表",
+                                            "type": "select",
+                                            "options_source": {"type": "runtime_refs", "ref_kind": "transit_table"},
+                                            "action": {"key": "pick_runtime_ref", "label": "选择中转表", "ref_kind": "transit_table"},
+                                        }
+                                    ],
+                                },
+                            },
+                        ],
+                    }
+                ]
+            }
+        }
+        form.set_node(
+            {
+                "node_type_id": "core.loop_start",
+                "node_id": "n1",
+                "name": "循环起点",
+                "enabled": True,
+                "node_version": "1.0.0",
+                "config": {
+                    "transit_table": "",
+                    "links": [{"target_transit_table": ""}],
+                },
+            },
+            schema=schema,
+        )
+
+        transit_editor = form.config_fields["transit_table"]["editor"]
+        transit_values = [transit_editor.itemText(i) for i in range(transit_editor.count())]
+        self.assertIn("中转A", transit_values)
+        self.assertIn("组输出B", transit_values)
+
+        links_editor = form.config_fields["links"]["editor"]
+        table = links_editor.structured_state["table"]
+        cell_widget = form._structured_cell_widget(
+            table.cellWidget(0, 0),
+            {"key": "target_transit_table", "type": "select"},
+        )
+        link_values = [cell_widget.itemText(i) for i in range(cell_widget.count())]
+        self.assertIn("中转A", link_values)
+        self.assertIn("组输出B", link_values)
+        app.processEvents()
+
+    def test_controller_handles_plan_reference_picker_actions(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+
+        with patch.object(controller.qt.QtWidgets.QInputDialog, "getItem", return_value=("Loop_A", True)):
+            result = controller._pick_plan_reference_for_field(
+                "loop_id",
+                {
+                    "action": {"key": "pick_plan_ref", "ref_kind": "loop_id"},
+                    "plan_refs": ["Loop_A", "Loop_B"],
+                    "value": "Loop_B",
+                },
+            )
+        self.assertEqual(result["value"], "Loop_A")
+
+        no_result = controller._pick_plan_reference_for_field(
+            "default_anchor_id",
+            {
+                "action": {"key": "pick_plan_ref", "ref_kind": "anchor_id"},
+                "plan_refs": [],
+                "value": "",
+            },
+        )
+        self.assertEqual(no_result, {})
+        self.assertIn("计划引用选择", controller.info_text.toPlainText())
+        self.assertIn("请先添加对应节点或填写自定义值", controller.issue_text.toPlainText())
+        window.close()
+        app.processEvents()
+
+    def test_controller_handles_runtime_reference_picker_actions(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+
+        with patch.object(controller.qt.QtWidgets.QInputDialog, "getItem", return_value=("中转A", True)):
+            result = controller._pick_runtime_reference_for_field(
+                "transit_table",
+                {
+                    "action": {"key": "pick_runtime_ref", "ref_kind": "transit_table"},
+                    "runtime_refs": ["中转A", "组输出B"],
+                    "value": "组输出B",
+                },
+            )
+        self.assertEqual(result["value"], "中转A")
+
+        no_result = controller._pick_runtime_reference_for_field(
+            "transit_table",
+            {
+                "action": {"key": "pick_runtime_ref", "ref_kind": "transit_table"},
+                "runtime_refs": [],
+                "value": "",
+            },
+        )
+        self.assertEqual(no_result, {})
+        self.assertIn("运行时引用选择", controller.info_text.toPlainText())
+        self.assertIn("请先配置相关节点或填写自定义值", controller.issue_text.toPlainText())
+        window.close()
+        app.processEvents()
+
+    def test_controller_uses_facade_file_actions_for_import_open_and_save(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+        window.show()
+        app.processEvents()
+
+        import_path = str(Path("demo.csv"))
+        plan_path = str(Path("plan") / "demo.json")
+        save_path = str(Path("plan") / "saved.json")
+
+        with patch("ui_qt.main_window.QtWorkflowMainWindow._choose_file_path", side_effect=[import_path, plan_path, save_path]) as mock_choose:
+            with patch.object(controller.engine_client, "import_table_file", return_value={
+                "ok": True,
+                "path": import_path,
+                "table": {"headers": ["A"], "rows": [["a"]]},
+            }):
+                controller.import_table()
+                self.assertEqual(controller.current_headers, ["A"])
+                self.assertEqual(controller.current_rows, [["a"]])
+
+            with patch.object(controller.engine_client, "load_plan_template", return_value={
+                "ok": True,
+                "path": plan_path,
+                "plan": SAMPLE_PLAN,
+                "warning": "已打开测试计划",
+            }):
+                controller.open_plan()
+                self.assertTrue(str(controller.current_plan_path).endswith("demo.json"))
+                self.assertIn("打开计划", controller.info_text.toPlainText())
+                self.assertIn("已打开测试计划", controller.current_message_panel.get("body", ""))
+
+            with patch.object(controller.engine_client, "save_plan_template", return_value={
+                "ok": True,
+                "path": save_path,
+                "plan": SAMPLE_PLAN,
+            }):
+                controller.current_plan_path = None
+                controller.save_plan()
+                self.assertTrue(str(controller.current_plan_path).endswith("saved.json"))
+                self.assertIn("已保存", controller.status_bar.currentMessage())
+
+            self.assertEqual(mock_choose.call_count, 3)
+
+        window.close()
+        app.processEvents()
+        window.close()
+        app.processEvents()
+
+    def test_controller_uses_shared_template_list_state(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+        window.show()
+        app.processEvents()
+
+        with patch.object(controller.engine_client, "list_plan_templates", return_value={
+            "templates": [
+                {"name": "Alpha", "path": "plan\\alpha.json"},
+                {"name": "Beta", "path": "plan\\beta.json"},
+            ]
+        }):
+            controller.refresh_template_list(show_status=True)
+
+        self.assertEqual(controller.plan_template_combo.count(), 2)
+        self.assertEqual(controller.plan_template_combo.itemText(0), "Alpha")
+        self.assertEqual(controller.status_bar.currentMessage(), "模板刷新完成：2 个。")
+        self.assertEqual(controller.current_message_panel.get("title"), "计划模板")
+        self.assertIn("Alpha", controller.info_text.toPlainText())
+
+        window.close()
+        app.processEvents()
+
+
+if __name__ == "__main__":
+    unittest.main()

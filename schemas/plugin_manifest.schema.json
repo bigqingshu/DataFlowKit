@@ -1,0 +1,121 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://dataflowkit.local/schemas/plugin_manifest.schema.json",
+  "title": "DataFlowKit Plugin Manifest",
+  "type": "object",
+  "properties": {
+    "entry": {
+      "type": "string"
+    },
+    "main": {
+      "type": "string"
+    },
+    "requirements": {
+      "type": "string"
+    },
+    "schema": {
+      "$ref": "#/definitions/parameterSchema"
+    },
+    "parameters": {
+      "$ref": "#/definitions/parameterSchema"
+    },
+    "parameter_schema": {
+      "$ref": "#/definitions/parameterSchema"
+    },
+    "extensions": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "patternProperties": {
+    "^(plugin_info|PLUGIN_INFO|info)$": {
+      "$ref": "#/definitions/pluginInfo"
+    }
+  },
+  "anyOf": [
+    {
+      "required": ["plugin_info"]
+    },
+    {
+      "required": ["PLUGIN_INFO"]
+    },
+    {
+      "required": ["info"]
+    },
+    {
+      "required": ["id"]
+    }
+  ],
+  "additionalProperties": true,
+  "definitions": {
+    "pluginInfo": {
+      "type": "object",
+      "required": ["id", "api_version"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]+$"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "api_version": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "input_type": {
+          "type": "string"
+        },
+        "output_type": {
+          "type": "string"
+        },
+        "danger_level": {
+          "type": "string"
+        },
+        "run_mode": {
+          "type": "string"
+        },
+        "table_access": {},
+        "table_access_spec": {}
+      },
+      "additionalProperties": true
+    },
+    "parameterSchema": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "type"],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "default": {},
+          "options": {
+            "type": "array"
+          },
+          "help": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  }
+}

@@ -1,0 +1,156 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://dataflowkit.local/schemas/runtime_message.schema.json",
+  "title": "DataFlowKit Runtime Message",
+  "oneOf": [
+    {
+      "$ref": "#/definitions/request"
+    },
+    {
+      "$ref": "#/definitions/response"
+    },
+    {
+      "$ref": "#/definitions/event"
+    }
+  ],
+  "definitions": {
+    "request": {
+      "type": "object",
+      "required": ["request_id", "api_version", "action", "payload"],
+      "properties": {
+        "request_id": {
+          "type": "string"
+        },
+        "api_version": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "list_node_types",
+            "get_node_type",
+            "list_node_ui_schemas",
+            "get_node_ui_schema",
+            "migrate_plan",
+            "list_plan_templates",
+            "load_plan_template",
+            "save_plan_template",
+            "validate_plan_template",
+            "apply_plan_command",
+            "validate_config",
+            "validate_plan_configs",
+            "make_default_node",
+            "validate_plan",
+            "preview_plan",
+            "preview_node",
+            "run_plan",
+            "start_job",
+            "cancel_job",
+            "get_job_status",
+            "get_job_events",
+            "list_output_modes",
+            "apply_output",
+            "list_tables",
+            "load_table",
+            "get_table_page",
+            "create_table_handle",
+            "get_table_handle_page",
+            "list_table_handles",
+            "release_table_handle",
+            "build_table_access",
+            "precheck_access",
+            "format_access_issue",
+            "record_access_audit",
+            "list_access_audit_logs",
+            "format_access_audit_event",
+            "analyze_jumps",
+            "validate_jumps",
+            "format_jump_issue",
+            "get_plugin_schema",
+            "make_plugin_default_config",
+            "list_plugins"
+          ]
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "response": {
+      "type": "object",
+      "required": ["request_id", "ok"],
+      "properties": {
+        "request_id": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "result": {},
+        "logs": {
+          "type": "array"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "event": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "workflow_start",
+            "workflow_done",
+            "workflow_error",
+            "workflow_cancelled",
+            "job_started",
+            "job_done",
+            "job_failed",
+            "job_cancel_requested",
+            "node_start",
+            "node_progress",
+            "node_done",
+            "node_error",
+            "node_log",
+            "log"
+          ]
+        },
+        "job_id": {
+          "type": "string"
+        },
+        "node_id": {
+          "type": "string"
+        },
+        "node_name": {
+          "type": "string"
+        },
+        "current": {
+          "type": "number"
+        },
+        "total": {
+          "type": "number"
+        },
+        "message": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

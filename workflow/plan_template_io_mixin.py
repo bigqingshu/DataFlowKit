@@ -7,6 +7,7 @@ import sys
 from tkinter import filedialog, messagebox
 
 from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
+from workflow.protocol_adapter import build_workflow_plan_payload
 
 
 def _default_app_dir():
@@ -52,16 +53,15 @@ class PlanTemplateIoMixin:
             plan_name = self.output_table_var.get().strip() or "工作流计划"
 
         self.refresh_node_tree_table_access(self.nodes)
-        return {
-            "template_type": "workflow_plan",
-            "version": "1.0",
-            "plan_name": plan_name,
-            "nodes": self.nodes,
-            "output_mode": self.output_mode_var.get(),
-            "output_table": self.output_table_var.get(),
-            "backup_before_overwrite": self.backup_before_overwrite_var.get(),
-            "table_access_policy": self.normalize_table_access_policy(),
-        }
+        return build_workflow_plan_payload(
+            plan_name=plan_name,
+            nodes=self.nodes,
+            output_mode=self.output_mode_var.get(),
+            output_table=self.output_table_var.get(),
+            backup_before_overwrite=self.backup_before_overwrite_var.get(),
+            table_access_policy=self.normalize_table_access_policy(),
+            ensure_node_id=self.ensure_node_identity,
+        )
 
     def validate_plan_template_data(self, data):
         """
