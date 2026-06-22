@@ -118,6 +118,14 @@ class StdioWorker:
                     include_legacy_type=bool(payload.get("include_legacy_type", True)),
                 )
             }
+        if action == "apply_plan_command":
+            return self.engine.apply_plan_command(
+                payload.get("plan", {}),
+                payload.get("command", {}),
+                preview_headers=payload.get("preview_headers"),
+                table_names=payload.get("table_names"),
+                table_columns=payload.get("table_columns"),
+            )
         if action == "validate_plan":
             return self.engine.validate_plan(
                 payload.get("plan", {}),

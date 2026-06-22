@@ -278,6 +278,7 @@ Recommended actions:
 - `list_node_ui_schemas`
 - `get_node_ui_schema`
 - `migrate_plan`
+- `apply_plan_command`
 - `make_default_node`
 - `validate_plan`
 - `preview_plan`
@@ -305,6 +306,9 @@ Runtime identity rules:
 - Clients can call `migrate_plan` after loading older templates. The service adds
   missing `node_id`, `node_type_id`, and `node_version` fields while preserving
   legacy `type` and unknown extension fields.
+- Clients should use `apply_plan_command` for plan edits such as inserting,
+  deleting, moving, duplicating, enabling, disabling, clearing, or replacing
+  nodes. This keeps node-id generation and edit semantics out of concrete UIs.
 - Clients that do not need old template compatibility may omit legacy `type`
   when creating nodes.
 

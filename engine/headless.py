@@ -59,6 +59,7 @@ from workflow.node_ui_schema import (
     get_node_ui_schema,
     list_node_ui_schemas,
 )
+from workflow.plan_commands import apply_plan_command as apply_workflow_plan_command
 from workflow.plan_migration import migrate_plan as migrate_workflow_plan
 
 
@@ -133,6 +134,16 @@ class HeadlessWorkflowEngine:
         return migrate_workflow_plan(
             plan,
             target_version=target_version,
+            node_id_factory=self.node_id_factory,
+        )
+
+    def apply_plan_command(self, plan, command, preview_headers=None, table_names=None, table_columns=None):
+        return apply_workflow_plan_command(
+            plan,
+            command,
+            preview_headers=preview_headers,
+            table_names=table_names,
+            table_columns=table_columns,
             node_id_factory=self.node_id_factory,
         )
 
