@@ -11,7 +11,7 @@ from ui_qt.config_form import NodeConfigForm
 from ui_qt.engine_client import QtHeadlessEngineClient, SAMPLE_HEADERS, SAMPLE_PLAN, SAMPLE_ROWS
 from ui_qt.node_ui_metadata import CATEGORY_ORDER, category_label, format_node_detail
 from ui_qt.qt_compat import qt_enum
-from ui_qt.table_io import load_table_file
+from engine.table_io import load_table_file
 from ui_qt.table_model import make_table_model
 
 
