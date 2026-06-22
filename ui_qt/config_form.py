@@ -84,10 +84,32 @@ class NodeConfigForm:
         self.schema = {}
         self.node_fields = {}
         self.config_fields = {}
+        self.validation_issues = []
         self.set_node(None)
 
     def set_headers(self, headers):
         self.headers = list(headers or [])
+        self._refresh_dynamic_options()
+
+    def set_validation_issues(self, issues=None):
+        self.validation_issues = list(issues or [])
+        self._apply_validation_state()
+
+    def describe_state(self):
+        return {
+            "ok": True,
+            "fields": {
+                key: {
+                    "kind": field.get("kind"),
+                    "visible": bool(field.get("editor").isVisible()) if field.get("editor") is not None else False,
+                    "enabled": bool(field.get("editor").isEnabled()) if field.get("editor") is not None else False,
+                    "issues": list(field.get("issues") or []),
+                    "action": copy.deepcopy((field.get("schema") or {}).get("action") or {}),
+                }
+                for key, field in self.config_fields.items()
+            },
+            "issues": list(self.validation_issues or []),
+        }
 
     def set_node(self, node, headers=None, schema=None):
         if headers is not None:
@@ -96,6 +118,7 @@ class NodeConfigForm:
         self.schema = copy.deepcopy(schema) if isinstance(schema, dict) else {}
         self.node_fields = {}
         self.config_fields = {}
+        self.validation_issues = []
 
         content = self.qt.QtWidgets.QWidget()
         outer = self.qt.QtWidgets.QVBoxLayout(content)
@@ -113,6 +136,7 @@ class NodeConfigForm:
         for group in self._build_config_groups():
             outer.addWidget(group)
         self._apply_dynamic_state()
+        self._apply_validation_state()
         outer.addStretch(1)
         self.scroll_area.setWidget(content)
 
@@ -267,6 +291,7 @@ class NodeConfigForm:
             "visible_when": field_schema.get("visible_when"),
             "enabled_when": field_schema.get("enabled_when"),
             "depends_on": list(field_schema.get("depends_on") or []),
+            "issues": [],
         }
         editor = self._editor_for_field(key, kind, value, choices)
         self.config_fields[key]["editor"] = editor
@@ -275,6 +300,25 @@ class NodeConfigForm:
             editor.setToolTip(help_text)
         self._connect_dynamic_refresh(editor, kind)
         return editor
+
+    def _refresh_dynamic_options(self):
+        for key, field in self.config_fields.items():
+            editor = field.get("editor")
+            schema = field.get("schema") or {}
+            if editor is None or field.get("kind") != "choice":
+                continue
+            options_source = schema.get("options_source") or {}
+            if options_source.get("type") != "preview_headers":
+                continue
+            current = str(editor.currentText())
+            editor.blockSignals(True)
+            editor.clear()
+            values = [str(item) for item in self.headers]
+            if current and current not in values:
+                values.insert(0, current)
+            editor.addItems(values)
+            editor.setCurrentText(current)
+            editor.blockSignals(False)
 
     def _form_layout(self, parent):
         form = self.qt.QtWidgets.QFormLayout(parent)
@@ -576,6 +620,28 @@ class NodeConfigForm:
                 label.setVisible(visible)
             editor.setVisible(visible)
             editor.setEnabled(enabled)
+        self._apply_validation_state()
+
+    def _apply_validation_state(self):
+        issue_map = {}
+        for issue in self.validation_issues or []:
+            path = str((issue or {}).get("path") or "")
+            field_key = path.split(".")[-1] if path else ""
+            if field_key:
+                issue_map.setdefault(field_key, []).append(copy.deepcopy(issue))
+        for key, field in self.config_fields.items():
+            editor = field.get("editor")
+            label = field.get("label")
+            field_issues = list(issue_map.get(key) or [])
+            field["issues"] = field_issues
+            tooltip = self._field_tooltip(key, field.get("schema") or {})
+            if field_issues:
+                issue_text = "\n".join(str(item.get("message") or "") for item in field_issues if str(item.get("message") or "").strip())
+                tooltip = (tooltip + "\n\n" if tooltip else "") + issue_text
+            if editor is not None:
+                editor.setToolTip(tooltip)
+            if label is not None:
+                label.setToolTip(tooltip)
 
     def _current_field_values(self):
         values = {}

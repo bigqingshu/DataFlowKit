@@ -360,6 +360,40 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(converted["config"]["mappings"], [{"old": "A", "new": "AA"}, {"old": "B", "new": "BB"}])
         app.processEvents()
 
+    def test_config_form_refreshes_dynamic_options_and_validation_state(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        schema = get_node_ui_schema("core.replace", preview_headers=["A", "B"])
+        node = {
+            "node_type_id": "core.replace",
+            "node_id": "n1",
+            "name": "批量替换",
+            "enabled": True,
+            "node_version": "1.0.0",
+            "config": {
+                "target_field": "A",
+                "match_mode": "包含",
+                "match_value": "x",
+                "replace_mode": "整格替换为新值",
+                "replace_value": "y",
+                "match_value_source": "手动输入",
+                "replace_value_source": "手动输入",
+            },
+        }
+        form = NodeConfigForm(qt, headers=["A", "B"])
+        form.set_node(node, headers=["A", "B"], schema=schema)
+        form.set_headers(["C", "D"])
+        target_editor = form.config_fields["target_field"]["editor"]
+        self.assertIn("C", [target_editor.itemText(i) for i in range(target_editor.count())])
+        form.set_validation_issues([{"path": "config.target_field", "message": "目标字段不存在"}])
+        state = form.describe_state()
+        self.assertIn("目标字段不存在", form.config_fields["target_field"]["editor"].toolTip())
+        self.assertEqual(state["fields"]["target_field"]["issues"][0]["message"], "目标字段不存在")
+        app.processEvents()
+
     def test_node_ui_metadata_maps_protocol_to_chinese_ui(self):
         self.assertEqual(node_display_label("core.new_columns"), "新建列")
         self.assertEqual(category_label("数据处理"), "数据处理")
@@ -494,6 +528,7 @@ class Qt6UiShellTests(unittest.TestCase):
             controller.apply_node_config()
             self.assertEqual(controller.current_plan["nodes"][controller.selected_node_index()].get("config", {}), before_config)
             self.assertIn("目标字段不存在", controller.issue_text.toPlainText())
+            self.assertEqual(controller.message_tabs.tabText(controller.message_tabs.currentIndex()), "问题")
             controller.toggle_selected_node_enabled()
             self.assertFalse(controller.current_plan["nodes"][controller.selected_node_index()].get("enabled", True))
             controller.toggle_selected_node_enabled()
@@ -531,6 +566,8 @@ class Qt6UiShellTests(unittest.TestCase):
             self.wait_for_controller_job(app, controller)
             self.assertTrue(controller.table_title.text().startswith("执行结果（输出未落地）"))
             self.assertIn("missing_db_path", controller.issue_text.toPlainText())
+            controller.show_log_text()
+            self.assertEqual(controller.message_tabs.tabText(controller.message_tabs.currentIndex()), "日志")
             self.assertIn("输出设置校验失败", controller.status_bar.currentMessage())
             settings = controller.current_output_settings()
             self.assertEqual(settings["mode"], "保存为SQLite新表")
@@ -594,7 +631,7 @@ class Qt6UiShellTests(unittest.TestCase):
             }):
                 controller.open_plan()
                 self.assertTrue(str(controller.current_plan_path).endswith("demo.json"))
-                self.assertIn("已打开测试计划", controller.issue_text.toPlainText())
+                self.assertIn("已打开测试计划", controller.info_text.toPlainText())
 
             with patch.object(controller.engine_client, "save_plan_template", return_value={
                 "ok": True,

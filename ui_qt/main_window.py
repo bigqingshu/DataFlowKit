@@ -46,6 +46,7 @@ class QtWorkflowMainWindow:
         self.output_mode_records = []
         self.output_mode_meta = {}
         self.preview_source_records = []
+        self.current_message_panel = {}
 
         self._build_ui()
         self.refresh_all()
@@ -347,13 +348,21 @@ class QtWorkflowMainWindow:
         except Exception:
             pass
 
+        self.message_tabs = qt.QtWidgets.QTabWidget()
+        self.message_tabs.setMaximumHeight(180)
         self.issue_text = qt.QtWidgets.QPlainTextEdit()
         self.issue_text.setReadOnly(True)
-        self.issue_text.setMaximumHeight(140)
+        self.log_text = qt.QtWidgets.QPlainTextEdit()
+        self.log_text.setReadOnly(True)
+        self.info_text = qt.QtWidgets.QPlainTextEdit()
+        self.info_text.setReadOnly(True)
+        self.message_tabs.addTab(self.info_text, "说明")
+        self.message_tabs.addTab(self.issue_text, "问题")
+        self.message_tabs.addTab(self.log_text, "日志")
         preview_layout.addLayout(preview_toolbar)
         preview_layout.addWidget(self.table_title)
         preview_layout.addWidget(self.table_view, 1)
-        preview_layout.addWidget(self.issue_text)
+        preview_layout.addWidget(self.message_tabs)
 
         layout.addWidget(config_group, 2)
         layout.addLayout(action_row)
@@ -580,13 +589,22 @@ class QtWorkflowMainWindow:
             if not node.get("node_type_id") and not node.get("type"):
                 raise ValueError("节点必须包含 node_type_id 或 legacy type。")
             validation = self.engine_client.validate_config(node, preview_headers=self.current_headers)
+            self.config_form.set_validation_issues(validation.get("issues", []))
             if not validation.get("ok"):
-                self.issue_text.setPlainText(self._format_issues(validation.get("issues", [])))
+                self._apply_message_panel(self.engine_client.build_message_panel_state(
+                    mode="warning",
+                    title="节点配置校验失败",
+                    issues=validation.get("issues", []),
+                ).get("panel") or {})
                 self.status_bar.showMessage("节点配置校验失败")
                 return
             issues = validation.get("issues", []) or []
             if issues:
-                self.issue_text.setPlainText(self._format_issues(issues))
+                self._apply_message_panel(self.engine_client.build_message_panel_state(
+                    mode="info",
+                    title="节点配置提示",
+                    issues=issues,
+                ).get("panel") or {})
             self.apply_plan_command({"type": "replace_node", "index": index, "node": node}, status_message="节点配置已应用。")
         except Exception as exc:
             self.show_error("配置无效", str(exc))
@@ -611,8 +629,23 @@ class QtWorkflowMainWindow:
 
     def _apply_message_panel(self, panel):
         panel = panel or {}
+        self.current_message_panel = dict(panel)
+        mode = str(panel.get("mode") or "info")
+        title = str(panel.get("title") or "")
         body = str(panel.get("body") or "")
-        self.issue_text.setPlainText(body)
+        logs = [str(item) for item in (panel.get("logs") or []) if str(item).strip()]
+        issues = panel.get("issues") or []
+        issue_text = self._format_issues(issues) if issues else (body if mode in {"warning", "error"} else "")
+        info_lines = [item for item in [title, body if mode not in {"warning", "error"} else ""] if str(item).strip()]
+        self.info_text.setPlainText("\n\n".join(info_lines))
+        self.issue_text.setPlainText(issue_text)
+        self.log_text.setPlainText("\n".join(logs))
+        if issues:
+            self.message_tabs.setCurrentWidget(self.issue_text)
+        elif logs:
+            self.message_tabs.setCurrentWidget(self.log_text)
+        else:
+            self.message_tabs.setCurrentWidget(self.info_text)
 
     def _confirm_prompt(self, prompt_result):
         prompt = (prompt_result or {}).get("prompt") or {}
@@ -1182,7 +1215,8 @@ class QtWorkflowMainWindow:
         self._show_preview_source({"type": "memory", "table_role": "preview"}, kind="preview")
 
     def show_log_text(self):
-        self.issue_text.setFocus()
+        self.message_tabs.setCurrentWidget(self.log_text)
+        self.log_text.setFocus()
 
     def refresh_preview_table_combo(self):
         panel_state = self.engine_client.build_preview_panel_state(
