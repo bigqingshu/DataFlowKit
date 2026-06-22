@@ -146,6 +146,11 @@ class Qt6UiShellTests(unittest.TestCase):
         copied_node = controller.current_plan["nodes"][controller.selected_node_index()]
         self.assertTrue(copied_node.get("node_id"))
         self.assertTrue(copied_node.get("name", "").endswith("_复制"))
+        controller.config_form.config_fields["target_field"]["editor"].setCurrentText("Missing")
+        before_config = dict(controller.current_plan["nodes"][controller.selected_node_index()].get("config", {}))
+        controller.apply_node_config()
+        self.assertEqual(controller.current_plan["nodes"][controller.selected_node_index()].get("config", {}), before_config)
+        self.assertIn("目标字段不存在", controller.issue_text.toPlainText())
         controller.toggle_selected_node_enabled()
         self.assertFalse(controller.current_plan["nodes"][controller.selected_node_index()].get("enabled", True))
         controller.toggle_selected_node_enabled()

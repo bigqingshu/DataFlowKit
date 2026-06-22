@@ -85,6 +85,22 @@ class QtHeadlessEngineClient:
     def validate_plan(self, plan):
         return self.engine.validate_plan(copy.deepcopy(plan))
 
+    def validate_config(self, node, preview_headers=None, table_names=None, table_columns=None):
+        return self.engine.validate_config(
+            copy.deepcopy(node),
+            preview_headers=preview_headers,
+            table_names=table_names,
+            table_columns=table_columns,
+        )
+
+    def validate_plan_configs(self, plan, preview_headers=None, table_names=None, table_columns=None):
+        return self.engine.validate_plan_configs(
+            copy.deepcopy(plan),
+            preview_headers=preview_headers,
+            table_names=table_names,
+            table_columns=table_columns,
+        )
+
     def preview_plan(self, plan, input_table=None):
         return self.engine.preview_plan(copy.deepcopy(plan), input_table=input_table)
 

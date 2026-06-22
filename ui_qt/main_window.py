@@ -495,6 +495,14 @@ class QtWorkflowMainWindow:
                 raise ValueError("节点配置必须是 JSON object。")
             if not node.get("node_type_id") and not node.get("type"):
                 raise ValueError("节点必须包含 node_type_id 或 legacy type。")
+            validation = self.engine_client.validate_config(node, preview_headers=self.current_headers)
+            if not validation.get("ok"):
+                self.issue_text.setPlainText(self._format_issues(validation.get("issues", [])))
+                self.status_bar.showMessage("节点配置校验失败")
+                return
+            issues = validation.get("issues", []) or []
+            if issues:
+                self.issue_text.setPlainText(self._format_issues(issues))
             self.apply_plan_command({"type": "replace_node", "index": index, "node": node}, status_message="节点配置已应用。")
         except Exception as exc:
             self.show_error("配置无效", str(exc))

@@ -19,6 +19,10 @@ from engine.issue_schema import has_error_issues, make_issue
 from engine.models import EngineRunResult, TableData
 from engine.safety_policy import resolve_safety_policy
 from workflow.default_configs import default_config_for_type, default_name_for_node
+from workflow.config_validation import (
+    validate_node_config,
+    validate_plan_configs,
+)
 from workflow.nodes.data_common import (
     MAX_EXPANDED_ROWS,
     MAX_TARGET_CELLS,
@@ -147,6 +151,23 @@ class HeadlessWorkflowEngine:
             table_names=table_names,
             table_columns=table_columns,
             node_id_factory=self.node_id_factory,
+        )
+
+    def validate_config(self, node_or_type, config=None, preview_headers=None, table_names=None, table_columns=None):
+        return validate_node_config(
+            node_or_type,
+            config,
+            headers=preview_headers,
+            table_names=table_names,
+            table_columns=table_columns,
+        )
+
+    def validate_plan_configs(self, plan, preview_headers=None, table_names=None, table_columns=None):
+        return validate_plan_configs(
+            plan,
+            headers=preview_headers,
+            table_names=table_names,
+            table_columns=table_columns,
         )
 
     def is_node_supported(self, node_type):

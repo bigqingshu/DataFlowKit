@@ -279,6 +279,8 @@ Recommended actions:
 - `get_node_ui_schema`
 - `migrate_plan`
 - `apply_plan_command`
+- `validate_config`
+- `validate_plan_configs`
 - `make_default_node`
 - `validate_plan`
 - `preview_plan`
@@ -309,6 +311,9 @@ Runtime identity rules:
 - Clients should use `apply_plan_command` for plan edits such as inserting,
   deleting, moving, duplicating, enabling, disabling, clearing, or replacing
   nodes. This keeps node-id generation and edit semantics out of concrete UIs.
+- Clients should use `validate_config` before applying node edits and
+  `validate_plan_configs` before running a plan when they want field-level
+  warnings/errors for supported nodes.
 - Clients that do not need old template compatibility may omit legacy `type`
   when creating nodes.
 - `preview_plan` always runs with `execute_actions = false` and

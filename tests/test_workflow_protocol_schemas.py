@@ -107,6 +107,8 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
             "get_node_ui_schema",
             "migrate_plan",
             "apply_plan_command",
+            "validate_config",
+            "validate_plan_configs",
             "make_default_node",
             "validate_plan",
             "preview_plan",

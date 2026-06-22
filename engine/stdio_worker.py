@@ -126,6 +126,25 @@ class StdioWorker:
                 table_names=payload.get("table_names"),
                 table_columns=payload.get("table_columns"),
             )
+        if action == "validate_config":
+            node = payload.get("node")
+            node_or_type = node if isinstance(node, dict) else (
+                payload.get("node_type") or payload.get("type") or payload.get("node_type_id")
+            )
+            return self.engine.validate_config(
+                node_or_type,
+                payload.get("config"),
+                preview_headers=payload.get("preview_headers"),
+                table_names=payload.get("table_names"),
+                table_columns=payload.get("table_columns"),
+            )
+        if action == "validate_plan_configs":
+            return self.engine.validate_plan_configs(
+                payload.get("plan", {}),
+                preview_headers=payload.get("preview_headers"),
+                table_names=payload.get("table_names"),
+                table_columns=payload.get("table_columns"),
+            )
         if action == "validate_plan":
             return self.engine.validate_plan(
                 payload.get("plan", {}),
