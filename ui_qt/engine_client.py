@@ -181,6 +181,18 @@ class QtHeadlessEngineClient:
     def get_table_page(self, table, *, limit=None, offset=0, source=None):
         return self.engine.get_table_page(table, limit=limit, offset=offset, source=source)
 
+    def create_table_handle(self, table_or_source=None, **kwargs):
+        return self.engine.create_table_handle(copy.deepcopy(table_or_source), **kwargs)
+
+    def get_table_handle_page(self, handle, *, limit=None, offset=0):
+        return self.engine.get_table_handle_page(handle, limit=limit, offset=offset)
+
+    def list_table_handles(self):
+        return self.engine.list_table_handles()
+
+    def release_table_handle(self, handle):
+        return self.engine.release_table_handle(handle)
+
     def build_table_access(self, node):
         return self.engine.build_table_access(copy.deepcopy(node))
 

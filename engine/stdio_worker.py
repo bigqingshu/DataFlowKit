@@ -247,6 +247,26 @@ class StdioWorker:
                 offset=payload.get("offset", 0),
                 source=payload.get("source"),
             )
+        if action == "create_table_handle":
+            return self.engine.create_table_handle(
+                payload.get("table", payload.get("source")),
+                source=payload.get("source"),
+                db_path=payload.get("db_path"),
+                table_name=payload.get("table_name") or payload.get("table"),
+                path=payload.get("path"),
+                limit=payload.get("limit"),
+                offset=payload.get("offset", 0),
+            )
+        if action == "get_table_handle_page":
+            return self.engine.get_table_handle_page(
+                payload.get("handle", ""),
+                limit=payload.get("limit"),
+                offset=payload.get("offset", 0),
+            )
+        if action == "list_table_handles":
+            return self.engine.list_table_handles()
+        if action == "release_table_handle":
+            return self.engine.release_table_handle(payload.get("handle", ""))
         if action == "build_table_access":
             return self.engine.build_table_access(payload.get("node", {}))
         if action == "precheck_access":

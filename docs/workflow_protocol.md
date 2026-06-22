@@ -303,6 +303,10 @@ Recommended actions:
 - `list_tables`
 - `load_table`
 - `get_table_page`
+- `create_table_handle`
+- `get_table_handle_page`
+- `list_table_handles`
+- `release_table_handle`
 - `build_table_access`
 - `precheck_access`
 - `format_access_issue`
@@ -362,9 +366,11 @@ Runtime identity rules:
   frontend preview updates, SQLite new-table writes, SQLite overwrite with an
   optional backup, and xlsx export through `WorkflowServices`. SQLite modes need
   `db_path`; xlsx export needs `output_path`.
-- Clients should use `list_tables`, `load_table`, and `get_table_page` for
-  table browsing and paging. The first implementation supports SQLite table
-  listing/loading, table files, and inline table paging.
+- Clients should use `list_tables`, `load_table`, `get_table_page`,
+  `create_table_handle`, `get_table_handle_page`, `list_table_handles`, and
+  `release_table_handle` for table browsing and paging. The first implementation
+  supports SQLite table listing/loading, table files, inline table paging, and
+  in-process table handles for large table preview flows.
 - Clients should use `build_table_access`, `precheck_access`,
   `format_access_issue`, `record_access_audit`, `list_access_audit_logs`, and
   `format_access_audit_event` for table-access defaults, execution precheck,
