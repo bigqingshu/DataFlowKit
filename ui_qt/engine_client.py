@@ -69,6 +69,15 @@ class QtHeadlessEngineClient:
             table_columns=table_columns,
         )
 
+    def build_workflow_panel_state(self, **kwargs):
+        return self.facade.build_workflow_panel_state(**kwargs)
+
+    def describe_node_detail(self, node_type_id, *, preview_headers=None):
+        return self.facade.describe_node_detail(node_type_id, preview_headers=preview_headers)
+
+    def plan_status_text(self, plan=None, *, current_plan_path=None):
+        return self.facade.plan_status_text(plan, current_plan_path=current_plan_path)
+
     def get_node_ui_schema(self, node_type_id, preview_headers=None):
         return self.engine.get_node_ui_schema(
             node_type_id,

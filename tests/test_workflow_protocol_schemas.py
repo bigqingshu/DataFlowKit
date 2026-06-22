@@ -183,6 +183,18 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
         self.assertIn("submenu", first_item)
         self.assertIn("path", first_item)
 
+    def test_node_ui_schema_marks_structured_list_fields(self):
+        from workflow.node_ui_schema import get_node_ui_schema
+
+        schema = get_node_ui_schema("批量更改列名", preview_headers=["A", "B"])
+        fields = {
+            field["key"]: field
+            for group in schema["form"]["groups"]
+            for field in group["fields"]
+        }
+        self.assertEqual(fields["mappings"]["type"], "structured_list")
+        self.assertEqual(fields["mappings"]["item_schema"]["columns"][0]["key"], "old")
+
     def test_plugin_manifest_schema_keeps_current_manifest_shapes(self):
         schema = load_schema("plugin_manifest.schema.json")
         defs = schema["definitions"]

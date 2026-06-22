@@ -53,6 +53,82 @@ class WorkflowFacade:
     def apply_plan_command(self, plan, command, **kwargs):
         return apply_workflow_plan_command(copy.deepcopy(plan), command, **kwargs)
 
+    def build_workflow_panel_state(
+        self,
+        *,
+        plan=None,
+        current_headers=None,
+        current_rows=None,
+        selected_index=None,
+        preview_headers=None,
+        preview_rows=None,
+        current_plan_path=None,
+        include_unsupported=True,
+    ):
+        plan = copy.deepcopy(plan or {})
+        current_headers = list(current_headers or [])
+        current_rows = [list(row) for row in (current_rows or [])]
+        preview_headers = list(preview_headers or [])
+        preview_rows = [list(row) for row in (preview_rows or [])]
+        catalog = self.list_node_ui_catalog(
+            include_unsupported=include_unsupported,
+            preview_headers=current_headers,
+        ).get("catalog") or {}
+        schemas = catalog.get("items") or []
+        schema_by_id = {item.get("node_type_id"): item for item in schemas}
+        nodes = plan.get("nodes", []) or []
+        node_items = []
+        for index, node in enumerate(nodes):
+            node_type_id = str(node.get("node_type_id") or node.get("type") or "")
+            schema = schema_by_id.get(node_type_id, {})
+            display = schema.get("display_name") or node.get("type") or node_type_id
+            name = node.get("name") or display or "未命名节点"
+            enabled = bool(node.get("enabled", True))
+            mark = "√" if enabled else "×"
+            node_items.append({
+                "index": index,
+                "node_type_id": node_type_id,
+                "display_name": display,
+                "name": name,
+                "enabled": enabled,
+                "summary_text": f"[{mark}] {index + 1}. {display}：{name}\n{node_type_id}",
+            })
+
+        selected_node = None
+        selected_schema = {}
+        if selected_index is not None and 0 <= int(selected_index) < len(nodes):
+            selected_node = copy.deepcopy(nodes[int(selected_index)])
+            selected_schema = schema_by_id.get(str(selected_node.get("node_type_id") or selected_node.get("type") or ""), {})
+
+        return {
+            "ok": True,
+            "catalog": catalog,
+            "schemas": schemas,
+            "selected_index": selected_index,
+            "selected_node": selected_node,
+            "selected_schema": selected_schema,
+            "node_items": node_items,
+            "input_summary": f"当前输入：{len(current_rows)} 行 x {len(current_headers)} 列",
+            "plan_status": self.plan_status_text(plan, current_plan_path=current_plan_path),
+            "table_state": {
+                "input": {"headers": current_headers, "rows": current_rows},
+                "preview": {"headers": preview_headers, "rows": preview_rows},
+            },
+        }
+
+    def describe_node_detail(self, node_type_id, *, preview_headers=None):
+        schema = self.engine.get_node_ui_schema(node_type_id, preview_headers=preview_headers)
+        return {
+            "ok": True,
+            "schema": schema,
+        }
+
+    def plan_status_text(self, plan=None, *, current_plan_path=None):
+        plan = plan or {}
+        name = plan.get("plan_name", "未命名计划")
+        path = str(current_plan_path) if current_plan_path else "未保存"
+        return f"{name} · {path}"
+
     def list_node_ui_catalog(self, *, include_unsupported=True, preview_headers=None, table_names=None, table_columns=None):
         catalog = build_node_ui_catalog(
             include_unsupported=include_unsupported,

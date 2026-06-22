@@ -112,6 +112,17 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(preview_loaded["table"]["headers"], ["A", "B"])
         self.assertEqual(preview_loaded["title"], "Headless 预览结果")
 
+        panel_state = client.build_workflow_panel_state(
+            plan=SAMPLE_PLAN,
+            current_headers=SAMPLE_PLAN["headers"],
+            current_rows=SAMPLE_PLAN["rows"],
+            selected_index=0,
+        )
+        self.assertTrue(panel_state["ok"])
+        self.assertEqual(panel_state["input_summary"], "当前输入：3 行 x 4 列")
+        self.assertEqual(panel_state["selected_node"]["node_type_id"], "core.new_columns")
+        self.assertTrue(panel_state["node_items"])
+
     def test_config_form_value_helpers_preserve_types(self):
         self.assertEqual(value_kind(True), "bool")
         self.assertEqual(value_kind(3), "int")
@@ -228,6 +239,7 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertGreater(controller.node_type_combo.count(), 0)
         self.assertGreater(controller.catalog_tree.topLevelItemCount(), 0)
         self.assertEqual(controller.node_list.count(), 1)
+        self.assertIn("未保存", controller.status_bar.currentMessage())
         self.assertEqual(controller.output_mode_combo.itemText(0), "输出到主界面预览区")
         self.assertEqual(controller.output_mode_combo.currentText(), "输出到主界面预览区")
         self.assertEqual(controller.output_db_path_edit.text(), "")

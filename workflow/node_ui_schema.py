@@ -302,6 +302,32 @@ LONG_TEXT_KEYS = {
 }
 
 
+STRUCTURED_LIST_FIELD_COLUMNS = {
+    "mappings": [
+        {"key": "old", "label": "原字段", "type": "field_select", "options_source": {"type": "preview_headers"}},
+        {"key": "new", "label": "新字段名", "type": "text"},
+    ],
+    "jump_rules": [
+        {"key": "value", "label": "匹配值", "type": "text"},
+        {"key": "target_anchor_id", "label": "目标锚点", "type": "text"},
+    ],
+    "field_mappings": [
+        {"key": "source_field", "label": "源字段", "type": "field_select", "options_source": {"type": "preview_headers"}},
+        {"key": "target_field", "label": "目标字段", "type": "text"},
+    ],
+    "conditions": [
+        {"key": "field", "label": "字段", "type": "text"},
+        {"key": "op", "label": "操作", "type": "select", "choices": FIELD_CHOICES.get("op", [])},
+        {"key": "value", "label": "值", "type": "text"},
+    ],
+    "join_rules": [
+        {"key": "left", "label": "左字段", "type": "text"},
+        {"key": "op", "label": "操作", "type": "select", "choices": FIELD_CHOICES.get("op", [])},
+        {"key": "right", "label": "右字段", "type": "text"},
+    ],
+}
+
+
 NODE_CONFIG_LAYOUTS = {
     "core.new_columns": [
         {
@@ -810,6 +836,13 @@ def dynamic_rules_for_field(key):
     return payload
 
 
+def structured_list_columns_for_field(key):
+    columns = []
+    for item in STRUCTURED_LIST_FIELD_COLUMNS.get(key, []):
+        columns.append(dict(item))
+    return columns
+
+
 def node_menu_path(node_type_id, category=""):
     """Return the menu path a UI can use for tree/menu rendering."""
 
@@ -894,6 +927,13 @@ def config_field_schema(key, value=None, *, headers=None, table_names=None, tabl
         schema["validation"] = validation
         if validation.get("required"):
             schema["required"] = True
+    structured_columns = structured_list_columns_for_field(key)
+    if structured_columns and isinstance(value, list):
+        schema["type"] = "structured_list"
+        schema["item_schema"] = {
+            "type": "object",
+            "columns": structured_columns,
+        }
     schema.update(dynamic_rules_for_field(key))
     return schema
 

@@ -338,12 +338,23 @@ class QtWorkflowMainWindow:
         self.show_node_config(self.node_list.currentRow())
         self.status_bar.showMessage(self._plan_status_text())
 
-    def refresh_catalog(self):
-        catalog_result = self.engine_client.list_node_ui_catalog(
+    def _panel_state(self, *, selected_index=None):
+        if selected_index is None:
+            selected_index = self.selected_node_index()
+        return self.engine_client.build_workflow_panel_state(
+            plan=self.current_plan,
+            current_headers=self.current_headers,
+            current_rows=self.current_rows,
+            selected_index=selected_index,
+            preview_headers=self.last_preview_headers,
+            preview_rows=self.last_preview_rows,
+            current_plan_path=self.current_plan_path,
             include_unsupported=True,
-            preview_headers=self.current_headers,
         )
-        catalog = catalog_result.get("catalog") or {}
+
+    def refresh_catalog(self):
+        panel_state = self._panel_state()
+        catalog = panel_state.get("catalog") or {}
         schemas = catalog.get("items") or []
         self.node_schema_by_id = {item.get("node_type_id"): item for item in schemas}
         self.node_type_combo.blockSignals(True)
@@ -390,19 +401,16 @@ class QtWorkflowMainWindow:
             self.status_bar.showMessage(f"模板刷新完成：{self.plan_template_combo.count()} 个。")
 
     def update_input_summary(self):
-        self.input_summary_label.setText(f"当前输入：{len(self.current_rows)} 行 x {len(self.current_headers)} 列")
+        panel_state = self._panel_state()
+        self.input_summary_label.setText(panel_state.get("input_summary", ""))
 
     def refresh_node_list(self):
         selected = self.node_list.currentRow()
+        panel_state = self._panel_state(selected_index=selected if selected >= 0 else None)
         self.node_list.clear()
-        for index, node in enumerate(self.current_plan.get("nodes", []) or []):
-            node_type_id = self._node_type_id_for_node(node)
-            schema = self.node_schema_by_id.get(node_type_id, {})
-            display = schema.get("display_name") or node.get("type") or node_type_id
-            name = node.get("name") or display or "未命名节点"
-            mark = "√" if node.get("enabled", True) else "×"
-            item = self.qt.QtWidgets.QListWidgetItem(f"[{mark}] {index + 1}. {display}：{name}\n{node_type_id}")
-            item.setData(self.user_role, index)
+        for node_item in panel_state.get("node_items") or []:
+            item = self.qt.QtWidgets.QListWidgetItem(node_item.get("summary_text", ""))
+            item.setData(self.user_role, node_item.get("index"))
             self.node_list.addItem(item)
         if self.node_list.count():
             if selected < 0:
@@ -504,14 +512,14 @@ class QtWorkflowMainWindow:
         self.apply_plan_command({"type": "clear_nodes"}, status_message="节点已清空。")
 
     def show_node_config(self, row):
-        nodes = self.current_plan.get("nodes", []) or []
-        if row is None or row < 0 or row >= len(nodes):
+        panel_state = self._panel_state(selected_index=row)
+        node = panel_state.get("selected_node")
+        if row is None or row < 0 or node is None:
             self.config_form.set_node(None)
             self.config_header_label.setText("未选择节点")
             return
-        node = nodes[row]
         node_type_id = self._node_type_id_for_node(node)
-        schema = self.node_schema_by_id.get(node_type_id, {})
+        schema = panel_state.get("selected_schema") or self.node_schema_by_id.get(node_type_id, {})
         display = schema.get("display_name") or node.get("type") or node_type_id
         self.config_header_label.setText(f"节点类型：{display}    节点名称：{node.get('name', '')}")
         self.config_form.set_node(node, headers=self.current_headers, schema=schema)
@@ -556,7 +564,8 @@ class QtWorkflowMainWindow:
         schema = self.node_schema_by_id.get(node_type_id)
         if schema is None:
             try:
-                schema = self.engine_client.get_node_ui_schema(node_type_id, preview_headers=self.current_headers)
+                described = self.engine_client.describe_node_detail(node_type_id, preview_headers=self.current_headers)
+                schema = described.get("schema") or {}
             except Exception:
                 schema = {}
         if not schema:
@@ -1081,9 +1090,7 @@ class QtWorkflowMainWindow:
         return "\n".join(lines)
 
     def _plan_status_text(self):
-        name = self.current_plan.get("plan_name", "未命名计划")
-        path = str(self.current_plan_path) if self.current_plan_path else "未保存"
-        return f"{name} · {path}"
+        return self.engine_client.plan_status_text(self.current_plan, current_plan_path=self.current_plan_path)
 
     def show_error(self, title, message):
         self.qt.QtWidgets.QMessageBox.critical(self.window, title, message)
