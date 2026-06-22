@@ -20,6 +20,9 @@ from workflow.protocol_nodes import (
 
 CATEGORY_ORDER = ["文件处理", "流程控制", "数据处理", "输出", "插件", "未知"]
 
+NODE_UI_SCHEMA_VERSION = "2.0"
+FORM_SCHEMA_VERSION = "2.0"
+
 
 NODE_CATEGORY_LABELS = {
     "文件处理": "文件处理",
@@ -273,6 +276,23 @@ FIELD_PICKER_KEYS = {
     "field",
 }
 
+FIELD_MULTI_PICKER_KEYS = {
+    "fields",
+    "source_fields",
+    "scope_fields",
+    "key_fields",
+    "input_fields",
+}
+
+TABLE_PICKER_KEYS = {
+    "source_table",
+    "transit_table",
+    "input_sqlite_table",
+    "input_transit_table",
+    "output_sqlite_table",
+    "output_transit_name",
+}
+
 
 LONG_TEXT_KEYS = {
     "columns_text",
@@ -351,6 +371,150 @@ FIELD_HELP_TEXTS = {
     "replace_count": "0 表示替换全部命中。",
     "match_value_source": "匹配值可以手动输入，也可以来自字段。",
     "replace_value_source": "替换值可以手动输入，也可以来自字段。",
+}
+
+FIELD_VALIDATION_RULES = {
+    "columns_text": {"required": True},
+    "target_field": {"required": True},
+    "source_field": {"required": True},
+    "source_fields": {"required": True},
+    "fields": {"required": True},
+    "key_fields": {"required": True},
+    "new_field": {"required": True},
+    "output_field": {"required": True},
+    "replace_count": {"integer": True, "min": 0},
+    "match_row_index": {"integer": True, "min": 1},
+    "replace_row_index": {"integer": True, "min": 1},
+    "regex_group": {"integer": True, "min": 0},
+    "start_pos": {"integer": True, "min": 0},
+    "extract_len": {"integer": True, "min": 0},
+    "n_chars": {"integer": True, "min": 0},
+    "part_index": {"integer": True, "min": 1},
+    "between_occurrence": {"integer": True, "min": 1},
+}
+
+FIELD_DYNAMIC_RULES = {
+    "default_value": {
+        "visible_when": {"field": "value_mode", "equals": "统一默认值"},
+        "depends_on": ["value_mode"],
+    },
+    "match_value": {
+        "visible_when": {
+            "all": [
+                {"field": "match_mode", "not_in": ["为空", "不为空"]},
+                {"field": "match_value_source", "equals": "手动输入"},
+            ],
+        },
+        "depends_on": ["match_mode", "match_value_source"],
+    },
+    "match_value_field": {
+        "visible_when": {"field": "match_value_source", "equals": "列字段"},
+        "depends_on": ["match_value_source"],
+    },
+    "replace_value": {
+        "visible_when": {"field": "replace_value_source", "equals": "手动输入"},
+        "depends_on": ["replace_value_source"],
+    },
+    "replace_value_field": {
+        "visible_when": {"field": "replace_value_source", "equals": "列字段"},
+        "depends_on": ["replace_value_source"],
+    },
+    "match_row_index": {
+        "visible_when": {"field": "match_row_policy", "equals": "固定行号"},
+        "depends_on": ["match_row_policy"],
+    },
+    "replace_row_index": {
+        "visible_when": {"field": "replace_row_policy", "equals": "固定行号"},
+        "depends_on": ["replace_row_policy"],
+    },
+    "regex_pattern": {
+        "visible_when": {"field": "method", "equals": "正则提取"},
+        "depends_on": ["method"],
+    },
+    "regex_group": {
+        "visible_when": {"field": "method", "equals": "正则提取"},
+        "depends_on": ["method"],
+    },
+    "regex_find_all": {
+        "visible_when": {"field": "method", "equals": "正则提取"},
+        "depends_on": ["method"],
+    },
+    "regex_joiner": {
+        "visible_when": {"field": "regex_find_all", "equals": True},
+        "depends_on": ["regex_find_all"],
+    },
+    "start_pos": {
+        "visible_when": {"field": "method", "in": ["固定位置提取", "从左取N位", "从右取N位"]},
+        "depends_on": ["method"],
+    },
+    "extract_len": {
+        "visible_when": {"field": "method", "equals": "固定位置提取"},
+        "depends_on": ["method"],
+    },
+    "n_chars": {
+        "visible_when": {"field": "method", "in": ["从左取N位", "从右取N位"]},
+        "depends_on": ["method"],
+    },
+    "delimiter": {
+        "visible_when": {"field": "method", "equals": "按分隔符提取"},
+        "depends_on": ["method"],
+    },
+    "part_index": {
+        "visible_when": {"field": "method", "equals": "按分隔符提取"},
+        "depends_on": ["method"],
+    },
+    "ignore_empty_part": {
+        "visible_when": {"field": "method", "equals": "按分隔符提取"},
+        "depends_on": ["method"],
+    },
+    "before_key": {
+        "visible_when": {"field": "method", "equals": "前后关键字之间提取"},
+        "depends_on": ["method"],
+    },
+    "after_key": {
+        "visible_when": {"field": "method", "equals": "前后关键字之间提取"},
+        "depends_on": ["method"],
+    },
+    "between_occurrence": {
+        "visible_when": {"field": "method", "equals": "前后关键字之间提取"},
+        "depends_on": ["method"],
+    },
+    "marker": {
+        "visible_when": {"field": "method", "in": ["指定字符前提取", "指定字符后提取"]},
+        "depends_on": ["method"],
+    },
+    "find_mode": {
+        "visible_when": {"field": "method", "in": ["指定字符前提取", "指定字符后提取"]},
+        "depends_on": ["method"],
+    },
+    "prefix": {
+        "visible_when": {"field": "method", "equals": "删除前缀"},
+        "depends_on": ["method"],
+    },
+    "suffix": {
+        "visible_when": {"field": "method", "equals": "删除后缀"},
+        "depends_on": ["method"],
+    },
+    "time_source_field": {
+        "visible_when": {"field": "use_separate_time_field", "equals": True},
+        "depends_on": ["use_separate_time_field"],
+    },
+    "custom_date_delimiter": {
+        "visible_when": {"field": "date_delimiter", "equals": "自定义"},
+        "depends_on": ["date_delimiter"],
+    },
+    "custom_time_delimiter": {
+        "visible_when": {"field": "time_delimiter", "equals": "自定义"},
+        "depends_on": ["time_delimiter"],
+    },
+    "strftime_template": {
+        "visible_when": {"field": "format_mode", "equals": "Python strftime"},
+        "depends_on": ["format_mode"],
+    },
+    "template": {
+        "visible_when": {"field": "format_mode", "equals": "占位符模板"},
+        "depends_on": ["format_mode"],
+    },
 }
 
 
@@ -605,10 +769,13 @@ def config_field_label(key):
     return CONFIG_FIELD_LABELS.get(key, key.replace("_", " "))
 
 
-def choices_for_field(key, headers=None):
+def choices_for_field(key, headers=None, table_names=None, table_columns=None):
     headers = [str(item) for item in (headers or [])]
-    if key in FIELD_PICKER_KEYS:
+    table_names = [str(item) for item in (table_names or [])]
+    if key in FIELD_PICKER_KEYS or key in FIELD_MULTI_PICKER_KEYS:
         return headers
+    if key in TABLE_PICKER_KEYS:
+        return table_names
     return FIELD_CHOICES.get(key, [])
 
 
@@ -622,6 +789,25 @@ def config_layout_for_node(node_type_id):
 
 def field_help_text(key):
     return FIELD_HELP_TEXTS.get(key, "")
+
+
+def options_source_for_field(key):
+    if key in FIELD_PICKER_KEYS or key in FIELD_MULTI_PICKER_KEYS:
+        return {"type": "preview_headers"}
+    if key in TABLE_PICKER_KEYS:
+        return {"type": "table_names"}
+    return None
+
+
+def validation_for_field(key):
+    return dict(FIELD_VALIDATION_RULES.get(key, {}))
+
+
+def dynamic_rules_for_field(key):
+    payload = dict(FIELD_DYNAMIC_RULES.get(key, {}))
+    if "depends_on" in payload:
+        payload["depends_on"] = list(payload["depends_on"])
+    return payload
 
 
 def node_menu_path(node_type_id, category=""):
@@ -650,10 +836,19 @@ def node_ui_description(node_type_id, supported_headless=None):
     return payload
 
 
-def config_field_schema(key, value=None, *, headers=None):
-    choices = choices_for_field(key, headers=headers)
+def config_field_schema(key, value=None, *, headers=None, table_names=None, table_columns=None):
+    choices = choices_for_field(
+        key,
+        headers=headers,
+        table_names=table_names,
+        table_columns=table_columns,
+    )
     if key in FIELD_PICKER_KEYS:
         field_type = "field_select"
+    elif key in FIELD_MULTI_PICKER_KEYS:
+        field_type = "field_multi_select"
+    elif key in TABLE_PICKER_KEYS:
+        field_type = "table_select"
     elif key in FIELD_CHOICES:
         field_type = "select"
     elif key in LONG_TEXT_KEYS:
@@ -668,7 +863,7 @@ def config_field_schema(key, value=None, *, headers=None):
         field_type = "json"
     else:
         field_type = "text"
-    return {
+    schema = {
         "key": key,
         "label": config_field_label(key),
         "type": field_type,
@@ -676,9 +871,26 @@ def config_field_schema(key, value=None, *, headers=None):
         "default": value,
         "help": field_help_text(key),
     }
+    options_source = options_source_for_field(key)
+    if options_source:
+        schema["options_source"] = options_source
+    validation = validation_for_field(key)
+    if validation:
+        schema["validation"] = validation
+        if validation.get("required"):
+            schema["required"] = True
+    schema.update(dynamic_rules_for_field(key))
+    return schema
 
 
-def config_form_groups_for_node(node_type_id, default_config=None, *, headers=None):
+def config_form_groups_for_node(
+    node_type_id,
+    default_config=None,
+    *,
+    headers=None,
+    table_names=None,
+    table_columns=None,
+):
     stable_id = normalize_node_type_id(node_type_id)
     config = dict(default_config or {})
     groups = []
@@ -690,7 +902,13 @@ def config_form_groups_for_node(node_type_id, default_config=None, *, headers=No
         groups.append({
             "title": spec.get("title", "参数"),
             "fields": [
-                config_field_schema(key, config.get(key), headers=headers)
+                config_field_schema(
+                    key,
+                    config.get(key),
+                    headers=headers,
+                    table_names=table_names,
+                    table_columns=table_columns,
+                )
                 for key in fields
             ],
         })
@@ -701,7 +919,13 @@ def config_form_groups_for_node(node_type_id, default_config=None, *, headers=No
         groups.append({
             "title": "其他参数",
             "fields": [
-                config_field_schema(key, config.get(key), headers=headers)
+                config_field_schema(
+                    key,
+                    config.get(key),
+                    headers=headers,
+                    table_names=table_names,
+                    table_columns=table_columns,
+                )
                 for key in remaining
             ],
         })
@@ -723,6 +947,7 @@ def build_node_ui_schema(node_type_id, *, preview_headers=None, table_names=None
     )
     category_index = CATEGORY_ORDER.index(category) if category in CATEGORY_ORDER else len(CATEGORY_ORDER)
     return {
+        "schema_version": NODE_UI_SCHEMA_VERSION,
         "node_type_id": stable_id,
         "node_version": DEFAULT_NODE_VERSION,
         "display_name": display_name,
@@ -743,10 +968,14 @@ def build_node_ui_schema(node_type_id, *, preview_headers=None, table_names=None
             "execute_actions": False,
         },
         "form": {
+            "schema_version": FORM_SCHEMA_VERSION,
+            "dynamic_rules": True,
             "groups": config_form_groups_for_node(
                 stable_id,
                 default_config,
                 headers=preview_headers,
+                table_names=table_names,
+                table_columns=table_columns,
             ),
         },
         "default_config": default_config,

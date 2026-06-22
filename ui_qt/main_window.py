@@ -482,7 +482,7 @@ class QtWorkflowMainWindow:
         schema = self.node_schema_by_id.get(node_type_id, {})
         display = schema.get("display_name") or node.get("type") or node_type_id
         self.config_header_label.setText(f"节点类型：{display}    节点名称：{node.get('name', '')}")
-        self.config_form.set_node(node, headers=self.current_headers)
+        self.config_form.set_node(node, headers=self.current_headers, schema=schema)
         self.show_node_detail(node_type_id)
 
     def apply_node_config(self):

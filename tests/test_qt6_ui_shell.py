@@ -79,8 +79,33 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertTrue(node_warnings("core.delete_columns"))
         self.assertIn("暂不支持", format_node_detail("core.filter", supported_headless=False))
         schema = get_node_ui_schema("core.new_columns", preview_headers=["A"])
+        self.assertEqual(schema["schema_version"], "2.0")
+        self.assertEqual(schema["form"]["schema_version"], "2.0")
+        self.assertTrue(schema["form"]["dynamic_rules"])
         self.assertEqual(schema["menu"]["path"], ["数据处理", "新建列"])
         self.assertEqual(schema["form"]["groups"][0]["fields"][0]["key"], "columns_text")
+        new_column_fields = {
+            field["key"]: field
+            for group in schema["form"]["groups"]
+            for field in group["fields"]
+        }
+        self.assertTrue(new_column_fields["columns_text"]["required"])
+        self.assertEqual(
+            new_column_fields["default_value"]["visible_when"],
+            {"field": "value_mode", "equals": "统一默认值"},
+        )
+        replace_schema = get_node_ui_schema("core.replace", preview_headers=["A", "B"])
+        replace_fields = {
+            field["key"]: field
+            for group in replace_schema["form"]["groups"]
+            for field in group["fields"]
+        }
+        self.assertEqual(replace_fields["target_field"]["options_source"], {"type": "preview_headers"})
+        self.assertEqual(
+            replace_fields["match_value_field"]["visible_when"],
+            {"field": "match_value_source", "equals": "列字段"},
+        )
+        self.assertEqual(replace_fields["replace_count"]["validation"], {"integer": True, "min": 0})
 
     def test_qt6_loader_rejects_qt5_binding(self):
         with self.assertRaises(QtBindingUnavailable):
@@ -141,6 +166,10 @@ class Qt6UiShellTests(unittest.TestCase):
 
         controller.add_node_by_type("core.replace")
         self.assertEqual(len(controller.current_plan["nodes"]), 2)
+        self.assertTrue(controller.config_form.config_fields["match_value_field"]["label"].isHidden())
+        controller.config_form.config_fields["match_value_source"]["editor"].setCurrentText("列字段")
+        app.processEvents()
+        self.assertFalse(controller.config_form.config_fields["match_value_field"]["label"].isHidden())
         controller.copy_selected_node()
         self.assertEqual(len(controller.current_plan["nodes"]), 3)
         copied_node = controller.current_plan["nodes"][controller.selected_node_index()]

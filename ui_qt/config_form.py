@@ -69,6 +69,7 @@ class NodeConfigForm:
         self.scroll_area.setWidgetResizable(True)
         self.root_layout.addWidget(self.scroll_area)
         self.node = None
+        self.schema = {}
         self.node_fields = {}
         self.config_fields = {}
         self.set_node(None)
@@ -76,10 +77,11 @@ class NodeConfigForm:
     def set_headers(self, headers):
         self.headers = list(headers or [])
 
-    def set_node(self, node, headers=None):
+    def set_node(self, node, headers=None, schema=None):
         if headers is not None:
             self.set_headers(headers)
         self.node = copy.deepcopy(node) if isinstance(node, dict) else None
+        self.schema = copy.deepcopy(schema) if isinstance(schema, dict) else {}
         self.node_fields = {}
         self.config_fields = {}
 
@@ -98,6 +100,7 @@ class NodeConfigForm:
         outer.addWidget(self._build_node_group())
         for group in self._build_config_groups():
             outer.addWidget(group)
+        self._apply_dynamic_state()
         outer.addStretch(1)
         self.scroll_area.setWidget(content)
 
@@ -165,6 +168,10 @@ class NodeConfigForm:
             form.addRow("", self.qt.QtWidgets.QLabel(""))
             return [group]
 
+        schema_groups = self._build_schema_config_groups(config)
+        if schema_groups is not None:
+            return schema_groups
+
         groups = []
         used = set()
         for spec in config_layout_for_node(self.node.get("node_type_id", "")):
@@ -179,31 +186,77 @@ class NodeConfigForm:
             groups.append(self._build_config_group("其他参数", config, remaining))
         return groups
 
-    def _build_config_group(self, title, config, keys):
+    def _build_schema_config_groups(self, config):
+        form_schema = self.schema.get("form", {}) if isinstance(self.schema, dict) else {}
+        schema_groups = form_schema.get("groups", []) if isinstance(form_schema, dict) else []
+        if not isinstance(schema_groups, list) or not schema_groups:
+            return None
+
+        groups = []
+        used = set()
+        for group_spec in schema_groups:
+            if not isinstance(group_spec, dict):
+                continue
+            field_specs = []
+            for field_spec in group_spec.get("fields", []):
+                if not isinstance(field_spec, dict):
+                    continue
+                key = field_spec.get("key")
+                if key in config:
+                    field_specs.append(field_spec)
+                    used.add(key)
+            if field_specs:
+                groups.append(self._build_config_group(group_spec.get("title", "参数"), config, field_specs))
+
+        remaining = [key for key in config.keys() if key not in used]
+        if remaining:
+            groups.append(self._build_config_group("其他参数", config, remaining))
+        return groups
+
+    def _build_config_group(self, title, config, fields):
         group = self.qt.QtWidgets.QGroupBox(title or "参数")
         form = self._form_layout(group)
-        for key in keys:
+        for item in fields:
+            field_schema = item if isinstance(item, dict) else {}
+            key = field_schema.get("key") if field_schema else item
+            if key not in config:
+                continue
             value = config[key]
-            editor = self._build_config_editor(key, value)
-            form.addRow(config_field_label(key), editor)
+            editor = self._build_config_editor(key, value, field_schema=field_schema)
+            label = self.qt.QtWidgets.QLabel(field_schema.get("label") or config_field_label(key))
+            form.addRow(label, editor)
+            self.config_fields[key]["label"] = label
         return group
 
-    def _build_config_editor(self, key, value):
-        choices = choices_for_field(key, headers=self.headers)
-        if choices:
+    def _build_config_editor(self, key, value, field_schema=None):
+        field_schema = dict(field_schema or {})
+        field_type = field_schema.get("type", "")
+        choices = list(field_schema.get("choices") or choices_for_field(key, headers=self.headers))
+        if field_type in {"select", "field_select", "table_select"} or choices:
             kind = "choice"
-        elif is_long_text_field(key):
+        elif field_type == "textarea" or is_long_text_field(key):
             kind = "long_text"
+        elif field_type == "bool":
+            kind = "bool"
+        elif field_type == "json" or field_type == "field_multi_select":
+            kind = "json"
+        elif field_type == "number":
+            kind = value_kind(value) if value_kind(value) in {"int", "float"} else "text"
         else:
             kind = value_kind(value)
         editor = self._editor_for_field(key, kind, value, choices)
-        help_text = field_help_text(key)
+        help_text = self._field_tooltip(key, field_schema)
         if help_text:
             editor.setToolTip(help_text)
         self.config_fields[key] = {
             "kind": kind,
             "editor": editor,
+            "schema": field_schema,
+            "visible_when": field_schema.get("visible_when"),
+            "enabled_when": field_schema.get("enabled_when"),
+            "depends_on": list(field_schema.get("depends_on") or []),
         }
+        self._connect_dynamic_refresh(editor, kind)
         return editor
 
     def _form_layout(self, parent):
@@ -246,3 +299,98 @@ class NodeConfigForm:
         widget.setText(format_form_value(value))
         widget.setReadOnly(bool(read_only))
         return widget
+
+    def _field_tooltip(self, key, field_schema):
+        parts = []
+        help_text = field_schema.get("help") or field_help_text(key)
+        if help_text:
+            parts.append(str(help_text))
+        validation = field_schema.get("validation") or {}
+        if validation.get("required"):
+            parts.append("必填")
+        if validation.get("integer"):
+            parts.append("必须为整数")
+        if "min" in validation:
+            parts.append(f"最小值：{validation['min']}")
+        return "\n".join(parts)
+
+    def _connect_dynamic_refresh(self, editor, kind):
+        try:
+            if kind == "bool":
+                editor.stateChanged.connect(lambda *_args: self._apply_dynamic_state())
+            elif kind == "choice":
+                editor.currentTextChanged.connect(lambda *_args: self._apply_dynamic_state())
+            elif kind in {"long_text", "json"}:
+                editor.textChanged.connect(lambda *_args: self._apply_dynamic_state())
+            else:
+                editor.textChanged.connect(lambda *_args: self._apply_dynamic_state())
+        except AttributeError:
+            return
+
+    def _apply_dynamic_state(self):
+        values = self._current_field_values()
+        for field in self.config_fields.values():
+            label = field.get("label")
+            editor = field.get("editor")
+            if editor is None:
+                continue
+            visible = self._condition_matches(field.get("visible_when"), values)
+            enabled = visible and self._condition_matches(field.get("enabled_when"), values)
+            if label is not None:
+                label.setVisible(visible)
+            editor.setVisible(visible)
+            editor.setEnabled(enabled)
+
+    def _current_field_values(self):
+        values = {}
+        for key, field in self.config_fields.items():
+            editor = field.get("editor")
+            kind = field.get("kind")
+            if editor is None:
+                continue
+            if kind == "bool":
+                values[key] = bool(editor.isChecked())
+            elif kind == "choice":
+                values[key] = str(editor.currentText())
+            elif kind in {"long_text", "json"}:
+                values[key] = str(editor.toPlainText())
+            else:
+                values[key] = str(editor.text())
+        return values
+
+    def _condition_matches(self, condition, values):
+        if not condition:
+            return True
+        if not isinstance(condition, dict):
+            return True
+        if "all" in condition:
+            return all(self._condition_matches(item, values) for item in condition.get("all") or [])
+        if "any" in condition:
+            return any(self._condition_matches(item, values) for item in condition.get("any") or [])
+        if "not" in condition:
+            return not self._condition_matches(condition.get("not"), values)
+
+        field = condition.get("field")
+        actual = values.get(field)
+        if "equals" in condition and not self._values_equal(actual, condition.get("equals")):
+            return False
+        if "not_equals" in condition and self._values_equal(actual, condition.get("not_equals")):
+            return False
+        if "in" in condition:
+            expected_values = condition.get("in") or []
+            if not any(self._values_equal(actual, expected) for expected in expected_values):
+                return False
+        if "not_in" in condition:
+            expected_values = condition.get("not_in") or []
+            if any(self._values_equal(actual, expected) for expected in expected_values):
+                return False
+        if "truthy" in condition and bool(actual) is not bool(condition.get("truthy")):
+            return False
+        return True
+
+    def _values_equal(self, actual, expected):
+        if isinstance(expected, bool):
+            if isinstance(actual, bool):
+                return actual is expected
+            return str(actual).strip().lower() in {"1", "true", "yes", "on"} if expected else str(actual).strip().lower() in {"", "0", "false", "no", "off"}
+        return str(actual) == str(expected)

@@ -52,6 +52,8 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertIn("core.new_columns", [item["node_type_id"] for item in listed["result"]["node_ui_schemas"]])
         self.assertTrue(schema["ok"])
         self.assertEqual(schema["result"]["node_type_id"], "core.replace")
+        self.assertEqual(schema["result"]["schema_version"], "2.0")
+        self.assertEqual(schema["result"]["form"]["schema_version"], "2.0")
         self.assertEqual(schema["result"]["category_label"], "数据处理")
         self.assertIn("批量替换", schema["result"]["menu"]["path"])
         target_fields = [

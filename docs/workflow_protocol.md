@@ -332,6 +332,7 @@ Example:
 
 ```json
 {
+  "schema_version": "2.0",
   "node_type_id": "core.new_columns",
   "display_name": "新建列",
   "category": "数据处理",
@@ -348,6 +349,8 @@ Example:
     "execute_actions": false
   },
   "form": {
+    "schema_version": "2.0",
+    "dynamic_rules": true,
     "groups": []
   },
   "default_config": {}
@@ -356,7 +359,16 @@ Example:
 
 Clients may use `form.groups[].fields[]` to build controls. Common field types
 include `text`, `textarea`, `number`, `bool`, `select`, `field_select`, and
-`json`.
+`json`. Schema v2 fields may also include:
+
+- `options_source`: backend-owned option source such as `preview_headers` or
+  `table_names`.
+- `visible_when` / `enabled_when`: declarative conditions based on another
+  field value.
+- `depends_on`: fields that should trigger a UI refresh when changed.
+- `validation`: lightweight field hints such as `required`, `integer`, and
+  `min`. Clients may show these hints immediately, while backend
+  `validate_config` remains the final authority.
 
 ## 8. Runtime Responses
 
