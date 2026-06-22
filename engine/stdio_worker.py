@@ -247,6 +247,33 @@ class StdioWorker:
                 offset=payload.get("offset", 0),
                 source=payload.get("source"),
             )
+        if action == "build_table_access":
+            return self.engine.build_table_access(payload.get("node", {}))
+        if action == "precheck_access":
+            return self.engine.precheck_access(
+                payload.get("plan"),
+                nodes=payload.get("nodes"),
+                execute_actions=bool(payload.get("execute_actions", True)),
+                stop_index=self._optional_int(payload.get("stop_at", payload.get("stop_index"))),
+                db_path=payload.get("db_path") or payload.get("output_db_path"),
+                sqlite_tables=payload.get("sqlite_tables"),
+                output_mode=payload.get("output_mode"),
+                output_table=payload.get("output_table"),
+                table_access_policy=payload.get("table_access_policy"),
+                current_transit_tables=payload.get("current_transit_tables"),
+                confirmed=bool(payload.get("confirmed", False)),
+            )
+        if action == "format_access_issue":
+            return {"text": self.engine.format_access_issue(payload.get("issue", {}))}
+        if action == "record_access_audit":
+            return self.engine.record_access_audit(payload.get("event", {}))
+        if action == "list_access_audit_logs":
+            return self.engine.list_access_audit_logs(
+                selected_status=payload.get("selected_status", "全部"),
+                keyword=payload.get("keyword", ""),
+            )
+        if action == "format_access_audit_event":
+            return {"text": self.engine.format_access_audit_event(payload.get("event", {}))}
         if action == "analyze_jumps":
             return self.engine.analyze_jumps(
                 payload.get("plan"),

@@ -14,6 +14,7 @@ import uuid
 from datetime import datetime
 
 from core.data_utils import normalize_rows, safe_cell
+from engine.access_policy_service import AccessPolicyService
 from engine.errors import EngineCancelled, PlanValidationError
 from engine.issue_schema import has_error_issues, make_issue
 from engine.jump_analysis_service import JumpAnalysisService
@@ -109,6 +110,7 @@ class HeadlessWorkflowEngine:
         self.node_id_factory = node_id_factory or (lambda: "node_" + uuid.uuid4().hex)
         self.now_factory = now_factory or datetime.now
         self.services = services or WorkflowServices()
+        self.access = AccessPolicyService(db_path=getattr(self.services, "db_path", ""))
         self.jumps = JumpAnalysisService()
         self.tables = TableDataService(db_path=getattr(self.services, "db_path", ""))
         self.plan_templates = PlanTemplateService(node_id_factory=self.node_id_factory)
@@ -204,6 +206,27 @@ class HeadlessWorkflowEngine:
 
     def get_table_page(self, table, *, limit=None, offset=0, source=None):
         return self.tables.get_table_page(table, limit=limit, offset=offset, source=source)
+
+    def build_table_access(self, node):
+        return self.access.build_table_access(node)
+
+    def precheck_access(self, plan=None, **kwargs):
+        return self.access.precheck_access(plan, **kwargs)
+
+    def format_access_issue(self, issue):
+        return self.access.format_access_issue(issue)
+
+    def record_access_audit(self, event):
+        return self.access.record_access_audit(event)
+
+    def list_access_audit_logs(self, *, selected_status="全部", keyword=""):
+        return self.access.list_access_audit_logs(
+            selected_status=selected_status,
+            keyword=keyword,
+        )
+
+    def format_access_audit_event(self, event):
+        return self.access.format_access_audit_event(event)
 
     def analyze_jumps(self, plan=None, *, nodes=None):
         return self.jumps.analyze_plan(plan, nodes=nodes)

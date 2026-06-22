@@ -12,6 +12,7 @@ from engine.errors import (
     PlanValidationError,
     UnsupportedNodeError,
 )
+from engine.access_policy_service import AccessPolicyService
 from engine.headless import HeadlessWorkflowEngine
 from engine.issue_schema import (
     has_error_issues,
@@ -31,6 +32,7 @@ from engine.table_data_service import TableDataService
 from engine.workflow_services import WorkflowServices
 
 __all__ = [
+    "AccessPolicyService",
     "EngineCancelled",
     "EngineRunResult",
     "HeadlessEngineError",

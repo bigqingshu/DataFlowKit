@@ -303,6 +303,12 @@ Recommended actions:
 - `list_tables`
 - `load_table`
 - `get_table_page`
+- `build_table_access`
+- `precheck_access`
+- `format_access_issue`
+- `record_access_audit`
+- `list_access_audit_logs`
+- `format_access_audit_event`
 - `analyze_jumps`
 - `validate_jumps`
 - `format_jump_issue`
@@ -357,6 +363,13 @@ Runtime identity rules:
 - Clients should use `list_tables`, `load_table`, and `get_table_page` for
   table browsing and paging. The first implementation supports SQLite table
   listing/loading, table files, and inline table paging.
+- Clients should use `build_table_access`, `precheck_access`,
+  `format_access_issue`, `record_access_audit`, `list_access_audit_logs`, and
+  `format_access_audit_event` for table-access defaults, execution precheck,
+  display text, and recent audit-log views. The service accepts both legacy
+  Chinese `type` and stable `node_type_id`, and returns shared issue fields
+  plus `can_continue`, `requires_confirmation`, and `blocking_count` so UIs can
+  implement audit/prompt/strict policies without importing Tkinter mixins.
 - Clients should use `analyze_jumps`, `validate_jumps`, and `format_jump_issue`
   for jump-anchor relations and jump precheck display instead of importing
   Tkinter jump manager helpers.

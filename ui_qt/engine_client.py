@@ -181,6 +181,27 @@ class QtHeadlessEngineClient:
     def get_table_page(self, table, *, limit=None, offset=0, source=None):
         return self.engine.get_table_page(table, limit=limit, offset=offset, source=source)
 
+    def build_table_access(self, node):
+        return self.engine.build_table_access(copy.deepcopy(node))
+
+    def precheck_access(self, plan, **options):
+        return self.engine.precheck_access(copy.deepcopy(plan), **options)
+
+    def format_access_issue(self, issue):
+        return self.engine.format_access_issue(copy.deepcopy(issue))
+
+    def record_access_audit(self, event):
+        return self.engine.record_access_audit(copy.deepcopy(event))
+
+    def list_access_audit_logs(self, *, selected_status="全部", keyword=""):
+        return self.engine.list_access_audit_logs(
+            selected_status=selected_status,
+            keyword=keyword,
+        )
+
+    def format_access_audit_event(self, event):
+        return self.engine.format_access_audit_event(copy.deepcopy(event))
+
     def analyze_jumps(self, plan):
         return self.engine.analyze_jumps(copy.deepcopy(plan))
 

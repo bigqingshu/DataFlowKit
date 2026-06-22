@@ -690,21 +690,49 @@ class QtWorkflowMainWindow:
     def validate_plan(self):
         validation = self.engine_client.validate_plan(self.current_plan)
         jump_validation = self.engine_client.validate_jumps(self.current_plan)
+        access_precheck = self.build_access_precheck(self.current_plan, execute_actions=True)
         combined = dict(validation)
         combined["jump_validation"] = jump_validation
-        combined["ok"] = bool(validation.get("ok")) and bool(jump_validation.get("ok"))
+        combined["access_precheck"] = access_precheck
+        combined["ok"] = (
+            bool(validation.get("ok"))
+            and bool(jump_validation.get("ok"))
+            and bool(access_precheck.get("can_continue", True))
+        )
         text = self._format_validation(validation)
         jump_issues = jump_validation.get("issues", []) or []
         if jump_issues:
             text = text + "\n\n跳转校验：\n" + self._format_issues(jump_issues)
+        access_issues = access_precheck.get("issues", []) or []
+        if access_issues:
+            text = (
+                text
+                + "\n\n权限预检：\n"
+                + access_precheck.get("summary", "")
+                + "\n"
+                + self._format_issues(access_issues)
+            )
         self.issue_text.setPlainText(text)
         if not combined.get("ok"):
             self.status_bar.showMessage("校验发现问题")
-        elif jump_issues:
+        elif jump_issues or access_issues:
             self.status_bar.showMessage("校验发现提示")
         else:
             self.status_bar.showMessage("校验通过")
         return combined
+
+    def build_access_precheck(self, plan=None, *, execute_actions=True, stop_index=None, confirmed=False):
+        plan = plan or self.current_plan
+        return self.engine_client.precheck_access(
+            plan,
+            execute_actions=execute_actions,
+            stop_index=stop_index,
+            db_path=self.output_db_path_edit.text(),
+            output_mode=self.output_mode_combo.currentText(),
+            output_table=self.output_table_edit.text(),
+            table_access_policy=(plan or {}).get("table_access_policy", "audit"),
+            confirmed=confirmed,
+        )
 
     def preview_to_selected_node(self):
         index = self.selected_node_index()
