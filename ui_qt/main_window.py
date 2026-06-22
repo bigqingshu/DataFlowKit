@@ -527,6 +527,12 @@ class QtWorkflowMainWindow:
         self.apply_plan_command({"type": "duplicate_node", "index": index}, status_message="节点已复制。")
 
     def clear_nodes(self):
+        prompt = self.engine_client.describe_confirmation_prompt(
+            action="clear_nodes",
+            plan=self.current_plan,
+        )
+        if not self._confirm_prompt(prompt):
+            return
         self.apply_plan_command({"type": "clear_nodes"}, status_message="节点已清空。")
 
     def show_node_config(self, row):
@@ -582,6 +588,26 @@ class QtWorkflowMainWindow:
 
         if status_message:
             self.status_bar.showMessage(status_message)
+
+    def _confirm_prompt(self, prompt_result):
+        prompt = (prompt_result or {}).get("prompt") or {}
+        if not prompt.get("required"):
+            return True
+        title = str(prompt.get("title") or "请确认")
+        message = str(prompt.get("message") or "")
+        details = [str(item) for item in (prompt.get("details") or []) if str(item).strip()]
+        body = message
+        if details:
+            body = (body + "\n\n" if body else "") + "\n".join(details)
+        buttons = self.qt.QtWidgets.QMessageBox.StandardButton.Yes | self.qt.QtWidgets.QMessageBox.StandardButton.No
+        answer = self.qt.QtWidgets.QMessageBox.question(
+            self.window,
+            title,
+            body,
+            buttons,
+            self.qt.QtWidgets.QMessageBox.StandardButton.No,
+        )
+        return answer == self.qt.QtWidgets.QMessageBox.StandardButton.Yes
 
     def show_selected_node_type_detail(self):
         node_type_id = self.current_node_type_id_from_combo()
@@ -814,6 +840,16 @@ class QtWorkflowMainWindow:
         validation = self.validate_plan()
         if not validation.get("ok"):
             return
+        access_precheck = validation.get("access_precheck") or {}
+        prompt = self.engine_client.describe_confirmation_prompt(
+            action="run_plan",
+            plan=self.current_plan,
+            output_settings=self.current_output_settings(),
+            access_precheck=access_precheck,
+        )
+        if not self._confirm_prompt(prompt):
+            self.status_bar.showMessage("已取消执行")
+            return
         self.start_workflow_job(
             "run_plan",
             copy.deepcopy(self.current_plan),
@@ -821,6 +857,7 @@ class QtWorkflowMainWindow:
             title="执行结果",
             execute_actions=True,
             output_settings=self.current_output_settings(),
+            confirmed=True,
             status_prefix="执行",
         )
 

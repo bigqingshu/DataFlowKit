@@ -124,6 +124,80 @@ class WorkflowFacade:
             }],
         )
 
+    def describe_confirmation_prompt(self, *, action="", plan=None, output_settings=None, access_precheck=None):
+        action = str(action or "")
+        plan = copy.deepcopy(plan or {})
+        output_settings = OutputSettings.from_payload(output_settings or {}).to_dict()
+        nodes = plan.get("nodes", []) or []
+
+        if action == "clear_nodes":
+            node_count = len(nodes)
+            return {
+                "ok": True,
+                "prompt": {
+                    "required": node_count > 0,
+                    "kind": "confirm",
+                    "code": "confirm_clear_nodes",
+                    "title": "确认清空节点",
+                    "message": f"当前计划共有 {node_count} 个节点，确认要全部清空吗？" if node_count else "当前没有节点可清空。",
+                    "details": [
+                        "该操作只影响当前工作流节点列表。",
+                        "输入表格与预览结果不会被删除。",
+                    ],
+                    "confirm_label": "清空节点",
+                    "cancel_label": "取消",
+                    "severity": "warning",
+                },
+            }
+
+        if action == "run_plan":
+            access_precheck = copy.deepcopy(access_precheck or {})
+            issues = access_precheck.get("issues", []) or []
+            summary = str(access_precheck.get("summary") or "")
+            mode = str(output_settings.get("mode") or "输出到主界面预览区")
+            requires_confirm = bool(issues) or mode == "覆盖当前表"
+            details = []
+            if summary:
+                details.append(summary)
+            if mode == "覆盖当前表":
+                details.append("将直接写回当前表，建议确认目标表和备份设置。")
+            if output_settings.get("backup_before_overwrite"):
+                details.append("已启用覆盖前自动备份旧表。")
+            details.extend([
+                issue.get("message", "")
+                for issue in issues
+                if str(issue.get("message", "")).strip()
+            ])
+            return {
+                "ok": True,
+                "prompt": {
+                    "required": requires_confirm,
+                    "kind": "confirm",
+                    "code": "confirm_run_plan",
+                    "title": "确认执行计划",
+                    "message": "执行计划会按当前输出设置落地结果，确认继续吗？" if requires_confirm else "",
+                    "details": details,
+                    "confirm_label": "继续执行",
+                    "cancel_label": "取消",
+                    "severity": "warning" if issues or mode == "覆盖当前表" else "info",
+                },
+            }
+
+        return {
+            "ok": True,
+            "prompt": {
+                "required": False,
+                "kind": "confirm",
+                "code": "",
+                "title": "",
+                "message": "",
+                "details": [],
+                "confirm_label": "确定",
+                "cancel_label": "取消",
+                "severity": "info",
+            },
+        }
+
     def describe_validation_feedback(self, combined):
         combined = copy.deepcopy(combined or {})
         validation = combined.get("validation") or {}
