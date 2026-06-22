@@ -42,6 +42,7 @@ class QtWorkflowMainWindow:
         self.current_job_messages = []
         self.workflow_action_buttons = []
         self.output_mode_records = []
+        self.preview_source_records = []
 
         self._build_ui()
         self.refresh_all()
@@ -338,7 +339,12 @@ class QtWorkflowMainWindow:
         self.status_bar.showMessage(self._plan_status_text())
 
     def refresh_catalog(self):
-        schemas = self.engine_client.list_node_ui_schemas(include_unsupported=True, preview_headers=self.current_headers)
+        catalog_result = self.engine_client.list_node_ui_catalog(
+            include_unsupported=True,
+            preview_headers=self.current_headers,
+        )
+        catalog = catalog_result.get("catalog") or {}
+        schemas = catalog.get("items") or []
         self.node_schema_by_id = {item.get("node_type_id"): item for item in schemas}
         self.node_type_combo.blockSignals(True)
         self.node_type_combo.clear()
@@ -347,16 +353,12 @@ class QtWorkflowMainWindow:
         self.node_type_combo.blockSignals(False)
 
         self.catalog_tree.clear()
-        grouped = {}
-        for item in schemas:
-            grouped.setdefault(item.get("category", "未知"), []).append(item)
-        ordered_categories = [item for item in CATEGORY_ORDER if item in grouped]
-        ordered_categories.extend(sorted(key for key in grouped.keys() if key not in ordered_categories))
-        for category in ordered_categories:
-            category_item = self.qt.QtWidgets.QTreeWidgetItem([category_label(category)])
+        for group in catalog.get("groups") or []:
+            group_name = group.get("group") or "其他"
+            category_item = self.qt.QtWidgets.QTreeWidgetItem([group_name])
             category_item.setData(0, self.user_role, "")
             self.catalog_tree.addTopLevelItem(category_item)
-            for item in grouped.get(category, []):
+            for item in group.get("items") or []:
                 summary = item.get("summary", "")
                 badges = " / ".join((item.get("badges") or [])[:2])
                 detail = summary
@@ -367,8 +369,8 @@ class QtWorkflowMainWindow:
                 child.setToolTip(0, format_node_detail(
                     item.get("node_type_id", ""),
                     display_name=item.get("display_name", ""),
-                    category=item.get("category", ""),
-                    supported_headless=item.get("capabilities", {}).get("headless_preview"),
+                    category=group_name,
+                    supported_headless=item.get("supported_headless"),
                 ))
                 category_item.addChild(child)
             category_item.setExpanded(True)
@@ -931,41 +933,34 @@ class QtWorkflowMainWindow:
         self.cancel_job_button.setEnabled(bool(running))
 
     def show_input_table(self):
-        self.current_table_kind = "input"
-        self.update_table(self.current_headers, self.current_rows, title="输入表格")
-        self.status_bar.showMessage("已切换到输入表格。")
+        self._show_preview_source({"type": "memory", "table_role": "input"}, kind="input")
 
     def show_preview_table(self):
-        if not self.last_preview_headers and not self.last_preview_rows:
-            self.issue_text.setPlainText("还没有预览结果。")
-            self.status_bar.showMessage("暂无预览结果")
-            return
-        self.current_table_kind = "preview"
-        self.update_table(self.last_preview_headers, self.last_preview_rows, title="Headless 预览结果")
-        self.status_bar.showMessage("已切换到预览结果。")
+        self._show_preview_source({"type": "memory", "table_role": "preview"}, kind="preview")
 
     def show_log_text(self):
         self.issue_text.setFocus()
 
     def refresh_preview_table_combo(self):
         current_key = self._table_source_key(self.preview_table_combo.currentData())
-        items = [
-            ("输入表格", {"type": "input"}),
-            ("Headless 预览结果", {"type": "preview"}),
-        ]
-        db_path = self.output_db_path_edit.text().strip()
-        if db_path:
-            try:
-                result = self.engine_client.list_tables(db_path=db_path)
-                for table_name in result.get("tables", []):
-                    items.append((f"SQLite：{table_name}", {"type": "sqlite", "table_name": table_name}))
-            except Exception as exc:
-                self.issue_text.setPlainText(f"读取 SQLite 表列表失败：{exc}")
+        result = self.engine_client.list_preview_sources(
+            current_headers=self.current_headers,
+            current_rows=self.current_rows,
+            preview_headers=self.last_preview_headers,
+            preview_rows=self.last_preview_rows,
+            db_path=self.output_db_path_edit.text().strip(),
+        )
+        self.preview_source_records = list(result.get("sources") or [])
+        issues = result.get("issues") or []
+        if issues:
+            self.issue_text.setPlainText(self._format_issues(issues))
 
         self.preview_table_combo.blockSignals(True)
         self.preview_table_combo.clear()
         restore_index = 0
-        for index, (label, source) in enumerate(items):
+        for index, item in enumerate(self.preview_source_records):
+            label = item.get("label", "")
+            source = item.get("source") or {}
             self.preview_table_combo.addItem(label, source)
             if self._table_source_key(source) == current_key:
                 restore_index = index
@@ -974,39 +969,49 @@ class QtWorkflowMainWindow:
 
     def show_selected_preview_table(self):
         source = self.preview_table_combo.currentData() or {}
-        kind = source.get("type")
-        if kind == "input":
-            self.show_input_table()
-            return
-        if kind == "preview":
-            self.show_preview_table()
-            return
-        if kind == "sqlite":
-            table_name = source.get("table_name", "")
-            try:
-                loaded = self.engine_client.load_table(
-                    db_path=self.output_db_path_edit.text(),
-                    table_name=table_name,
-                )
-                if not loaded.get("ok"):
-                    self.issue_text.setPlainText(self._format_issues(loaded.get("issues", [])))
-                    self.status_bar.showMessage("读取 SQLite 表失败")
-                    return
-                table = loaded.get("table") or {}
-                headers = list(table.get("headers") or [])
-                rows = [list(row) for row in (table.get("rows") or [])]
-                self.current_table_kind = "sqlite"
-                self.update_table(headers, rows, title=f"SQLite：{table_name}")
-                self.issue_text.setPlainText(f"已读取 SQLite 表：{table_name}")
-                self.status_bar.showMessage(f"已读取 SQLite 表：{table_name}")
-            except Exception as exc:
-                self.issue_text.setPlainText(str(exc))
-                self.status_bar.showMessage("读取 SQLite 表失败")
+        self._show_preview_source(source)
 
     def _table_source_key(self, source):
         if not isinstance(source, dict):
             return ""
-        return f"{source.get('type', '')}:{source.get('table_name', '')}"
+        return f"{source.get('type', '')}:{source.get('table_role', '')}:{source.get('table_name', '')}"
+
+    def _show_preview_source(self, source, *, kind=None):
+        try:
+            loaded = self.engine_client.load_preview_source(
+                source,
+                current_headers=self.current_headers,
+                current_rows=self.current_rows,
+                preview_headers=self.last_preview_headers,
+                preview_rows=self.last_preview_rows,
+            )
+        except Exception as exc:
+            self.issue_text.setPlainText(str(exc))
+            self.status_bar.showMessage("读取预览来源失败")
+            return
+        if not loaded.get("ok"):
+            self.issue_text.setPlainText(self._format_issues(loaded.get("issues", [])))
+            self.status_bar.showMessage(loaded.get("message", "读取预览来源失败"))
+            return
+        table = loaded.get("table") or {}
+        headers = list(table.get("headers") or [])
+        rows = [list(row) for row in (table.get("rows") or [])]
+        resolved_source = loaded.get("source") or source or {}
+        source_type = resolved_source.get("type")
+        source_role = resolved_source.get("table_role")
+        if kind:
+            self.current_table_kind = kind
+        elif source_type == "memory" and source_role == "input":
+            self.current_table_kind = "input"
+        elif source_type == "memory" and source_role == "preview":
+            self.current_table_kind = "preview"
+        elif source_type == "sqlite":
+            self.current_table_kind = "sqlite"
+        else:
+            self.current_table_kind = "preview"
+        self.update_table(headers, rows, title=loaded.get("title") or "表格预览")
+        self.issue_text.setPlainText(loaded.get("message", ""))
+        self.status_bar.showMessage(loaded.get("message", "已切换表格。"))
 
     def _input_table_payload(self):
         return {

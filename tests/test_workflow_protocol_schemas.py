@@ -166,6 +166,23 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
         self.assertEqual(defs["request"]["required"], ["request_id", "api_version", "action", "payload"])
         self.assertEqual(defs["response"]["required"], ["request_id", "ok"])
 
+    def test_node_ui_schema_metadata_supports_group_and_submenu_rendering(self):
+        from workflow.node_ui_schema import build_node_ui_catalog, get_node_ui_schema
+
+        schema = get_node_ui_schema("core.new_columns", preview_headers=["A"])
+        self.assertEqual(schema["menu"]["group"], "数据处理")
+        self.assertEqual(schema["menu"]["submenu"], ["新建列"])
+
+        catalog = build_node_ui_catalog(preview_headers=["A"])
+        self.assertEqual(catalog["schema_version"], "2.0")
+        self.assertTrue(catalog["groups"])
+        first_group = catalog["groups"][0]
+        self.assertIn("group", first_group)
+        self.assertTrue(first_group["items"])
+        first_item = first_group["items"][0]
+        self.assertIn("submenu", first_item)
+        self.assertIn("path", first_item)
+
     def test_plugin_manifest_schema_keeps_current_manifest_shapes(self):
         schema = load_schema("plugin_manifest.schema.json")
         defs = schema["definitions"]

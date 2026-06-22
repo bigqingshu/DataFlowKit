@@ -818,6 +818,21 @@ def node_menu_path(node_type_id, category=""):
     return [category_label(category), display_type_for_node_type_id(stable_id)]
 
 
+def menu_group_for_node(node_type_id, category=""):
+    """Return a stable top-level menu group key for UI shells."""
+
+    stable_id = normalize_node_type_id(node_type_id)
+    category = category or node_type_definition_for(stable_id).get("category", "未知")
+    return category_label(category)
+
+
+def submenu_path_for_node(node_type_id, category=""):
+    """Return submenu-only segments under the top-level group."""
+
+    path = node_menu_path(node_type_id, category)
+    return path[1:] if len(path) > 1 else path
+
+
 def node_ui_description(node_type_id, supported_headless=None):
     stable_id = normalize_node_type_id(node_type_id)
     payload = dict(NODE_UI_DESCRIPTIONS.get(stable_id, {}))
@@ -955,6 +970,8 @@ def build_node_ui_schema(node_type_id, *, preview_headers=None, table_names=None
         "category_label": category_label(category),
         "menu": {
             "path": node_menu_path(stable_id, category),
+            "group": menu_group_for_node(stable_id, category),
+            "submenu": submenu_path_for_node(stable_id, category),
             "order": category_index * 1000,
         },
         "summary": meta.get("summary", ""),
@@ -992,6 +1009,47 @@ def list_node_ui_schemas(include_unsupported=True, *, preview_headers=None, tabl
         )
         for item in list_node_type_definitions(include_unsupported=include_unsupported)
     ]
+
+
+def build_node_ui_catalog(include_unsupported=True, *, preview_headers=None, table_names=None, table_columns=None):
+    schemas = list_node_ui_schemas(
+        include_unsupported=include_unsupported,
+        preview_headers=preview_headers,
+        table_names=table_names,
+        table_columns=table_columns,
+    )
+    groups = []
+    grouped_entries = {}
+    for item in schemas:
+        menu = item.get("menu") or {}
+        group = str(menu.get("group") or item.get("category_label") or "其他")
+        grouped_entries.setdefault(group, []).append({
+            "node_type_id": item.get("node_type_id", ""),
+            "display_name": item.get("display_name", ""),
+            "summary": item.get("summary", ""),
+            "badges": list(item.get("badges") or []),
+            "warnings": list(item.get("warnings") or []),
+            "submenu": list(menu.get("submenu") or []),
+            "path": list(menu.get("path") or []),
+            "supported_headless": bool((item.get("capabilities") or {}).get("headless_preview")),
+            "risk": item.get("risk", "unknown"),
+            "order": int(menu.get("order", 0) or 0),
+        })
+
+    order_lookup = {category_label(name): index for index, name in enumerate(CATEGORY_ORDER)}
+    for group_name, entries in grouped_entries.items():
+        entries.sort(key=lambda entry: (entry.get("order", 0), entry.get("display_name", "")))
+        groups.append({
+            "group": group_name,
+            "order": order_lookup.get(group_name, len(order_lookup)),
+            "items": entries,
+        })
+    groups.sort(key=lambda item: (item.get("order", 0), item.get("group", "")))
+    return {
+        "schema_version": NODE_UI_SCHEMA_VERSION,
+        "groups": groups,
+        "items": schemas,
+    }
 
 
 def get_node_ui_schema(node_type_id, *, preview_headers=None, table_names=None, table_columns=None):

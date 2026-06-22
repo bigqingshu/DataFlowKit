@@ -59,6 +59,8 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertEqual(schema["result"]["form"]["schema_version"], "2.0")
         self.assertEqual(schema["result"]["category_label"], "数据处理")
         self.assertIn("批量替换", schema["result"]["menu"]["path"])
+        self.assertEqual(schema["result"]["menu"]["group"], "数据处理")
+        self.assertEqual(schema["result"]["menu"]["submenu"], ["批量替换"])
         target_fields = [
             field
             for group in schema["result"]["form"]["groups"]

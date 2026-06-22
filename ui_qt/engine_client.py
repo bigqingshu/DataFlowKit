@@ -61,6 +61,14 @@ class QtHeadlessEngineClient:
             preview_headers=preview_headers,
         )
 
+    def list_node_ui_catalog(self, *, include_unsupported=True, preview_headers=None, table_names=None, table_columns=None):
+        return self.facade.list_node_ui_catalog(
+            include_unsupported=include_unsupported,
+            preview_headers=preview_headers,
+            table_names=table_names,
+            table_columns=table_columns,
+        )
+
     def get_node_ui_schema(self, node_type_id, preview_headers=None):
         return self.engine.get_node_ui_schema(
             node_type_id,
@@ -170,6 +178,12 @@ class QtHeadlessEngineClient:
 
     def build_output_settings(self, payload=None, **fallbacks):
         return self.facade.build_output_settings(payload, **fallbacks)
+
+    def list_preview_sources(self, **kwargs):
+        return self.facade.list_preview_sources(**kwargs)
+
+    def load_preview_source(self, source, **kwargs):
+        return self.facade.load_preview_source(copy.deepcopy(source), **kwargs)
 
     def validate_workflow_request(self, plan, **options):
         return self.facade.validate_workflow_request(copy.deepcopy(plan), **options)

@@ -79,6 +79,39 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertIn("jump_validation", validation)
         self.assertIn("access_precheck", validation)
 
+    def test_facade_lists_node_ui_catalog_and_preview_sources(self):
+        client = QtHeadlessEngineClient()
+
+        catalog = client.list_node_ui_catalog(preview_headers=["A", "B"])
+        self.assertTrue(catalog["ok"])
+        self.assertEqual(catalog["catalog"]["schema_version"], "2.0")
+        first_group = catalog["catalog"]["groups"][0]
+        self.assertIn("group", first_group)
+        self.assertTrue(first_group["items"])
+        first_item = first_group["items"][0]
+        self.assertIn("submenu", first_item)
+        self.assertIn("supported_headless", first_item)
+
+        preview_sources = client.list_preview_sources(
+            current_headers=["A"],
+            current_rows=[["a"]],
+            preview_headers=["A", "B"],
+            preview_rows=[["a", "b"]],
+        )
+        self.assertTrue(preview_sources["sources"])
+        self.assertEqual(preview_sources["sources"][0]["source"]["table_role"], "input")
+
+        preview_loaded = client.load_preview_source(
+            {"type": "memory", "table_role": "preview"},
+            current_headers=["A"],
+            current_rows=[["a"]],
+            preview_headers=["A", "B"],
+            preview_rows=[["a", "b"]],
+        )
+        self.assertTrue(preview_loaded["ok"])
+        self.assertEqual(preview_loaded["table"]["headers"], ["A", "B"])
+        self.assertEqual(preview_loaded["title"], "Headless 预览结果")
+
     def test_config_form_value_helpers_preserve_types(self):
         self.assertEqual(value_kind(True), "bool")
         self.assertEqual(value_kind(3), "int")
@@ -112,6 +145,8 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(schema["form"]["schema_version"], "2.0")
         self.assertTrue(schema["form"]["dynamic_rules"])
         self.assertEqual(schema["menu"]["path"], ["数据处理", "新建列"])
+        self.assertEqual(schema["menu"]["group"], "数据处理")
+        self.assertEqual(schema["menu"]["submenu"], ["新建列"])
         self.assertEqual(schema["form"]["groups"][0]["fields"][0]["key"], "columns_text")
         new_column_fields = {
             field["key"]: field

@@ -10,6 +10,7 @@ from engine.output_service import OutputSettings
 from engine.plan_templates import PlanTemplateService
 from engine.table_io import load_table_file
 from workflow.plan_commands import apply_plan_command as apply_workflow_plan_command
+from workflow.node_ui_schema import build_node_ui_catalog
 
 
 class WorkflowFacade:
@@ -52,11 +53,133 @@ class WorkflowFacade:
     def apply_plan_command(self, plan, command, **kwargs):
         return apply_workflow_plan_command(copy.deepcopy(plan), command, **kwargs)
 
+    def list_node_ui_catalog(self, *, include_unsupported=True, preview_headers=None, table_names=None, table_columns=None):
+        catalog = build_node_ui_catalog(
+            include_unsupported=include_unsupported,
+            preview_headers=preview_headers,
+            table_names=table_names,
+            table_columns=table_columns,
+        )
+        return {
+            "ok": True,
+            "catalog": catalog,
+        }
+
     def build_output_settings(self, payload=None, **fallbacks):
         settings = OutputSettings.from_payload(payload, **fallbacks)
         return {
             "ok": True,
             "settings": settings.to_dict(),
+        }
+
+    def list_preview_sources(self, *, current_headers=None, current_rows=None, preview_headers=None, preview_rows=None, db_path=None):
+        items = [
+            {
+                "key": "input",
+                "label": "输入表格",
+                "source": {"type": "memory", "table_role": "input"},
+                "table": {
+                    "headers": list(current_headers or []),
+                    "rows": [list(row) for row in (current_rows or [])],
+                },
+            },
+            {
+                "key": "preview",
+                "label": "Headless 预览结果",
+                "source": {"type": "memory", "table_role": "preview"},
+                "table": {
+                    "headers": list(preview_headers or []),
+                    "rows": [list(row) for row in (preview_rows or [])],
+                },
+            },
+        ]
+        issues = []
+        db_path = str(db_path or "").strip()
+        if db_path:
+            try:
+                table_result = self.engine.list_tables(db_path=db_path)
+                for table_name in table_result.get("tables", []) or []:
+                    items.append({
+                        "key": f"sqlite:{table_name}",
+                        "label": f"SQLite：{table_name}",
+                        "source": {"type": "sqlite", "db_path": db_path, "table_name": table_name},
+                    })
+            except Exception as exc:
+                issues.append({
+                    "severity": "warning",
+                    "code": "preview_source_list_failed",
+                    "message": f"读取 SQLite 表列表失败：{exc}",
+                })
+        return {
+            "ok": not issues,
+            "sources": items,
+            "issues": issues,
+        }
+
+    def load_preview_source(self, source, *, current_headers=None, current_rows=None, preview_headers=None, preview_rows=None):
+        source = copy.deepcopy(source or {})
+        kind = source.get("type")
+        table_role = source.get("table_role")
+        if kind == "memory" and table_role == "input":
+            return {
+                "ok": True,
+                "source": source,
+                "table": {
+                    "headers": list(current_headers or []),
+                    "rows": [list(row) for row in (current_rows or [])],
+                },
+                "title": "输入表格",
+                "message": "已切换到输入表格。",
+            }
+        if kind == "memory" and table_role == "preview":
+            headers = list(preview_headers or [])
+            rows = [list(row) for row in (preview_rows or [])]
+            if not headers and not rows:
+                return {
+                    "ok": False,
+                    "source": source,
+                    "issues": [{
+                        "severity": "warning",
+                        "code": "preview_table_missing",
+                        "message": "还没有预览结果。",
+                    }],
+                    "message": "暂无预览结果",
+                }
+            return {
+                "ok": True,
+                "source": source,
+                "table": {"headers": headers, "rows": rows},
+                "title": "Headless 预览结果",
+                "message": "已切换到预览结果。",
+            }
+        if kind == "sqlite":
+            loaded = self.engine.load_table(
+                db_path=source.get("db_path"),
+                table_name=source.get("table_name"),
+            )
+            if not loaded.get("ok"):
+                return loaded
+            table = loaded.get("table") or {}
+            table_name = source.get("table_name", "")
+            return {
+                "ok": True,
+                "source": source,
+                "table": {
+                    "headers": list(table.get("headers") or []),
+                    "rows": [list(row) for row in (table.get("rows") or [])],
+                },
+                "title": f"SQLite：{table_name}",
+                "message": f"已读取 SQLite 表：{table_name}",
+            }
+        return {
+            "ok": False,
+            "source": source,
+            "issues": [{
+                "severity": "error",
+                "code": "unsupported_preview_source",
+                "message": f"不支持的预览来源：{kind or 'unknown'}",
+            }],
+            "message": "读取预览来源失败",
         }
 
     def build_run_options(self, plan=None, *, stop_index=None, execute_actions=False, output_settings=None, confirmed=False):
