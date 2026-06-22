@@ -174,6 +174,25 @@ class WorkflowFacade:
         }
         return feedback
 
+    def build_message_panel_state(self, *, mode="info", title="", body="", issues=None, logs=None):
+        issues = copy.deepcopy(issues or [])
+        logs = [str(item) for item in (logs or []) if str(item).strip()]
+        body_text = str(body or "")
+        if not body_text and issues:
+            body_text = self.format_issues_text(issues)
+        if not body_text and logs:
+            body_text = "\n".join(logs)
+        return {
+            "ok": True,
+            "panel": {
+                "mode": str(mode or "info"),
+                "title": str(title or ""),
+                "body": body_text,
+                "issues": issues,
+                "logs": logs,
+            },
+        }
+
     def describe_selection_feedback(self, *, selected_index=None, purpose=""):
         if selected_index is not None and int(selected_index) >= 0:
             return self.build_user_feedback()
@@ -912,6 +931,12 @@ class WorkflowFacade:
             payload["ok"] = False
             payload["error"] = error
             payload["display_message"] = error.get("message") or status.get("message") or "后台任务失败。"
+            payload["message_panel"] = self.build_message_panel_state(
+                mode="error",
+                title="后台任务失败",
+                body=payload["display_message"],
+                logs=merged_logs,
+            ).get("panel")
             return payload
         if job_action == "run_plan" and (headers or rows):
             output = self.engine.apply_output(
@@ -928,6 +953,26 @@ class WorkflowFacade:
             payload["output"] = output
             payload["ok"] = bool(output.get("ok"))
             payload["display_message"] = output.get("message") or ("输出完成。" if output.get("ok") else "执行完成，但输出未落地")
+            if output.get("ok"):
+                payload["message_panel"] = self.build_message_panel_state(
+                    mode="success",
+                    title="输出结果",
+                    body=payload["display_message"],
+                    logs=output.get("logs") or merged_logs,
+                ).get("panel")
+            else:
+                payload["message_panel"] = self.build_message_panel_state(
+                    mode="warning",
+                    title="输出结果",
+                    issues=output.get("issues") or [],
+                    logs=merged_logs,
+                ).get("panel")
             return payload
         payload["display_message"] = status.get("message") or "任务完成。"
+        payload["message_panel"] = self.build_message_panel_state(
+            mode="info",
+            title="任务结果",
+            body=payload["display_message"],
+            logs=merged_logs,
+        ).get("panel")
         return payload

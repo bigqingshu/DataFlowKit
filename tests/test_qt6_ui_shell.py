@@ -209,6 +209,22 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(final_progress["progress"]["workflow_label"], "执行结果完成：1 行 x 2 列")
         self.assertEqual(final_progress["progress"]["node_label"], "执行步数：3")
 
+    def test_finalize_job_result_includes_message_panel(self):
+        client = QtHeadlessEngineClient()
+
+        final = client.finalize_job_result({
+            "status": "completed",
+            "message": "任务完成",
+            "result": {
+                "table": {"headers": ["A"], "rows": [["a"]]},
+                "logs": ["done"],
+                "steps": 1,
+            },
+        }, job_action="preview_plan")
+
+        self.assertEqual(final["message_panel"]["title"], "任务结果")
+        self.assertIn("任务完成", final["message_panel"]["body"])
+
     def test_facade_builds_standard_feedback_payloads(self):
         client = QtHeadlessEngineClient()
 
@@ -229,6 +245,15 @@ class Qt6UiShellTests(unittest.TestCase):
         validation_feedback = client.describe_validation_feedback(validation)
         self.assertEqual(validation_feedback["feedback"]["status_message"], "校验通过")
         self.assertIn("OK: true", validation_feedback["feedback"]["issue_message"])
+
+        message_panel = client.build_message_panel_state(
+            mode="warning",
+            title="测试",
+            issues=[{"severity": "warning", "code": "demo", "message": "hello"}],
+            logs=["log-1"],
+        )
+        self.assertEqual(message_panel["panel"]["mode"], "warning")
+        self.assertIn("hello", message_panel["panel"]["body"])
 
     def test_facade_describes_confirmation_prompts(self):
         client = QtHeadlessEngineClient()

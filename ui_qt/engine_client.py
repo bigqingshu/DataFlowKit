@@ -81,6 +81,9 @@ class QtHeadlessEngineClient:
     def build_user_feedback(self, **kwargs):
         return self.facade.build_user_feedback(**kwargs)
 
+    def build_message_panel_state(self, **kwargs):
+        return self.facade.build_message_panel_state(**kwargs)
+
     def describe_selection_feedback(self, **kwargs):
         return self.facade.describe_selection_feedback(**kwargs)
 

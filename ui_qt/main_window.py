@@ -598,15 +598,21 @@ class QtWorkflowMainWindow:
         logs = payload.get("logs") or []
         status_message = str(payload.get("status_message") or fallback_status or "")
 
-        if issue_message:
-            self.issue_text.setPlainText(issue_message)
-        elif issues:
-            self.issue_text.setPlainText(self._format_issues(issues))
-        elif logs:
-            self.issue_text.setPlainText("\n".join(str(item) for item in logs))
+        self._apply_message_panel(self.engine_client.build_message_panel_state(
+            mode=str(payload.get("level") or "info"),
+            title=str(payload.get("title") or ""),
+            body=issue_message,
+            issues=issues,
+            logs=logs,
+        ).get("panel") or {})
 
         if status_message:
             self.status_bar.showMessage(status_message)
+
+    def _apply_message_panel(self, panel):
+        panel = panel or {}
+        body = str(panel.get("body") or "")
+        self.issue_text.setPlainText(body)
 
     def _confirm_prompt(self, prompt_result):
         prompt = (prompt_result or {}).get("prompt") or {}
@@ -676,7 +682,11 @@ class QtWorkflowMainWindow:
         self.update_input_summary()
         self.update_table(self.current_headers, self.current_rows, title=state.get("table_title") or "输入表格")
         self.show_node_config(self.node_list.currentRow())
-        self.issue_text.setPlainText(str(state.get("issue_message") or ""))
+        self._apply_message_panel(self.engine_client.build_message_panel_state(
+            mode="success",
+            title="导入输入表格",
+            body=str(state.get("issue_message") or ""),
+        ).get("panel") or {})
         self.status_bar.showMessage(str(state.get("status_message") or "已导入输入表格。"))
 
     def _apply_loaded_plan_state(self, state):
@@ -689,7 +699,11 @@ class QtWorkflowMainWindow:
         self.last_preview_headers = []
         self.last_preview_rows = []
         self.refresh_all()
-        self.issue_text.setPlainText(str(state.get("issue_message") or ""))
+        self._apply_message_panel(self.engine_client.build_message_panel_state(
+            mode="info",
+            title="打开计划",
+            body=str(state.get("issue_message") or ""),
+        ).get("panel") or {})
         self.status_bar.showMessage(str(state.get("status_message") or "已打开计划。"))
 
     def _apply_saved_plan_state(self, state):
@@ -721,12 +735,16 @@ class QtWorkflowMainWindow:
         detail = described.get("detail") or {}
         if not schema and not detail:
             return
-        self.issue_text.setPlainText(str(detail.get("text") or format_node_detail(
+        self._apply_message_panel(self.engine_client.build_message_panel_state(
+            mode="info",
+            title=str(detail.get("title") or schema.get("display_name") or "节点说明"),
+            body=str(detail.get("text") or format_node_detail(
             node_type_id,
             display_name=schema.get("display_name", ""),
             category=schema.get("category", ""),
             supported_headless=schema.get("capabilities", {}).get("headless_preview"),
-        )))
+        )),
+        ).get("panel") or {})
 
     def _apply_output_form_settings(self, settings):
         mode = str((settings or {}).get("mode") or "").strip()
@@ -798,7 +816,11 @@ class QtWorkflowMainWindow:
         self.last_preview_headers = []
         self.last_preview_rows = []
         self.refresh_all()
-        self.issue_text.setPlainText("已载入 Qt6 示例计划。")
+        self._apply_message_panel(self.engine_client.build_message_panel_state(
+            mode="success",
+            title="示例计划",
+            body="已载入 Qt6 示例计划。",
+        ).get("panel") or {})
 
     def reload_sample_input(self):
         self.current_headers = list(SAMPLE_HEADERS)
@@ -980,7 +1002,11 @@ class QtWorkflowMainWindow:
             title=self.current_job_title,
             running=True,
         ).get("progress") or {})
-        self.issue_text.setPlainText(f"{status_prefix or '任务'}已启动。")
+        self._apply_message_panel(self.engine_client.build_message_panel_state(
+            mode="info",
+            title=str(status_prefix or "任务"),
+            body=f"{status_prefix or '任务'}已启动。",
+        ).get("panel") or {})
         self.set_workflow_running(True)
         self.job_timer.start()
         self.poll_current_job()
@@ -993,7 +1019,7 @@ class QtWorkflowMainWindow:
             self.append_job_message(result.get("message", "已请求取消任务。"))
             self.status_bar.showMessage("已请求取消后台任务")
         except Exception as exc:
-            self.issue_text.setPlainText(str(exc))
+            self._apply_message_panel(self.engine_client.build_message_panel_state(mode="error", title="取消任务失败", body=str(exc)).get("panel") or {})
             self.status_bar.showMessage("取消任务失败")
 
     def poll_current_job(self):
@@ -1012,7 +1038,7 @@ class QtWorkflowMainWindow:
         except Exception as exc:
             self.job_timer.stop()
             self.set_workflow_running(False)
-            self.issue_text.setPlainText(str(exc))
+            self._apply_message_panel(self.engine_client.build_message_panel_state(mode="error", title="后台任务状态读取失败", body=str(exc)).get("panel") or {})
             self.status_bar.showMessage("后台任务状态读取失败")
             self.current_job_id = ""
             return
@@ -1044,7 +1070,11 @@ class QtWorkflowMainWindow:
         if not message:
             return
         self.current_job_messages.append(str(message))
-        self.issue_text.setPlainText("\n".join(self.current_job_messages[-80:]))
+        self._apply_message_panel(self.engine_client.build_message_panel_state(
+            mode="info",
+            title="执行日志",
+            logs=self.current_job_messages[-80:],
+        ).get("panel") or {})
 
     def finish_workflow_job(self, status):
         self.job_timer.stop()
@@ -1059,7 +1089,7 @@ class QtWorkflowMainWindow:
         headers = list(table.get("headers") or [])
         rows = [list(row) for row in (table.get("rows") or [])]
         if status.get("status") == "failed":
-            self.issue_text.setPlainText(final.get("display_message") or "后台任务失败。")
+            self._apply_message_panel(final.get("message_panel") or {})
             self.status_bar.showMessage("后台任务失败")
         elif headers or rows:
             logs = final.get("logs") or []
@@ -1075,14 +1105,16 @@ class QtWorkflowMainWindow:
             output = final.get("output") or {}
             if output:
                 if output.get("ok"):
-                    self.issue_text.setPlainText("\n".join(output.get("logs") or logs) or output.get("message", "输出完成。"))
+                    self._apply_message_panel(final.get("message_panel") or {})
                 else:
-                    issue_text = self._format_issues(output.get("issues", []))
-                    if logs:
-                        issue_text = issue_text + "\n\n执行日志：\n" + "\n".join(logs)
-                    self.issue_text.setPlainText(issue_text)
+                    self._apply_message_panel(final.get("message_panel") or {})
             else:
-                self.issue_text.setPlainText("\n".join(logs) or f"{self.current_job_title}完成，无日志。")
+                self._apply_message_panel(final.get("message_panel") or self.engine_client.build_message_panel_state(
+                    mode="success",
+                    title=self.current_job_title,
+                    body=f"{self.current_job_title}完成，无日志。",
+                    logs=logs,
+                ).get("panel") or {})
             self._apply_job_progress_state(self.engine_client.build_job_progress_state(
                 current_job_id=self.current_job_id,
                 title=self.current_job_title,
@@ -1090,7 +1122,12 @@ class QtWorkflowMainWindow:
             ).get("progress") or {})
             self.status_bar.showMessage(final_status_message)
         else:
-            self.issue_text.setPlainText("\n".join(self.current_job_messages) or status.get("message", "后台任务已结束。"))
+            self._apply_message_panel(self.engine_client.build_message_panel_state(
+                mode="info",
+                title="后台任务",
+                body=status.get("message", "后台任务已结束。"),
+                logs=self.current_job_messages,
+            ).get("panel") or {})
             self.status_bar.showMessage(status.get("message", "后台任务已结束。"))
         self.current_job_id = ""
         self.current_job_action = ""
@@ -1159,7 +1196,7 @@ class QtWorkflowMainWindow:
         self.preview_source_records = list(panel_state.get("sources") or [])
         issues = panel_state.get("issues") or []
         if issues:
-            self.issue_text.setPlainText(self._format_issues(issues))
+            self._apply_message_panel(self.engine_client.build_message_panel_state(mode="warning", title="预览来源", issues=issues).get("panel") or {})
 
         self.preview_table_combo.blockSignals(True)
         self.preview_table_combo.clear()
@@ -1193,11 +1230,11 @@ class QtWorkflowMainWindow:
                 preview_rows=self.last_preview_rows,
             )
         except Exception as exc:
-            self.issue_text.setPlainText(str(exc))
+            self._apply_message_panel(self.engine_client.build_message_panel_state(mode="error", title="读取预览来源失败", body=str(exc)).get("panel") or {})
             self.status_bar.showMessage("读取预览来源失败")
             return
         if not loaded.get("ok"):
-            self.issue_text.setPlainText(self._format_issues(loaded.get("issues", [])))
+            self._apply_message_panel(self.engine_client.build_message_panel_state(mode="warning", title="读取预览来源失败", issues=loaded.get("issues", [])).get("panel") or {})
             self.status_bar.showMessage(loaded.get("message", "读取预览来源失败"))
             return
         table = loaded.get("table") or {}
@@ -1217,7 +1254,7 @@ class QtWorkflowMainWindow:
         else:
             self.current_table_kind = "preview"
         self.update_table(headers, rows, title=loaded.get("title") or "表格预览")
-        self.issue_text.setPlainText(loaded.get("message", ""))
+        self._apply_message_panel(self.engine_client.build_message_panel_state(mode="info", title="预览来源", body=loaded.get("message", "")).get("panel") or {})
         self.status_bar.showMessage(loaded.get("message", "已切换表格。"))
 
     def _input_table_payload(self):
