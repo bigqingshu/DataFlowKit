@@ -465,26 +465,12 @@ class NodeConfigForm:
                 continue
             options_source = schema.get("options_source") or {}
             source_type = str(options_source.get("type") or "")
-            if source_type not in {"preview_headers", "table_names", "table_columns", "plan_refs", "runtime_refs"}:
+            if source_type not in {"preview_headers", "table_names", "table_columns", "plan_refs", "runtime_refs", "field_values"}:
                 continue
             current = str(editor.currentText())
             editor.blockSignals(True)
             editor.clear()
-            if source_type == "preview_headers":
-                values = [str(item) for item in self.headers]
-            elif source_type == "table_names":
-                values = [str(item) for item in self.table_names]
-            elif source_type == "plan_refs":
-                values = plan_reference_choices(self.plan, options_source.get("ref_kind"))
-            elif source_type == "runtime_refs":
-                values = runtime_reference_choices(self.plan, options_source.get("ref_kind"))
-            else:
-                table_field = str(options_source.get("table_field") or "").strip()
-                selected_table = ""
-                if table_field:
-                    dependency = self.config_fields.get(table_field) or {}
-                    selected_table = str(self._field_value_for_action(dependency) or "")
-                values = [str(item) for item in (self.table_columns.get(selected_table, []) or [])]
+            values = self._choices_for_options_source(options_source)
             if current and current not in values:
                 values.insert(0, current)
             editor.addItems(values)
@@ -681,6 +667,17 @@ class NodeConfigForm:
                 "source": "table_names",
                 "multiple": kind == "field_multi_select",
             }
+        if source_type == "field_values":
+            value_kind = str((options_source or {}).get("value_kind") or "")
+            if value_kind == "table_names":
+                return {
+                    "key": "pick_table_names" if kind == "field_multi_select" else "pick_table_name",
+                    "label": "选择表",
+                    "style": "picker",
+                    "source": "table_names",
+                    "multiple": kind == "field_multi_select",
+                    "field": str((options_source or {}).get("field") or ""),
+                }
         if source_type == "table_columns":
             return {
                 "key": "pick_table_fields" if kind == "field_multi_select" else "pick_table_field",
@@ -721,6 +718,37 @@ class NodeConfigForm:
             selected_table = str(self._field_value_for_action(dependency) or "")
         return [str(item) for item in (self.table_columns.get(selected_table, []) or [])]
 
+    def _choices_for_options_source(self, options_source, row_values=None):
+        options_source = options_source or {}
+        source_type = str(options_source.get("type") or "")
+        if source_type == "preview_headers":
+            return [str(item) for item in self.headers]
+        if source_type == "table_names":
+            return [str(item) for item in self.table_names]
+        if source_type == "table_columns":
+            return self._table_column_choices_for_options_source(options_source, row_values=row_values)
+        if source_type == "plan_refs":
+            return plan_reference_choices(self.plan, options_source.get("ref_kind"))
+        if source_type == "runtime_refs":
+            return runtime_reference_choices(self.plan, options_source.get("ref_kind"))
+        if source_type == "field_values":
+            field_key = str(options_source.get("field") or "").strip()
+            values = []
+            if field_key and isinstance(row_values, dict) and field_key in row_values:
+                current = row_values.get(field_key)
+            else:
+                dependency = self.config_fields.get(field_key) or {}
+                current = self._field_value_for_action(dependency)
+            if isinstance(current, (list, tuple, set)):
+                values = [str(item) for item in current if str(item).strip()]
+            elif str(current or "").strip():
+                values = [str(current)]
+            if str(options_source.get("value_kind") or "") == "table_names":
+                allowed = set(str(item) for item in self.table_names)
+                values = [item for item in values if item in allowed]
+            return values
+        return []
+
     def _refresh_structured_list_options(self, editor):
         state = getattr(editor, "structured_state", {})
         table = state.get("table")
@@ -742,18 +770,8 @@ class NodeConfigForm:
                 if widget is None or self._structured_column_kind(column) != "choice":
                     continue
                 options_source = column.get("options_source") or {}
-                source_type = str(options_source.get("type") or "")
-                if source_type == "preview_headers":
-                    values = [str(item) for item in self.headers]
-                elif source_type == "table_names":
-                    values = [str(item) for item in self.table_names]
-                elif source_type == "table_columns":
-                    values = self._table_column_choices_for_options_source(options_source, row_values=row_values)
-                elif source_type == "plan_refs":
-                    values = plan_reference_choices(self.plan, options_source.get("ref_kind"))
-                elif source_type == "runtime_refs":
-                    values = runtime_reference_choices(self.plan, options_source.get("ref_kind"))
-                else:
+                values = self._choices_for_options_source(options_source, row_values=row_values)
+                if not values and str(options_source.get("type") or "") not in {"preview_headers", "table_names", "table_columns", "plan_refs", "runtime_refs", "field_values"}:
                     continue
                 current = str(widget.currentText())
                 widget.blockSignals(True)

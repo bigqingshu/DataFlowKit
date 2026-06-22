@@ -239,7 +239,7 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
         self.assertEqual(condition_columns["field"]["options_source"], {"type": "table_columns", "table_field": "source_table"})
         self.assertEqual(join_columns["left"]["action"]["key"], "pick_table_field")
         self.assertEqual(join_columns["right_table"]["type"], "table_select")
-        self.assertEqual(join_columns["right_table"]["options_source"], {"type": "table_names"})
+        self.assertEqual(join_columns["right_table"]["options_source"], {"type": "field_values", "field": "extra_tables", "value_kind": "table_names"})
         self.assertEqual(join_columns["right"]["options_source"], {"type": "table_columns", "table_field": "right_table"})
         self.assertTrue(join_columns["left"]["ui_capabilities"]["supports_picker"])
         self.assertEqual(join_columns["left"]["help_sections"][0]["title"], "字段说明")

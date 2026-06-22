@@ -929,6 +929,69 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertIn("row_id", [field_editor.itemText(i) for i in range(field_editor.count())])
         app.processEvents()
 
+    def test_structured_list_refreshes_table_name_choices_from_multi_select_field(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        schema = {
+            "form": {
+                "groups": [
+                    {
+                        "title": "参数",
+                        "fields": [
+                            {
+                                "key": "extra_tables",
+                                "type": "field_multi_select",
+                                "options_source": {"type": "table_names"},
+                            },
+                            {
+                                "key": "rules",
+                                "type": "structured_list",
+                                "item_schema": {
+                                    "columns": [
+                                        {
+                                            "key": "table_name",
+                                            "label": "目标表",
+                                            "type": "table_select",
+                                            "options_source": {"type": "field_values", "field": "extra_tables", "value_kind": "table_names"},
+                                        }
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+        node = {
+            "node_type_id": "demo.contextual_table_picker",
+            "node_id": "n1",
+            "name": "上下文表选择",
+            "enabled": True,
+            "node_version": "1.0.0",
+            "config": {
+                "extra_tables": ["logs"],
+                "rules": [{"table_name": "logs"}],
+            },
+        }
+        form = NodeConfigForm(qt, table_names=["orders", "logs", "archive"])
+        form.set_node(node, table_names=["orders", "logs", "archive"], schema=schema)
+        editor = form.config_fields["rules"]["editor"]
+        table_widget = editor.structured_state["table"]
+        column_schema = editor.structured_state["columns"][0]
+        table_name_editor = form._structured_cell_widget(table_widget.cellWidget(0, 0), column_schema)
+
+        self.assertEqual([table_name_editor.itemText(i) for i in range(table_name_editor.count())], ["logs"])
+
+        form.config_fields["extra_tables"]["editor"].multi_select_value = ["orders", "archive"]
+        form.config_fields["extra_tables"]["editor"].setText("2 项")
+        form._apply_dynamic_state()
+        app.processEvents()
+
+        self.assertEqual([table_name_editor.itemText(i) for i in range(table_name_editor.count())], ["logs", "orders", "archive"])
+
     def test_structured_list_cells_support_single_table_field_picker_actions(self):
         try:
             qt = qt_app.load_qt6()
@@ -1234,11 +1297,12 @@ class Qt6UiShellTests(unittest.TestCase):
         table = frame.structured_state["table"]
         right_table_column = next(i for i, col in enumerate(frame.structured_state["columns"]) if col.get("key") == "right_table")
         right_column = next(i for i, col in enumerate(frame.structured_state["columns"]) if col.get("key") == "right")
-        right_table_combo = table.cellWidget(0, right_table_column).findChild(qt.QtWidgets.QComboBox)
-        right_combo = table.cellWidget(0, right_column).findChild(qt.QtWidgets.QComboBox)
+        right_table_combo = form._structured_cell_widget(table.cellWidget(0, right_table_column), frame.structured_state["columns"][right_table_column])
+        right_combo = form._structured_cell_widget(table.cellWidget(0, right_column), frame.structured_state["columns"][right_column])
 
         self.assertEqual(right_table_combo.currentText(), "people")
         self.assertEqual(right_combo.currentText(), "code")
+        self.assertEqual([right_table_combo.itemText(i) for i in range(right_table_combo.count())], ["people"])
 
         right_table_combo.setCurrentText("people")
         app.processEvents()

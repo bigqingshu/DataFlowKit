@@ -365,7 +365,12 @@ STRUCTURED_LIST_FIELD_COLUMNS = {
     "join_rules": [
         {"key": "left", "label": "左字段", "type": "field_select"},
         {"key": "op", "label": "操作", "type": "select", "choices": FIELD_CHOICES.get("op", [])},
-        {"key": "right_table", "label": "右侧表", "type": "table_select", "options_source": {"type": "table_names"}},
+        {
+            "key": "right_table",
+            "label": "右侧表",
+            "type": "table_select",
+            "options_source": {"type": "field_values", "field": "extra_tables", "value_kind": "table_names"},
+        },
         {"key": "right", "label": "右字段", "type": "field_select"},
     ],
     "match_rules": [
