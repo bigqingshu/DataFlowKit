@@ -6,7 +6,7 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 
-from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
+from engine.plan_io import build_plan_document, list_plan_templates, load_plan, save_plan as save_plan_file
 from ui_qt.config_form import NodeConfigForm
 from ui_qt.engine_client import QtHeadlessEngineClient, SAMPLE_HEADERS, SAMPLE_PLAN, SAMPLE_ROWS
 from ui_qt.node_ui_metadata import CATEGORY_ORDER, category_label, format_node_detail
@@ -347,12 +347,13 @@ class QtWorkflowMainWindow:
 
     def refresh_template_list(self, show_status=True):
         self.plan_template_combo.clear()
-        if not self.plan_dir.exists():
+        templates = list_plan_templates(self.plan_dir)
+        if not templates:
             if show_status:
-                self.status_bar.showMessage(f"计划目录不存在：{self.plan_dir}")
+                self.status_bar.showMessage(f"模板刷新完成：0 个。")
             return
-        for path in sorted(self.plan_dir.glob("*.json")):
-            self.plan_template_combo.addItem(path.stem, str(path))
+        for item in templates:
+            self.plan_template_combo.addItem(item["name"], item["path"])
         if show_status:
             self.status_bar.showMessage(f"模板刷新完成：{self.plan_template_combo.count()} 个。")
 
@@ -593,17 +594,16 @@ class QtWorkflowMainWindow:
 
     def load_plan_path(self, path):
         try:
-            data, info = load_json_with_backup(path)
-            if not isinstance(data, dict):
-                raise ValueError("计划文件必须是 JSON object")
-            self.current_plan_path = Path(path)
+            loaded = load_plan(path)
+            data = loaded["plan"]
+            self.current_plan_path = Path(loaded["path"])
             self.current_plan = data
             self.current_headers = list(data.get("headers", []))
             self.current_rows = [list(row) for row in data.get("rows", [])]
             self.last_preview_headers = []
             self.last_preview_rows = []
             self.refresh_all()
-            warning = info.get("warning") or ""
+            warning = loaded.get("warning") or ""
             self.issue_text.setPlainText(warning or f"已打开计划：{path}")
         except Exception as exc:
             self.show_error("打开失败", str(exc))
@@ -621,13 +621,16 @@ class QtWorkflowMainWindow:
                 return
             path = Path(selected)
         try:
-            self.current_plan["headers"] = list(self.current_headers)
-            self.current_plan["rows"] = [list(row) for row in self.current_rows]
-            self.current_plan["output_mode"] = str(self.output_mode_combo.currentText())
-            self.current_plan["output_table"] = str(self.output_table_edit.text())
-            self.current_plan["backup_before_overwrite"] = bool(self.backup_checkbox.isChecked())
-            atomic_write_json(path, self.current_plan)
-            self.current_plan_path = Path(path)
+            self.current_plan = build_plan_document(
+                self.current_plan,
+                headers=self.current_headers,
+                rows=self.current_rows,
+                output_mode=self.output_mode_combo.currentText(),
+                output_table=self.output_table_edit.text(),
+                backup_before_overwrite=self.backup_checkbox.isChecked(),
+            )
+            saved = save_plan_file(path, self.current_plan)
+            self.current_plan_path = Path(saved["path"])
             self.refresh_template_list(show_status=False)
             self.status_bar.showMessage(f"已保存：{path}")
         except Exception as exc:
