@@ -219,6 +219,81 @@ class PlanCommandTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["issues"][0]["code"], "invalid_list_field")
 
+    def test_jump_rule_commands_support_set_move_and_delete(self):
+        plan = {
+            "nodes": [
+                {
+                    "node_id": "a",
+                    "node_type_id": "core.conditional_jump",
+                    "type": "条件跳转",
+                    "enabled": True,
+                    "config": {
+                        "flag_name": "flag_a",
+                        "jump_rules": [
+                            {"value": "TRUE", "target_anchor_id": "ANCHOR_TRUE"},
+                            {"value": "FALSE", "target_anchor_id": "ANCHOR_FALSE"},
+                        ],
+                    },
+                }
+            ]
+        }
+
+        appended = apply_plan_command(
+            plan,
+            {
+                "type": "set_jump_rule",
+                "index": 0,
+                "rule": {"value": "OTHER", "target_anchor_id": "ANCHOR_OTHER"},
+            },
+            node_id_factory=node_id_counter(),
+        )
+        updated = apply_plan_command(
+            plan,
+            {
+                "type": "set_jump_rule",
+                "index": 0,
+                "item_index": 1,
+                "rule": {"target_anchor_id": "ANCHOR_FALSE_2"},
+            },
+            node_id_factory=node_id_counter(),
+        )
+        moved = apply_plan_command(
+            plan,
+            {
+                "type": "move_jump_rule",
+                "index": 0,
+                "item_index": 1,
+                "direction": "up",
+            },
+            node_id_factory=node_id_counter(),
+        )
+        deleted = apply_plan_command(
+            plan,
+            {
+                "type": "delete_jump_rule",
+                "index": 0,
+                "item_index": 0,
+            },
+            node_id_factory=node_id_counter(),
+        )
+
+        self.assertTrue(appended["ok"])
+        self.assertEqual(len(appended["plan"]["nodes"][0]["config"]["jump_rules"]), 3)
+        self.assertEqual(appended["plan"]["nodes"][0]["config"]["jump_rules"][-1]["value"], "OTHER")
+
+        self.assertTrue(updated["ok"])
+        self.assertEqual(updated["plan"]["nodes"][0]["config"]["jump_rules"][1]["value"], "FALSE")
+        self.assertEqual(updated["plan"]["nodes"][0]["config"]["jump_rules"][1]["target_anchor_id"], "ANCHOR_FALSE_2")
+
+        self.assertTrue(moved["ok"])
+        moved_rules = moved["plan"]["nodes"][0]["config"]["jump_rules"]
+        self.assertEqual(moved_rules[0]["value"], "FALSE")
+        self.assertEqual(moved_rules[1]["value"], "TRUE")
+
+        self.assertTrue(deleted["ok"])
+        self.assertEqual(len(deleted["plan"]["nodes"][0]["config"]["jump_rules"]), 1)
+        self.assertEqual(deleted["plan"]["nodes"][0]["config"]["jump_rules"][0]["value"], "FALSE")
+
     def test_update_node_fields_rejects_reserved_fields(self):
         plan = {"nodes": [{"node_id": "a", "node_type_id": "core.new_columns", "config": {}}]}
 
@@ -303,6 +378,31 @@ class PlanCommandTests(unittest.TestCase):
 
         self.assertTrue(list_response["ok"])
         self.assertEqual(len(list_response["result"]["plan"]["nodes"][0]["config"]["jump_rules"]), 2)
+
+        jump_response = worker.handle_request(request("apply_plan_command", {
+            "plan": {
+                "nodes": [{
+                    "node_id": "n1",
+                    "node_type_id": "core.conditional_jump",
+                    "type": "条件跳转",
+                    "enabled": True,
+                    "config": {
+                        "flag_name": "flag_a",
+                        "jump_rules": [{"value": "TRUE", "target_anchor_id": "ANCHOR_A"}],
+                    },
+                }],
+            },
+            "command": {
+                "type": "set_jump_rule",
+                "index": 0,
+                "item_index": 0,
+                "rule": {"target_anchor_id": "ANCHOR_B"},
+            },
+        }))
+
+        self.assertTrue(jump_response["ok"])
+        self.assertEqual(jump_response["result"]["plan"]["nodes"][0]["config"]["jump_rules"][0]["value"], "TRUE")
+        self.assertEqual(jump_response["result"]["plan"]["nodes"][0]["config"]["jump_rules"][0]["target_anchor_id"], "ANCHOR_B")
 
 
 if __name__ == "__main__":

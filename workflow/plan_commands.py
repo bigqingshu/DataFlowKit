@@ -38,6 +38,9 @@ def apply_plan_command(
     - ``update_node_fields``
     - ``patch_node_config``
     - ``update_config_list``
+    - ``set_jump_rule``
+    - ``delete_jump_rule``
+    - ``move_jump_rule``
     - ``replace_node``
     - ``clear_nodes``
     """
@@ -158,6 +161,18 @@ def apply_plan_command(
                 if changed:
                     nodes[index] = _normalize_command_node(updated, factory, issues, path="/command/node")
                     selected_index = index
+    elif command_type in {"set_jump_rule", "delete_jump_rule", "move_jump_rule"}:
+        index = _optional_int(command.get("index"))
+        if _validate_indexes([index], len(nodes), issues, "/command/index"):
+            updated = copy.deepcopy(nodes[index])
+            config = updated.get("config")
+            if not isinstance(config, dict):
+                config = {}
+                updated["config"] = config
+            changed = _apply_jump_rule_command(config, command_type, command, issues, path="/command")
+            if changed:
+                nodes[index] = _normalize_command_node(updated, factory, issues, path="/command/node")
+                selected_index = index
     elif command_type == "replace_node":
         index = _optional_int(command.get("index"))
         if _validate_indexes([index], len(nodes), issues, "/command/index"):
@@ -373,6 +388,58 @@ def _apply_config_list_command(config, field, action, command, issues, *, path):
         return item_index != target_index
 
     issues.append(_issue("error", "invalid_list_action", f"未知列表动作：{action}", path=f"{path}/action"))
+    return False
+
+
+def _apply_jump_rule_command(config, command_type, command, issues, *, path):
+    jump_rules = config.get("jump_rules")
+    if jump_rules is None:
+        jump_rules = []
+        config["jump_rules"] = jump_rules
+    if not isinstance(jump_rules, list):
+        issues.append(_issue("error", "invalid_list_field", "jump_rules 不是 list。", path=f"{path}/field"))
+        return False
+
+    if command_type == "set_jump_rule":
+        item_index = _optional_int(command.get("item_index"))
+        rule = copy.deepcopy(command.get("rule") or command.get("item") or {})
+        if not isinstance(rule, dict):
+            issues.append(_issue("error", "invalid_jump_rule", "set_jump_rule.rule 必须是 object。", path=f"{path}/rule"))
+            return False
+        if item_index is None:
+            jump_rules.append(rule)
+            return True
+        if item_index < 0:
+            issues.append(_issue("error", "invalid_item_index", f"列表项索引超出范围：{item_index}", path=f"{path}/item_index"))
+            return False
+        if item_index >= len(jump_rules):
+            jump_rules.append(rule)
+            return True
+        merged = copy.deepcopy(jump_rules[item_index]) if isinstance(jump_rules[item_index], dict) else {}
+        merged.update(rule)
+        jump_rules[item_index] = merged
+        return True
+
+    if command_type == "delete_jump_rule":
+        item_index = _optional_int(command.get("item_index"))
+        if not _validate_list_indexes([item_index], len(jump_rules), issues, f"{path}/item_index"):
+            return False
+        del jump_rules[item_index]
+        return True
+
+    if command_type == "move_jump_rule":
+        item_index = _optional_int(command.get("item_index"))
+        if not _validate_list_indexes([item_index], len(jump_rules), issues, f"{path}/item_index"):
+            return False
+        target_index = _move_target(command, item_index)
+        if target_index is None or target_index < 0 or target_index >= len(jump_rules):
+            issues.append(_issue("error", "move_out_of_range", "跳转规则移动目标超出范围。", path=path))
+            return False
+        item = jump_rules.pop(item_index)
+        jump_rules.insert(target_index, item)
+        return item_index != target_index
+
+    issues.append(_issue("error", "unknown_command", f"未知 jump rule command：{command_type}", path=f"{path}/type"))
     return False
 
 
