@@ -692,6 +692,215 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(form.to_node()["config"]["rules"], [{"fields": ["B", "C"]}])
         app.processEvents()
 
+    def test_structured_list_refreshes_table_column_choices_per_row(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        schema = {
+            "form": {
+                "groups": [
+                    {
+                        "title": "参数",
+                        "fields": [
+                            {
+                                "key": "rules",
+                                "type": "structured_list",
+                                "item_schema": {
+                                    "columns": [
+                                        {
+                                            "key": "table_name",
+                                            "label": "目标表",
+                                            "type": "table_select",
+                                            "options_source": {"type": "table_names"},
+                                        },
+                                        {
+                                            "key": "field_name",
+                                            "label": "目标字段",
+                                            "type": "field_select",
+                                            "options_source": {"type": "table_columns", "table_field": "table_name"},
+                                        },
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+        node = {
+            "node_type_id": "demo.structured_table_field",
+            "node_id": "n1",
+            "name": "结构化表字段",
+            "enabled": True,
+            "node_version": "1.0.0",
+            "config": {
+                "rules": [{"table_name": "orders", "field_name": "id"}],
+            },
+        }
+        form = NodeConfigForm(
+            qt,
+            table_names=["orders", "logs"],
+            table_columns={"orders": ["id", "name"], "logs": ["row_id"]},
+        )
+        form.set_node(
+            node,
+            table_names=["orders", "logs"],
+            table_columns={"orders": ["id", "name"], "logs": ["row_id"]},
+            schema=schema,
+        )
+        editor = form.config_fields["rules"]["editor"]
+        table = editor.structured_state["table"]
+        table_name_editor = table.cellWidget(0, 0).findChild(qt.QtWidgets.QComboBox)
+        field_editor = table.cellWidget(0, 1).findChild(qt.QtWidgets.QComboBox)
+        self.assertIn("name", [field_editor.itemText(i) for i in range(field_editor.count())])
+        table_name_editor.setCurrentText("logs")
+        app.processEvents()
+        self.assertIn("row_id", [field_editor.itemText(i) for i in range(field_editor.count())])
+        app.processEvents()
+
+    def test_structured_list_cells_support_single_table_field_picker_actions(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        schema = {
+            "form": {
+                "groups": [
+                    {
+                        "title": "参数",
+                        "fields": [
+                            {
+                                "key": "rules",
+                                "type": "structured_list",
+                                "item_schema": {
+                                    "columns": [
+                                        {
+                                            "key": "table_name",
+                                            "label": "目标表",
+                                            "type": "table_select",
+                                            "options_source": {"type": "table_names"},
+                                        },
+                                        {
+                                            "key": "field_name",
+                                            "label": "目标字段",
+                                            "type": "field_select",
+                                            "options_source": {"type": "table_columns", "table_field": "table_name"},
+                                        },
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+        node = {
+            "node_type_id": "demo.structured_table_field",
+            "node_id": "n1",
+            "name": "结构化表字段",
+            "enabled": True,
+            "node_version": "1.0.0",
+            "config": {
+                "rules": [{"table_name": "orders", "field_name": "id"}],
+            },
+        }
+        calls = []
+
+        def action_handler(payload):
+            calls.append(payload)
+            return {"value": "name"}
+
+        form = NodeConfigForm(
+            qt,
+            table_names=["orders", "logs"],
+            table_columns={"orders": ["id", "name"], "logs": ["row_id"]},
+            action_handler=action_handler,
+        )
+        form.set_node(
+            node,
+            table_names=["orders", "logs"],
+            table_columns={"orders": ["id", "name"], "logs": ["row_id"]},
+            schema=schema,
+        )
+        editor = form.config_fields["rules"]["editor"]
+        table = editor.structured_state["table"]
+        cell_container = table.cellWidget(0, 1)
+        button = cell_container.findChild(qt.QtWidgets.QPushButton)
+        combo = cell_container.findChild(qt.QtWidgets.QComboBox)
+        self.assertIsNotNone(button)
+        self.assertIsNotNone(combo)
+        button.click()
+        self.assertEqual(calls[0]["action"]["key"], "pick_table_field")
+        self.assertEqual(calls[0]["table_columns"], {"orders": ["id", "name"], "logs": ["row_id"]})
+        self.assertEqual(combo.currentText(), "name")
+        self.assertEqual(form.to_node()["config"]["rules"], [{"table_name": "orders", "field_name": "name"}])
+        app.processEvents()
+
+    def test_controller_handles_single_table_field_picker_actions(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+
+        controller.config_form.set_node(
+            {
+                "node_type_id": "demo.lookup_field_picker",
+                "node_id": "n1",
+                "name": "表字段选择",
+                "enabled": True,
+                "node_version": "1.0.0",
+                "config": {
+                    "lookup_table": "orders",
+                    "lookup_field": "id",
+                },
+            },
+            table_names=["orders"],
+            table_columns={"orders": ["id", "name"]},
+            schema={
+                "form": {
+                    "groups": [
+                        {
+                            "title": "参数",
+                            "fields": [
+                                {
+                                    "key": "lookup_table",
+                                    "type": "table_select",
+                                    "options_source": {"type": "table_names"},
+                                },
+                                {
+                                    "key": "lookup_field",
+                                    "type": "field_select",
+                                    "options_source": {"type": "table_columns", "table_field": "lookup_table"},
+                                    "action": {"key": "pick_table_field", "table_field": "lookup_table"},
+                                },
+                            ],
+                        }
+                    ]
+                }
+            },
+        )
+
+        with patch.object(controller.qt.QtWidgets.QInputDialog, "getItem", return_value=("name", True)):
+            result = controller._pick_single_table_field_for_field(
+                "lookup_field",
+                {
+                    "action": {"key": "pick_table_field", "table_field": "lookup_table"},
+                    "schema": {"options_source": {"type": "table_columns", "table_field": "lookup_table"}},
+                    "table_columns": {"orders": ["id", "name"]},
+                    "value": "id",
+                },
+            )
+
+        self.assertEqual(result["value"], "name")
+        window.close()
+        app.processEvents()
+
     def test_node_ui_metadata_maps_protocol_to_chinese_ui(self):
         self.assertEqual(node_display_label("core.new_columns"), "新建列")
         self.assertEqual(category_label("数据处理"), "数据处理")

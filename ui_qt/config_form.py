@@ -462,6 +462,10 @@ class NodeConfigForm:
             editor.addItems(values)
             editor.setCurrentText(current)
             editor.blockSignals(False)
+        for field in self.config_fields.values():
+            if field.get("kind") != "structured_list":
+                continue
+            self._refresh_structured_list_options(field.get("editor"))
 
     def _form_layout(self, parent):
         form = self.qt.QtWidgets.QFormLayout(parent)
@@ -573,19 +577,24 @@ class NodeConfigForm:
         for column_index, column in enumerate(columns):
             key = str(column.get("key") or "")
             cell_value = item.get(key, column.get("default", "")) if isinstance(item, dict) else column.get("default", "")
-            editor = self._structured_cell_editor(column, cell_value)
+            editor = self._structured_cell_editor(frame, column, cell_value)
             table.setCellWidget(row, column_index, editor)
             self._connect_dynamic_refresh(editor, self._structured_column_kind(column))
         table.setCurrentCell(row, 0)
 
-    def _structured_cell_editor(self, column, value):
+    def _structured_cell_editor(self, frame, column, value):
         choices = list(column.get("choices") or [])
         options_source = column.get("options_source") or {}
         if not choices and options_source.get("type") == "preview_headers":
             choices = list(self.headers)
+        elif not choices and options_source.get("type") == "table_names":
+            choices = list(self.table_names)
+        elif not choices and options_source.get("type") == "table_columns":
+            choices = self._table_column_choices_for_options_source(options_source)
         kind = self._structured_column_kind(column)
         key = str(column.get("key") or "")
         editor = self._editor_for_field(key, kind, value, choices)
+        self._connect_structured_refresh(editor, kind, frame)
         action = column.get("action") or {}
         if not action:
             action = self._default_action_for_structured_column(kind, options_source)
@@ -629,7 +638,66 @@ class NodeConfigForm:
                 "style": "picker",
                 "source": "table_names",
             }
+        if source_type == "table_columns":
+            return {
+                "key": "pick_table_fields" if kind == "field_multi_select" else "pick_table_field",
+                "label": "选择字段",
+                "style": "picker",
+                "source": "table_columns",
+                "multiple": kind == "field_multi_select",
+                "table_field": str((options_source or {}).get("table_field") or ""),
+            }
         return {}
+
+    def _table_column_choices_for_options_source(self, options_source, row_values=None):
+        options_source = options_source or {}
+        table_field = str(options_source.get("table_field") or "").strip()
+        selected_table = ""
+        if table_field and isinstance(row_values, dict):
+            selected_table = str(row_values.get(table_field) or "")
+        if not selected_table and table_field:
+            dependency = self.config_fields.get(table_field) or {}
+            selected_table = str(self._field_value_for_action(dependency) or "")
+        return [str(item) for item in (self.table_columns.get(selected_table, []) or [])]
+
+    def _refresh_structured_list_options(self, editor):
+        state = getattr(editor, "structured_state", {})
+        table = state.get("table")
+        columns = state.get("columns") or []
+        if table is None:
+            return
+        for row in range(table.rowCount()):
+            row_values = {}
+            for column_index, column in enumerate(columns):
+                key = str(column.get("key") or "")
+                if not key:
+                    continue
+                widget = self._structured_cell_widget(table.cellWidget(row, column_index), column)
+                if widget is None:
+                    continue
+                row_values[key] = self._structured_widget_value(widget, column)
+            for column_index, column in enumerate(columns):
+                widget = self._structured_cell_widget(table.cellWidget(row, column_index), column)
+                if widget is None or self._structured_column_kind(column) != "choice":
+                    continue
+                options_source = column.get("options_source") or {}
+                source_type = str(options_source.get("type") or "")
+                if source_type == "preview_headers":
+                    values = [str(item) for item in self.headers]
+                elif source_type == "table_names":
+                    values = [str(item) for item in self.table_names]
+                elif source_type == "table_columns":
+                    values = self._table_column_choices_for_options_source(options_source, row_values=row_values)
+                else:
+                    continue
+                current = str(widget.currentText())
+                widget.blockSignals(True)
+                widget.clear()
+                if current and current not in values:
+                    values.insert(0, current)
+                widget.addItems(values)
+                widget.setCurrentText(current)
+                widget.blockSignals(False)
 
     def _trigger_structured_cell_action(self, editor, kind, column_key, column_schema, action):
         if not callable(self.action_handler):
@@ -863,6 +931,19 @@ class NodeConfigForm:
                 editor.textChanged.connect(lambda *_args: self._apply_dynamic_state())
             else:
                 editor.textChanged.connect(lambda *_args: self._apply_dynamic_state())
+        except AttributeError:
+            return
+
+    def _connect_structured_refresh(self, editor, kind, frame):
+        try:
+            if kind == "bool":
+                editor.stateChanged.connect(lambda *_args: self._refresh_structured_list_options(frame))
+            elif kind == "choice":
+                editor.currentTextChanged.connect(lambda *_args: self._refresh_structured_list_options(frame))
+            elif kind in {"long_text", "json"}:
+                editor.textChanged.connect(lambda *_args: self._refresh_structured_list_options(frame))
+            else:
+                editor.textChanged.connect(lambda *_args: self._refresh_structured_list_options(frame))
         except AttributeError:
             return
 

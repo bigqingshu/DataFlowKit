@@ -870,6 +870,8 @@ class QtWorkflowMainWindow:
         action_key = str(action.get("key") or "")
         if action_key == "pick_table_name":
             return self._pick_single_table_for_field(field_key, payload)
+        if action_key == "pick_table_field":
+            return self._pick_single_table_field_for_field(field_key, payload)
         if action_key == "pick_table_fields":
             return self._pick_multi_table_fields_for_field(field_key, payload)
         if action_key == "pick_preview_header":
@@ -1001,6 +1003,34 @@ class QtWorkflowMainWindow:
             if item.checkState() == self.qt.QtCore.Qt.CheckState.Checked:
                 values.append(item.text())
         return {"value": values}
+
+    def _pick_single_table_field_for_field(self, field_key, payload):
+        action = payload.get("action") or {}
+        schema = payload.get("schema") or {}
+        table_field = str(action.get("table_field") or (schema.get("options_source") or {}).get("table_field") or "").strip()
+        table_name = ""
+        if table_field:
+            table_name = str(self._current_config_field_value(table_field) or "")
+        table_columns = payload.get("table_columns") or {}
+        candidates = [str(item) for item in (table_columns.get(table_name, []) or []) if str(item).strip()]
+        if not table_name:
+            self.status_bar.showMessage("请先选择关联数据表。")
+            return {}
+        if not candidates:
+            self.status_bar.showMessage(f"数据表 {table_name} 暂无可选字段。")
+            return {}
+        current = str(payload.get("value") or "")
+        value, accepted = self.qt.QtWidgets.QInputDialog.getItem(
+            self.window,
+            f"选择{field_key}",
+            f"{table_name} 可用字段：",
+            candidates,
+            max(0, candidates.index(current)) if current in candidates else 0,
+            False,
+        )
+        if not accepted:
+            return {}
+        return {"value": value}
 
     def _current_config_field_value(self, field_key):
         field = self.config_form.config_fields.get(field_key) or {}
