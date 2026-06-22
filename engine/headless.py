@@ -72,6 +72,17 @@ from workflow.nodes.file_nodes import (
     apply_file_list_node,
     make_numbered_path,
 )
+from workflow.nodes.group_nodes import (
+    build_empty_group_stat,
+    build_group_final_output,
+    build_group_input_table,
+    build_group_status_text,
+    ensure_group_parent_context,
+    make_group_child_context,
+    merge_group_child_audit_logs,
+    normalize_group_sqlite_mode,
+    normalize_group_transit_conflict_mode,
+)
 from workflow.nodes.loop_nodes import (
     apply_loop_judge_to_state,
     build_loop_judge_output,
@@ -94,7 +105,11 @@ from workflow.nodes.selected_columns_nodes import (
     normalize_selected_columns_write_mode,
     resolve_selected_columns_write_target,
 )
-from workflow.nodes.transit_nodes import apply_save_transit_node
+from workflow.nodes.transit_nodes import (
+    append_headers_rows,
+    apply_save_transit_node,
+    make_unique_transit_name,
+)
 from workflow.nodes.writeback_nodes import (
     apply_external_table_to_current_node,
     build_writeback_actions as build_writeback_actions_from_records,
@@ -553,6 +568,8 @@ class HeadlessWorkflowEngine:
                     ))
                 else:
                     anchor_ids[anchor_id] = idx
+            if enabled and node_type_id == "core.group":
+                self._append_group_validation_issues(config, idx, node_label, issues)
 
         ok = not has_error_issues(issues)
         return {
@@ -562,6 +579,85 @@ class HeadlessWorkflowEngine:
             "supported_node_type_ids": sorted(SUPPORTED_HEADLESS_NODE_TYPE_IDS),
             "supported_node_types": sorted(SUPPORTED_HEADLESS_NODES),
         }
+
+    def _append_group_validation_issues(self, config, node_index, node_label, issues, *, path=""):
+        nodes = (config or {}).get("nodes", [])
+        group_name = str((config or {}).get("group_name", "") or node_label or "节点组").strip()
+        group_path = path or group_name
+        if nodes in (None, ""):
+            return
+        if not isinstance(nodes, list):
+            issues.append(self._issue(
+                "error",
+                "invalid_group_nodes",
+                node_index,
+                node_label,
+                f"节点组【{group_path}】的 config.nodes 必须是 list",
+                node_type_id="core.group",
+            ))
+            return
+        for inner_idx, inner in enumerate(nodes):
+            prefix = f"节点组【{group_path}】内第 {inner_idx + 1} 个节点"
+            if not isinstance(inner, dict):
+                issues.append(self._issue(
+                    "error",
+                    "invalid_group_inner_node",
+                    node_index,
+                    node_label,
+                    f"{prefix}必须是 dict",
+                    node_type_id="core.group",
+                ))
+                continue
+            inner_type_id = self._node_type_id_from_node(inner)
+            inner_label = self._node_label(inner, inner_type_id)
+            if not inner_type_id:
+                issues.append(self._issue(
+                    "error",
+                    "missing_group_inner_node_type",
+                    node_index,
+                    node_label,
+                    f"{prefix}缺少 node_type_id/type",
+                    node_type_id="core.group",
+                ))
+                continue
+            enabled = bool(inner.get("enabled", True))
+            if inner_type_id in ("core.loop_start", "core.loop_judge"):
+                issues.append(self._issue(
+                    "error",
+                    "unsupported_group_loop_node",
+                    node_index,
+                    node_label,
+                    f"{prefix}【{inner_label}】暂不支持放在节点组内部",
+                    node_type_id=inner_type_id,
+                ))
+                continue
+            if enabled and not self.is_node_supported(inner_type_id):
+                issues.append(self._issue(
+                    "error",
+                    "unsupported_group_inner_node",
+                    node_index,
+                    node_label,
+                    f"{prefix}【{inner_label}】暂不支持 headless 执行",
+                    node_type_id=inner_type_id,
+                ))
+            elif not enabled and not self.is_node_supported(inner_type_id):
+                issues.append(self._issue(
+                    "warning",
+                    "disabled_unsupported_group_inner_node",
+                    node_index,
+                    node_label,
+                    f"{prefix}【{inner_label}】暂不支持但执行时会跳过",
+                    node_type_id=inner_type_id,
+                ))
+            if enabled and inner_type_id == "core.group":
+                nested_path = f"{group_path}/{str((inner.get('config') or {}).get('group_name', '') or inner_label)}"
+                self._append_group_validation_issues(
+                    inner.get("config", {}) or {},
+                    node_index,
+                    node_label,
+                    issues,
+                    path=nested_path,
+                )
 
     def preview_plan(self, plan, input_table=None, *, stop_index=None, **kwargs):
         kwargs.pop("execute_actions", None)
@@ -761,6 +857,16 @@ class HeadlessWorkflowEngine:
         if node_type_id == "core.conditional_jump":
             headers, rows, stat, jump_to = self._apply_conditional_jump(headers, rows, config, context, anchors)
             return headers, rows, stat, jump_to
+        if node_type_id == "core.group":
+            h, r, stat = self._apply_group_node(
+                headers,
+                rows,
+                config,
+                context,
+                execute_actions,
+                cancel_event,
+            )
+            return h, r, stat, None
         if node_type_id == "core.loop_start":
             h, r, stat, jump_to = self._apply_loop_start_node(
                 headers,
@@ -1478,6 +1584,239 @@ class HeadlessWorkflowEngine:
             path = f"{options.get('base_name', '中转数据')}.xlsx"
         result = self.services.export_xlsx(path, {"headers": headers, "rows": rows}, sheet_name=options.get("base_name", "中转数据"))
         return f"xlsx：{result.get('path', path)}"
+
+    def _apply_group_node(self, headers, rows, config, context, execute_actions, cancel_event):
+        parent_context = ensure_group_parent_context(context)
+        nodes = config.get("nodes", []) or []
+        if not isinstance(nodes, list):
+            raise ValueError("节点组 config.nodes 必须是 list。")
+        self._ensure_group_inner_nodes_supported(nodes)
+        group_name = str(config.get("group_name") or "节点组").strip() or "节点组"
+
+        source_headers, source_rows, source_name = self._read_group_source_table(
+            headers,
+            rows,
+            config,
+            parent_context,
+        )
+        cur_headers, cur_rows, input_stat = build_group_input_table(
+            source_headers,
+            source_rows,
+            config,
+        )
+
+        if not nodes:
+            output_parts = self._write_group_outputs(
+                cur_headers,
+                cur_rows,
+                config,
+                parent_context,
+                execute_actions=execute_actions,
+            )
+            if config.get("main_output_mode", "输出为当前工作表") == "透传原当前表":
+                stat = build_empty_group_stat(
+                    group_name,
+                    source_name,
+                    input_stat,
+                    output_parts,
+                    passthrough_current=True,
+                )
+                return list(headers), [list(row) for row in rows], stat
+            stat = build_empty_group_stat(group_name, source_name, input_stat, output_parts)
+            return cur_headers, cur_rows, stat
+
+        child_context = make_group_child_context(parent_context, config)
+        self._prepare_group_child_context(parent_context, child_context)
+        child_plan = {"nodes": copy.deepcopy(nodes), "headers": cur_headers, "rows": cur_rows}
+        child_result = self.run_plan(
+            child_plan,
+            execute_actions=execute_actions,
+            dry_run=bool(parent_context.get("dry_run", False)),
+            initial_context=child_context,
+            progress_callback=parent_context.get("progress_callback"),
+            cancel_event=cancel_event or parent_context.get("cancel_event"),
+            return_context=True,
+        )
+        cur_headers = list(child_result.headers)
+        cur_rows = [list(row) for row in child_result.rows]
+        self._merge_group_child_context(parent_context, child_result.context, config)
+
+        output_parts = self._write_group_outputs(
+            cur_headers,
+            cur_rows,
+            config,
+            parent_context,
+            execute_actions=execute_actions,
+        )
+        final_headers, final_rows, main_stat = build_group_final_output(
+            headers,
+            rows,
+            cur_headers,
+            cur_rows,
+            config,
+        )
+        stat = build_group_status_text(
+            group_name,
+            source_name,
+            input_stat,
+            main_stat,
+            logs=child_result.logs,
+            output_parts=output_parts,
+        )
+        return final_headers, final_rows, stat
+
+    def _ensure_group_inner_nodes_supported(self, nodes):
+        for index, node in enumerate(nodes or [], start=1):
+            if not isinstance(node, dict):
+                raise ValueError(f"节点组内第 {index} 个节点必须是 dict。")
+            if not node.get("enabled", True):
+                continue
+            node_type_id = self._node_type_id_from_node(node)
+            node_label = self._node_label(node, node_type_id)
+            if node_type_id in ("core.loop_start", "core.loop_judge"):
+                raise ValueError(f"第一版节点组暂不支持组内循环节点：{node_label}")
+            if not self.is_node_supported(node_type_id):
+                raise ValueError(f"节点组内节点暂不支持 headless 执行：{node_label}")
+            if node_type_id == "core.group":
+                self._ensure_group_inner_nodes_supported((node.get("config") or {}).get("nodes", []) or [])
+
+    def _read_group_source_table(self, headers, rows, config, context):
+        source_type = str(config.get("input_source_type", "当前工作表") or "当前工作表").strip()
+        if source_type == "当前工作表":
+            fixed_headers = list(headers)
+            return fixed_headers, normalize_rows(rows, len(fixed_headers)), "当前工作表"
+        if source_type == "中转副表":
+            name = str(config.get("input_transit_table", "") or "").strip()
+            if not name:
+                raise ValueError("节点组入口选择了中转副表，但没有填写中转副表名。")
+            source_headers, source_rows = self._load_transit_table(context, name)
+            self._record_table_access_log(
+                context,
+                "read_transit_table",
+                name,
+                "ok",
+                "中转副表",
+                "",
+                f"节点组入口读取中转副表 {name}：{len(source_rows)} 行 × {len(source_headers)} 列",
+            )
+            return source_headers, source_rows, f"中转副表:{name}"
+        if source_type == "SQLite表":
+            name = str(config.get("input_sqlite_table", "") or "").strip()
+            if not name:
+                raise ValueError("节点组入口选择了 SQLite 表，但没有填写表名。")
+            source_headers, source_rows = self._load_named_table(name, context)
+            return source_headers, source_rows, f"SQLite:{name}"
+        fixed_headers = list(headers)
+        return fixed_headers, normalize_rows(rows, len(fixed_headers)), "当前工作表"
+
+    def _prepare_group_child_context(self, parent_context, child_context):
+        for key in (
+            "execute_actions",
+            "dry_run",
+            "safety_policy",
+            "table_sources",
+            "tables",
+            "table_access_policy",
+            "selected_columns_config_preview_only",
+            "allow_selected_columns_write_in_preview",
+        ):
+            if key in parent_context and key not in child_context:
+                child_context[key] = copy.deepcopy(parent_context[key])
+
+    def _merge_group_child_context(self, parent_context, child_context, config):
+        if config.get("transit_scope", "组内中转私有") == "允许输出到外部":
+            parent_context["transit_tables"] = copy.deepcopy(child_context.get("transit_tables", {}) or {})
+        merge_group_child_audit_logs(parent_context, child_context)
+        if child_context.get("ui_refresh_requests"):
+            requests = parent_context.setdefault("ui_refresh_requests", [])
+            for item in child_context.get("ui_refresh_requests", []) or []:
+                if item not in requests:
+                    requests.append(item)
+
+    def _write_group_outputs(self, result_headers, result_rows, config, parent_context, *, execute_actions=False):
+        parts = []
+        parent_context = ensure_group_parent_context(parent_context)
+        if config.get("save_to_transit", False):
+            name = str(config.get("output_transit_name") or config.get("group_name") or "节点组结果").strip() or "节点组结果"
+            conflict = normalize_group_transit_conflict_mode(config.get("output_transit_conflict_mode", "覆盖整表"))
+            parts.append(self._save_group_output_to_transit(
+                parent_context,
+                name,
+                result_headers,
+                result_rows,
+                conflict,
+                source=f"节点组:{config.get('group_name', '节点组')}",
+            ))
+
+        sqlite_preview_only = bool(parent_context.get("selected_columns_config_preview_only", False))
+        if config.get("save_to_sqlite", False) and (not execute_actions or sqlite_preview_only):
+            parts.append("SQLite保存已跳过：仅执行计划时保存")
+        elif config.get("save_to_sqlite", False):
+            table_name = str(config.get("output_sqlite_table") or config.get("group_name") or "节点组结果").strip()
+            if not table_name:
+                raise ValueError("节点组已启用 SQLite 输出，但未填写 SQLite 表名。")
+            mode = normalize_group_sqlite_mode(config.get("output_sqlite_mode", "自动加时间戳新表"))
+            info = self.services.write_table(
+                table_name,
+                {"headers": result_headers, "rows": result_rows},
+                mode=mode,
+                backup=True,
+            )
+            parts.append(f"SQLite表：{info.get('table_name')}（{info.get('rows')}行）")
+            requests = parent_context.setdefault("ui_refresh_requests", [])
+            if "table_list" not in requests:
+                requests.append("table_list")
+        return parts
+
+    def _save_group_output_to_transit(self, context, name, headers, rows, conflict_mode="覆盖", source="节点组"):
+        transit_tables = context.setdefault("transit_tables", {})
+        base_name = str(name or "节点组结果").strip() or "节点组结果"
+        headers = list(headers or [])
+        rows = [list(row) for row in (rows or [])]
+        exists_before = base_name in transit_tables
+        if conflict_mode == "自动加时间戳":
+            final_name = make_unique_transit_name(base_name, transit_tables)
+            self._write_context_transit_table(
+                context,
+                final_name,
+                headers,
+                rows,
+                source=source,
+                operation="write_transit_table",
+                write_mode=conflict_mode,
+                message=f"写入中转副表 {final_name}：{len(rows)} 行 × {len(headers)} 列",
+            )
+            return f"中转副表：{final_name}"
+        if conflict_mode == "追加" and exists_before:
+            old = transit_tables.get(base_name, {}) or {}
+            merged_headers, merged_rows = append_headers_rows(
+                old.get("headers", []) or [],
+                old.get("rows", []) or [],
+                headers,
+                rows,
+            )
+            self._write_context_transit_table(
+                context,
+                base_name,
+                merged_headers,
+                merged_rows,
+                source=f"{source}:追加",
+                operation="append_transit_table",
+                write_mode=conflict_mode,
+                message=f"追加中转副表 {base_name}：新增 {len(rows)} 行，累计 {len(merged_rows)} 行",
+            )
+            return f"中转副表追加：{base_name}（新增 {len(rows)} 行，累计 {len(merged_rows)} 行）"
+        self._write_context_transit_table(
+            context,
+            base_name,
+            headers,
+            rows,
+            source=source,
+            operation="write_transit_table",
+            write_mode=conflict_mode or "覆盖",
+            message=f"写入中转副表 {base_name}：{len(rows)} 行 × {len(headers)} 列",
+        )
+        return f"中转副表：{base_name}"
 
     def _apply_loop_start_node(self, headers, rows, config, context, nodes, *, node_index=0, end_index=None):
         context.setdefault("loop_states", {})

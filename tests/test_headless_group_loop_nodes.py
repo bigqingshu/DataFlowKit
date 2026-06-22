@@ -1,8 +1,13 @@
 # -*- coding: utf-8 -*-
+import os
+import sqlite3
+import tempfile
 import unittest
 from datetime import datetime
+from pathlib import Path
 
 from engine import HeadlessWorkflowEngine
+from engine.workflow_services import WorkflowServices
 from workflow.nodes.loop_nodes import LOOP_RESULT_HEADERS
 
 
@@ -145,6 +150,185 @@ class HeadlessLoopNodeTests(unittest.TestCase):
         self.assertTrue(engine.is_node_supported("core.loop_start"))
         self.assertTrue(engine.is_node_supported("循环判断回跳"))
         self.assertIn("core.loop_judge", engine.list_node_type_ids(include_unsupported=False))
+
+
+class HeadlessGroupNodeTests(unittest.TestCase):
+    def make_engine(self):
+        ids = iter([f"g{i}" for i in range(1, 20)])
+        return HeadlessWorkflowEngine(
+            node_id_factory=lambda: next(ids),
+            now_factory=lambda: datetime(2026, 1, 2, 3, 4, 5),
+        )
+
+    def test_group_runs_inner_nodes_and_outputs_group_result(self):
+        engine = self.make_engine()
+        plan = {
+            "nodes": [{
+                "node_type_id": "core.group",
+                "config": {
+                    "group_name": "组A",
+                    "input_fields": ["Name"],
+                    "input_mapping": {"Name": "A"},
+                    "nodes": [{
+                        "node_type_id": "core.new_columns",
+                        "config": {
+                            "columns_text": "Done=ok",
+                            "value_mode": "按列配置值",
+                        },
+                    }],
+                },
+            }],
+            "headers": ["A"],
+            "rows": [["alpha"], ["beta"]],
+        }
+
+        result = engine.run_plan(plan)
+
+        self.assertEqual(result.headers, ["Name", "Done"])
+        self.assertEqual(result.rows, [["alpha", "ok"], ["beta", "ok"]])
+        self.assertEqual(result.steps, 1)
+        self.assertIn("节点组【组A】完成", result.logs[0])
+        self.assertIn("主输出=组结果作为当前表", result.logs[0])
+
+    def test_group_can_passthrough_main_table_and_save_transit_output(self):
+        engine = self.make_engine()
+        plan = {
+            "nodes": [{
+                "type": "节点组 / 子工作流",
+                "config": {
+                    "group_name": "组B",
+                    "main_output_mode": "透传原当前表",
+                    "save_to_transit": True,
+                    "output_transit_name": "组输出",
+                    "nodes": [{
+                        "type": "新建列",
+                        "config": {
+                            "columns_text": "Inner=1",
+                            "value_mode": "按列配置值",
+                        },
+                    }],
+                },
+            }],
+            "headers": ["A"],
+            "rows": [["a"]],
+        }
+
+        result = engine.run_plan(plan)
+
+        self.assertEqual(result.headers, ["A"])
+        self.assertEqual(result.rows, [["a"]])
+        self.assertEqual(result.context["transit_tables"]["组输出"]["headers"], ["A", "Inner"])
+        self.assertEqual(result.context["transit_tables"]["组输出"]["rows"], [["a", "1"]])
+        self.assertIn("主输出=透传原当前表", result.logs[0])
+
+    def test_group_can_read_transit_source_and_expose_child_transit_when_allowed(self):
+        engine = self.make_engine()
+        plan = {
+            "nodes": [{
+                "node_type_id": "core.group",
+                "config": {
+                    "group_name": "组C",
+                    "input_source_type": "中转副表",
+                    "input_transit_table": "来源",
+                    "transit_scope": "允许输出到外部",
+                    "nodes": [{
+                        "node_type_id": "core.save_transit",
+                        "config": {
+                            "transit_name": "组内保存",
+                            "save_memory": True,
+                        },
+                    }],
+                },
+            }],
+        }
+
+        result = engine.run_plan(
+            plan,
+            initial_context={
+                "transit_tables": {
+                    "来源": {"headers": ["A"], "rows": [["from-transit"]], "source": "测试"}
+                }
+            },
+        )
+
+        self.assertEqual(result.headers, ["A"])
+        self.assertEqual(result.rows, [["from-transit"]])
+        self.assertIn("组内保存", result.context["transit_tables"])
+        self.assertEqual(result.context["transit_tables"]["组内保存"]["rows"], [["from-transit"]])
+        self.assertTrue(
+            any(log.get("operation") == "read_transit_table" for log in result.context["table_access_logs"])
+        )
+
+    def test_group_sqlite_output_only_writes_when_execute_actions_is_true(self):
+        with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:
+            db_path = str(Path(temp_dir) / "group.db")
+            engine = HeadlessWorkflowEngine(
+                services=WorkflowServices(db_path=db_path),
+                now_factory=lambda: datetime(2026, 1, 2, 3, 4, 5),
+            )
+            plan = {
+                "nodes": [{
+                    "node_type_id": "core.group",
+                    "config": {
+                        "group_name": "组D",
+                        "save_to_sqlite": True,
+                        "output_sqlite_table": "group_out",
+                        "output_sqlite_mode": "覆盖表",
+                        "nodes": [{
+                            "node_type_id": "core.new_columns",
+                            "config": {
+                                "columns_text": "B=b",
+                                "value_mode": "按列配置值",
+                            },
+                        }],
+                    },
+                }],
+                "headers": ["A"],
+                "rows": [["a"]],
+            }
+
+            preview = engine.preview_plan(plan)
+            self.assertFalse(os.path.exists(db_path))
+
+            executed = engine.run_plan(plan, execute_actions=True)
+            conn = sqlite3.connect(db_path)
+            try:
+                rows = conn.execute('SELECT "A", "B" FROM "group_out"').fetchall()
+            finally:
+                conn.close()
+
+        self.assertEqual(preview.headers, ["A", "B"])
+        self.assertEqual(executed.headers, ["A", "B"])
+        self.assertEqual(rows, [("a", "b")])
+        self.assertIn("SQLite表：group_out（1行）", executed.logs[0])
+
+    def test_group_rejects_inner_loop_nodes(self):
+        engine = self.make_engine()
+        plan = {
+            "nodes": [{
+                "node_type_id": "core.group",
+                "config": {
+                    "group_name": "组E",
+                    "nodes": [{
+                        "node_type_id": "core.loop_start",
+                        "config": {"loop_id": "L"},
+                    }],
+                },
+            }],
+            "headers": ["A"],
+            "rows": [["a"]],
+        }
+
+        validation = engine.validate_plan(plan)
+
+        self.assertFalse(validation["ok"])
+        self.assertEqual(validation["issues"][0]["code"], "unsupported_group_loop_node")
+
+    def test_group_node_is_reported_as_headless_supported(self):
+        engine = self.make_engine()
+
+        self.assertTrue(engine.is_node_supported("core.group"))
+        self.assertIn("core.group", engine.list_node_type_ids(include_unsupported=False))
 
 
 if __name__ == "__main__":

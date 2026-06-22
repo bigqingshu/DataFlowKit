@@ -86,6 +86,7 @@ HEADLESS_DATA_NODE_TYPE_IDS = {
 }
 
 HEADLESS_CONTROL_NODE_TYPE_IDS = {
+    "core.group",
     "core.loop_start",
     "core.loop_judge",
     "core.jump_anchor",

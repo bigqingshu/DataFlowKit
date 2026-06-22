@@ -374,6 +374,10 @@ Runtime identity rules:
 - `core.file_list` and `core.batch_rename` run headlessly. Batch rename only
   changes files when `execute_actions = true` and `config.actual_rename = true`;
   otherwise it returns the preview table.
+- `core.group` runs headlessly for UI-free child workflows. The first version
+  supports current/transit/SQLite inputs, input-field mapping, transit/SQLite
+  group outputs, and main-table passthrough; loop nodes are still rejected inside
+  group nodes to keep nested control flow explicit.
 - `core.loop_start` and `core.loop_judge` run headlessly. The runtime keeps
   loop queues/results in `context.loop_states` and `context.loop_results`, writes
   the current item/result/queue transit tables to `context.transit_tables`, and
