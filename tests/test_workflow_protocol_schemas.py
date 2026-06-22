@@ -279,6 +279,7 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
         joined = "\n".join(section["lines"])
         self.assertIn("必填", joined)
         self.assertIn("支持动作：选择字段", joined)
+        self.assertEqual(fields["target_field"]["help_sections"][0]["title"], "字段说明")
 
         match_payload = build_field_help_payload("match_value_field", fields["match_value_field"])
         match_joined = "\n".join(match_payload["sections"][0]["lines"])

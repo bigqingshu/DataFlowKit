@@ -1062,6 +1062,9 @@ def config_field_schema(key, value=None, *, headers=None, table_names=None, tabl
             "columns": structured_columns,
         }
     schema.update(dynamic_rules_for_field(key))
+    help_sections = field_help_sections(key, schema)
+    if help_sections:
+        schema["help_sections"] = help_sections
     return schema
 
 
