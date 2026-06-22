@@ -55,6 +55,23 @@ def coerce_form_value(kind, text, field_name=""):
     return "" if text is None else str(text)
 
 
+def coerce_multi_select_value(value):
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    return [str(value)]
+
+
+def format_multi_select_summary(value):
+    items = coerce_multi_select_value(value)
+    if not items:
+        return "未选择"
+    return "、".join(items)
+
+
 def structured_item_default(columns):
     item = {}
     for column in columns or []:
@@ -158,6 +175,8 @@ class NodeConfigForm:
             editor = field["editor"]
             if kind == "bool":
                 config[key] = bool(editor.isChecked())
+            elif kind == "field_multi_select":
+                config[key] = list(getattr(editor, "multi_select_value", []))
             elif kind == "choice":
                 config[key] = str(editor.currentText())
             elif kind == "structured_list":
@@ -273,7 +292,9 @@ class NodeConfigForm:
         field_schema = dict(field_schema or {})
         field_type = field_schema.get("type", "")
         choices = list(field_schema.get("choices") or choices_for_field(key, headers=self.headers))
-        if field_type in {"select", "field_select", "table_select"} or choices:
+        if field_type == "field_multi_select":
+            kind = "field_multi_select"
+        elif field_type in {"select", "field_select", "table_select"} or choices:
             kind = "choice"
         elif field_type == "structured_list":
             kind = "structured_list"
@@ -281,7 +302,7 @@ class NodeConfigForm:
             kind = "long_text"
         elif field_type == "bool":
             kind = "bool"
-        elif field_type == "json" or field_type == "field_multi_select":
+        elif field_type == "json":
             kind = "json"
         elif field_type == "number":
             kind = value_kind(value) if value_kind(value) in {"int", "float"} else "text"
@@ -362,6 +383,8 @@ class NodeConfigForm:
             return None
         if kind == "bool":
             return bool(editor.isChecked())
+        if kind == "field_multi_select":
+            return list(getattr(editor, "multi_select_value", []))
         if kind == "choice":
             return str(editor.currentText())
         if kind == "structured_list":
@@ -377,6 +400,10 @@ class NodeConfigForm:
             return
         if kind == "bool":
             editor.setChecked(bool(value))
+        elif kind == "field_multi_select":
+            values = coerce_multi_select_value(value)
+            editor.multi_select_value = values
+            editor.setText(format_multi_select_summary(values))
         elif kind == "choice":
             editor.setCurrentText(format_form_value(value))
         elif kind in {"long_text", "json"}:
@@ -413,6 +440,10 @@ class NodeConfigForm:
         if kind == "bool":
             widget = self.qt.QtWidgets.QCheckBox()
             widget.setChecked(bool(value))
+            return widget
+        if kind == "field_multi_select":
+            widget = self._line(format_multi_select_summary(value), read_only=True)
+            widget.multi_select_value = coerce_multi_select_value(value)
             return widget
         if kind == "choice":
             widget = self.qt.QtWidgets.QComboBox()
@@ -739,6 +770,8 @@ class NodeConfigForm:
                 continue
             if kind == "bool":
                 values[key] = bool(editor.isChecked())
+            elif kind == "field_multi_select":
+                values[key] = list(getattr(editor, "multi_select_value", []))
             elif kind == "choice":
                 values[key] = str(editor.currentText())
             elif kind == "structured_list":

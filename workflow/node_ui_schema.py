@@ -1176,6 +1176,17 @@ def build_node_detail_payload(node_type_id, *, display_name="", category="", sup
     resolved_category = category or definition.get("category", "未知")
     supported = definition.get("supported_headless") if supported_headless is None else supported_headless
     meta = node_ui_description(stable_id, supported_headless=supported)
+    default_config = default_config_for_type(resolved_display_name)
+    config_groups = config_form_groups_for_node(stable_id, default_config)
+
+    config_lines = []
+    for group in config_groups:
+        fields = group.get("fields") or []
+        labels = [str(item.get("label") or item.get("key") or "") for item in fields if str(item.get("label") or item.get("key") or "").strip()]
+        if labels:
+            config_lines.append(f"{group.get('title', '参数')}：" + "、".join(labels[:6]))
+    if not config_lines and default_config:
+        config_lines.append("可配置字段：" + "、".join(list(default_config.keys())[:6]))
 
     sections = [
         {
@@ -1188,6 +1199,11 @@ def build_node_detail_payload(node_type_id, *, display_name="", category="", sup
         sections.append({
             "title": "注意",
             "lines": warnings,
+        })
+    if config_lines:
+        sections.append({
+            "title": "配置项",
+            "lines": config_lines,
         })
     if supported is False:
         sections.append({
@@ -1203,6 +1219,7 @@ def build_node_detail_payload(node_type_id, *, display_name="", category="", sup
         "description": meta.get("description") or meta.get("summary") or "暂无说明",
         "badges": list(meta.get("badges") or []),
         "warnings": warnings,
+        "config_summary": config_lines,
         "risk": meta.get("risk", "unknown"),
         "supported_headless": bool(supported),
         "sections": sections,

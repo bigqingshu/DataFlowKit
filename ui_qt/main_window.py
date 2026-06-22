@@ -865,19 +865,39 @@ class QtWorkflowMainWindow:
         if not candidates:
             self.status_bar.showMessage("当前没有可选字段。")
             return {}
-        current_value = str(payload.get("value") or "")
-        current_items = [item.strip() for item in current_value.split(",") if item.strip()]
-        text, accepted = self.qt.QtWidgets.QInputDialog.getText(
-            self.window,
-            f"选择{field_key}",
-            "请输入字段名，多个字段用逗号分隔：\n" + "、".join(candidates),
-            text=", ".join(current_items),
+        selected = set(str(item) for item in (payload.get("value") or []) if str(item).strip())
+
+        dialog = self.qt.QtWidgets.QDialog(self.window)
+        dialog.setWindowTitle(f"选择{field_key}")
+        dialog.resize(360, 420)
+        layout = self.qt.QtWidgets.QVBoxLayout(dialog)
+        hint = self.qt.QtWidgets.QLabel("勾选需要的字段，可多选。")
+        layout.addWidget(hint)
+        list_widget = self.qt.QtWidgets.QListWidget(dialog)
+        list_widget.setSelectionMode(self.qt.QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
+        for item in candidates:
+            row = self.qt.QtWidgets.QListWidgetItem(item, list_widget)
+            row.setFlags(row.flags() | self.qt.QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+            row.setCheckState(
+                self.qt.QtCore.Qt.CheckState.Checked if item in selected else self.qt.QtCore.Qt.CheckState.Unchecked
+            )
+        layout.addWidget(list_widget, 1)
+        button_box = self.qt.QtWidgets.QDialogButtonBox(
+            self.qt.QtWidgets.QDialogButtonBox.StandardButton.Ok | self.qt.QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
         )
-        if not accepted:
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+        if dialog.exec() != int(self.qt.QtWidgets.QDialog.DialogCode.Accepted):
             return {}
-        selected = [item.strip() for item in str(text).split(",") if item.strip()]
-        selected = [item for item in selected if item in candidates]
-        return {"value": ", ".join(selected)}
+
+        values = []
+        for index in range(list_widget.count()):
+            item = list_widget.item(index)
+            if item.checkState() == self.qt.QtCore.Qt.CheckState.Checked:
+                values.append(item.text())
+        return {"value": values}
 
     def _apply_output_form_settings(self, settings):
         mode = str((settings or {}).get("mode") or "").strip()

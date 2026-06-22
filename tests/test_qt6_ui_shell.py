@@ -435,6 +435,38 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(form.config_fields["target_field"]["editor"].currentText(), "B")
         app.processEvents()
 
+    def test_config_form_supports_multi_select_field_values(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        schema = get_node_ui_schema("core.merge_columns", preview_headers=["A", "B", "C"])
+        node = {
+            "node_type_id": "core.merge_columns",
+            "node_id": "n1",
+            "name": "合并列",
+            "enabled": True,
+            "node_version": "1.0.0",
+            "config": {
+                "fields": ["A", "B"],
+                "separators": ["-"],
+                "output_field": "合并结果",
+                "skip_empty": True,
+                "trim_value": True,
+                "empty_placeholder": "",
+            },
+        }
+        form = NodeConfigForm(qt, headers=["A", "B", "C"])
+        form.set_node(node, headers=["A", "B", "C"], schema=schema)
+        editor = form.config_fields["fields"]["editor"]
+        self.assertEqual(editor.text(), "A、B")
+        self.assertEqual(form.to_node()["config"]["fields"], ["A", "B"])
+        form._set_field_value(form.config_fields["fields"], ["B", "C"])
+        self.assertEqual(editor.text(), "B、C")
+        self.assertEqual(form.to_node()["config"]["fields"], ["B", "C"])
+        app.processEvents()
+
     def test_node_ui_metadata_maps_protocol_to_chinese_ui(self):
         self.assertEqual(node_display_label("core.new_columns"), "新建列")
         self.assertEqual(category_label("数据处理"), "数据处理")
@@ -452,6 +484,7 @@ class Qt6UiShellTests(unittest.TestCase):
         detail_payload = build_node_detail_payload("core.filter", supported_headless=False)
         self.assertEqual(detail_payload["category"], "数据处理")
         self.assertEqual(detail_payload["sections"][-1]["title"], "兼容性")
+        self.assertTrue(detail_payload["config_summary"])
         schema = get_node_ui_schema("core.new_columns", preview_headers=["A"])
         self.assertEqual(schema["schema_version"], "2.0")
         self.assertEqual(schema["form"]["schema_version"], "2.0")
@@ -565,6 +598,7 @@ class Qt6UiShellTests(unittest.TestCase):
             controller.show_node_detail("core.replace")
             self.assertEqual(controller.node_detail_title_label.text(), "批量替换")
             self.assertIn("注意", controller.node_detail_sections.toPlainText())
+            self.assertIn("配置项", controller.node_detail_sections.toPlainText())
             controller.copy_selected_node()
             self.assertEqual(len(controller.current_plan["nodes"]), 3)
             copied_node = controller.current_plan["nodes"][controller.selected_node_index()]
