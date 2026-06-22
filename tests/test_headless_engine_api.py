@@ -70,6 +70,39 @@ class HeadlessWorkflowEngineApiTests(unittest.TestCase):
         ]
         self.assertIn("columns_text", field_keys)
 
+    def test_node_ui_schema_carries_shared_warning_and_context_metadata(self):
+        engine = self.make_engine()
+
+        loop_schema = engine.get_node_ui_schema("core.loop_judge", preview_headers=["A"])
+        self.assertTrue(loop_schema["warning_items"])
+        self.assertEqual(loop_schema["warning_items"][0]["level"], "warning")
+
+        loop_fields = {
+            field["key"]: field
+            for group in loop_schema["form"]["groups"]
+            for field in group["fields"]
+        }
+        self.assertEqual(loop_fields["loop_id"]["context_requirements"][0]["kind"], "plan_refs")
+        self.assertEqual(loop_fields["loop_id"]["context_requirements"][0]["ref_kind"], "loop_id")
+
+        write_schema = engine.get_node_ui_schema(
+            "字段映射写入表",
+            preview_headers=["源字段"],
+            table_names=["orders", "result"],
+            table_columns={"orders": ["id", "name"], "result": ["row_id", "status"]},
+        )
+        write_fields = {
+            field["key"]: field
+            for group in write_schema["form"]["groups"]
+            for field in group["fields"]
+        }
+        mapping_columns = {
+            item["key"]: item
+            for item in write_fields["field_mappings"]["item_schema"]["columns"]
+        }
+        self.assertEqual(mapping_columns["source_field"]["context_requirements"][0]["kind"], "table_columns")
+        self.assertEqual(mapping_columns["source_field"]["context_requirements"][1]["field"], "source_table")
+
     def test_validate_plan_reports_unsupported_nodes_without_running(self):
         engine = self.make_engine()
         validation = engine.validate_plan({

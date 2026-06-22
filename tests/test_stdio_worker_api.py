@@ -70,6 +70,45 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertEqual(target_fields[0]["type"], "field_select")
         self.assertEqual(target_fields[0]["choices"], ["A", "B"])
 
+    def test_node_ui_schema_includes_shared_warning_and_context_metadata(self):
+        worker = StdioWorker()
+
+        loop_schema = worker.handle_request(request("get_node_ui_schema", {
+            "node_type_id": "core.loop_judge",
+            "preview_headers": ["A"],
+        }))
+        self.assertTrue(loop_schema["ok"])
+        self.assertTrue(loop_schema["result"]["warning_items"])
+        self.assertEqual(loop_schema["result"]["warning_items"][0]["level"], "warning")
+
+        loop_fields = [
+            field
+            for group in loop_schema["result"]["form"]["groups"]
+            for field in group["fields"]
+            if field["key"] == "loop_id"
+        ]
+        self.assertEqual(loop_fields[0]["context_requirements"][0]["kind"], "plan_refs")
+        self.assertEqual(loop_fields[0]["context_requirements"][0]["ref_kind"], "loop_id")
+
+        write_schema = worker.handle_request(request("get_node_ui_schema", {
+            "node_type_id": "字段映射写入表",
+            "preview_headers": ["源字段"],
+            "table_names": ["orders", "result"],
+            "table_columns": {"orders": ["id", "name"], "result": ["row_id", "status"]},
+        }))
+        self.assertTrue(write_schema["ok"])
+        write_fields = {
+            field["key"]: field
+            for group in write_schema["result"]["form"]["groups"]
+            for field in group["fields"]
+        }
+        mapping_columns = {
+            item["key"]: item
+            for item in write_fields["field_mappings"]["item_schema"]["columns"]
+        }
+        self.assertEqual(mapping_columns["source_field"]["context_requirements"][0]["kind"], "table_columns")
+        self.assertEqual(mapping_columns["source_field"]["context_requirements"][1]["field"], "source_table")
+
     def test_make_default_node_and_validate_plan(self):
         worker = StdioWorker()
 

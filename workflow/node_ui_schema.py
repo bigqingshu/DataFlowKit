@@ -411,6 +411,9 @@ def enrich_structured_column_schema(parent_key, column):
     help_sections = field_help_sections(key, payload)
     if help_sections:
         payload["help_sections"] = help_sections
+    context_requirements = field_context_requirements(key, payload)
+    if context_requirements:
+        payload["context_requirements"] = context_requirements
     return payload
 
 
