@@ -609,6 +609,77 @@ class QtWorkflowMainWindow:
         )
         return answer == self.qt.QtWidgets.QMessageBox.StandardButton.Yes
 
+    def _file_dialog_filter_text(self, filters):
+        filters = filters or []
+        if not filters:
+            return "所有文件 (*.*)"
+        parts = []
+        for item in filters:
+            label = str((item or {}).get("label") or "所有文件")
+            pattern = str((item or {}).get("pattern") or "*.*")
+            parts.append(f"{label} ({pattern})")
+        return ";;".join(parts)
+
+    def _choose_file_path(self, action):
+        described = self.engine_client.describe_file_action(
+            action,
+            current_plan_path=self.current_plan_path,
+            plan_dir=self.plan_dir,
+        )
+        dialog = described.get("file_dialog") or {}
+        title = str(dialog.get("title") or "选择文件")
+        initial_path = str(dialog.get("initial_path") or "")
+        filters = self._file_dialog_filter_text(dialog.get("filters") or [])
+        if dialog.get("dialog") == "save_file":
+            path, _ = self.qt.QtWidgets.QFileDialog.getSaveFileName(
+                self.window,
+                title,
+                initial_path,
+                filters,
+            )
+        else:
+            path, _ = self.qt.QtWidgets.QFileDialog.getOpenFileName(
+                self.window,
+                title,
+                initial_path,
+                filters,
+            )
+        return path
+
+    def _apply_imported_table_state(self, state):
+        state = state or {}
+        self.current_headers = list(state.get("headers") or [])
+        self.current_rows = [list(row) for row in (state.get("rows") or [])]
+        self.current_plan["headers"] = list(self.current_headers)
+        self.current_plan["rows"] = [list(row) for row in self.current_rows]
+        self.config_form.set_headers(self.current_headers)
+        self.refresh_catalog()
+        self.update_input_summary()
+        self.update_table(self.current_headers, self.current_rows, title=state.get("table_title") or "输入表格")
+        self.show_node_config(self.node_list.currentRow())
+        self.issue_text.setPlainText(str(state.get("issue_message") or ""))
+        self.status_bar.showMessage(str(state.get("status_message") or "已导入输入表格。"))
+
+    def _apply_loaded_plan_state(self, state):
+        state = state or {}
+        self.current_plan_path = Path(state["plan_path"]) if state.get("plan_path") else None
+        self.current_plan = copy.deepcopy(state.get("plan") or self.current_plan)
+        self.current_headers = list(state.get("headers") or [])
+        self.current_rows = [list(row) for row in (state.get("rows") or [])]
+        self.apply_output_settings_from_plan(state.get("plan") or {})
+        self.last_preview_headers = []
+        self.last_preview_rows = []
+        self.refresh_all()
+        self.issue_text.setPlainText(str(state.get("issue_message") or ""))
+        self.status_bar.showMessage(str(state.get("status_message") or "已打开计划。"))
+
+    def _apply_saved_plan_state(self, state):
+        state = state or {}
+        self.current_plan = copy.deepcopy(state.get("plan") or self.current_plan)
+        self.current_plan_path = Path(state["plan_path"]) if state.get("plan_path") else self.current_plan_path
+        self.refresh_template_list(show_status=False)
+        self.status_bar.showMessage(str(state.get("status_message") or "已保存计划。"))
+
     def show_selected_node_type_detail(self):
         node_type_id = self.current_node_type_id_from_combo()
         if node_type_id:
@@ -684,37 +755,18 @@ class QtWorkflowMainWindow:
         self.status_bar.showMessage("已重新载入示例输入。")
 
     def import_table(self):
-        path, _ = self.qt.QtWidgets.QFileDialog.getOpenFileName(
-            self.window,
-            "导入输入表格",
-            "",
-            "表格文件 (*.json *.csv *.tsv *.tab);;JSON 文件 (*.json);;CSV 文件 (*.csv);;TSV 文件 (*.tsv *.tab);;所有文件 (*.*)",
-        )
+        path = self._choose_file_path("import_table")
         if not path:
             return
         try:
             imported = self.engine_client.import_table_file(path)
-            table = imported.get("table") or {}
-            self.current_headers = list(table.get("headers") or [])
-            self.current_rows = [list(row) for row in (table.get("rows") or [])]
-            self.current_plan["headers"] = list(self.current_headers)
-            self.current_plan["rows"] = [list(row) for row in self.current_rows]
-            self.config_form.set_headers(self.current_headers)
-            self.refresh_catalog()
-            self.update_input_summary()
-            self.update_table(self.current_headers, self.current_rows, title="输入表格")
-            self.show_node_config(self.node_list.currentRow())
-            self.status_bar.showMessage(f"已导入输入表格：{imported.get('path') or path}")
+            state = self.engine_client.build_import_table_state(imported).get("state") or {}
+            self._apply_imported_table_state(state)
         except Exception as exc:
             self.show_error("导入失败", str(exc))
 
     def open_plan(self):
-        path, _ = self.qt.QtWidgets.QFileDialog.getOpenFileName(
-            self.window,
-            "打开 workflow_plan",
-            "",
-            "JSON 文件 (*.json);;所有文件 (*.*)",
-        )
+        path = self._choose_file_path("open_plan")
         if path:
             self.load_plan_path(Path(path))
 
@@ -730,29 +782,15 @@ class QtWorkflowMainWindow:
                 self.issue_text.setPlainText(self._format_issues(loaded.get("issues", [])))
                 self.status_bar.showMessage("打开失败：计划模板校验未通过")
                 return
-            data = loaded["plan"]
-            self.current_plan_path = Path(loaded["path"])
-            self.current_plan = data
-            self.current_headers = list(data.get("headers", []))
-            self.current_rows = [list(row) for row in data.get("rows", [])]
-            self.apply_output_settings_from_plan(data)
-            self.last_preview_headers = []
-            self.last_preview_rows = []
-            self.refresh_all()
-            warning = loaded.get("warning") or ""
-            self.issue_text.setPlainText(warning or f"已打开计划：{path}")
+            state = self.engine_client.build_loaded_plan_state(loaded).get("state") or {}
+            self._apply_loaded_plan_state(state)
         except Exception as exc:
             self.show_error("打开失败", str(exc))
 
     def save_plan(self):
         path = self.current_plan_path
         if path is None:
-            selected, _ = self.qt.QtWidgets.QFileDialog.getSaveFileName(
-                self.window,
-                "保存 workflow_plan",
-                str(self.plan_dir / "工作流计划.json"),
-                "JSON 文件 (*.json);;所有文件 (*.*)",
-            )
+            selected = self._choose_file_path("save_plan")
             if not selected:
                 return
             path = Path(selected)
@@ -772,10 +810,8 @@ class QtWorkflowMainWindow:
                 self.issue_text.setPlainText(self._format_issues(saved.get("issues", [])))
                 self.status_bar.showMessage("保存失败：计划模板校验未通过")
                 return
-            self.current_plan = saved.get("plan") or self.current_plan
-            self.current_plan_path = Path(saved["path"])
-            self.refresh_template_list(show_status=False)
-            self.status_bar.showMessage(f"已保存：{path}")
+            state = self.engine_client.build_saved_plan_state(saved, self.current_plan).get("state") or {}
+            self._apply_saved_plan_state(state)
         except Exception as exc:
             self.show_error("保存失败", str(exc))
 

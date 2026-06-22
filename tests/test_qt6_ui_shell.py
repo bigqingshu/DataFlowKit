@@ -230,6 +230,39 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertIn("将写回数据库", "\n".join(run_prompt["prompt"]["details"]))
         self.assertIn("自动备份", "\n".join(run_prompt["prompt"]["details"]))
 
+    def test_facade_describes_file_actions_and_state_payloads(self):
+        client = QtHeadlessEngineClient()
+
+        open_action = client.describe_file_action("open_plan", plan_dir="plan")
+        self.assertEqual(open_action["file_dialog"]["dialog"], "open_file")
+        self.assertEqual(open_action["file_dialog"]["title"], "打开 workflow_plan")
+
+        save_action = client.describe_file_action("save_plan", plan_dir="plan", current_plan_path="")
+        self.assertEqual(save_action["file_dialog"]["dialog"], "save_file")
+        self.assertIn("工作流计划.json", save_action["file_dialog"]["initial_path"])
+
+        imported_state = client.build_import_table_state({
+            "path": "demo.csv",
+            "table": {"headers": ["A"], "rows": [["a"]]},
+        })
+        self.assertEqual(imported_state["state"]["table_title"], "输入表格")
+        self.assertIn("demo.csv", imported_state["state"]["status_message"])
+
+        loaded_state = client.build_loaded_plan_state({
+            "path": "plan\\demo.json",
+            "plan": SAMPLE_PLAN,
+            "warning": "已迁移旧字段",
+        })
+        self.assertEqual(loaded_state["state"]["plan_path"], "plan\\demo.json")
+        self.assertEqual(loaded_state["state"]["issue_message"], "已迁移旧字段")
+
+        saved_state = client.build_saved_plan_state({
+            "path": "plan\\saved.json",
+            "plan": SAMPLE_PLAN,
+        }, SAMPLE_PLAN)
+        self.assertEqual(saved_state["state"]["plan_path"], "plan\\saved.json")
+        self.assertIn("已保存", saved_state["state"]["status_message"])
+
     def test_config_form_value_helpers_preserve_types(self):
         self.assertEqual(value_kind(True), "bool")
         self.assertEqual(value_kind(3), "int")
@@ -474,6 +507,56 @@ class Qt6UiShellTests(unittest.TestCase):
             controller.execute_plan()
             self.assertTrue(mock_confirm.called)
             self.assertEqual(controller.status_bar.currentMessage(), "已取消执行")
+
+        window.close()
+        app.processEvents()
+
+    def test_controller_uses_facade_file_actions_for_import_open_and_save(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+        window.show()
+        app.processEvents()
+
+        import_path = str(Path("demo.csv"))
+        plan_path = str(Path("plan") / "demo.json")
+        save_path = str(Path("plan") / "saved.json")
+
+        with patch("ui_qt.main_window.QtWorkflowMainWindow._choose_file_path", side_effect=[import_path, plan_path, save_path]) as mock_choose:
+            with patch.object(controller.engine_client, "import_table_file", return_value={
+                "ok": True,
+                "path": import_path,
+                "table": {"headers": ["A"], "rows": [["a"]]},
+            }):
+                controller.import_table()
+                self.assertEqual(controller.current_headers, ["A"])
+                self.assertEqual(controller.current_rows, [["a"]])
+
+            with patch.object(controller.engine_client, "load_plan_template", return_value={
+                "ok": True,
+                "path": plan_path,
+                "plan": SAMPLE_PLAN,
+                "warning": "已打开测试计划",
+            }):
+                controller.open_plan()
+                self.assertTrue(str(controller.current_plan_path).endswith("demo.json"))
+                self.assertIn("已打开测试计划", controller.issue_text.toPlainText())
+
+            with patch.object(controller.engine_client, "save_plan_template", return_value={
+                "ok": True,
+                "path": save_path,
+                "plan": SAMPLE_PLAN,
+            }):
+                controller.current_plan_path = None
+                controller.save_plan()
+                self.assertTrue(str(controller.current_plan_path).endswith("saved.json"))
+                self.assertIn("已保存", controller.status_bar.currentMessage())
+
+            self.assertEqual(mock_choose.call_count, 3)
 
         window.close()
         app.processEvents()

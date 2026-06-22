@@ -166,6 +166,18 @@ class QtHeadlessEngineClient:
     def import_table_file(self, path):
         return self.facade.import_table_file(path)
 
+    def describe_file_action(self, action, **kwargs):
+        return self.facade.describe_file_action(action, **kwargs)
+
+    def build_import_table_state(self, imported):
+        return self.facade.build_import_table_state(copy.deepcopy(imported))
+
+    def build_loaded_plan_state(self, loaded):
+        return self.facade.build_loaded_plan_state(copy.deepcopy(loaded))
+
+    def build_saved_plan_state(self, saved, plan=None):
+        return self.facade.build_saved_plan_state(copy.deepcopy(saved), copy.deepcopy(plan))
+
     def start_job(self, job_action, plan, input_table=None, **options):
         return self.facade.start_workflow_job(
             job_action,

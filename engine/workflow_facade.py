@@ -34,6 +34,102 @@ class WorkflowFacade:
             },
         }
 
+    def describe_file_action(self, action, *, current_plan_path=None, plan_dir=None):
+        action = str(action or "")
+        plan_dir_value = str(plan_dir or "")
+        current_plan_path_value = str(current_plan_path or "")
+        actions = {
+            "import_table": {
+                "dialog": "open_file",
+                "title": "导入输入表格",
+                "initial_path": "",
+                "filters": [
+                    {"label": "表格文件", "pattern": "*.json *.csv *.tsv *.tab"},
+                    {"label": "JSON 文件", "pattern": "*.json"},
+                    {"label": "CSV 文件", "pattern": "*.csv"},
+                    {"label": "TSV 文件", "pattern": "*.tsv *.tab"},
+                    {"label": "所有文件", "pattern": "*.*"},
+                ],
+            },
+            "open_plan": {
+                "dialog": "open_file",
+                "title": "打开 workflow_plan",
+                "initial_path": plan_dir_value,
+                "filters": [
+                    {"label": "JSON 文件", "pattern": "*.json"},
+                    {"label": "所有文件", "pattern": "*.*"},
+                ],
+            },
+            "save_plan": {
+                "dialog": "save_file",
+                "title": "保存 workflow_plan",
+                "initial_path": current_plan_path_value or (plan_dir_value + "\\工作流计划.json" if plan_dir_value else "工作流计划.json"),
+                "filters": [
+                    {"label": "JSON 文件", "pattern": "*.json"},
+                    {"label": "所有文件", "pattern": "*.*"},
+                ],
+            },
+        }
+        payload = actions.get(action, {
+            "dialog": "open_file",
+            "title": "选择文件",
+            "initial_path": "",
+            "filters": [{"label": "所有文件", "pattern": "*.*"}],
+        })
+        return {
+            "ok": True,
+            "action": action,
+            "file_dialog": payload,
+        }
+
+    def build_import_table_state(self, imported):
+        imported = copy.deepcopy(imported or {})
+        table = imported.get("table") or {}
+        headers = list(table.get("headers") or [])
+        rows = [list(row) for row in (table.get("rows") or [])]
+        path = str(imported.get("path") or "")
+        return {
+            "ok": True,
+            "state": {
+                "headers": headers,
+                "rows": rows,
+                "table_title": "输入表格",
+                "status_message": f"已导入输入表格：{path}" if path else "已导入输入表格。",
+                "issue_message": f"已导入输入表格：{path}" if path else "已导入输入表格。",
+            },
+        }
+
+    def build_loaded_plan_state(self, loaded):
+        loaded = copy.deepcopy(loaded or {})
+        plan = copy.deepcopy(loaded.get("plan") or {})
+        path = str(loaded.get("path") or "")
+        warning = str(loaded.get("warning") or "")
+        return {
+            "ok": True,
+            "state": {
+                "plan": plan,
+                "plan_path": path,
+                "headers": list(plan.get("headers") or []),
+                "rows": [list(row) for row in (plan.get("rows") or [])],
+                "output_settings": OutputSettings.from_payload(plan).to_dict(),
+                "status_message": f"已打开计划：{path}" if path else "已打开计划。",
+                "issue_message": warning or (f"已打开计划：{path}" if path else "已打开计划。"),
+            },
+        }
+
+    def build_saved_plan_state(self, saved, plan):
+        saved = copy.deepcopy(saved or {})
+        plan = copy.deepcopy(saved.get("plan") or plan or {})
+        path = str(saved.get("path") or "")
+        return {
+            "ok": True,
+            "state": {
+                "plan": plan,
+                "plan_path": path,
+                "status_message": f"已保存：{path}" if path else "已保存计划。",
+            },
+        }
+
     def list_plan_templates(self, plan_dir):
         return self.plan_templates.list_templates(plan_dir)
 
