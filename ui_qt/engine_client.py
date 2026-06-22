@@ -87,6 +87,9 @@ class QtHeadlessEngineClient:
     def describe_selection_feedback(self, **kwargs):
         return self.facade.describe_selection_feedback(**kwargs)
 
+    def describe_picker_feedback(self, **kwargs):
+        return self.facade.describe_picker_feedback(**kwargs)
+
     def describe_job_run_conflict(self, **kwargs):
         return self.facade.describe_job_run_conflict(**kwargs)
 
@@ -202,6 +205,9 @@ class QtHeadlessEngineClient:
 
     def build_saved_plan_state(self, saved, plan=None):
         return self.facade.build_saved_plan_state(copy.deepcopy(saved), copy.deepcopy(plan))
+
+    def build_template_list_state(self, listed, *, show_status=True):
+        return self.facade.build_template_list_state(copy.deepcopy(listed), show_status=show_status)
 
     def start_job(self, job_action, plan, input_table=None, **options):
         return self.facade.start_workflow_job(

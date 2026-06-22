@@ -151,6 +151,31 @@ class WorkflowFacade:
     def list_plan_templates(self, plan_dir):
         return self.plan_templates.list_templates(plan_dir)
 
+    def build_template_list_state(self, listed, *, show_status=True):
+        listed = copy.deepcopy(listed or {})
+        templates = [item for item in (listed.get("templates") or []) if isinstance(item, dict)]
+        count = len(templates)
+        status_message = f"模板刷新完成：{count} 个。" if show_status else ""
+        info_body = f"当前可用计划模板：{count} 个。"
+        if count:
+            info_body = info_body + "\n\n" + "\n".join(
+                f"- {str(item.get('name') or item.get('path') or '')}" for item in templates
+            )
+        return {
+            "ok": True,
+            "state": {
+                "templates": templates,
+                "template_count": count,
+                "status_message": status_message,
+                "message_panel": self.build_message_panel_state(
+                    mode="info",
+                    title="计划模板",
+                    info_body=info_body,
+                    preferred_tab="info",
+                ).get("panel") or {},
+            },
+        }
+
     def load_plan_template(self, path, *, migrate=True, target_version=None):
         return self.plan_templates.load_template(
             path,
@@ -294,6 +319,59 @@ class WorkflowFacade:
                 "severity": "warning",
                 "code": "selection_required",
                 "message": "请先选择一个节点。",
+            }],
+        )
+
+    def describe_picker_feedback(self, *, action_key="", field_key="", table_name="", table_field="", candidates=None):
+        action_key = str(action_key or "").strip()
+        field_key = str(field_key or "").strip()
+        table_name = str(table_name or "").strip()
+        table_field = str(table_field or "").strip()
+        candidates = [str(item) for item in (candidates or []) if str(item).strip()]
+
+        title = "字段选择"
+        status_message = "当前没有可选项。"
+        issue_message = status_message
+        code = "picker_candidates_missing"
+
+        if action_key == "pick_table_name":
+            title = "数据表选择"
+            status_message = "当前没有可选数据表。"
+            issue_message = status_message
+            code = "table_names_missing"
+        elif action_key in {"pick_preview_header", "pick_preview_headers"}:
+            title = "字段选择"
+            status_message = "当前没有可选字段。"
+            issue_message = status_message
+            code = "preview_headers_missing"
+        elif action_key in {"pick_table_field", "pick_table_fields"}:
+            title = "表字段选择"
+            if not table_name:
+                label = table_field or "关联数据表"
+                status_message = "请先选择关联数据表。"
+                issue_message = f"字段 {field_key or label} 依赖数据表上下文，请先设置 {label}。"
+                code = "table_context_required"
+            else:
+                status_message = f"数据表 {table_name} 暂无可选字段。"
+                issue_message = status_message
+                code = "table_columns_missing"
+
+        if candidates:
+            return self.build_user_feedback()
+        return self.build_user_feedback(
+            level="warning",
+            code=code,
+            title=title,
+            status_message=status_message,
+            issue_message=issue_message,
+            issues=[{
+                "severity": "warning",
+                "code": code,
+                "message": issue_message,
+                "field": field_key,
+                "table_name": table_name,
+                "table_field": table_field,
+                "action": action_key,
             }],
         )
 

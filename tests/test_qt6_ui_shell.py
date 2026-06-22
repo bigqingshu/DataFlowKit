@@ -284,6 +284,17 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(message_panel["panel"]["preferred_tab"], "issues")
         self.assertIn("hello", message_panel["panel"]["issue_body"])
 
+        picker_feedback = client.describe_picker_feedback(
+            action_key="pick_table_field",
+            field_key="lookup_field",
+            table_field="lookup_table",
+            table_name="",
+            candidates=[],
+        )
+        self.assertEqual(picker_feedback["feedback"]["status_message"], "请先选择关联数据表。")
+        self.assertIn("lookup_table", picker_feedback["feedback"]["issue_message"])
+        self.assertEqual(picker_feedback["feedback"]["issues"][0]["code"], "table_context_required")
+
     def test_facade_applies_node_config_state(self):
         client = QtHeadlessEngineClient()
 
@@ -386,6 +397,17 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(saved_state["state"]["plan_path"], "plan\\saved.json")
         self.assertIn("已保存", saved_state["state"]["status_message"])
         self.assertEqual(saved_state["state"]["message_panel"]["title"], "保存计划")
+
+        template_state = client.build_template_list_state({
+            "templates": [
+                {"name": "示例模板A", "path": "plan\\a.json"},
+                {"name": "示例模板B", "path": "plan\\b.json"},
+            ]
+        }, show_status=True)
+        self.assertEqual(template_state["state"]["template_count"], 2)
+        self.assertEqual(template_state["state"]["status_message"], "模板刷新完成：2 个。")
+        self.assertEqual(template_state["state"]["message_panel"]["title"], "计划模板")
+        self.assertIn("示例模板A", template_state["state"]["message_panel"]["info_body"])
 
     def test_config_form_value_helpers_preserve_types(self):
         self.assertEqual(value_kind(True), "bool")
@@ -979,6 +1001,65 @@ class Qt6UiShellTests(unittest.TestCase):
         window.close()
         app.processEvents()
 
+    def test_controller_uses_shared_picker_feedback_for_missing_candidates(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+
+        result = controller._pick_single_value_for_field("target_field", {"headers": [], "value": ""})
+        self.assertEqual(result, {})
+        self.assertEqual(controller.status_bar.currentMessage(), "当前没有可选字段。")
+        self.assertEqual(controller.current_message_panel.get("title"), "字段选择")
+        self.assertIn("当前没有可选字段", controller.issue_text.toPlainText())
+
+        controller.config_form.set_node(
+            {
+                "node_type_id": "demo.lookup_field_picker",
+                "node_id": "n1",
+                "name": "表字段选择",
+                "enabled": True,
+                "node_version": "1.0.0",
+                "config": {
+                    "lookup_table": "",
+                    "lookup_field": "",
+                },
+            },
+            table_names=["orders"],
+            table_columns={"orders": ["id", "name"]},
+            schema={
+                "form": {
+                    "groups": [
+                        {
+                            "title": "参数",
+                            "fields": [
+                                {"key": "lookup_table", "type": "table_select", "options_source": {"type": "table_names"}},
+                                {"key": "lookup_field", "type": "field_select", "options_source": {"type": "table_columns", "table_field": "lookup_table"}},
+                            ],
+                        }
+                    ]
+                }
+            },
+        )
+        result = controller._pick_single_table_field_for_field(
+            "lookup_field",
+            {
+                "action": {"key": "pick_table_field", "table_field": "lookup_table"},
+                "schema": {"options_source": {"type": "table_columns", "table_field": "lookup_table"}},
+                "table_columns": {"orders": ["id", "name"]},
+                "value": "",
+            },
+        )
+        self.assertEqual(result, {})
+        self.assertEqual(controller.status_bar.currentMessage(), "请先选择关联数据表。")
+        self.assertIn("lookup_table", controller.issue_text.toPlainText())
+
+        window.close()
+        app.processEvents()
+
     def test_node_ui_metadata_maps_protocol_to_chinese_ui(self):
         self.assertEqual(node_display_label("core.new_columns"), "新建列")
         self.assertEqual(category_label("数据处理"), "数据处理")
@@ -1394,6 +1475,34 @@ class Qt6UiShellTests(unittest.TestCase):
 
         window.close()
         app.processEvents()
+        window.close()
+        app.processEvents()
+
+    def test_controller_uses_shared_template_list_state(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+        window.show()
+        app.processEvents()
+
+        with patch.object(controller.engine_client, "list_plan_templates", return_value={
+            "templates": [
+                {"name": "Alpha", "path": "plan\\alpha.json"},
+                {"name": "Beta", "path": "plan\\beta.json"},
+            ]
+        }):
+            controller.refresh_template_list(show_status=True)
+
+        self.assertEqual(controller.plan_template_combo.count(), 2)
+        self.assertEqual(controller.plan_template_combo.itemText(0), "Alpha")
+        self.assertEqual(controller.status_bar.currentMessage(), "模板刷新完成：2 个。")
+        self.assertEqual(controller.current_message_panel.get("title"), "计划模板")
+        self.assertIn("Alpha", controller.info_text.toPlainText())
+
         window.close()
         app.processEvents()
 

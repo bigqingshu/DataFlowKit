@@ -475,16 +475,17 @@ class QtWorkflowMainWindow:
 
     def refresh_template_list(self, show_status=True):
         self.plan_template_combo.clear()
-        result = self.engine_client.list_plan_templates(self.plan_dir)
-        templates = result.get("templates", [])
-        if not templates:
-            if show_status:
-                self.status_bar.showMessage(f"模板刷新完成：0 个。")
-            return
+        listed = self.engine_client.list_plan_templates(self.plan_dir)
+        state = self.engine_client.build_template_list_state(listed, show_status=show_status).get("state") or {}
+        templates = state.get("templates") or []
         for item in templates:
             self.plan_template_combo.addItem(item["name"], item["path"])
-        if show_status:
-            self.status_bar.showMessage(f"模板刷新完成：{self.plan_template_combo.count()} 个。")
+        panel = state.get("message_panel") or {}
+        if panel:
+            self._apply_message_panel(panel)
+        status_message = str(state.get("status_message") or "")
+        if status_message:
+            self.status_bar.showMessage(status_message)
 
     def update_input_summary(self):
         panel_state = self._panel_state()
@@ -904,7 +905,11 @@ class QtWorkflowMainWindow:
     def _pick_single_table_for_field(self, field_key, payload):
         candidates = [str(item) for item in (payload.get("table_names") or []) if str(item).strip()]
         if not candidates:
-            self.status_bar.showMessage("当前没有可选数据表。")
+            self._apply_feedback(self.engine_client.describe_picker_feedback(
+                action_key="pick_table_name",
+                field_key=field_key,
+                candidates=candidates,
+            ))
             return {}
         current = str(payload.get("value") or "")
         value, accepted = self.qt.QtWidgets.QInputDialog.getItem(
@@ -922,7 +927,11 @@ class QtWorkflowMainWindow:
     def _pick_single_value_for_field(self, field_key, payload):
         candidates = [str(item) for item in (payload.get("headers") or []) if str(item).strip()]
         if not candidates:
-            self.status_bar.showMessage("当前没有可选字段。")
+            self._apply_feedback(self.engine_client.describe_picker_feedback(
+                action_key="pick_preview_header",
+                field_key=field_key,
+                candidates=candidates,
+            ))
             return {}
         current = str(payload.get("value") or "")
         value, accepted = self.qt.QtWidgets.QInputDialog.getItem(
@@ -940,7 +949,11 @@ class QtWorkflowMainWindow:
     def _pick_multi_values_for_field(self, field_key, payload):
         candidates = [str(item) for item in (payload.get("headers") or []) if str(item).strip()]
         if not candidates:
-            self.status_bar.showMessage("当前没有可选字段。")
+            self._apply_feedback(self.engine_client.describe_picker_feedback(
+                action_key="pick_preview_headers",
+                field_key=field_key,
+                candidates=candidates,
+            ))
             return {}
         selected = set(str(item) for item in (payload.get("value") or []) if str(item).strip())
 
@@ -986,10 +999,22 @@ class QtWorkflowMainWindow:
         table_columns = payload.get("table_columns") or {}
         candidates = [str(item) for item in (table_columns.get(table_name, []) or []) if str(item).strip()]
         if not table_name:
-            self.status_bar.showMessage("请先选择关联数据表。")
+            self._apply_feedback(self.engine_client.describe_picker_feedback(
+                action_key="pick_table_fields",
+                field_key=field_key,
+                table_name=table_name,
+                table_field=table_field,
+                candidates=candidates,
+            ))
             return {}
         if not candidates:
-            self.status_bar.showMessage(f"数据表 {table_name} 暂无可选字段。")
+            self._apply_feedback(self.engine_client.describe_picker_feedback(
+                action_key="pick_table_fields",
+                field_key=field_key,
+                table_name=table_name,
+                table_field=table_field,
+                candidates=candidates,
+            ))
             return {}
         selected = set(str(item) for item in (payload.get("value") or []) if str(item).strip())
 
@@ -1035,10 +1060,22 @@ class QtWorkflowMainWindow:
         table_columns = payload.get("table_columns") or {}
         candidates = [str(item) for item in (table_columns.get(table_name, []) or []) if str(item).strip()]
         if not table_name:
-            self.status_bar.showMessage("请先选择关联数据表。")
+            self._apply_feedback(self.engine_client.describe_picker_feedback(
+                action_key="pick_table_field",
+                field_key=field_key,
+                table_name=table_name,
+                table_field=table_field,
+                candidates=candidates,
+            ))
             return {}
         if not candidates:
-            self.status_bar.showMessage(f"数据表 {table_name} 暂无可选字段。")
+            self._apply_feedback(self.engine_client.describe_picker_feedback(
+                action_key="pick_table_field",
+                field_key=field_key,
+                table_name=table_name,
+                table_field=table_field,
+                candidates=candidates,
+            ))
             return {}
         current = str(payload.get("value") or "")
         value, accepted = self.qt.QtWidgets.QInputDialog.getItem(
