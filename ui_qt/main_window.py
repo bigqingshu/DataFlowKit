@@ -932,6 +932,8 @@ class QtWorkflowMainWindow:
         action_key = str(action.get("key") or "")
         if action_key == "pick_table_name":
             return self._pick_single_table_for_field(field_key, payload)
+        if action_key == "pick_table_names":
+            return self._pick_multi_tables_for_field(field_key, payload)
         if action_key == "pick_table_field":
             return self._pick_single_table_field_for_field(field_key, payload)
         if action_key == "pick_table_fields":
@@ -1017,6 +1019,49 @@ class QtWorkflowMainWindow:
         if not accepted:
             return {}
         return {"value": value}
+
+    def _pick_multi_tables_for_field(self, field_key, payload):
+        candidates = [str(item) for item in (payload.get("table_names") or []) if str(item).strip()]
+        if not candidates:
+            self._apply_feedback(self.engine_client.describe_picker_feedback(
+                action_key="pick_table_names",
+                field_key=field_key,
+                candidates=candidates,
+            ))
+            return {}
+        selected = set(str(item) for item in (payload.get("value") or []) if str(item).strip())
+
+        dialog = self.qt.QtWidgets.QDialog(self.window)
+        dialog.setWindowTitle(f"选择{field_key}")
+        dialog.resize(360, 420)
+        layout = self.qt.QtWidgets.QVBoxLayout(dialog)
+        hint = self.qt.QtWidgets.QLabel("勾选需要关联的数据表，可多选。")
+        layout.addWidget(hint)
+        list_widget = self.qt.QtWidgets.QListWidget(dialog)
+        list_widget.setSelectionMode(self.qt.QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
+        for item in candidates:
+            row = self.qt.QtWidgets.QListWidgetItem(item, list_widget)
+            row.setFlags(row.flags() | self.qt.QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+            row.setCheckState(
+                self.qt.QtCore.Qt.CheckState.Checked if item in selected else self.qt.QtCore.Qt.CheckState.Unchecked
+            )
+        layout.addWidget(list_widget, 1)
+        button_box = self.qt.QtWidgets.QDialogButtonBox(
+            self.qt.QtWidgets.QDialogButtonBox.StandardButton.Ok | self.qt.QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
+        )
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+        if dialog.exec() != int(self.qt.QtWidgets.QDialog.DialogCode.Accepted):
+            return {}
+
+        values = []
+        for index in range(list_widget.count()):
+            item = list_widget.item(index)
+            if item.checkState() == self.qt.QtCore.Qt.CheckState.Checked:
+                values.append(item.text())
+        return {"value": values}
 
     def _pick_single_value_for_field(self, field_key, payload):
         candidates = [str(item) for item in (payload.get("headers") or []) if str(item).strip()]

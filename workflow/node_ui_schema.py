@@ -282,13 +282,17 @@ FIELD_MULTI_PICKER_KEYS = {
     "scope_fields",
     "key_fields",
     "input_fields",
+    "selected_fields",
 }
+
+TABLE_MULTI_PICKER_KEYS = {
+    "extra_tables",
+}
+
+TABLE_FIELD_PICKER_RULES = {}
 
 TABLE_FIELD_MULTI_PICKER_RULES = {
     "lookup_fields": {"table_field": "lookup_table"},
-}
-
-TABLE_FIELD_PICKER_RULES = {
     "output_fields": {"table_field": "source_table"},
 }
 
@@ -305,6 +309,8 @@ STRUCTURED_COLUMN_TABLE_FIELD_RULES = {
 TABLE_PICKER_KEYS = {
     "lookup_table",
     "source_table",
+    "target_table",
+    "source_sqlite_table",
     "input_sqlite_table",
     "output_sqlite_table",
 }
@@ -1021,6 +1027,8 @@ def choices_for_field(key, headers=None, table_names=None, table_columns=None):
             return [str(item) for item in (table_columns.get(table_name, []) or [])]
     if key in TABLE_PICKER_KEYS:
         return table_names
+    if key in TABLE_MULTI_PICKER_KEYS:
+        return table_names
     return FIELD_CHOICES.get(key, [])
 
 
@@ -1112,6 +1120,8 @@ def options_source_for_field(key):
         return payload
     if key in TABLE_PICKER_KEYS:
         return {"type": "table_names"}
+    if key in TABLE_MULTI_PICKER_KEYS:
+        return {"type": "table_names"}
     return None
 
 
@@ -1169,11 +1179,10 @@ def action_for_field(key):
     if key in TABLE_FIELD_PICKER_RULES:
         table_field = TABLE_FIELD_PICKER_RULES[key].get("table_field")
         return {
-            "key": "pick_table_fields",
+            "key": "pick_table_field",
             "label": "选择字段",
             "style": "picker",
             "source": "table_columns",
-            "multiple": True,
             "table_field": table_field,
         }
     if key in TABLE_PICKER_KEYS:
@@ -1182,6 +1191,14 @@ def action_for_field(key):
             "label": "选择表",
             "style": "picker",
             "source": "table_names",
+        }
+    if key in TABLE_MULTI_PICKER_KEYS:
+        return {
+            "key": "pick_table_names",
+            "label": "选择表",
+            "style": "picker",
+            "source": "table_names",
+            "multiple": True,
         }
     return None
 
@@ -1259,9 +1276,11 @@ def config_field_schema(key, value=None, *, headers=None, table_names=None, tabl
     elif key in TABLE_FIELD_MULTI_PICKER_RULES:
         field_type = "field_multi_select"
     elif key in TABLE_FIELD_PICKER_RULES:
-        field_type = "field_multi_select"
+        field_type = "field_select"
     elif key in TABLE_PICKER_KEYS:
         field_type = "table_select"
+    elif key in TABLE_MULTI_PICKER_KEYS:
+        field_type = "field_multi_select"
     elif key in FIELD_CHOICES:
         field_type = "select"
     elif key in LONG_TEXT_KEYS:
@@ -1302,6 +1321,8 @@ def config_field_schema(key, value=None, *, headers=None, table_names=None, tabl
     if action:
         schema["action"] = action
         schema["ui_capabilities"]["supports_picker"] = True
+        if action.get("multiple"):
+            schema["ui_capabilities"]["supports_multi_select"] = True
     validation = validation_for_field(key)
     if validation:
         schema["validation"] = validation

@@ -653,10 +653,11 @@ class NodeConfigForm:
             }
         if source_type == "table_names":
             return {
-                "key": "pick_table_name",
+                "key": "pick_table_names" if kind == "field_multi_select" else "pick_table_name",
                 "label": "选择表",
                 "style": "picker",
                 "source": "table_names",
+                "multiple": kind == "field_multi_select",
             }
         if source_type == "table_columns":
             return {

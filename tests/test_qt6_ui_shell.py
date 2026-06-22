@@ -592,6 +592,55 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(form.to_node()["config"]["fields"], ["B", "C"])
         app.processEvents()
 
+    def test_config_form_supports_table_name_multi_select_actions(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        calls = []
+
+        def action_handler(payload):
+            calls.append(payload)
+            return {"value": ["orders", "logs"]}
+
+        form = NodeConfigForm(qt, table_names=["orders", "logs", "archive"], action_handler=action_handler)
+        form.set_node(
+            {
+                "node_type_id": "demo.multi_table",
+                "node_id": "n1",
+                "name": "多表",
+                "enabled": True,
+                "node_version": "1.0.0",
+                "config": {"extra_tables": ["orders"]},
+            },
+            table_names=["orders", "logs", "archive"],
+            schema={
+                "form": {
+                    "groups": [
+                        {
+                            "title": "参数",
+                            "fields": [
+                                {
+                                    "key": "extra_tables",
+                                    "type": "field_multi_select",
+                                    "options_source": {"type": "table_names"},
+                                    "action": {"key": "pick_table_names", "label": "选择表", "multiple": True},
+                                }
+                            ],
+                        }
+                    ]
+                }
+            },
+        )
+
+        form._trigger_field_action("extra_tables")
+
+        self.assertEqual(calls[0]["action"]["key"], "pick_table_names")
+        self.assertEqual(calls[0]["table_names"], ["orders", "logs", "archive"])
+        self.assertEqual(form.to_node()["config"]["extra_tables"], ["orders", "logs"])
+        app.processEvents()
+
     def test_config_form_refreshes_table_column_choices_from_selected_table(self):
         try:
             qt = qt_app.load_qt6()
@@ -1463,6 +1512,30 @@ class Qt6UiShellTests(unittest.TestCase):
             )
 
         self.assertEqual(result["value"], ["id"])
+        window.close()
+        app.processEvents()
+
+    def test_controller_picks_multi_table_names(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+
+        with patch.object(controller.qt.QtWidgets.QDialog, "exec", return_value=int(controller.qt.QtWidgets.QDialog.DialogCode.Accepted)):
+            result = controller._pick_multi_tables_for_field(
+                "extra_tables",
+                {
+                    "action": {"key": "pick_table_names"},
+                    "table_names": ["orders", "logs"],
+                    "value": ["orders"],
+                },
+            )
+
+        self.assertEqual(result["value"], ["orders"])
         window.close()
         app.processEvents()
 

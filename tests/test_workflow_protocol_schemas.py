@@ -242,6 +242,9 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
 
         filter_group_titles = [group["title"] for group in filter_schema["form"]["groups"]]
         self.assertEqual(filter_group_titles, ["筛选条件", "关联表", "输出控制"])
+        self.assertEqual(filter_fields["extra_tables"]["type"], "field_multi_select")
+        self.assertEqual(filter_fields["extra_tables"]["options_source"], {"type": "table_names"})
+        self.assertEqual(filter_fields["extra_tables"]["action"]["key"], "pick_table_names")
         self.assertEqual(filter_fields["output_fields"]["type"], "field_multi_select")
         self.assertEqual(filter_fields["output_fields"]["options_source"], {"type": "table_columns", "table_field": "source_table"})
         self.assertEqual(filter_fields["output_fields"]["action"]["key"], "pick_table_fields")
@@ -258,6 +261,25 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
         self.assertEqual(match_columns["source_field"]["options_source"], {"type": "table_columns", "table_field": "source_table"})
         self.assertEqual(match_columns["target_field"]["action"]["key"], "pick_table_field")
         self.assertEqual(fields["source_empty_fixed"]["visible_when"], {"field": "source_empty_policy", "equals": "填写固定值"})
+        self.assertEqual(fields["target_table"]["type"], "table_select")
+        self.assertEqual(fields["target_table"]["options_source"], {"type": "table_names"})
+
+        selected_write_schema = get_node_ui_schema(
+            "选定列写入指定表",
+            preview_headers=["编码", "名称", "数量"],
+            table_names=["orders", "result"],
+            table_columns={"orders": ["id", "name"], "result": ["row_id", "status"]},
+        )
+        selected_write_fields = {
+            field["key"]: field
+            for group in selected_write_schema["form"]["groups"]
+            for field in group["fields"]
+        }
+        self.assertEqual(selected_write_fields["source_sqlite_table"]["options_source"], {"type": "table_names"})
+        self.assertEqual(selected_write_fields["selected_fields"]["type"], "field_multi_select")
+        self.assertEqual(selected_write_fields["selected_fields"]["options_source"], {"type": "preview_headers"})
+        self.assertEqual(selected_write_fields["selected_fields"]["action"]["key"], "pick_preview_headers")
+        self.assertEqual(selected_write_fields["target_table"]["action"]["key"], "pick_table_name")
 
     def test_node_ui_schema_marks_table_driven_field_actions(self):
         from workflow.node_ui_schema import get_node_ui_schema
