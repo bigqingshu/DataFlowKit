@@ -26,6 +26,7 @@ from engine.plugin_service import PluginService
 from engine.safety_policy import resolve_safety_policy
 from engine.table_data_service import TableDataService
 from engine.workflow_services import WorkflowServices
+from db.table_manager import TableAccessManager
 from workflow.default_configs import default_config_for_type, default_name_for_node
 from workflow.config_validation import (
     validate_node_config,
@@ -71,6 +72,19 @@ from workflow.nodes.selected_columns_nodes import (
     resolve_selected_columns_write_target,
 )
 from workflow.nodes.transit_nodes import apply_save_transit_node
+from workflow.nodes.writeback_nodes import (
+    apply_external_table_to_current_node,
+    build_writeback_actions as build_writeback_actions_from_records,
+    build_writeback_execute_stat,
+    build_writeback_full_structure_execute_stat,
+    build_writeback_full_structure_rows_for_sqlite,
+    build_writeback_preview_stat,
+    count_writeback_actions,
+    finish_writeback_node_output,
+    get_writeback_non_execute_suffix,
+    get_writeback_target_fields,
+    should_execute_writeback_update,
+)
 from workflow.protocol_nodes import (
     DEFAULT_NODE_VERSION,
     HEADLESS_CONTROL_NODE_TYPE_IDS,
@@ -675,6 +689,9 @@ class HeadlessWorkflowEngine:
             if node_type_id == "core.selected_columns_write":
                 h, r, stat = self._apply_selected_columns_write_node(headers, rows, config, context, execute_actions)
                 return h, r, stat, None
+            if node_type_id == "core.writeback":
+                h, r, stat = self._apply_writeback_node(headers, rows, config, context, execute_actions)
+                return h, r, stat, None
             h, r, stat = self._apply_data_node(headers, rows, node_type_id, config, context, cancel_event)
             return h, r, stat, None
         if node_type_id == "core.jump_anchor":
@@ -1026,6 +1043,103 @@ class HeadlessWorkflowEngine:
             list(headers),
             [list(row) for row in rows],
             f"已复制选定列到 SQLite 表字段：{result.get('table_name', target_name)}（{len(new_rows)} 行 × {len(new_headers)} 列），主流程数据透传",
+        )
+
+    def _apply_writeback_node(self, headers, rows, config, context, execute_actions):
+        direction = config.get("writeback_direction", "当前表写入SQLite目标表")
+        if direction == "其他表写入当前表":
+            source_table = str(config.get("source_table", "") or "").strip()
+            if not source_table:
+                raise ValueError("请选择来源表。")
+            source_columns, source_records = self._read_writeback_records(source_table, context)
+            return apply_external_table_to_current_node(headers, rows, config, source_columns, source_records)
+
+        table_name = str(config.get("target_table", "") or "").strip()
+        if not table_name:
+            raise ValueError("请选择目标表。")
+        write_range_mode = config.get("write_range_mode", "局部覆盖，保留目标原行数")
+        enable_write = bool(config.get("enable_write", False))
+        backup_before_write = bool(config.get("backup_before_write", True))
+        output_preview = bool(config.get("output_preview_table", True))
+        manager = self._make_sqlite_table_manager(context, node_type="字段映射写入表")
+
+        if write_range_mode == "按来源完整结构覆盖":
+            target_columns = manager.get_columns(table_name)
+            if not target_columns and not manager.table_exists(table_name):
+                raise ValueError(f"表不存在：{table_name}")
+            actions, full_rows = build_writeback_full_structure_rows_for_sqlite(
+                headers,
+                rows,
+                config,
+                target_columns,
+            )
+            stat = build_writeback_preview_stat(
+                write_range_mode,
+                actions,
+                full_rows=full_rows,
+                target_columns=target_columns,
+            )
+            if execute_actions and enable_write:
+                if backup_before_write and manager.table_exists(table_name):
+                    manager.backup_table(table_name)
+                info = manager.write_table(table_name, target_columns, full_rows, mode="replace")
+                stat = build_writeback_full_structure_execute_stat(
+                    info.get("table_name", table_name),
+                    full_rows,
+                    target_columns,
+                )
+            else:
+                stat += get_writeback_non_execute_suffix(execute_actions, enable_write)
+            return finish_writeback_node_output(headers, rows, actions, stat, output_preview)
+
+        target_columns, target_records = self._read_writeback_records(table_name, context)
+        actions = build_writeback_actions_from_records(headers, rows, config, target_columns, target_records)
+        action_counts = count_writeback_actions(actions)
+        target_fields = get_writeback_target_fields(config)
+        stat = build_writeback_preview_stat(write_range_mode, actions, target_fields=target_fields)
+
+        if should_execute_writeback_update(execute_actions, enable_write, action_counts, write_range_mode):
+            backup_name = ""
+            if backup_before_write:
+                backup_name = manager.backup_table(table_name)
+            cleared = 0
+            if write_range_mode == "清空目标字段后覆盖，保留目标原行数":
+                result = manager.apply_writeback_transaction(
+                    table_name,
+                    actions,
+                    clear_fields=target_fields,
+                    cancel_event=context.get("cancel_event"),
+                )
+                cleared = result.get("cleared_fields", 0)
+                actual = result.get("cells", 0)
+            else:
+                actual = (
+                    manager.apply_cell_actions(table_name, actions, cancel_event=context.get("cancel_event"))
+                    if action_counts["write_count"] > 0
+                    else 0
+                )
+            stat = build_writeback_execute_stat(table_name, actual, cleared=cleared, backup_name=backup_name)
+        else:
+            stat += get_writeback_non_execute_suffix(execute_actions, enable_write)
+        return finish_writeback_node_output(headers, rows, actions, stat, output_preview)
+
+    def _read_writeback_records(self, table_name, context):
+        manager = self._make_sqlite_table_manager(context, node_type="字段映射写入表")
+        return manager.read_records(table_name, include_rowid=True, include_row_index=True)
+
+    def _make_sqlite_table_manager(self, context, node_type="HeadlessWorkflowEngine"):
+        db_path = str(getattr(self.services, "db_path", "") or "").strip()
+        if not db_path:
+            raise ValueError("请先设置 SQLite 数据库路径。")
+        current = (context or {}).get("current_node_info", {}) if isinstance(context, dict) else {}
+        return TableAccessManager(
+            db_path,
+            node_id=current.get("node_id", ""),
+            node_name=current.get("node_name", ""),
+            node_type=node_type,
+            context=context if isinstance(context, dict) else None,
+            table_access=current.get("table_access") if isinstance(current, dict) else None,
+            permission_policy=(context or {}).get("table_access_policy") if isinstance(context, dict) else None,
         )
 
     def _apply_save_transit_node(self, headers, rows, config, context, execute_actions):

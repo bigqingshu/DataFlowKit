@@ -180,6 +180,114 @@ class HeadlessExternalDataNodesTests(unittest.TestCase):
         self.assertEqual(rows, [("b",)])
         self.assertIn("已覆盖重建 SQLite 表：selected_out", result.logs[0])
 
+    def test_writeback_preview_does_not_modify_sqlite(self):
+        with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:
+            db_path = str(Path(temp_dir) / "preview_writeback.db")
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.execute('CREATE TABLE target (id TEXT, value TEXT)')
+                conn.execute('INSERT INTO target (id, value) VALUES (?, ?)', ("A", "old"))
+                conn.commit()
+            finally:
+                conn.close()
+
+            engine = HeadlessWorkflowEngine(services=WorkflowServices(db_path=db_path))
+            plan = {
+                "nodes": [{
+                    "node_type_id": "core.writeback",
+                    "config": {
+                        "enable_write": True,
+                        "target_table": "target",
+                        "use_match_rules": True,
+                        "match_rules": [{"source_field": "id", "target_field": "id", "operator": "等于"}],
+                        "field_mappings": [{"source_field": "value", "target_field": "value"}],
+                    },
+                }],
+                "headers": ["id", "value"],
+                "rows": [["A", "new"]],
+            }
+
+            result = engine.preview_plan(plan)
+            conn = sqlite3.connect(db_path)
+            try:
+                value = conn.execute('SELECT value FROM target WHERE id=?', ("A",)).fetchone()[0]
+            finally:
+                conn.close()
+
+        self.assertEqual(value, "old")
+        self.assertIn("预览模式未修改数据库", result.logs[0])
+
+    def test_writeback_execute_updates_sqlite(self):
+        with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:
+            db_path = str(Path(temp_dir) / "run_writeback.db")
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.execute('CREATE TABLE target (id TEXT, value TEXT)')
+                conn.execute('INSERT INTO target (id, value) VALUES (?, ?)', ("A", "old"))
+                conn.commit()
+            finally:
+                conn.close()
+
+            engine = HeadlessWorkflowEngine(services=WorkflowServices(db_path=db_path))
+            plan = {
+                "nodes": [{
+                    "node_type_id": "core.writeback",
+                    "config": {
+                        "enable_write": True,
+                        "target_table": "target",
+                        "use_match_rules": True,
+                        "match_rules": [{"source_field": "id", "target_field": "id", "operator": "等于"}],
+                        "field_mappings": [{"source_field": "value", "target_field": "value"}],
+                        "overwrite_policy": "覆盖全部",
+                    },
+                }],
+                "headers": ["id", "value"],
+                "rows": [["A", "new"]],
+            }
+
+            result = engine.run_plan(plan, execute_actions=True)
+            conn = sqlite3.connect(db_path)
+            try:
+                value = conn.execute('SELECT value FROM target WHERE id=?', ("A",)).fetchone()[0]
+            finally:
+                conn.close()
+
+        self.assertEqual(value, "new")
+        self.assertIn("已写入目标表 target：1 处", result.logs[0])
+
+    def test_writeback_external_table_to_current_uses_sqlite_source(self):
+        with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:
+            db_path = str(Path(temp_dir) / "external_current.db")
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.execute('CREATE TABLE source (name TEXT)')
+                conn.execute('INSERT INTO source (name) VALUES (?)', ("Alpha",))
+                conn.commit()
+            finally:
+                conn.close()
+
+            engine = HeadlessWorkflowEngine(services=WorkflowServices(db_path=db_path))
+            plan = {
+                "nodes": [{
+                    "node_type_id": "core.writeback",
+                    "config": {
+                        "writeback_direction": "其他表写入当前表",
+                        "source_table": "source",
+                        "use_match_rules": False,
+                        "field_mappings": [{"source_field": "name", "target_field": "external_name"}],
+                        "overwrite_policy": "覆盖全部",
+                    },
+                }],
+                "headers": ["id"],
+                "rows": [["A"]],
+            }
+
+            result = engine.preview_plan(plan)
+
+        self.assertEqual(result.headers, ["id", "external_name"])
+        self.assertEqual(result.rows, [["A", "Alpha"]])
+        self.assertIn("其他表写入当前表", result.logs[0])
+
 
 if __name__ == "__main__":
     unittest.main()

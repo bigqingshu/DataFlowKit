@@ -80,6 +80,7 @@ HEADLESS_DATA_NODE_TYPE_IDS = {
     "core.save_transit",
     "core.filter",
     "core.selected_columns_write",
+    "core.writeback",
 }
 
 HEADLESS_CONTROL_NODE_TYPE_IDS = {

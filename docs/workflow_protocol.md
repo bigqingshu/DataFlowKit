@@ -366,6 +366,9 @@ Runtime identity rules:
 - `core.selected_columns_write` runs headlessly for current-table, transit-table,
   and SQLite targets. SQLite writes still require `execute_actions = true` and
   `config.enable_write = true`.
+- `core.writeback` runs headlessly for SQLite writeback and external-table to
+  current-table modes. SQLite updates use `TableAccessManager` transactions and
+  still require `execute_actions = true` and `config.enable_write = true`.
 - Clients that need progress, cancellation, or polling should use
   `start_job`, `get_job_status`, `get_job_events`, and `cancel_job`.
   `start_job` accepts `job_action = preview_plan | run_plan` and stores emitted
