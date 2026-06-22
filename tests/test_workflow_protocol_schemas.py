@@ -396,6 +396,54 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
         }
         self.assertTrue(jump_fields["loop_id"]["ui_capabilities"]["depends_on_plan"])
 
+    def test_node_ui_schema_exposes_structured_warning_items(self):
+        from workflow.node_ui_schema import get_node_ui_schema
+
+        schema = get_node_ui_schema("core.loop_judge", preview_headers=["A"])
+        self.assertTrue(schema["warnings"])
+        self.assertTrue(schema["warning_items"])
+        self.assertEqual(schema["warning_items"][0]["level"], "warning")
+        self.assertEqual(schema["warning_items"][0]["message"], schema["warnings"][0])
+
+    def test_field_help_payload_exposes_shared_context_requirements(self):
+        from workflow.node_ui_schema import build_field_help_payload, get_node_ui_schema
+
+        schema = get_node_ui_schema(
+            "字段映射写入表",
+            preview_headers=["源字段"],
+            table_names=["orders", "result"],
+            table_columns={"orders": ["id", "name"], "result": ["row_id", "status"]},
+        )
+        fields = {
+            field["key"]: field
+            for group in schema["form"]["groups"]
+            for field in group["fields"]
+        }
+        mapping_columns = {
+            item["key"]: item
+            for item in fields["field_mappings"]["item_schema"]["columns"]
+        }
+
+        target_payload = build_field_help_payload("target_table", fields["target_table"])
+        self.assertEqual(target_payload["context_requirements"][0]["kind"], "table_names")
+
+        source_payload = build_field_help_payload("source_field", mapping_columns["source_field"])
+        source_requirements = source_payload["context_requirements"]
+        self.assertEqual(source_requirements[0]["kind"], "table_columns")
+        self.assertEqual(source_requirements[0]["table_field"], "source_table")
+        self.assertEqual(source_requirements[1]["kind"], "config_field")
+        self.assertEqual(source_requirements[1]["field"], "source_table")
+
+        loop_schema = get_node_ui_schema("core.loop_judge", preview_headers=["A"])
+        loop_fields = {
+            field["key"]: field
+            for group in loop_schema["form"]["groups"]
+            for field in group["fields"]
+        }
+        loop_payload = build_field_help_payload("loop_id", loop_fields["loop_id"])
+        self.assertEqual(loop_payload["context_requirements"][0]["kind"], "plan_refs")
+        self.assertEqual(loop_payload["context_requirements"][0]["ref_kind"], "loop_id")
+
     def test_field_help_payload_exposes_shared_help_sections(self):
         from workflow.node_ui_schema import build_field_help_payload, get_node_ui_schema
 

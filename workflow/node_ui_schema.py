@@ -1117,6 +1117,88 @@ def field_help_sections(key, schema=None):
     }]
 
 
+def field_context_requirements(key, schema=None):
+    schema = dict(schema or {})
+    requirements = []
+    options_source = schema.get("options_source") or {}
+    source_type = str(options_source.get("type") or "")
+
+    if source_type == "preview_headers":
+        requirements.append({
+            "kind": "preview_headers",
+            "label": "预览字段",
+            "required": False,
+            "reason": "候选项来自当前预览结果的字段名，也可以手动输入。",
+        })
+    elif source_type == "table_names":
+        requirements.append({
+            "kind": "table_names",
+            "label": "表名列表",
+            "required": False,
+            "reason": "候选项来自当前可访问的表名，也可以手动输入。",
+        })
+    elif source_type == "table_columns":
+        table_field = str(options_source.get("table_field") or "")
+        requirements.append({
+            "kind": "table_columns",
+            "label": "表字段列表",
+            "required": False,
+            "table_field": table_field,
+            "reason": "候选项依赖所选表的字段列表；若表未选定，通常暂时无法给出下拉候选。",
+        })
+        if table_field:
+            requirements.append({
+                "kind": "config_field",
+                "label": config_field_label(table_field),
+                "field": table_field,
+                "required": True,
+                "reason": "需要先选择该字段对应的表，才能生成当前字段的候选项。",
+            })
+    elif source_type == "field_values":
+        source_field = str(options_source.get("field") or "")
+        requirements.append({
+            "kind": "field_values",
+            "label": config_field_label(source_field),
+            "field": source_field,
+            "required": False,
+            "reason": "候选项来自当前表单中另一个字段已有的值。",
+        })
+    elif source_type == "plan_refs":
+        ref_kind = str(options_source.get("ref_kind") or "")
+        requirements.append({
+            "kind": "plan_refs",
+            "label": "计划内引用",
+            "ref_kind": ref_kind,
+            "required": False,
+            "reason": "候选项来自当前工作流计划里的前置节点定义，也可以手动输入约定值。",
+        })
+    elif source_type == "runtime_refs":
+        ref_kind = str(options_source.get("ref_kind") or "")
+        requirements.append({
+            "kind": "runtime_refs",
+            "label": "运行时引用",
+            "ref_kind": ref_kind,
+            "required": False,
+            "reason": "候选项来自计划里可能生成的运行时名称，也可以手动输入约定值。",
+        })
+
+    return requirements
+
+
+def warning_items_for_node(node_type_id, supported_headless=None):
+    meta = node_ui_description(node_type_id, supported_headless=supported_headless)
+    items = []
+    for text in meta.get("warnings") or []:
+        warning_text = str(text).strip()
+        if not warning_text:
+            continue
+        items.append({
+            "level": "warning",
+            "message": warning_text,
+        })
+    return items
+
+
 def options_source_for_field(key):
     if key == "loop_id":
         return {"type": "plan_refs", "ref_kind": "loop_id"}
@@ -1355,6 +1437,9 @@ def config_field_schema(key, value=None, *, headers=None, table_names=None, tabl
     help_sections = field_help_sections(key, schema)
     if help_sections:
         schema["help_sections"] = help_sections
+    context_requirements = field_context_requirements(key, schema)
+    if context_requirements:
+        schema["context_requirements"] = context_requirements
     return schema
 
 
@@ -1414,6 +1499,7 @@ def build_node_ui_schema(node_type_id, *, preview_headers=None, table_names=None
     category = definition.get("category", "未知")
     supported_headless = bool(definition.get("supported_headless", False))
     meta = node_ui_description(stable_id, supported_headless=supported_headless)
+    warning_items = warning_items_for_node(stable_id, supported_headless=supported_headless)
     default_config = default_config_for_type(
         display_name,
         preview_headers=preview_headers,
@@ -1438,6 +1524,7 @@ def build_node_ui_schema(node_type_id, *, preview_headers=None, table_names=None
         "description": meta.get("description", ""),
         "badges": list(meta.get("badges", [])),
         "warnings": list(meta.get("warnings", [])),
+        "warning_items": warning_items,
         "risk": meta.get("risk", "unknown"),
         "capabilities": {
             "headless_preview": supported_headless,
@@ -1710,6 +1797,7 @@ def build_field_help_payload(key, schema=None):
         "label": str(resolved_schema.get("label") or config_field_label(key)),
         "help": str(resolved_schema.get("help") or field_help_text(key) or ""),
         "sections": field_help_sections(key, resolved_schema),
+        "context_requirements": field_context_requirements(key, resolved_schema),
         "required": bool(resolved_schema.get("required")),
         "action": dict(resolved_schema.get("action") or {}),
     }
