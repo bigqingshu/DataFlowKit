@@ -182,7 +182,7 @@ class HeadlessWorkflowEngine:
         self.jumps = JumpAnalysisService()
         self.tables = TableDataService(db_path=getattr(self.services, "db_path", ""))
         self.plan_templates = PlanTemplateService(node_id_factory=self.node_id_factory)
-        self.plugins = PluginService()
+        self.plugins = PluginService(db_path=getattr(self.services, "db_path", ""))
         self.jobs = JobService(self)
         self.outputs = OutputService(self.services)
 

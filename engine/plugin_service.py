@@ -9,9 +9,12 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from db.table_manager import TableAccessManager
 from engine.issue_schema import has_error_issues, make_issue
 from plugin_runtime.scanner import scan_plugins
+from workflow import plugin_runtime_services
 from workflow.nodes.plugin_nodes import (
+    is_external_plugin_mode,
     make_plugin_input_data,
     normalize_plugin_run_result,
 )
@@ -27,6 +30,7 @@ class PluginService:
 
     plugins_dir: str = ""
     app_dir: str = ""
+    db_path: str = ""
     scanner: object = scan_plugins
     registry: dict = field(default_factory=dict)
     errors: list = field(default_factory=list)
@@ -147,15 +151,18 @@ class PluginService:
             return _plugin_failure("plugin_not_found", f"未找到插件：{plugin_id}", "/plugin_id")
         item = self.registry.get(key, {})
         module = item.get("module")
+        external_mode = _plugin_should_run_external(config, item)
         if not _plugin_is_headless_runnable(item):
             return _plugin_failure(
                 "plugin_not_headless_runnable",
-                f"插件暂不支持 headless 内置执行：{key}",
+                f"插件暂不支持 headless 执行：{key}",
                 "/plugin_id",
             )
         params = dict(params if params is not None else (config or {}).get("params", {}))
         input_data = _make_plugin_service_input_data(key, input_table, context)
         plugin_context = _make_plugin_service_context(key, config=config, context=context)
+        if external_mode:
+            return {"ok": True, "plugin_id": key, "issues": []}
         validate = getattr(module, "validate_params", None)
         if callable(validate):
             try:
@@ -177,32 +184,47 @@ class PluginService:
             return _plugin_failure("plugin_not_found", f"未找到插件：{plugin_id}", "/plugin_id")
         item = self.registry.get(key, {})
         module = item.get("module")
+        external_mode = _plugin_should_run_external(config, item)
         if not _plugin_is_headless_runnable(item):
             return _plugin_failure(
                 "plugin_not_headless_runnable",
-                f"插件暂不支持 headless 内置执行：{key}",
+                f"插件暂不支持 headless 执行：{key}",
                 "/plugin_id",
             )
         params = dict(params if params is not None else (config or {}).get("params", {}))
-        input_data = _make_plugin_service_input_data(key, input_table, context)
+        runtime_context = context if isinstance(context, dict) else {}
+        self._ensure_runtime_context_snapshot(runtime_context)
+        input_data = _make_plugin_service_input_data(key, input_table, runtime_context)
         plugin_context = _make_plugin_service_context(
             key,
             config=config,
-            context=context,
+            context=runtime_context,
             execute_actions=execute_actions,
         )
         validation = self.validate_plugin_config(
             key,
             params,
             input_table=input_table,
-            context=context,
+            context=runtime_context,
             config=config,
             plugins_dir=plugins_dir,
         )
         if not validation.get("ok"):
             return validation
         try:
-            result = module.run(input_data, params, plugin_context)
+            if external_mode:
+                adapter = _PluginServiceExternalAdapter(self)
+                result = plugin_runtime_services.run_external_plugin_process(
+                    adapter,
+                    item,
+                    input_data,
+                    params,
+                    _normalize_external_plugin_config(key, item, config),
+                    runtime_context,
+                    execute_actions=execute_actions,
+                )
+            else:
+                result = module.run(input_data, params, plugin_context)
             normalized = normalize_plugin_run_result(
                 result,
                 input_data,
@@ -220,6 +242,15 @@ class PluginService:
             "context": plugin_context,
             "issues": [],
         }
+
+    def _ensure_runtime_context_snapshot(self, context):
+        if not isinstance(context, dict):
+            return
+        snapshot = context.setdefault("workflow_snapshot", {})
+        if self.db_path and not snapshot.get("db_path"):
+            snapshot["db_path"] = self.db_path
+        if not snapshot.get("app_dir"):
+            snapshot["app_dir"] = self._resolve_app_dir()
 
     def list_plugin_node_ui_schemas(self, plugins_dir=None, *, preview_headers=None, table_names=None, table_columns=None):
         listed = self.list_plugins(plugins_dir=plugins_dir)
@@ -416,7 +447,110 @@ def _plugin_badges(item):
 
 def _plugin_is_headless_runnable(item):
     item = item or {}
-    return bool(item.get("import_ok") and item.get("module") is not None)
+    return bool((item.get("import_ok") and item.get("module") is not None) or item.get("external_entry") or item.get("path"))
+
+
+def _plugin_should_run_external(config, item):
+    item = item or {}
+    config = config or {}
+    return bool(
+        is_external_plugin_mode(config, item)
+        or item.get("module") is None
+        or not item.get("import_ok")
+    )
+
+
+def _normalize_external_plugin_config(plugin_id, item, config):
+    result = copy.deepcopy(config or {})
+    result["plugin_id"] = result.get("plugin_id") or plugin_id
+    result["run_mode"] = "插件独立环境"
+    result.setdefault("external_entry", item.get("external_entry") or item.get("path") or "")
+    result.setdefault("external_env_dir", "")
+    result.setdefault("external_python", "")
+    result.setdefault("external_timeout", "0")
+    return result
+
+
+class _PluginServiceApp:
+    def __init__(self, app_dir):
+        self.app_dir = app_dir
+
+    @staticmethod
+    def sanitize_sql_name(value, default="plugin"):
+        return _sanitize_path_segment(value, default)
+
+
+class _PluginServiceExternalAdapter:
+    def __init__(self, service):
+        self.service = service
+        self.app = _PluginServiceApp(service._resolve_app_dir())
+
+    def find_external_python(self, config, item=None, allow_current=False, return_info=False):
+        return plugin_runtime_services.find_external_python(
+            config,
+            item=item,
+            allow_current=allow_current,
+            return_info=return_info,
+        )
+
+    def get_plugins_dir(self):
+        path = self.service._resolve_plugins_dir()
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    def get_plugin_data_dir(self, plugin_id=None):
+        base = Path(self.service._resolve_app_dir()) / "plugin_data"
+        if plugin_id:
+            base = base / _sanitize_path_segment(plugin_id, "plugin")
+        base.mkdir(parents=True, exist_ok=True)
+        return str(base)
+
+    def get_plugin_log_dir(self):
+        path = Path(self.service._resolve_app_dir()) / "logs" / "plugins"
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
+
+    def get_workflow_db_path(self, context=None):
+        context = context or {}
+        snapshot = context.get("workflow_snapshot", {}) if isinstance(context, dict) else {}
+        return str(snapshot.get("db_path") or context.get("db_path") or self.service.db_path or "")
+
+    def get_workflow_output_table(self, context=None):
+        context = context or {}
+        snapshot = context.get("workflow_snapshot", {}) if isinstance(context, dict) else {}
+        return str(snapshot.get("workflow_name") or context.get("workflow_name") or "")
+
+    def make_external_plugin_json_context(self, config, context=None, execute_actions=False):
+        return plugin_runtime_services.make_external_plugin_json_context(
+            self,
+            config,
+            context=context,
+            execute_actions=execute_actions,
+        )
+
+    def execute_external_plugin_database_requests(self, result, config, context=None, execute_actions=False):
+        return plugin_runtime_services.execute_external_plugin_database_requests(
+            self,
+            result,
+            config,
+            context=context,
+            execute_actions=execute_actions,
+        )
+
+    def get_table_manager(self, context=None, node_type="插件节点", node_name="插件节点"):
+        db_path = self.get_workflow_db_path(context)
+        if not db_path:
+            raise ValueError("SQLite 数据库路径为空，无法执行外部插件数据库请求。")
+        current = (context or {}).get("current_node_info", {}) if isinstance(context, dict) else {}
+        return TableAccessManager(
+            db_path,
+            node_id=current.get("node_id", ""),
+            node_name=node_name or current.get("node_name", ""),
+            node_type=node_type,
+            context=context if isinstance(context, dict) else None,
+            table_access=current.get("table_access") if isinstance(current, dict) else None,
+            permission_policy=(context or {}).get("table_access_policy") if isinstance(context, dict) else None,
+        )
 
 
 def _make_plugin_service_input_data(plugin_id, input_table=None, context=None):

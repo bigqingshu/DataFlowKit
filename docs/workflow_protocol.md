@@ -382,10 +382,11 @@ Runtime identity rules:
   loop queues/results in `context.loop_states` and `context.loop_results`, writes
   the current item/result/queue transit tables to `context.transit_tables`, and
   resolves loop back-jumps without any UI window methods.
-- Imported `plugin.<plugin_id>` nodes can run headlessly through
-  `PluginService.run_plugin`. External-process plugins remain discoverable, but
-  are reported as not headless-runnable until the process runner is moved behind
-  the same service boundary.
+- `plugin.<plugin_id>` nodes can run headlessly through `PluginService.run_plugin`.
+  Imported plugins run in-process; external-process plugins use the same
+  input/output JSON protocol behind a UI-free adapter. Database requests from
+  external plugins stay managed by the host and only execute when
+  `execute_actions = true`.
 - Clients that need progress, cancellation, or polling should use
   `start_job`, `get_job_status`, `get_job_events`, and `cancel_job`.
   `start_job` accepts `job_action = preview_plan | run_plan` and stores emitted
