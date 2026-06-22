@@ -41,12 +41,16 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
         self.assertEqual(schema["properties"]["template_type"]["const"], "workflow_plan")
         self.assertTrue(schema.get("additionalProperties"))
         self.assertIn("workflow_node.schema.json", schema["properties"]["nodes"]["items"]["$ref"])
+        self.assertEqual(schema["properties"]["db_path"]["type"], "string")
+        self.assertEqual(schema["properties"]["output_path"]["type"], "string")
 
         sample = {
             "template_type": "workflow_plan",
             "version": "1.0",
             "plan_name": "demo",
             "nodes": [],
+            "db_path": "",
+            "output_path": "",
             "legacy_field": "preserved",
         }
         for field in schema["required"]:

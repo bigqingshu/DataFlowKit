@@ -26,6 +26,7 @@ from engine.output_service import OutputService, OutputSettings
 from engine.plan_templates import PlanTemplateService
 from engine.safety_policy import SafetyPolicy, resolve_safety_policy
 from engine.stdio_worker import StdioWorker
+from engine.workflow_services import WorkflowServices
 
 __all__ = [
     "EngineCancelled",
@@ -39,6 +40,7 @@ __all__ = [
     "PlanTemplateService",
     "SafetyPolicy",
     "StdioWorker",
+    "WorkflowServices",
     "TableData",
     "UnsupportedNodeError",
     "has_error_issues",

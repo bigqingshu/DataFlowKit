@@ -49,6 +49,8 @@ def build_plan_document(
     output_mode=None,
     output_table=None,
     backup_before_overwrite=None,
+    db_path=None,
+    output_path=None,
 ):
     """Return a plan copy with current table and output settings attached."""
 
@@ -63,6 +65,10 @@ def build_plan_document(
         result["output_table"] = str(output_table)
     if backup_before_overwrite is not None:
         result["backup_before_overwrite"] = bool(backup_before_overwrite)
+    if db_path is not None:
+        result["db_path"] = str(db_path)
+    if output_path is not None:
+        result["output_path"] = str(output_path)
     return result
 
 

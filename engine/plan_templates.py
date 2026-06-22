@@ -71,6 +71,8 @@ class PlanTemplateService:
         output_mode=None,
         output_table=None,
         backup_before_overwrite=None,
+        db_path=None,
+        output_path=None,
         migrate=True,
         target_version=None,
     ):
@@ -82,6 +84,8 @@ class PlanTemplateService:
             output_mode=output_mode,
             output_table=output_table,
             backup_before_overwrite=backup_before_overwrite,
+            db_path=db_path,
+            output_path=output_path,
         )
         if not str(document.get("plan_name") or "").strip():
             document["plan_name"] = target.stem or "工作流计划"
@@ -172,4 +176,3 @@ def _first_non_error_message(issues):
         if issue.get("severity") in {"warning", "info"}:
             return issue.get("message", "")
     return ""
-

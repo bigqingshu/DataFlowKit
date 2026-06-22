@@ -115,6 +115,8 @@ class StdioWorker:
                 output_mode=payload.get("output_mode"),
                 output_table=payload.get("output_table"),
                 backup_before_overwrite=payload.get("backup_before_overwrite"),
+                db_path=payload.get("db_path") or payload.get("output_db_path"),
+                output_path=payload.get("output_path"),
                 migrate=bool(payload.get("migrate", True)),
                 target_version=payload.get("target_version") or payload.get("protocol_version"),
             )
@@ -224,6 +226,7 @@ class StdioWorker:
                 output_mode=payload.get("output_mode"),
                 output_table=payload.get("output_table"),
                 backup_before_overwrite=payload.get("backup_before_overwrite"),
+                db_path=payload.get("db_path") or payload.get("output_db_path"),
                 output_path=payload.get("output_path"),
             )
         if action == "list_plugins":

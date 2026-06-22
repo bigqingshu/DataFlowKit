@@ -266,12 +266,20 @@ class QtWorkflowMainWindow:
         output_labels = [item.get("label") or item.get("mode") for item in self.output_mode_records]
         self.output_mode_combo.addItems(output_labels or ["输出到主界面预览区", "保存为SQLite新表", "覆盖当前表", "导出为xlsx"])
         self.output_table_edit = qt.QtWidgets.QLineEdit("结果表")
+        self.output_db_path_edit = qt.QtWidgets.QLineEdit()
+        self.output_db_path_edit.setPlaceholderText("SQLite 数据库路径")
+        self.output_path_edit = qt.QtWidgets.QLineEdit()
+        self.output_path_edit.setPlaceholderText("xlsx 输出路径")
         self.backup_checkbox = qt.QtWidgets.QCheckBox("覆盖前自动备份旧表")
         self.backup_checkbox.setChecked(True)
         output_layout.addWidget(qt.QtWidgets.QLabel("输出方式："))
         output_layout.addWidget(self.output_mode_combo)
         output_layout.addWidget(qt.QtWidgets.QLabel("输出表名："))
         output_layout.addWidget(self.output_table_edit, 1)
+        output_layout.addWidget(qt.QtWidgets.QLabel("数据库："))
+        output_layout.addWidget(self.output_db_path_edit, 1)
+        output_layout.addWidget(qt.QtWidgets.QLabel("文件："))
+        output_layout.addWidget(self.output_path_edit, 1)
         output_layout.addWidget(self.backup_checkbox)
 
         preview_group = qt.QtWidgets.QGroupBox("6. 结果预览")
@@ -632,6 +640,7 @@ class QtWorkflowMainWindow:
             self.current_plan = data
             self.current_headers = list(data.get("headers", []))
             self.current_rows = [list(row) for row in data.get("rows", [])]
+            self.apply_output_settings_from_plan(data)
             self.last_preview_headers = []
             self.last_preview_rows = []
             self.refresh_all()
@@ -661,6 +670,8 @@ class QtWorkflowMainWindow:
                 output_mode=self.output_mode_combo.currentText(),
                 output_table=self.output_table_edit.text(),
                 backup_before_overwrite=self.backup_checkbox.isChecked(),
+                db_path=self.output_db_path_edit.text(),
+                output_path=self.output_path_edit.text(),
             )
             if not saved.get("ok"):
                 self.issue_text.setPlainText(self._format_issues(saved.get("issues", [])))
@@ -868,6 +879,8 @@ class QtWorkflowMainWindow:
             output_mode=self.output_mode_combo.currentText(),
             output_table=self.output_table_edit.text(),
             backup_before_overwrite=self.backup_checkbox.isChecked(),
+            db_path=self.output_db_path_edit.text(),
+            output_path=self.output_path_edit.text(),
         )
         table = output.get("table") or {}
         out_headers = list(table.get("headers") or headers)
@@ -912,6 +925,17 @@ class QtWorkflowMainWindow:
 
     def _node_type_id_for_node(self, node):
         return str(node.get("node_type_id") or node.get("type") or "")
+
+    def apply_output_settings_from_plan(self, plan):
+        plan = plan or {}
+        mode = str(plan.get("output_mode") or "").strip()
+        if mode:
+            index = self.output_mode_combo.findText(mode)
+            if index >= 0:
+                self.output_mode_combo.setCurrentIndex(index)
+        self.output_table_edit.setText(str(plan.get("output_table") or "结果表"))
+        self.output_db_path_edit.setText(str(plan.get("db_path") or plan.get("output_db_path") or ""))
+        self.output_path_edit.setText(str(plan.get("output_path") or ""))
 
     def _format_issues(self, issues):
         issues = issues or []

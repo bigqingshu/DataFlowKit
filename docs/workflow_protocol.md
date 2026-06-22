@@ -53,6 +53,8 @@ Recommended fields:
 
 - `output_mode`: default final output target.
 - `output_table`: default final table name.
+- `db_path`: SQLite database path for output modes that write SQLite.
+- `output_path`: file path for output modes that export files such as xlsx.
 - `backup_before_overwrite`: whether destructive table writes should back up.
 - `table_access_policy`: one of `audit`, `prompt`, `strict`, `off`.
 - `metadata`: non-execution plan metadata.
@@ -69,6 +71,8 @@ Example:
   "nodes": [],
   "output_mode": "输出到主界面预览区",
   "output_table": "结果表",
+  "db_path": "",
+  "output_path": "",
   "backup_before_overwrite": true,
   "table_access_policy": "audit",
   "metadata": {
@@ -340,9 +344,10 @@ Runtime identity rules:
   workflow/node events behind the returned `job_id`.
 - Clients should call `apply_output` after a completed `run_plan` job when they
   need to honor the plan's output settings. `list_output_modes` returns the
-  backend-supported labels and requirements. The first implementation supports
-  frontend preview output and returns structured issues for SQLite/current-table
-  overwrite/xlsx modes until the corresponding writers are connected.
+  backend-supported labels and requirements. Current output modes support
+  frontend preview updates, SQLite new-table writes, SQLite overwrite with an
+  optional backup, and xlsx export through `WorkflowServices`. SQLite modes need
+  `db_path`; xlsx export needs `output_path`.
 
 ### 7.1 Shared Node UI Schema
 

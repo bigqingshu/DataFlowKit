@@ -21,6 +21,7 @@ from engine.models import EngineRunResult, TableData
 from engine.output_service import OutputService
 from engine.plan_templates import PlanTemplateService
 from engine.safety_policy import resolve_safety_policy
+from engine.workflow_services import WorkflowServices
 from workflow.default_configs import default_config_for_type, default_name_for_node
 from workflow.config_validation import (
     validate_node_config,
@@ -99,14 +100,16 @@ class HeadlessWorkflowEngine:
         max_target_cells=MAX_TARGET_CELLS,
         node_id_factory=None,
         now_factory=None,
+        services=None,
     ):
         self.max_expanded_rows = int(max_expanded_rows or MAX_EXPANDED_ROWS)
         self.max_target_cells = int(max_target_cells or MAX_TARGET_CELLS)
         self.node_id_factory = node_id_factory or (lambda: "node_" + uuid.uuid4().hex)
         self.now_factory = now_factory or datetime.now
+        self.services = services or WorkflowServices()
         self.plan_templates = PlanTemplateService(node_id_factory=self.node_id_factory)
         self.jobs = JobService(self)
-        self.outputs = OutputService()
+        self.outputs = OutputService(self.services)
 
     def list_node_types(self, include_unsupported=True):
         return [

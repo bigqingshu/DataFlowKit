@@ -44,6 +44,8 @@ class PlanTemplateServiceTests(unittest.TestCase):
                 output_mode="输出到主界面预览区",
                 output_table="结果",
                 backup_before_overwrite=False,
+                db_path="demo.db",
+                output_path="demo.xlsx",
             )
 
             self.assertTrue(listed["ok"])
@@ -60,6 +62,8 @@ class PlanTemplateServiceTests(unittest.TestCase):
             self.assertEqual(saved_data["headers"], ["A"])
             self.assertEqual(saved_data["rows"], [["a"]])
             self.assertEqual(saved_data["nodes"][0]["node_type_id"], "core.new_columns")
+            self.assertEqual(saved_data["db_path"], "demo.db")
+            self.assertEqual(saved_data["output_path"], "demo.xlsx")
 
     def test_stdio_worker_exposes_plan_template_actions(self):
         with TemporaryDirectory() as temp_dir:
@@ -98,4 +102,3 @@ class PlanTemplateServiceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

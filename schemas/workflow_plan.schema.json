@@ -27,6 +27,12 @@
     "output_table": {
       "type": "string"
     },
+    "db_path": {
+      "type": "string"
+    },
+    "output_path": {
+      "type": "string"
+    },
     "backup_before_overwrite": {
       "type": "boolean"
     },

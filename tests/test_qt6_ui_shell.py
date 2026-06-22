@@ -174,6 +174,8 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(controller.node_list.count(), 1)
         self.assertEqual(controller.output_mode_combo.itemText(0), "输出到主界面预览区")
         self.assertEqual(controller.output_mode_combo.currentText(), "输出到主界面预览区")
+        self.assertEqual(controller.output_db_path_edit.text(), "")
+        self.assertEqual(controller.output_path_edit.text(), "")
 
         controller.add_node_by_type("core.replace")
         self.assertEqual(len(controller.current_plan["nodes"]), 2)
@@ -210,7 +212,7 @@ class Qt6UiShellTests(unittest.TestCase):
         controller.execute_plan()
         self.wait_for_controller_job(app, controller)
         self.assertTrue(controller.table_title.text().startswith("执行结果（输出未落地）"))
-        self.assertIn("output_writer_not_connected", controller.issue_text.toPlainText())
+        self.assertIn("missing_db_path", controller.issue_text.toPlainText())
         self.assertIn("执行完成，但输出未落地", controller.status_bar.currentMessage())
         window.close()
         app.processEvents()

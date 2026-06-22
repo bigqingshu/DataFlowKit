@@ -101,6 +101,8 @@ class QtHeadlessEngineClient:
         output_mode=None,
         output_table=None,
         backup_before_overwrite=None,
+        db_path=None,
+        output_path=None,
         migrate=True,
     ):
         return self.engine.save_plan_template(
@@ -111,6 +113,8 @@ class QtHeadlessEngineClient:
             output_mode=output_mode,
             output_table=output_table,
             backup_before_overwrite=backup_before_overwrite,
+            db_path=db_path,
+            output_path=output_path,
             migrate=migrate,
         )
 
@@ -147,6 +151,7 @@ class QtHeadlessEngineClient:
         output_mode=None,
         output_table=None,
         backup_before_overwrite=None,
+        db_path=None,
         output_path=None,
     ):
         return self.engine.apply_output(
@@ -156,6 +161,7 @@ class QtHeadlessEngineClient:
             output_mode=output_mode,
             output_table=output_table,
             backup_before_overwrite=backup_before_overwrite,
+            db_path=db_path,
             output_path=output_path,
         )
 
