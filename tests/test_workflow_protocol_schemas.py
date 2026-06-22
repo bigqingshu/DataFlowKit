@@ -388,6 +388,48 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
         self.assertEqual(write_fields["source_transit_table"]["action"]["key"], "pick_runtime_ref")
         self.assertEqual(write_fields["target_transit_table"]["options_source"], {"type": "runtime_refs", "ref_kind": "transit_table"})
 
+    def test_workflow_facade_describes_shared_picker_context(self):
+        from engine.workflow_facade import WorkflowFacade
+        from workflow.node_ui_schema import get_node_ui_schema
+
+        plan = {
+            "nodes": [
+                {"node_type_id": "core.loop_start", "config": {"loop_id": "Loop_A"}},
+                {"node_type_id": "core.jump_anchor", "config": {"anchor_id": "ANCHOR_END"}},
+                {"node_type_id": "core.save_transit", "config": {"transit_name": "中转A"}},
+                {"node_type_id": "core.group", "config": {"save_to_transit": True, "output_transit_name": "组输出B"}},
+            ]
+        }
+
+        facade = WorkflowFacade()
+        loop_context = facade.describe_picker_context(
+            plan=plan,
+            field_key="loop_id",
+            action_key="pick_plan_ref",
+            ref_kind="loop_id",
+        )["picker_context"]
+        self.assertEqual(loop_context["source"], "plan_refs")
+        self.assertEqual(loop_context["label"], "循环")
+        self.assertEqual(loop_context["candidates"], ["Loop_A"])
+
+        anchor_context = facade.describe_picker_context(
+            plan=plan,
+            field_key="default_anchor_id",
+            action_key="pick_plan_ref",
+            ref_kind="anchor_id",
+        )["picker_context"]
+        self.assertEqual(anchor_context["candidates"], ["ANCHOR_END"])
+
+        transit_context = facade.describe_picker_context(
+            plan=plan,
+            field_key="transit_table",
+            action_key="pick_runtime_ref",
+            ref_kind="transit_table",
+        )["picker_context"]
+        self.assertEqual(transit_context["source"], "runtime_refs")
+        self.assertEqual(transit_context["label"], "中转表")
+        self.assertEqual(transit_context["candidates"], ["中转A", "组输出B"])
+
         jump_schema = get_node_ui_schema("core.loop_judge", preview_headers=["A"])
         jump_fields = {
             field["key"]: field

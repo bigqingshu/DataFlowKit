@@ -1912,18 +1912,36 @@ class Qt6UiShellTests(unittest.TestCase):
         app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
         window = build_main_window(qt)
         controller = window.qt_workflow_controller
+        controller.plan = {
+            "nodes": [
+                {"node_type_id": "core.loop_start", "config": {"loop_id": "Loop_A"}},
+                {"node_type_id": "core.loop_start", "config": {"loop_id": "Loop_B"}},
+                {"node_type_id": "core.jump_anchor", "config": {"anchor_id": "ANCHOR_X"}},
+            ]
+        }
 
         with patch.object(controller.qt.QtWidgets.QInputDialog, "getItem", return_value=("Loop_A", True)):
             result = controller._pick_plan_reference_for_field(
                 "loop_id",
                 {
                     "action": {"key": "pick_plan_ref", "ref_kind": "loop_id"},
-                    "plan_refs": ["Loop_A", "Loop_B"],
+                    "plan_refs": [],
                     "value": "Loop_B",
                 },
             )
         self.assertEqual(result["value"], "Loop_A")
 
+        no_result = controller._pick_plan_reference_for_field(
+            "default_anchor_id",
+            {
+                "action": {"key": "pick_plan_ref", "ref_kind": "anchor_id"},
+                "plan_refs": [],
+                "value": "",
+            },
+        )
+        self.assertEqual(no_result["value"], "ANCHOR_X")
+
+        controller.plan = {"nodes": []}
         no_result = controller._pick_plan_reference_for_field(
             "default_anchor_id",
             {
@@ -1946,18 +1964,35 @@ class Qt6UiShellTests(unittest.TestCase):
         app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
         window = build_main_window(qt)
         controller = window.qt_workflow_controller
+        controller.plan = {
+            "nodes": [
+                {"node_type_id": "core.save_transit", "config": {"transit_name": "中转A"}},
+                {"node_type_id": "core.group", "config": {"save_to_transit": True, "output_transit_name": "组输出B"}},
+            ]
+        }
 
         with patch.object(controller.qt.QtWidgets.QInputDialog, "getItem", return_value=("中转A", True)):
             result = controller._pick_runtime_reference_for_field(
                 "transit_table",
                 {
                     "action": {"key": "pick_runtime_ref", "ref_kind": "transit_table"},
-                    "runtime_refs": ["中转A", "组输出B"],
+                    "runtime_refs": [],
                     "value": "组输出B",
                 },
             )
         self.assertEqual(result["value"], "中转A")
 
+        no_result = controller._pick_runtime_reference_for_field(
+            "transit_table",
+            {
+                "action": {"key": "pick_runtime_ref", "ref_kind": "transit_table"},
+                "runtime_refs": [],
+                "value": "",
+            },
+        )
+        self.assertEqual(no_result["value"], "中转A")
+
+        controller.plan = {"nodes": []}
         no_result = controller._pick_runtime_reference_for_field(
             "transit_table",
             {

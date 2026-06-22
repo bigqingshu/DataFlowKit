@@ -90,6 +90,9 @@ class QtHeadlessEngineClient:
     def describe_picker_feedback(self, **kwargs):
         return self.facade.describe_picker_feedback(**kwargs)
 
+    def describe_picker_context(self, **kwargs):
+        return self.facade.describe_picker_context(**kwargs)
+
     def describe_job_run_conflict(self, **kwargs):
         return self.facade.describe_job_run_conflict(**kwargs)
 

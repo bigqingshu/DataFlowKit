@@ -977,7 +977,14 @@ class QtWorkflowMainWindow:
     def _pick_plan_reference_for_field(self, field_key, payload):
         action = payload.get("action") or {}
         ref_kind = str(action.get("ref_kind") or "").strip()
-        candidates = [str(item) for item in (payload.get("plan_refs") or []) if str(item).strip()]
+        picker_context = self.engine_client.describe_picker_context(
+            plan=self.plan,
+            field_key=field_key,
+            action_key="pick_plan_ref",
+            ref_kind=ref_kind,
+            options_source=payload.get("options_source") or {},
+        ).get("picker_context") or {}
+        candidates = [str(item) for item in (picker_context.get("candidates") or payload.get("plan_refs") or []) if str(item).strip()]
         if not candidates:
             self._apply_feedback(self.engine_client.describe_picker_feedback(
                 action_key="pick_plan_ref",
@@ -1002,7 +1009,14 @@ class QtWorkflowMainWindow:
     def _pick_runtime_reference_for_field(self, field_key, payload):
         action = payload.get("action") or {}
         ref_kind = str(action.get("ref_kind") or "").strip()
-        candidates = [str(item) for item in (payload.get("runtime_refs") or []) if str(item).strip()]
+        picker_context = self.engine_client.describe_picker_context(
+            plan=self.plan,
+            field_key=field_key,
+            action_key="pick_runtime_ref",
+            ref_kind=ref_kind,
+            options_source=payload.get("options_source") or {},
+        ).get("picker_context") or {}
+        candidates = [str(item) for item in (picker_context.get("candidates") or payload.get("runtime_refs") or []) if str(item).strip()]
         if not candidates:
             self._apply_feedback(self.engine_client.describe_picker_feedback(
                 action_key="pick_runtime_ref",

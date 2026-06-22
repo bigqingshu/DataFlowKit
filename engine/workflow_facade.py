@@ -14,6 +14,8 @@ from workflow.node_ui_schema import (
     build_field_help_payload,
     build_node_detail_payload,
     build_node_ui_catalog,
+    plan_reference_choices,
+    runtime_reference_choices,
 )
 
 
@@ -398,6 +400,57 @@ class WorkflowFacade:
                 "action": action_key,
             }],
         )
+
+    def describe_picker_context(self, *, plan=None, field_key="", action_key="", ref_kind="", options_source=None):
+        field_key = str(field_key or "").strip()
+        action_key = str(action_key or "").strip()
+        ref_kind = str(ref_kind or "").strip()
+        options_source = dict(options_source or {})
+
+        source_type = str(options_source.get("type") or "").strip()
+        if not ref_kind:
+            ref_kind = str(options_source.get("ref_kind") or "").strip()
+
+        source = ""
+        label = ""
+        empty_code = "picker_candidates_missing"
+        candidates = []
+
+        if action_key == "pick_plan_ref" or source_type == "plan_refs":
+            source = "plan_refs"
+            candidates = plan_reference_choices(plan, ref_kind)
+            if ref_kind == "loop_id":
+                label = "循环"
+            elif ref_kind == "anchor_id":
+                label = "锚点"
+            else:
+                label = "计划引用"
+            empty_code = "plan_refs_missing"
+        elif action_key == "pick_runtime_ref" or source_type == "runtime_refs":
+            source = "runtime_refs"
+            candidates = runtime_reference_choices(plan, ref_kind)
+            if ref_kind == "transit_table":
+                label = "中转表"
+            elif ref_kind == "transit_name":
+                label = "中转名称"
+            else:
+                label = "运行时引用"
+            empty_code = "runtime_refs_missing"
+
+        candidates = [str(item) for item in (candidates or []) if str(item).strip()]
+        return {
+            "ok": True,
+            "picker_context": {
+                "field_key": field_key,
+                "action_key": action_key,
+                "source": source,
+                "ref_kind": ref_kind,
+                "label": label,
+                "candidates": candidates,
+                "candidate_count": len(candidates),
+                "empty_code": empty_code,
+            },
+        }
 
     def describe_job_run_conflict(self, *, current_job_id=""):
         job_id = str(current_job_id or "")
