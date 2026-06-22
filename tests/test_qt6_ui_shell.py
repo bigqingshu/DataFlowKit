@@ -472,6 +472,63 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(form.to_node()["config"]["fields"], ["B", "C"])
         app.processEvents()
 
+    def test_config_form_refreshes_table_column_choices_from_selected_table(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        schema = {
+            "form": {
+                "groups": [
+                    {
+                        "title": "参数",
+                        "fields": [
+                            {
+                                "key": "lookup_table",
+                                "type": "table_select",
+                                "options_source": {"type": "table_names"},
+                            },
+                            {
+                                "key": "lookup_field",
+                                "type": "field_select",
+                                "options_source": {"type": "table_columns", "table_field": "lookup_table"},
+                            },
+                        ],
+                    }
+                ]
+            }
+        }
+        node = {
+            "node_type_id": "demo.lookup_field",
+            "node_id": "n1",
+            "name": "表字段选择",
+            "enabled": True,
+            "node_version": "1.0.0",
+            "config": {
+                "lookup_table": "orders",
+                "lookup_field": "id",
+            },
+        }
+        form = NodeConfigForm(
+            qt,
+            table_names=["orders", "logs"],
+            table_columns={"orders": ["id", "name"], "logs": ["row_id"]},
+        )
+        form.set_node(
+            node,
+            table_names=["orders", "logs"],
+            table_columns={"orders": ["id", "name"], "logs": ["row_id"]},
+            schema=schema,
+        )
+        table_editor = form.config_fields["lookup_table"]["editor"]
+        field_editor = form.config_fields["lookup_field"]["editor"]
+        self.assertIn("name", [field_editor.itemText(i) for i in range(field_editor.count())])
+        table_editor.setCurrentText("logs")
+        app.processEvents()
+        self.assertIn("row_id", [field_editor.itemText(i) for i in range(field_editor.count())])
+        app.processEvents()
+
     def test_structured_list_cells_support_schema_actions(self):
         try:
             qt = qt_app.load_qt6()
@@ -878,6 +935,67 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(controller.config_form.table_names, ["orders", "logs"])
         self.assertEqual(mock_describe_detail.call_args.kwargs["table_names"], ["orders", "logs"])
         self.assertEqual(mock_describe_detail.call_args.kwargs["table_columns"], {"orders": ["id", "name"], "logs": ["row_id"]})
+        window.close()
+        app.processEvents()
+
+    def test_controller_handles_table_field_picker_actions(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+
+        controller.config_form.set_node(
+            {
+                "node_type_id": "demo.lookup_field_picker",
+                "node_id": "n1",
+                "name": "表字段选择",
+                "enabled": True,
+                "node_version": "1.0.0",
+                "config": {
+                    "lookup_table": "orders",
+                    "lookup_fields": ["id"],
+                },
+            },
+            table_names=["orders"],
+            table_columns={"orders": ["id", "name"]},
+            schema={
+                "form": {
+                    "groups": [
+                        {
+                            "title": "参数",
+                            "fields": [
+                                {
+                                    "key": "lookup_table",
+                                    "type": "table_select",
+                                    "options_source": {"type": "table_names"},
+                                },
+                                {
+                                    "key": "lookup_fields",
+                                    "type": "field_multi_select",
+                                    "options_source": {"type": "table_columns", "table_field": "lookup_table"},
+                                },
+                            ],
+                        }
+                    ]
+                }
+            },
+        )
+
+        with patch.object(controller.qt.QtWidgets.QDialog, "exec", return_value=int(controller.qt.QtWidgets.QDialog.DialogCode.Accepted)):
+            result = controller._pick_multi_table_fields_for_field(
+                "lookup_fields",
+                {
+                    "action": {"key": "pick_table_fields", "table_field": "lookup_table"},
+                    "schema": {"options_source": {"type": "table_columns", "table_field": "lookup_table"}},
+                    "table_columns": {"orders": ["id", "name"]},
+                    "value": ["id"],
+                },
+            )
+
+        self.assertEqual(result["value"], ["id"])
         window.close()
         app.processEvents()
 

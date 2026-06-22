@@ -195,6 +195,26 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
         self.assertEqual(fields["mappings"]["type"], "structured_list")
         self.assertEqual(fields["mappings"]["item_schema"]["columns"][0]["key"], "old")
 
+    def test_node_ui_schema_marks_table_driven_field_actions(self):
+        from workflow.node_ui_schema import get_node_ui_schema
+
+        schema = get_node_ui_schema(
+            "匹配值输出列名",
+            preview_headers=["源字段"],
+            table_names=["lookup"],
+            table_columns={"lookup": ["编码", "名称"]},
+        )
+        fields = {
+            field["key"]: field
+            for group in schema["form"]["groups"]
+            for field in group["fields"]
+        }
+        self.assertEqual(fields["lookup_table"]["options_source"], {"type": "table_names"})
+        self.assertEqual(fields["lookup_fields"]["type"], "field_multi_select")
+        self.assertEqual(fields["lookup_fields"]["options_source"], {"type": "table_columns", "table_field": "lookup_table"})
+        self.assertEqual(fields["lookup_fields"]["action"]["key"], "pick_table_fields")
+        self.assertEqual(fields["lookup_fields"]["action"]["table_field"], "lookup_table")
+
     def test_plugin_manifest_schema_keeps_current_manifest_shapes(self):
         schema = load_schema("plugin_manifest.schema.json")
         defs = schema["definitions"]

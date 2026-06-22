@@ -87,10 +87,14 @@ def structured_item_default(columns):
 class NodeConfigForm:
     """Build editable Qt widgets for a workflow node dict."""
 
-    def __init__(self, qt, parent=None, headers=None, table_names=None, action_handler=None):
+    def __init__(self, qt, parent=None, headers=None, table_names=None, table_columns=None, action_handler=None):
         self.qt = qt
         self.headers = list(headers or [])
         self.table_names = list(table_names or [])
+        self.table_columns = {
+            str(key): [str(item) for item in (values or [])]
+            for key, values in dict(table_columns or {}).items()
+        }
         self.action_handler = action_handler
         self.widget = qt.QtWidgets.QWidget(parent)
         self.root_layout = qt.QtWidgets.QVBoxLayout(self.widget)
@@ -112,6 +116,14 @@ class NodeConfigForm:
 
     def set_table_names(self, table_names):
         self.table_names = list(table_names or [])
+        self._refresh_dynamic_options()
+
+    def set_table_columns(self, table_columns):
+        self.table_columns = {
+            str(key): [str(item) for item in (values or [])]
+            for key, values in dict(table_columns or {}).items()
+        }
+        self._refresh_dynamic_options()
 
     def set_validation_issues(self, issues=None):
         self.validation_issues = list(issues or [])
@@ -135,11 +147,13 @@ class NodeConfigForm:
             "issues": list(self.validation_issues or []),
         }
 
-    def set_node(self, node, headers=None, table_names=None, schema=None):
+    def set_node(self, node, headers=None, table_names=None, table_columns=None, schema=None):
         if headers is not None:
             self.set_headers(headers)
         if table_names is not None:
             self.set_table_names(table_names)
+        if table_columns is not None:
+            self.set_table_columns(table_columns)
         self.node = copy.deepcopy(node) if isinstance(node, dict) else None
         self.schema = copy.deepcopy(schema) if isinstance(schema, dict) else {}
         self.node_fields = {}
@@ -376,6 +390,8 @@ class NodeConfigForm:
             "action": action,
             "value": self._field_value_for_action(field),
             "headers": list(self.headers or []),
+            "table_names": list(self.table_names or []),
+            "table_columns": copy.deepcopy(self.table_columns or {}),
         }
         result = self.action_handler(payload) or {}
         if "value" in result:
@@ -424,12 +440,23 @@ class NodeConfigForm:
             if editor is None or field.get("kind") != "choice":
                 continue
             options_source = schema.get("options_source") or {}
-            if options_source.get("type") != "preview_headers":
+            source_type = str(options_source.get("type") or "")
+            if source_type not in {"preview_headers", "table_names", "table_columns"}:
                 continue
             current = str(editor.currentText())
             editor.blockSignals(True)
             editor.clear()
-            values = [str(item) for item in self.headers]
+            if source_type == "preview_headers":
+                values = [str(item) for item in self.headers]
+            elif source_type == "table_names":
+                values = [str(item) for item in self.table_names]
+            else:
+                table_field = str(options_source.get("table_field") or "").strip()
+                selected_table = ""
+                if table_field:
+                    dependency = self.config_fields.get(table_field) or {}
+                    selected_table = str(self._field_value_for_action(dependency) or "")
+                values = [str(item) for item in (self.table_columns.get(selected_table, []) or [])]
             if current and current not in values:
                 values.insert(0, current)
             editor.addItems(values)
@@ -614,6 +641,7 @@ class NodeConfigForm:
             "value": self._structured_editor_value(editor, kind),
             "headers": list(self.headers or []),
             "table_names": list(getattr(self, "table_names", []) or []),
+            "table_columns": copy.deepcopy(getattr(self, "table_columns", {}) or {}),
             "context": {"kind": "structured_cell"},
         }
         result = self.action_handler(payload) or {}
@@ -839,6 +867,7 @@ class NodeConfigForm:
             return
 
     def _apply_dynamic_state(self):
+        self._refresh_dynamic_options()
         values = self._current_field_values()
         for field in self.config_fields.values():
             label = field.get("label")

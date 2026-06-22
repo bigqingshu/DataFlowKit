@@ -618,7 +618,13 @@ class QtWorkflowMainWindow:
         display = schema.get("display_name") or node.get("type") or node_type_id
         self.config_header_label.setText(f"节点类型：{display}    节点名称：{node.get('name', '')}")
         table_context = self._table_context()
-        self.config_form.set_node(node, headers=self.current_headers, table_names=table_context.get("table_names"), schema=schema)
+        self.config_form.set_node(
+            node,
+            headers=self.current_headers,
+            table_names=table_context.get("table_names"),
+            table_columns=table_context.get("table_columns"),
+            schema=schema,
+        )
         self.show_node_detail(node_type_id)
         self.refresh_action_states()
 
@@ -754,8 +760,10 @@ class QtWorkflowMainWindow:
         self.current_rows = [list(row) for row in (state.get("rows") or [])]
         self.current_plan["headers"] = list(self.current_headers)
         self.current_plan["rows"] = [list(row) for row in self.current_rows]
+        table_context = self._table_context()
         self.config_form.set_headers(self.current_headers)
-        self.config_form.set_table_names(self._table_context().get("table_names"))
+        self.config_form.set_table_names(table_context.get("table_names"))
+        self.config_form.set_table_columns(table_context.get("table_columns"))
         self.refresh_catalog()
         self.update_input_summary()
         self.update_table(self.current_headers, self.current_rows, title=state.get("table_title") or "输入表格")
@@ -862,6 +870,8 @@ class QtWorkflowMainWindow:
         action_key = str(action.get("key") or "")
         if action_key == "pick_table_name":
             return self._pick_single_table_for_field(field_key, payload)
+        if action_key == "pick_table_fields":
+            return self._pick_multi_table_fields_for_field(field_key, payload)
         if action_key == "pick_preview_header":
             return self._pick_single_value_for_field(field_key, payload)
         if action_key == "pick_preview_headers":
@@ -942,6 +952,61 @@ class QtWorkflowMainWindow:
             if item.checkState() == self.qt.QtCore.Qt.CheckState.Checked:
                 values.append(item.text())
         return {"value": values}
+
+    def _pick_multi_table_fields_for_field(self, field_key, payload):
+        action = payload.get("action") or {}
+        schema = payload.get("schema") or {}
+        table_field = str(action.get("table_field") or (schema.get("options_source") or {}).get("table_field") or "").strip()
+        table_name = ""
+        if table_field:
+            table_name = str(self._current_config_field_value(table_field) or "")
+        table_columns = payload.get("table_columns") or {}
+        candidates = [str(item) for item in (table_columns.get(table_name, []) or []) if str(item).strip()]
+        if not table_name:
+            self.status_bar.showMessage("请先选择关联数据表。")
+            return {}
+        if not candidates:
+            self.status_bar.showMessage(f"数据表 {table_name} 暂无可选字段。")
+            return {}
+        selected = set(str(item) for item in (payload.get("value") or []) if str(item).strip())
+
+        dialog = self.qt.QtWidgets.QDialog(self.window)
+        dialog.setWindowTitle(f"选择{field_key}")
+        dialog.resize(360, 420)
+        layout = self.qt.QtWidgets.QVBoxLayout(dialog)
+        hint = self.qt.QtWidgets.QLabel(f"当前数据表：{table_name}")
+        layout.addWidget(hint)
+        list_widget = self.qt.QtWidgets.QListWidget(dialog)
+        list_widget.setSelectionMode(self.qt.QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
+        for item in candidates:
+            row = self.qt.QtWidgets.QListWidgetItem(item, list_widget)
+            row.setFlags(row.flags() | self.qt.QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+            row.setCheckState(
+                self.qt.QtCore.Qt.CheckState.Checked if item in selected else self.qt.QtCore.Qt.CheckState.Unchecked
+            )
+        layout.addWidget(list_widget, 1)
+        button_box = self.qt.QtWidgets.QDialogButtonBox(
+            self.qt.QtWidgets.QDialogButtonBox.StandardButton.Ok | self.qt.QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
+        )
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+        if dialog.exec() != int(self.qt.QtWidgets.QDialog.DialogCode.Accepted):
+            return {}
+
+        values = []
+        for index in range(list_widget.count()):
+            item = list_widget.item(index)
+            if item.checkState() == self.qt.QtCore.Qt.CheckState.Checked:
+                values.append(item.text())
+        return {"value": values}
+
+    def _current_config_field_value(self, field_key):
+        field = self.config_form.config_fields.get(field_key) or {}
+        if not field:
+            return ""
+        return self.config_form._field_value_for_action(field)
 
     def _apply_output_form_settings(self, settings):
         mode = str((settings or {}).get("mode") or "").strip()

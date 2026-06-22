@@ -284,7 +284,12 @@ FIELD_MULTI_PICKER_KEYS = {
     "input_fields",
 }
 
+TABLE_FIELD_MULTI_PICKER_RULES = {
+    "lookup_fields": {"table_field": "lookup_table"},
+}
+
 TABLE_PICKER_KEYS = {
+    "lookup_table",
     "source_table",
     "transit_table",
     "input_sqlite_table",
@@ -798,8 +803,14 @@ def config_field_label(key):
 def choices_for_field(key, headers=None, table_names=None, table_columns=None):
     headers = [str(item) for item in (headers or [])]
     table_names = [str(item) for item in (table_names or [])]
+    table_columns = table_columns or {}
     if key in FIELD_PICKER_KEYS or key in FIELD_MULTI_PICKER_KEYS:
         return headers
+    if key in TABLE_FIELD_MULTI_PICKER_RULES:
+        table_field = TABLE_FIELD_MULTI_PICKER_RULES[key].get("table_field")
+        if table_field:
+            table_name = table_names[0] if table_names else ""
+            return [str(item) for item in (table_columns.get(table_name, []) or [])]
     if key in TABLE_PICKER_KEYS:
         return table_names
     return FIELD_CHOICES.get(key, [])
@@ -820,6 +831,10 @@ def field_help_text(key):
 def options_source_for_field(key):
     if key in FIELD_PICKER_KEYS or key in FIELD_MULTI_PICKER_KEYS:
         return {"type": "preview_headers"}
+    if key in TABLE_FIELD_MULTI_PICKER_RULES:
+        payload = dict(TABLE_FIELD_MULTI_PICKER_RULES[key])
+        payload["type"] = "table_columns"
+        return payload
     if key in TABLE_PICKER_KEYS:
         return {"type": "table_names"}
     return None
@@ -840,6 +855,16 @@ def action_for_field(key):
             "style": "picker",
             "source": "preview_headers",
             "multiple": True,
+        }
+    if key in TABLE_FIELD_MULTI_PICKER_RULES:
+        table_field = TABLE_FIELD_MULTI_PICKER_RULES[key].get("table_field")
+        return {
+            "key": "pick_table_fields",
+            "label": "选择字段",
+            "style": "picker",
+            "source": "table_columns",
+            "multiple": True,
+            "table_field": table_field,
         }
     if key in TABLE_PICKER_KEYS:
         return {
@@ -920,6 +945,8 @@ def config_field_schema(key, value=None, *, headers=None, table_names=None, tabl
     if key in FIELD_PICKER_KEYS:
         field_type = "field_select"
     elif key in FIELD_MULTI_PICKER_KEYS:
+        field_type = "field_multi_select"
+    elif key in TABLE_FIELD_MULTI_PICKER_RULES:
         field_type = "field_multi_select"
     elif key in TABLE_PICKER_KEYS:
         field_type = "table_select"
