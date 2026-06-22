@@ -225,6 +225,8 @@ class Qt6UiShellTests(unittest.TestCase):
 
         self.assertEqual(final["message_panel"]["title"], "任务结果")
         self.assertIn("任务完成", final["message_panel"]["body"])
+        self.assertEqual(final["view_state"]["table_title"], "执行结果")
+        self.assertTrue(final["view_state"]["should_refresh_preview_sources"])
 
     def test_facade_builds_standard_feedback_payloads(self):
         client = QtHeadlessEngineClient()
@@ -260,6 +262,8 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertIn("OK: true", validation_feedback["feedback"]["issue_message"])
         self.assertEqual(validation_feedback["feedback"]["sections"][0]["title"], "基础校验")
         self.assertIn("校验通过", validation_feedback["feedback"]["summary_lines"])
+        self.assertEqual(validation_feedback["feedback"]["message_panel"]["preferred_tab"], "info")
+        self.assertIn("基础校验", validation_feedback["feedback"]["message_panel"]["info_body"])
 
         message_panel = client.build_message_panel_state(
             mode="warning",
@@ -269,6 +273,8 @@ class Qt6UiShellTests(unittest.TestCase):
         )
         self.assertEqual(message_panel["panel"]["mode"], "warning")
         self.assertIn("hello", message_panel["panel"]["body"])
+        self.assertEqual(message_panel["panel"]["preferred_tab"], "issues")
+        self.assertIn("hello", message_panel["panel"]["issue_body"])
 
     def test_facade_describes_confirmation_prompts(self):
         client = QtHeadlessEngineClient()
@@ -1159,6 +1165,7 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertIn("基础校验", controller.info_text.toPlainText())
         self.assertIn("存在写回风险，请确认目标表", controller.info_text.toPlainText())
         self.assertIn("将写回数据库", controller.issue_text.toPlainText())
+        self.assertEqual(controller.message_tabs.tabText(controller.message_tabs.currentIndex()), "问题")
 
     def test_controller_uses_confirmation_prompts_for_clear_and_run(self):
         try:

@@ -661,44 +661,16 @@ class QtWorkflowMainWindow:
 
     def _apply_feedback(self, feedback, *, fallback_status="", fallback_issue=""):
         payload = (feedback or {}).get("feedback") or {}
-        issue_message = str(payload.get("issue_message") or fallback_issue or "")
-        issues = payload.get("issues") or []
-        logs = payload.get("logs") or []
         status_message = str(payload.get("status_message") or fallback_status or "")
-        sections = [item for item in (payload.get("sections") or []) if isinstance(item, dict)]
-        summary_lines = [str(item) for item in (payload.get("summary_lines") or []) if str(item).strip()]
-
-        info_blocks = []
-        issue_blocks = []
-        for section in sections:
-            title = str(section.get("title") or "").strip()
-            body = str(section.get("body") or "").strip()
-            block = "\n".join(item for item in [title, body] if item)
-            if not block:
-                continue
-            if section.get("issues"):
-                issue_blocks.append(block)
-            else:
-                info_blocks.append(block)
-        info_message = "\n\n".join(info_blocks)
-        if summary_lines:
-            info_message = "\n".join(summary_lines) + (("\n\n" + info_message) if info_message else "")
-        if issue_blocks:
-            issue_message = "\n\n".join(issue_blocks)
-        elif not issue_message and info_message:
-            issue_message = info_message
-
-        self._apply_message_panel(self.engine_client.build_message_panel_state(
+        panel = payload.get("message_panel") or self.engine_client.build_message_panel_state(
             mode=str(payload.get("level") or "info"),
             title=str(payload.get("title") or ""),
-            body=issue_message if issue_message else info_message,
-            issues=issues,
-            logs=logs,
-        ).get("panel") or {})
+            body=str(payload.get("issue_message") or fallback_issue or ""),
+            issues=payload.get("issues") or [],
+            logs=payload.get("logs") or [],
+        ).get("panel") or {}
 
-        if info_message:
-            title = str((self.current_message_panel or {}).get("title") or payload.get("title") or "")
-            self.info_text.setPlainText("\n\n".join([item for item in [title, info_message] if str(item).strip()]))
+        self._apply_message_panel(panel)
 
         if status_message:
             self.status_bar.showMessage(status_message)
@@ -708,17 +680,19 @@ class QtWorkflowMainWindow:
         self.current_message_panel = dict(panel)
         mode = str(panel.get("mode") or "info")
         title = str(panel.get("title") or "")
-        body = str(panel.get("body") or "")
+        info_body = str(panel.get("info_body") or "")
+        issue_body = str(panel.get("issue_body") or "")
         logs = [str(item) for item in (panel.get("logs") or []) if str(item).strip()]
         issues = panel.get("issues") or []
-        issue_text = self._format_issues(issues) if issues else (body if mode in {"warning", "error"} else "")
-        info_lines = [item for item in [title, body if mode not in {"warning", "error"} else ""] if str(item).strip()]
+        issue_text = issue_body or (self._format_issues(issues) if issues else "")
+        info_lines = [item for item in [title, info_body] if str(item).strip()]
         self.info_text.setPlainText("\n\n".join(info_lines))
         self.issue_text.setPlainText(issue_text)
         self.log_text.setPlainText("\n".join(logs))
-        if issues:
+        preferred_tab = str(panel.get("preferred_tab") or "").strip().lower()
+        if preferred_tab == "issues":
             self.message_tabs.setCurrentWidget(self.issue_text)
-        elif logs:
+        elif preferred_tab == "logs":
             self.message_tabs.setCurrentWidget(self.log_text)
         else:
             self.message_tabs.setCurrentWidget(self.info_text)
@@ -1421,39 +1395,29 @@ class QtWorkflowMainWindow:
         table = final.get("table") or {}
         headers = list(table.get("headers") or [])
         rows = [list(row) for row in (table.get("rows") or [])]
+        view_state = final.get("view_state") or {}
         if status.get("status") == "failed":
             self._apply_message_panel(final.get("message_panel") or {})
-            self.status_bar.showMessage("后台任务失败")
+            self.status_bar.showMessage(str(view_state.get("status_message") or "后台任务失败"))
         elif headers or rows:
-            logs = final.get("logs") or []
-            final_status_message = final.get("display_message") or f"{self.current_job_title}完成。"
             self.last_preview_headers = headers
             self.last_preview_rows = rows
-            title = self.current_job_title
-            if self.current_job_action == "run_plan" and not (final.get("output") or {}).get("ok", True):
-                title = "执行结果（输出未落地）"
-            self.update_table(headers, rows, title=title)
-            self.current_table_kind = "preview"
-            self.refresh_preview_table_combo()
-            output = final.get("output") or {}
-            if output:
-                if output.get("ok"):
-                    self._apply_message_panel(final.get("message_panel") or {})
-                else:
-                    self._apply_message_panel(final.get("message_panel") or {})
-            else:
-                self._apply_message_panel(final.get("message_panel") or self.engine_client.build_message_panel_state(
-                    mode="success",
-                    title=self.current_job_title,
-                    body=f"{self.current_job_title}完成，无日志。",
-                    logs=logs,
-                ).get("panel") or {})
+            self.update_table(headers, rows, title=str(view_state.get("table_title") or self.current_job_title or "执行结果"))
+            self.current_table_kind = str(view_state.get("table_kind") or "preview")
+            if view_state.get("should_refresh_preview_sources"):
+                self.refresh_preview_table_combo()
+            self._apply_message_panel(final.get("message_panel") or self.engine_client.build_message_panel_state(
+                mode="success",
+                title=self.current_job_title,
+                body=f"{self.current_job_title}完成，无日志。",
+                logs=final.get("logs") or [],
+            ).get("panel") or {})
             self._apply_job_progress_state(self.engine_client.build_job_progress_state(
                 current_job_id=self.current_job_id,
                 title=self.current_job_title,
                 final=final,
             ).get("progress") or {})
-            self.status_bar.showMessage(final_status_message)
+            self.status_bar.showMessage(str(view_state.get("status_message") or final.get("display_message") or f"{self.current_job_title}完成。"))
         else:
             self._apply_message_panel(self.engine_client.build_message_panel_state(
                 mode="info",
@@ -1461,7 +1425,7 @@ class QtWorkflowMainWindow:
                 body=status.get("message", "后台任务已结束。"),
                 logs=self.current_job_messages,
             ).get("panel") or {})
-            self.status_bar.showMessage(status.get("message", "后台任务已结束。"))
+            self.status_bar.showMessage(str(view_state.get("status_message") or status.get("message", "后台任务已结束。")))
         self.current_job_id = ""
         self.current_job_action = ""
         self.current_job_title = ""

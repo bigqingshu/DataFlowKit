@@ -178,6 +178,13 @@ class WorkflowFacade:
     ):
         issues = list(issues or [])
         logs = [str(item) for item in (logs or []) if str(item).strip()]
+        panel = self.build_message_panel_state(
+            mode=level,
+            title=title,
+            body=issue_message,
+            issues=issues,
+            logs=logs,
+        ).get("panel") or {}
         feedback = {
             "ok": level not in {"error"},
             "feedback": {
@@ -188,11 +195,23 @@ class WorkflowFacade:
                 "issue_message": str(issue_message or ""),
                 "issues": issues,
                 "logs": logs,
+                "message_panel": panel,
             },
         }
         return feedback
 
-    def build_message_panel_state(self, *, mode="info", title="", body="", issues=None, logs=None):
+    def build_message_panel_state(
+        self,
+        *,
+        mode="info",
+        title="",
+        body="",
+        info_body="",
+        issue_body="",
+        issues=None,
+        logs=None,
+        preferred_tab="",
+    ):
         issues = copy.deepcopy(issues or [])
         logs = [str(item) for item in (logs or []) if str(item).strip()]
         body_text = str(body or "")
@@ -200,14 +219,34 @@ class WorkflowFacade:
             body_text = self.format_issues_text(issues)
         if not body_text and logs:
             body_text = "\n".join(logs)
+        info_text = str(info_body or "").strip()
+        issue_text = str(issue_body or "").strip()
+        mode_text = str(mode or "info")
+        if not issue_text and issues:
+            issue_text = self.format_issues_text(issues)
+        if not info_text and mode_text not in {"warning", "error"}:
+            info_text = body_text
+        if not issue_text and mode_text in {"warning", "error"}:
+            issue_text = body_text
+        preferred = str(preferred_tab or "").strip().lower()
+        if preferred not in {"info", "issues", "logs"}:
+            if issues:
+                preferred = "issues"
+            elif logs:
+                preferred = "logs"
+            else:
+                preferred = "info"
         return {
             "ok": True,
             "panel": {
-                "mode": str(mode or "info"),
+                "mode": mode_text,
                 "title": str(title or ""),
                 "body": body_text,
+                "info_body": info_text,
+                "issue_body": issue_text,
                 "issues": issues,
                 "logs": logs,
+                "preferred_tab": preferred,
             },
         }
 
@@ -423,6 +462,7 @@ class WorkflowFacade:
             status_message=status,
             issue_message=text,
             issues=(validation.get("issues", []) or []) + jump_issues + access_issues,
+            title="计划校验",
         )
         payload = feedback.get("feedback") or {}
         payload["sections"] = sections
@@ -431,6 +471,32 @@ class WorkflowFacade:
             for item in [status, jump_validation.get("summary"), access_precheck.get("summary")]
             if str(item or "").strip()
         ]
+        info_blocks = []
+        issue_blocks = []
+        for section in sections:
+            section_title = str(section.get("title") or "").strip()
+            section_body = str(section.get("body") or "").strip()
+            block = "\n".join(item for item in [section_title, section_body] if item)
+            if not block:
+                continue
+            if section.get("issues"):
+                issue_blocks.append(block)
+            else:
+                info_blocks.append(block)
+        info_message = "\n\n".join(info_blocks)
+        if payload["summary_lines"]:
+            info_message = "\n".join(payload["summary_lines"]) + (("\n\n" + info_message) if info_message else "")
+        issue_message = "\n\n".join(issue_blocks) if issue_blocks else (text if level in {"warning", "error"} else "")
+        payload["message_panel"] = self.build_message_panel_state(
+            mode=level,
+            title=str(payload.get("title") or ""),
+            body=issue_message or info_message,
+            info_body=info_message,
+            issue_body=issue_message,
+            issues=payload.get("issues") or [],
+            logs=payload.get("logs") or [],
+            preferred_tab="issues" if issue_blocks else "info",
+        ).get("panel") or {}
         return feedback
 
     def format_issues_text(self, issues):
@@ -1052,6 +1118,13 @@ class WorkflowFacade:
             "steps": int(result.get("steps", 0) or 0),
             "cancelled": bool(result.get("cancelled")),
             "message": status.get("message") or "",
+            "view_state": {
+                "table_title": "",
+                "table_kind": "preview",
+                "should_refresh_preview_sources": False,
+                "status_message": "",
+                "has_table": bool(headers or rows),
+            },
         }
         if status.get("status") == "failed":
             error = status.get("error") or {}
@@ -1064,6 +1137,10 @@ class WorkflowFacade:
                 body=payload["display_message"],
                 logs=merged_logs,
             ).get("panel")
+            payload["view_state"].update({
+                "status_message": "后台任务失败",
+                "table_kind": "preview",
+            })
             return payload
         if job_action == "run_plan" and (headers or rows):
             output = self.engine.apply_output(
@@ -1094,6 +1171,13 @@ class WorkflowFacade:
                     issues=output.get("issues") or [],
                     logs=merged_logs,
                 ).get("panel")
+            payload["view_state"].update({
+                "table_title": "执行结果" if output.get("ok") else "执行结果（输出未落地）",
+                "table_kind": "preview",
+                "should_refresh_preview_sources": True,
+                "status_message": payload["display_message"],
+                "has_table": True,
+            })
             return payload
         payload["display_message"] = status.get("message") or "任务完成。"
         payload["message_panel"] = self.build_message_panel_state(
@@ -1102,4 +1186,11 @@ class WorkflowFacade:
             body=payload["display_message"],
             logs=merged_logs,
         ).get("panel")
+        payload["view_state"].update({
+            "table_title": "执行结果" if headers or rows else "",
+            "table_kind": "preview",
+            "should_refresh_preview_sources": bool(headers or rows),
+            "status_message": payload["display_message"] if headers or rows else (status.get("message") or "后台任务已结束。"),
+            "has_table": bool(headers or rows),
+        })
         return payload
