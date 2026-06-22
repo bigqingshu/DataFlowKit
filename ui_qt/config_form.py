@@ -7,6 +7,7 @@ import copy
 import json
 
 from ui_qt.node_ui_metadata import (
+    build_field_help_payload,
     choices_for_field,
     config_layout_for_node,
     config_field_label,
@@ -908,17 +909,20 @@ class NodeConfigForm:
         return widget
 
     def _field_tooltip(self, key, field_schema):
+        payload = build_field_help_payload(key, field_schema)
         parts = []
-        help_text = field_schema.get("help") or field_help_text(key)
-        if help_text:
-            parts.append(str(help_text))
-        validation = field_schema.get("validation") or {}
-        if validation.get("required"):
-            parts.append("必填")
-        if validation.get("integer"):
-            parts.append("必须为整数")
-        if "min" in validation:
-            parts.append(f"最小值：{validation['min']}")
+        for section in payload.get("sections") or []:
+            title = str((section or {}).get("title") or "").strip()
+            lines = [str(item) for item in ((section or {}).get("lines") or []) if str(item).strip()]
+            if title and lines:
+                parts.append(title)
+                parts.extend(lines)
+            elif lines:
+                parts.extend(lines)
+        if not parts:
+            help_text = field_schema.get("help") or field_help_text(key)
+            if help_text:
+                parts.append(str(help_text))
         return "\n".join(parts)
 
     def _connect_dynamic_refresh(self, editor, kind):

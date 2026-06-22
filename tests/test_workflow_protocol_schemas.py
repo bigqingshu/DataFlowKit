@@ -260,6 +260,30 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
         self.assertEqual(fields["lookup_fields"]["action"]["key"], "pick_table_fields")
         self.assertEqual(fields["lookup_fields"]["action"]["table_field"], "lookup_table")
 
+    def test_field_help_payload_exposes_shared_help_sections(self):
+        from workflow.node_ui_schema import build_field_help_payload, get_node_ui_schema
+
+        schema = get_node_ui_schema("core.replace", preview_headers=["A", "B"])
+        fields = {
+            field["key"]: field
+            for group in schema["form"]["groups"]
+            for field in group["fields"]
+        }
+        payload = build_field_help_payload("target_field", fields["target_field"])
+        section = payload["sections"][0]
+
+        self.assertEqual(payload["label"], "目标字段")
+        self.assertTrue(payload["required"])
+        self.assertEqual(payload["action"]["key"], "pick_preview_header")
+        self.assertEqual(section["title"], "字段说明")
+        joined = "\n".join(section["lines"])
+        self.assertIn("必填", joined)
+        self.assertIn("支持动作：选择字段", joined)
+
+        match_payload = build_field_help_payload("match_value_field", fields["match_value_field"])
+        match_joined = "\n".join(match_payload["sections"][0]["lines"])
+        self.assertIn("动态显示", match_joined)
+
     def test_plugin_manifest_schema_keeps_current_manifest_shapes(self):
         schema = load_schema("plugin_manifest.schema.json")
         defs = schema["definitions"]

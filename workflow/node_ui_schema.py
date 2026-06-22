@@ -860,6 +860,45 @@ def field_help_text(key):
     return FIELD_HELP_TEXTS.get(key, "")
 
 
+def field_help_sections(key, schema=None):
+    schema = dict(schema or {})
+    validation = dict(schema.get("validation") or {})
+    lines = []
+    help_text = str(schema.get("help") or field_help_text(key) or "").strip()
+    if help_text:
+        lines.append(help_text)
+
+    validation_lines = []
+    if validation.get("required"):
+        validation_lines.append("必填")
+    if validation.get("integer"):
+        validation_lines.append("必须为整数")
+    if "min" in validation:
+        validation_lines.append(f"最小值：{validation['min']}")
+    if validation_lines:
+        lines.append("；".join(validation_lines))
+
+    dynamic_lines = []
+    if schema.get("visible_when"):
+        dynamic_lines.append("该字段会根据其他配置动态显示")
+    if schema.get("enabled_when"):
+        dynamic_lines.append("该字段会根据其他配置动态启用")
+    if dynamic_lines:
+        lines.extend(dynamic_lines)
+
+    action = schema.get("action") or {}
+    if action.get("key"):
+        action_label = str(action.get("label") or "选择")
+        lines.append(f"支持动作：{action_label}")
+
+    if not lines:
+        return []
+    return [{
+        "title": "字段说明",
+        "lines": lines,
+    }]
+
+
 def options_source_for_field(key):
     if key in FIELD_PICKER_KEYS or key in FIELD_MULTI_PICKER_KEYS:
         return {"type": "preview_headers"}
@@ -1314,4 +1353,16 @@ def build_node_detail_payload(node_type_id, *, display_name="", category="", sup
             category=resolved_category,
             supported_headless=supported,
         ),
+    }
+
+
+def build_field_help_payload(key, schema=None):
+    resolved_schema = dict(schema or {})
+    return {
+        "key": key,
+        "label": str(resolved_schema.get("label") or config_field_label(key)),
+        "help": str(resolved_schema.get("help") or field_help_text(key) or ""),
+        "sections": field_help_sections(key, resolved_schema),
+        "required": bool(resolved_schema.get("required")),
+        "action": dict(resolved_schema.get("action") or {}),
     }
