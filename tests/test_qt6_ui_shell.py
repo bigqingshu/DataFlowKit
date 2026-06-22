@@ -143,6 +143,9 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(len(controller.current_plan["nodes"]), 2)
         controller.copy_selected_node()
         self.assertEqual(len(controller.current_plan["nodes"]), 3)
+        copied_node = controller.current_plan["nodes"][controller.selected_node_index()]
+        self.assertTrue(copied_node.get("node_id"))
+        self.assertTrue(copied_node.get("name", "").endswith("_复制"))
         controller.toggle_selected_node_enabled()
         self.assertFalse(controller.current_plan["nodes"][controller.selected_node_index()].get("enabled", True))
         controller.toggle_selected_node_enabled()

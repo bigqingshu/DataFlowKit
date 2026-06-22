@@ -400,80 +400,75 @@ class QtWorkflowMainWindow:
     def add_catalog_node(self, item):
         self.add_node_by_type(str(item.data(0, self.user_role) or ""))
 
+    def apply_plan_command(self, command, *, status_message=""):
+        result = self.engine_client.apply_plan_command(
+            self.current_plan,
+            command,
+            preview_headers=self.current_headers,
+        )
+        if not result.get("ok"):
+            self.issue_text.setPlainText(self._format_issues(result.get("issues", [])))
+            self.status_bar.showMessage("计划编辑失败")
+            return None
+        self.current_plan = result.get("plan") or self.current_plan
+        self.refresh_node_list()
+        selected = result.get("selected_index")
+        if selected is not None and self.node_list.count():
+            self.node_list.setCurrentRow(max(0, min(int(selected), self.node_list.count() - 1)))
+        if status_message:
+            self.status_bar.showMessage(status_message)
+        return result
+
     def add_node_by_type(self, node_type_id):
         if not node_type_id:
             return
-        node = self.engine_client.make_default_node(
-            node_type_id,
-            preview_headers=self.current_headers,
-            include_legacy_type=False,
-        )
-        nodes = self.current_plan.setdefault("nodes", [])
+        nodes = self.current_plan.get("nodes", []) or []
         indexes = self.selected_node_indexes()
         insert_at = indexes[-1] + 1 if len(indexes) == 1 else len(nodes)
-        nodes.insert(insert_at, node)
-        self.refresh_node_list()
-        self.node_list.setCurrentRow(insert_at)
-        self.status_bar.showMessage(f"已添加节点：{node.get('name') or node_type_id}")
+        result = self.apply_plan_command({
+            "type": "insert_node",
+            "node_type_id": node_type_id,
+            "index": insert_at,
+            "include_legacy_type": False,
+        })
+        if result:
+            selected = result.get("selected_index")
+            node = (self.current_plan.get("nodes", []) or [])[selected] if selected is not None else {}
+            self.status_bar.showMessage(f"已添加节点：{node.get('name') or node_type_id}")
 
     def delete_selected_node(self):
         indexes = self.selected_node_indexes()
         if not indexes:
             return
-        nodes = self.current_plan.setdefault("nodes", [])
-        for index in reversed(indexes):
-            del nodes[index]
-        self.refresh_node_list()
-        if self.node_list.count():
-            self.node_list.setCurrentRow(min(indexes[0], self.node_list.count() - 1))
-        self.status_bar.showMessage("节点已删除。")
+        self.apply_plan_command({"type": "delete_nodes", "indexes": indexes}, status_message="节点已删除。")
 
     def move_selected_node_up(self):
         index = self.selected_node_index()
         if index is None or index <= 0:
             return
-        nodes = self.current_plan.setdefault("nodes", [])
-        nodes[index - 1], nodes[index] = nodes[index], nodes[index - 1]
-        self.refresh_node_list()
-        self.node_list.setCurrentRow(index - 1)
-        self.status_bar.showMessage("节点已上移。")
+        self.apply_plan_command({"type": "move_node", "index": index, "direction": "up"}, status_message="节点已上移。")
 
     def move_selected_node_down(self):
         index = self.selected_node_index()
         nodes = self.current_plan.get("nodes", []) or []
         if index is None or index >= len(nodes) - 1:
             return
-        nodes[index + 1], nodes[index] = nodes[index], nodes[index + 1]
-        self.refresh_node_list()
-        self.node_list.setCurrentRow(index + 1)
-        self.status_bar.showMessage("节点已下移。")
+        self.apply_plan_command({"type": "move_node", "index": index, "direction": "down"}, status_message="节点已下移。")
 
     def toggle_selected_node_enabled(self):
         index = self.selected_node_index()
         if index is None:
             return
-        nodes = self.current_plan.setdefault("nodes", [])
-        nodes[index]["enabled"] = not bool(nodes[index].get("enabled", True))
-        self.refresh_node_list()
-        self.node_list.setCurrentRow(index)
+        self.apply_plan_command({"type": "toggle_node_enabled", "index": index}, status_message="节点启用状态已切换。")
 
     def copy_selected_node(self):
         index = self.selected_node_index()
         if index is None:
             return
-        nodes = self.current_plan.setdefault("nodes", [])
-        new_node = copy.deepcopy(nodes[index])
-        new_node["node_id"] = ""
-        new_node["name"] = f"{new_node.get('name') or self._node_type_id_for_node(new_node)}_复制"
-        nodes.insert(index + 1, new_node)
-        self.refresh_node_list()
-        self.node_list.setCurrentRow(index + 1)
-        self.status_bar.showMessage("节点已复制。")
+        self.apply_plan_command({"type": "duplicate_node", "index": index}, status_message="节点已复制。")
 
     def clear_nodes(self):
-        self.current_plan["nodes"] = []
-        self.refresh_node_list()
-        self.status_bar.showMessage("节点已清空。")
+        self.apply_plan_command({"type": "clear_nodes"}, status_message="节点已清空。")
 
     def show_node_config(self, row):
         nodes = self.current_plan.get("nodes", []) or []
@@ -499,10 +494,7 @@ class QtWorkflowMainWindow:
                 raise ValueError("节点配置必须是 JSON object。")
             if not node.get("node_type_id") and not node.get("type"):
                 raise ValueError("节点必须包含 node_type_id 或 legacy type。")
-            self.current_plan.setdefault("nodes", [])[index] = node
-            self.refresh_node_list()
-            self.node_list.setCurrentRow(index)
-            self.status_bar.showMessage("节点配置已应用。")
+            self.apply_plan_command({"type": "replace_node", "index": index, "node": node}, status_message="节点配置已应用。")
         except Exception as exc:
             self.show_error("配置无效", str(exc))
 
@@ -730,6 +722,21 @@ class QtWorkflowMainWindow:
 
     def _node_type_id_for_node(self, node):
         return str(node.get("node_type_id") or node.get("type") or "")
+
+    def _format_issues(self, issues):
+        issues = issues or []
+        if not issues:
+            return "无问题。"
+        lines = []
+        for issue in issues:
+            severity = issue.get("severity", "")
+            code = issue.get("code", "")
+            path = issue.get("path", "")
+            message = issue.get("message", "")
+            lines.append(f"[{severity}] {code} {path}".strip())
+            if message:
+                lines.append(message)
+        return "\n".join(lines)
 
     def _format_validation(self, validation):
         lines = [

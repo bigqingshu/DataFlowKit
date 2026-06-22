@@ -73,6 +73,15 @@ class QtHeadlessEngineClient:
             include_legacy_type=include_legacy_type,
         )
 
+    def apply_plan_command(self, plan, command, preview_headers=None, table_names=None, table_columns=None):
+        return self.engine.apply_plan_command(
+            copy.deepcopy(plan),
+            command,
+            preview_headers=preview_headers,
+            table_names=table_names,
+            table_columns=table_columns,
+        )
+
     def validate_plan(self, plan):
         return self.engine.validate_plan(copy.deepcopy(plan))
 
