@@ -10,7 +10,7 @@ from engine.output_service import OutputSettings
 from engine.plan_templates import PlanTemplateService
 from engine.table_io import load_table_file
 from workflow.plan_commands import apply_plan_command as apply_workflow_plan_command
-from workflow.node_ui_schema import build_node_ui_catalog
+from workflow.node_ui_schema import build_node_detail_payload, build_node_ui_catalog
 
 
 class WorkflowFacade:
@@ -521,9 +521,16 @@ class WorkflowFacade:
 
     def describe_node_detail(self, node_type_id, *, preview_headers=None):
         schema = self.engine.get_node_ui_schema(node_type_id, preview_headers=preview_headers)
+        detail = build_node_detail_payload(
+            node_type_id,
+            display_name=schema.get("display_name", ""),
+            category=schema.get("category", ""),
+            supported_headless=((schema.get("capabilities") or {}).get("headless_preview")),
+        )
         return {
             "ok": True,
             "schema": schema,
+            "detail": detail,
         }
 
     def plan_status_text(self, plan=None, *, current_plan_path=None):
@@ -584,6 +591,16 @@ class WorkflowFacade:
                 "key": "db_path",
                 "label": "数据库路径",
                 "type": "text",
+                "action": {
+                    "key": "browse_output_db_path",
+                    "label": "选择数据库",
+                    "dialog": "save_file",
+                    "title": "选择 SQLite 数据库",
+                    "filters": [
+                        {"label": "SQLite 文件", "pattern": "*.db *.sqlite *.sqlite3"},
+                        {"label": "所有文件", "pattern": "*.*"},
+                    ],
+                },
                 "visible_when": {
                     "field": "mode",
                     "in": [
@@ -597,6 +614,16 @@ class WorkflowFacade:
                 "key": "path",
                 "label": "输出文件",
                 "type": "text",
+                "action": {
+                    "key": "browse_output_path",
+                    "label": "选择输出文件",
+                    "dialog": "save_file",
+                    "title": "选择 xlsx 输出文件",
+                    "filters": [
+                        {"label": "Excel 文件", "pattern": "*.xlsx"},
+                        {"label": "所有文件", "pattern": "*.*"},
+                    ],
+                },
                 "visible_when": {
                     "field": "mode",
                     "in": [
@@ -624,6 +651,30 @@ class WorkflowFacade:
                 "fields": fields,
             },
             "mode_meta": mode_meta,
+        }
+
+    def build_output_panel_state(self, payload=None, **fallbacks):
+        described = self.describe_output_form(payload, **fallbacks)
+        settings = copy.deepcopy(described.get("settings") or {})
+        fields = []
+        values = {
+            "mode": settings.get("mode", ""),
+            "target": settings.get("target", ""),
+            "db_path": settings.get("db_path", ""),
+            "path": settings.get("path", ""),
+            "backup_before_overwrite": bool(settings.get("backup_before_overwrite", False)),
+        }
+        for field in (described.get("form") or {}).get("fields", []):
+            visible = self._condition_matches(field.get("visible_when"), values)
+            field_payload = copy.deepcopy(field)
+            field_payload["visible"] = bool(visible)
+            field_payload["value"] = values.get(field.get("key"))
+            fields.append(field_payload)
+        return {
+            "ok": True,
+            "settings": settings,
+            "fields": fields,
+            "mode_meta": copy.deepcopy(described.get("mode_meta") or {}),
         }
 
     def list_preview_sources(self, *, current_headers=None, current_rows=None, preview_headers=None, preview_rows=None, db_path=None):
@@ -668,6 +719,32 @@ class WorkflowFacade:
             "ok": not issues,
             "sources": items,
             "issues": issues,
+        }
+
+    def build_preview_panel_state(self, *, current_source=None, current_headers=None, current_rows=None, preview_headers=None, preview_rows=None, db_path=None):
+        listed = self.list_preview_sources(
+            current_headers=current_headers,
+            current_rows=current_rows,
+            preview_headers=preview_headers,
+            preview_rows=preview_rows,
+            db_path=db_path,
+        )
+        sources = copy.deepcopy(listed.get("sources") or [])
+        selected_key = self._preview_source_key(current_source)
+        if not selected_key and sources:
+            selected_key = self._preview_source_key((sources[0].get("source") or {}))
+        title = "表格预览"
+        if current_source:
+            for item in sources:
+                if self._preview_source_key(item.get("source") or {}) == selected_key:
+                    title = item.get("label") or title
+                    break
+        return {
+            "ok": listed.get("ok", False),
+            "sources": sources,
+            "issues": copy.deepcopy(listed.get("issues") or []),
+            "selected_key": selected_key,
+            "title": title,
         }
 
     def load_preview_source(self, source, *, current_headers=None, current_rows=None, preview_headers=None, preview_rows=None):
@@ -735,6 +812,22 @@ class WorkflowFacade:
             }],
             "message": "读取预览来源失败",
         }
+
+    def _condition_matches(self, condition, values):
+        if not condition or not isinstance(condition, dict):
+            return True
+        field = condition.get("field")
+        actual = values.get(field)
+        if "equals" in condition:
+            return str(actual) == str(condition.get("equals"))
+        if "in" in condition:
+            return any(str(actual) == str(item) for item in (condition.get("in") or []))
+        return True
+
+    def _preview_source_key(self, source):
+        if not isinstance(source, dict):
+            return ""
+        return f"{source.get('type', '')}:{source.get('table_role', '')}:{source.get('table_name', '')}"
 
     def build_run_options(self, plan=None, *, stop_index=None, execute_actions=False, output_settings=None, confirmed=False):
         plan_copy = copy.deepcopy(plan or {})

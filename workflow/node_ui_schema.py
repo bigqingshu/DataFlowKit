@@ -1138,3 +1138,49 @@ def format_node_detail(node_type_id, *, display_name="", category="", supported_
         lines.append("")
         lines.append("当前 headless 预览暂不支持该节点，可保存计划后回到旧 UI 执行。")
     return "\n".join(lines)
+
+
+def build_node_detail_payload(node_type_id, *, display_name="", category="", supported_headless=None):
+    stable_id = normalize_node_type_id(node_type_id)
+    definition = node_type_definition_for(stable_id)
+    resolved_display_name = display_name or display_type_for_node_type_id(stable_id)
+    resolved_category = category or definition.get("category", "未知")
+    supported = definition.get("supported_headless") if supported_headless is None else supported_headless
+    meta = node_ui_description(stable_id, supported_headless=supported)
+
+    sections = [
+        {
+            "title": "说明",
+            "lines": [meta.get("description") or meta.get("summary") or "暂无说明"],
+        }
+    ]
+    warnings = [str(item) for item in (meta.get("warnings") or []) if str(item).strip()]
+    if warnings:
+        sections.append({
+            "title": "注意",
+            "lines": warnings,
+        })
+    if supported is False:
+        sections.append({
+            "title": "兼容性",
+            "lines": ["当前 headless 预览暂不支持该节点，可保存计划后回到旧 UI 执行。"],
+        })
+
+    return {
+        "node_type_id": stable_id,
+        "title": resolved_display_name,
+        "category": category_label(resolved_category),
+        "summary": meta.get("summary") or "",
+        "description": meta.get("description") or meta.get("summary") or "暂无说明",
+        "badges": list(meta.get("badges") or []),
+        "warnings": warnings,
+        "risk": meta.get("risk", "unknown"),
+        "supported_headless": bool(supported),
+        "sections": sections,
+        "text": format_node_detail(
+            stable_id,
+            display_name=resolved_display_name,
+            category=resolved_category,
+            supported_headless=supported,
+        ),
+    }

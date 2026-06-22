@@ -99,6 +99,12 @@ class QtHeadlessEngineClient:
     def describe_node_detail(self, node_type_id, *, preview_headers=None):
         return self.facade.describe_node_detail(node_type_id, preview_headers=preview_headers)
 
+    def build_output_panel_state(self, payload=None, **fallbacks):
+        return self.facade.build_output_panel_state(payload, **fallbacks)
+
+    def build_preview_panel_state(self, **kwargs):
+        return self.facade.build_preview_panel_state(**kwargs)
+
     def plan_status_text(self, plan=None, *, current_plan_path=None):
         return self.facade.plan_status_text(plan, current_plan_path=current_plan_path)
 

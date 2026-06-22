@@ -23,7 +23,7 @@ from ui_qt.node_ui_metadata import (
     node_warnings,
 )
 from ui_qt.qt_compat import QtBindingUnavailable
-from workflow.node_ui_schema import get_node_ui_schema
+from workflow.node_ui_schema import build_node_detail_payload, get_node_ui_schema
 
 
 class Qt6UiShellTests(unittest.TestCase):
@@ -112,6 +112,16 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(preview_loaded["table"]["headers"], ["A", "B"])
         self.assertEqual(preview_loaded["title"], "Headless 预览结果")
 
+        preview_panel = client.build_preview_panel_state(
+            current_source={"type": "memory", "table_role": "preview"},
+            current_headers=["A"],
+            current_rows=[["a"]],
+            preview_headers=["A", "B"],
+            preview_rows=[["a", "b"]],
+        )
+        self.assertEqual(preview_panel["selected_key"], "memory:preview:")
+        self.assertEqual(preview_panel["title"], "Headless 预览结果")
+
         panel_state = client.build_workflow_panel_state(
             plan=SAMPLE_PLAN,
             current_headers=SAMPLE_PLAN["headers"],
@@ -128,6 +138,17 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(output_form["settings"]["mode"], "覆盖当前表")
         output_fields = {field["key"]: field for field in output_form["form"]["fields"]}
         self.assertEqual(output_fields["backup_before_overwrite"]["visible_when"], {"field": "mode", "equals": "覆盖当前表"})
+
+        output_panel = client.build_output_panel_state({"output_mode": "导出为xlsx"})
+        output_panel_fields = {field["key"]: field for field in output_panel["fields"]}
+        self.assertTrue(output_panel_fields["path"]["visible"])
+        self.assertFalse(output_panel_fields["db_path"]["visible"])
+        self.assertEqual(output_panel_fields["path"]["action"]["key"], "browse_output_path")
+
+        node_detail = client.describe_node_detail("core.new_columns", preview_headers=["A"])
+        self.assertTrue(node_detail["ok"])
+        self.assertEqual(node_detail["detail"]["node_type_id"], "core.new_columns")
+        self.assertTrue(node_detail["detail"]["sections"])
 
     def test_facade_describes_workflow_actions_and_progress(self):
         client = QtHeadlessEngineClient()
@@ -328,6 +349,9 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertIn("可预览", node_badges("core.replace", supported_headless=True))
         self.assertTrue(node_warnings("core.delete_columns"))
         self.assertIn("暂不支持", format_node_detail("core.filter", supported_headless=False))
+        detail_payload = build_node_detail_payload("core.filter", supported_headless=False)
+        self.assertEqual(detail_payload["category"], "数据处理")
+        self.assertEqual(detail_payload["sections"][-1]["title"], "兼容性")
         schema = get_node_ui_schema("core.new_columns", preview_headers=["A"])
         self.assertEqual(schema["schema_version"], "2.0")
         self.assertEqual(schema["form"]["schema_version"], "2.0")
@@ -477,6 +501,7 @@ class Qt6UiShellTests(unittest.TestCase):
             app.processEvents()
             self.assertTrue(controller.output_form_fields["target"]["editor"].isVisible())
             self.assertTrue(controller.output_form_fields["db_path"]["editor"].isVisible())
+            self.assertTrue(controller.output_form_fields["db_path"]["action_button"].isVisible())
             controller.execute_plan()
             self.wait_for_controller_job(app, controller)
             self.assertTrue(controller.table_title.text().startswith("执行结果（输出未落地）"))
