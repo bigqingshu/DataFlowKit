@@ -78,6 +78,158 @@ class PlanCommandTests(unittest.TestCase):
         self.assertEqual(cleared["plan"]["nodes"], [])
         self.assertIsNone(cleared["selected_index"])
 
+    def test_update_node_fields_and_patch_node_config(self):
+        plan = {
+            "nodes": [
+                {
+                    "node_id": "a",
+                    "node_type_id": "core.new_columns",
+                    "type": "新建列",
+                    "name": "旧名称",
+                    "enabled": True,
+                    "config": {"columns_text": "B=b", "value_mode": "按列配置值"},
+                }
+            ]
+        }
+
+        updated = apply_plan_command(
+            plan,
+            {"type": "update_node_fields", "index": 0, "fields": {"name": "新名称", "enabled": False}},
+            node_id_factory=node_id_counter(),
+        )
+        patched = apply_plan_command(
+            plan,
+            {"type": "patch_node_config", "index": 0, "config": {"columns_text": "C=c", "value_mode": None}},
+            node_id_factory=node_id_counter(),
+        )
+
+        self.assertTrue(updated["ok"])
+        self.assertEqual(updated["plan"]["nodes"][0]["name"], "新名称")
+        self.assertFalse(updated["plan"]["nodes"][0]["enabled"])
+        self.assertEqual(updated["selected_index"], 0)
+        self.assertTrue(patched["ok"])
+        self.assertEqual(patched["plan"]["nodes"][0]["config"]["columns_text"], "C=c")
+        self.assertNotIn("value_mode", patched["plan"]["nodes"][0]["config"])
+
+    def test_update_config_list_supports_append_update_move_and_delete(self):
+        plan = {
+            "nodes": [
+                {
+                    "node_id": "a",
+                    "node_type_id": "core.conditional_jump",
+                    "type": "条件跳转",
+                    "enabled": True,
+                    "config": {
+                        "flag_name": "flag_a",
+                        "jump_rules": [
+                            {"value": "A", "target_anchor_id": "ANCHOR_A"},
+                            {"value": "B", "target_anchor_id": "ANCHOR_B"},
+                        ],
+                    },
+                }
+            ]
+        }
+
+        appended = apply_plan_command(
+            plan,
+            {
+                "type": "update_config_list",
+                "index": 0,
+                "field": "jump_rules",
+                "action": "append",
+                "item": {"value": "C", "target_anchor_id": "ANCHOR_C"},
+            },
+            node_id_factory=node_id_counter(),
+        )
+        updated = apply_plan_command(
+            plan,
+            {
+                "type": "update_config_list",
+                "index": 0,
+                "field": "jump_rules",
+                "action": "update",
+                "item_index": 1,
+                "item": {"target_anchor_id": "ANCHOR_B2"},
+            },
+            node_id_factory=node_id_counter(),
+        )
+        moved = apply_plan_command(
+            plan,
+            {
+                "type": "update_config_list",
+                "index": 0,
+                "field": "jump_rules",
+                "action": "move",
+                "item_index": 1,
+                "direction": "up",
+            },
+            node_id_factory=node_id_counter(),
+        )
+        deleted = apply_plan_command(
+            plan,
+            {
+                "type": "update_config_list",
+                "index": 0,
+                "field": "jump_rules",
+                "action": "delete",
+                "item_index": 0,
+            },
+            node_id_factory=node_id_counter(),
+        )
+
+        self.assertTrue(appended["ok"])
+        self.assertEqual(len(appended["plan"]["nodes"][0]["config"]["jump_rules"]), 3)
+        self.assertEqual(appended["plan"]["nodes"][0]["config"]["jump_rules"][-1]["value"], "C")
+
+        self.assertTrue(updated["ok"])
+        self.assertEqual(updated["plan"]["nodes"][0]["config"]["jump_rules"][1]["value"], "B")
+        self.assertEqual(updated["plan"]["nodes"][0]["config"]["jump_rules"][1]["target_anchor_id"], "ANCHOR_B2")
+
+        self.assertTrue(moved["ok"])
+        moved_rules = moved["plan"]["nodes"][0]["config"]["jump_rules"]
+        self.assertEqual(moved_rules[0]["value"], "B")
+        self.assertEqual(moved_rules[1]["value"], "A")
+
+        self.assertTrue(deleted["ok"])
+        self.assertEqual(len(deleted["plan"]["nodes"][0]["config"]["jump_rules"]), 1)
+        self.assertEqual(deleted["plan"]["nodes"][0]["config"]["jump_rules"][0]["value"], "B")
+
+    def test_update_config_list_reports_invalid_shape(self):
+        plan = {
+            "nodes": [
+                {
+                    "node_id": "a",
+                    "node_type_id": "core.new_columns",
+                    "config": {"columns_text": "B=b"},
+                }
+            ]
+        }
+
+        result = apply_plan_command(
+            plan,
+            {
+                "type": "update_config_list",
+                "index": 0,
+                "field": "columns_text",
+                "action": "append",
+                "item": "C=c",
+            },
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["issues"][0]["code"], "invalid_list_field")
+
+    def test_update_node_fields_rejects_reserved_fields(self):
+        plan = {"nodes": [{"node_id": "a", "node_type_id": "core.new_columns", "config": {}}]}
+
+        result = apply_plan_command(
+            plan,
+            {"type": "update_node_fields", "index": 0, "fields": {"config": {"columns_text": "B=b"}}},
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["issues"][0]["code"], "reserved_field_patch")
+
     def test_invalid_commands_return_structured_issues(self):
         invalid_plan = apply_plan_command({"nodes": {}}, {"type": "clear_nodes"})
         unknown = apply_plan_command({"nodes": []}, {"type": "not_real"})
@@ -109,6 +261,48 @@ class PlanCommandTests(unittest.TestCase):
         self.assertTrue(worker_response["ok"])
         self.assertEqual(worker_response["result"]["plan"]["nodes"][0]["node_id"], "s1")
         self.assertEqual(worker_response["result"]["plan"]["nodes"][0]["node_type_id"], "core.new_columns")
+
+        patch_response = worker.handle_request(request("apply_plan_command", {
+            "plan": {
+                "nodes": [{
+                    "node_id": "n1",
+                    "node_type_id": "core.new_columns",
+                    "type": "新建列",
+                    "name": "节点A",
+                    "enabled": True,
+                    "config": {"columns_text": "B=b", "value_mode": "按列配置值"},
+                }],
+            },
+            "command": {"type": "patch_node_config", "index": 0, "config": {"columns_text": "C=c"}},
+        }))
+
+        self.assertTrue(patch_response["ok"])
+        self.assertEqual(patch_response["result"]["plan"]["nodes"][0]["config"]["columns_text"], "C=c")
+
+        list_response = worker.handle_request(request("apply_plan_command", {
+            "plan": {
+                "nodes": [{
+                    "node_id": "n1",
+                    "node_type_id": "core.conditional_jump",
+                    "type": "条件跳转",
+                    "enabled": True,
+                    "config": {
+                        "flag_name": "flag_a",
+                        "jump_rules": [{"value": "A", "target_anchor_id": "ANCHOR_A"}],
+                    },
+                }],
+            },
+            "command": {
+                "type": "update_config_list",
+                "index": 0,
+                "field": "jump_rules",
+                "action": "append",
+                "item": {"value": "B", "target_anchor_id": "ANCHOR_B"},
+            },
+        }))
+
+        self.assertTrue(list_response["ok"])
+        self.assertEqual(len(list_response["result"]["plan"]["nodes"][0]["config"]["jump_rules"]), 2)
 
 
 if __name__ == "__main__":

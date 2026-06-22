@@ -35,6 +35,9 @@ def apply_plan_command(
     - ``move_node``
     - ``duplicate_node``
     - ``toggle_node_enabled``
+    - ``update_node_fields``
+    - ``patch_node_config``
+    - ``update_config_list``
     - ``replace_node``
     - ``clear_nodes``
     """
@@ -107,6 +110,54 @@ def apply_plan_command(
                 nodes[index]["enabled"] = not bool(nodes[index].get("enabled", True))
             selected_index = index
             changed = True
+    elif command_type == "update_node_fields":
+        index = _optional_int(command.get("index"))
+        if _validate_indexes([index], len(nodes), issues, "/command/index"):
+            patch = command.get("fields")
+            if not isinstance(patch, dict):
+                issues.append(_issue("error", "invalid_fields", "update_node_fields.fields 必须是 object。", path="/command/fields"))
+            else:
+                updated = _apply_node_field_patch(nodes[index], patch, issues, path="/command/fields")
+                nodes[index] = _normalize_command_node(updated, factory, issues, path="/command/node")
+                selected_index = index
+                changed = True
+    elif command_type == "patch_node_config":
+        index = _optional_int(command.get("index"))
+        if _validate_indexes([index], len(nodes), issues, "/command/index"):
+            config_patch = command.get("config")
+            if not isinstance(config_patch, dict):
+                issues.append(_issue("error", "invalid_config", "patch_node_config.config 必须是 object。", path="/command/config"))
+            else:
+                updated = copy.deepcopy(nodes[index])
+                config = updated.get("config")
+                if not isinstance(config, dict):
+                    config = {}
+                updated["config"] = config
+                for key, value in config_patch.items():
+                    if value is None:
+                        config.pop(key, None)
+                    else:
+                        config[key] = copy.deepcopy(value)
+                nodes[index] = _normalize_command_node(updated, factory, issues, path="/command/node")
+                selected_index = index
+                changed = True
+    elif command_type == "update_config_list":
+        index = _optional_int(command.get("index"))
+        if _validate_indexes([index], len(nodes), issues, "/command/index"):
+            updated = copy.deepcopy(nodes[index])
+            config = updated.get("config")
+            if not isinstance(config, dict):
+                config = {}
+                updated["config"] = config
+            field = str(command.get("field") or "").strip()
+            if not field:
+                issues.append(_issue("error", "missing_field", "update_config_list 缺少 field。", path="/command/field"))
+            else:
+                action = str(command.get("action") or "").strip().lower()
+                changed = _apply_config_list_command(config, field, action, command, issues, path="/command")
+                if changed:
+                    nodes[index] = _normalize_command_node(updated, factory, issues, path="/command/node")
+                    selected_index = index
     elif command_type == "replace_node":
         index = _optional_int(command.get("index"))
         if _validate_indexes([index], len(nodes), issues, "/command/index"):
@@ -252,6 +303,88 @@ def _result(plan, changed, selected_index, issues, command_type):
 
 def _issue(severity, code, message, *, path=""):
     return make_issue(severity, code, message, path=path)
+
+
+def _apply_node_field_patch(node, patch, issues, *, path):
+    result = copy.deepcopy(node)
+    protected = {"config", "nodes"}
+    for key, value in patch.items():
+        if key in protected:
+            issues.append(_issue("error", "reserved_field_patch", f"{key} 不能通过 update_node_fields 修改。", path=f"{path}/{key}"))
+            continue
+        if value is None:
+            result.pop(key, None)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
+
+
+def _apply_config_list_command(config, field, action, command, issues, *, path):
+    current = config.get(field)
+    if current is None:
+        current = []
+        config[field] = current
+    if not isinstance(current, list):
+        issues.append(_issue("error", "invalid_list_field", f"{field} 不是 list，不能使用 update_config_list。", path=f"{path}/field"))
+        return False
+
+    if action == "append":
+        current.append(copy.deepcopy(command.get("item")))
+        return True
+    if action == "insert":
+        target_index = _optional_int(command.get("item_index", command.get("at")))
+        if target_index is None:
+            issues.append(_issue("error", "missing_item_index", "insert 需要 item_index。", path=f"{path}/item_index"))
+            return False
+        current.insert(max(0, min(target_index, len(current))), copy.deepcopy(command.get("item")))
+        return True
+    if action == "update":
+        item_index = _optional_int(command.get("item_index"))
+        if not _validate_list_indexes([item_index], len(current), issues, f"{path}/item_index"):
+            return False
+        patch = command.get("item")
+        if isinstance(current[item_index], dict) and isinstance(patch, dict):
+            merged = copy.deepcopy(current[item_index])
+            for key, value in patch.items():
+                if value is None:
+                    merged.pop(key, None)
+                else:
+                    merged[key] = copy.deepcopy(value)
+            current[item_index] = merged
+        else:
+            current[item_index] = copy.deepcopy(patch)
+        return True
+    if action == "delete":
+        item_index = _optional_int(command.get("item_index"))
+        if not _validate_list_indexes([item_index], len(current), issues, f"{path}/item_index"):
+            return False
+        del current[item_index]
+        return True
+    if action == "move":
+        item_index = _optional_int(command.get("item_index"))
+        if not _validate_list_indexes([item_index], len(current), issues, f"{path}/item_index"):
+            return False
+        target_index = _move_target(command, item_index)
+        if target_index is None or target_index < 0 or target_index >= len(current):
+            issues.append(_issue("error", "move_out_of_range", "列表移动目标超出范围。", path=path))
+            return False
+        item = current.pop(item_index)
+        current.insert(target_index, item)
+        return item_index != target_index
+
+    issues.append(_issue("error", "invalid_list_action", f"未知列表动作：{action}", path=f"{path}/action"))
+    return False
+
+
+def _validate_list_indexes(indexes, item_count, issues, path):
+    if not indexes:
+        issues.append(_issue("error", "missing_item_index", "命令缺少列表项索引。", path=path))
+        return False
+    for index in indexes:
+        if index is None or index < 0 or index >= item_count:
+            issues.append(_issue("error", "invalid_item_index", f"列表项索引超出范围：{index}", path=path))
+            return False
+    return True
 
 
 def _default_node_id():
