@@ -277,6 +277,7 @@ Recommended actions:
 - `get_node_type`
 - `list_node_ui_schemas`
 - `get_node_ui_schema`
+- `migrate_plan`
 - `make_default_node`
 - `validate_plan`
 - `preview_plan`
@@ -301,6 +302,9 @@ Runtime identity rules:
   menu paths, Chinese labels, warnings, capability badges, and form groups. Qt,
   Web, HTTP, and other clients should use these actions instead of importing a
   UI-specific metadata file.
+- Clients can call `migrate_plan` after loading older templates. The service adds
+  missing `node_id`, `node_type_id`, and `node_version` fields while preserving
+  legacy `type` and unknown extension fields.
 - Clients that do not need old template compatibility may omit legacy `type`
   when creating nodes.
 
@@ -522,7 +526,11 @@ Current plan templates usually contain:
 }
 ```
 
-These files remain valid. A migration step may add:
+These files remain valid. The shared `migrate_plan` action performs this step without mutating the input plan.
+It returns `{ok, changed, plan, issues, summary}` so frontends can show warnings
+only when the migration finds invalid shapes.
+
+A migration step may add:
 
 - `node_id`
 - `node_type_id`

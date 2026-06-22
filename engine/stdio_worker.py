@@ -93,6 +93,11 @@ class StdioWorker:
                 table_names=payload.get("table_names"),
                 table_columns=payload.get("table_columns"),
             )
+        if action == "migrate_plan":
+            return self.engine.migrate_plan(
+                payload.get("plan", {}),
+                target_version=payload.get("target_version") or payload.get("protocol_version"),
+            )
         if action == "get_node_type":
             node_type = payload.get("node_type") or payload.get("type") or payload.get("node_type_id")
             return self.engine.get_node_type(

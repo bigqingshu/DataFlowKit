@@ -124,6 +124,8 @@ def stable_node_type_id_for_node(node):
     if display_type == "插件节点":
         plugin_id = str(((node.get("config") or {}).get("plugin_id", "")) or "").strip()
         if plugin_id:
+            if plugin_id.startswith("plugin."):
+                return plugin_id
             return "plugin." + plugin_id
     return normalize_node_type_id(display_type)
 

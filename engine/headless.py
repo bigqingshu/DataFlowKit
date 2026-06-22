@@ -59,6 +59,7 @@ from workflow.node_ui_schema import (
     get_node_ui_schema,
     list_node_ui_schemas,
 )
+from workflow.plan_migration import migrate_plan as migrate_workflow_plan
 
 
 SUPPORTED_DATA_NODE_TYPE_IDS = set(HEADLESS_DATA_NODE_TYPE_IDS)
@@ -126,6 +127,13 @@ class HeadlessWorkflowEngine:
             preview_headers=preview_headers,
             table_names=table_names,
             table_columns=table_columns,
+        )
+
+    def migrate_plan(self, plan, *, target_version=None):
+        return migrate_workflow_plan(
+            plan,
+            target_version=target_version,
+            node_id_factory=self.node_id_factory,
         )
 
     def is_node_supported(self, node_type):
