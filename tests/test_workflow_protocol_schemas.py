@@ -121,6 +121,8 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
             "cancel_job",
             "get_job_status",
             "get_job_events",
+            "list_output_modes",
+            "apply_output",
             "list_plugins",
         ]:
             self.assertIn(action, actions)

@@ -42,6 +42,7 @@ class QtWorkflowMainWindow:
         self.current_job_event_sequence = 0
         self.current_job_messages = []
         self.workflow_action_buttons = []
+        self.output_mode_records = []
 
         self._build_ui()
         self.refresh_all()
@@ -258,7 +259,12 @@ class QtWorkflowMainWindow:
         output_group = qt.QtWidgets.QGroupBox("5. 输出设置")
         output_layout = qt.QtWidgets.QHBoxLayout(output_group)
         self.output_mode_combo = qt.QtWidgets.QComboBox()
-        self.output_mode_combo.addItems(["输出到主界面预览区", "保存为SQLite新表", "覆盖当前表", "导出为xlsx"])
+        try:
+            self.output_mode_records = self.engine_client.list_output_modes().get("modes", [])
+        except Exception:
+            self.output_mode_records = []
+        output_labels = [item.get("label") or item.get("mode") for item in self.output_mode_records]
+        self.output_mode_combo.addItems(output_labels or ["输出到主界面预览区", "保存为SQLite新表", "覆盖当前表", "导出为xlsx"])
         self.output_table_edit = qt.QtWidgets.QLineEdit("结果表")
         self.backup_checkbox = qt.QtWidgets.QCheckBox("覆盖前自动备份旧表")
         self.backup_checkbox.setChecked(True)
@@ -825,17 +831,21 @@ class QtWorkflowMainWindow:
             self.issue_text.setPlainText(error.get("message") or status.get("message") or "后台任务失败。")
             self.status_bar.showMessage("后台任务失败")
         elif headers or rows:
-            self.last_preview_headers = headers
-            self.last_preview_rows = rows
-            self.update_table(headers, rows, title=self.current_job_title)
-            self.current_table_kind = "preview"
             logs = result.get("logs") or self.current_job_messages
-            self.issue_text.setPlainText("\n".join(logs) or f"{self.current_job_title}完成，无日志。")
+            final_status_message = f"{self.current_job_title}完成。"
+            if self.current_job_action == "run_plan":
+                final_status_message = self.finish_execute_output(headers, rows, logs)
+            else:
+                self.last_preview_headers = headers
+                self.last_preview_rows = rows
+                self.update_table(headers, rows, title=self.current_job_title)
+                self.current_table_kind = "preview"
+                self.issue_text.setPlainText("\n".join(logs) or f"{self.current_job_title}完成，无日志。")
             self.workflow_progress.setValue(100)
             self.node_progress.setValue(100)
             self.workflow_progress_label.setText(f"{self.current_job_title}完成：{len(rows)} 行 x {len(headers)} 列")
             self.node_progress_label.setText(f"执行步数：{result.get('steps', 0)}")
-            self.status_bar.showMessage(f"{self.current_job_title}完成。")
+            self.status_bar.showMessage(final_status_message)
         else:
             self.issue_text.setPlainText("\n".join(self.current_job_messages) or status.get("message", "后台任务已结束。"))
             self.status_bar.showMessage(status.get("message", "后台任务已结束。"))
@@ -849,6 +859,32 @@ class QtWorkflowMainWindow:
         for button in self.workflow_action_buttons:
             button.setEnabled(not running)
         self.cancel_job_button.setEnabled(bool(running))
+
+    def finish_execute_output(self, headers, rows, logs):
+        output = self.engine_client.apply_output(
+            headers=headers,
+            rows=rows,
+            logs=logs,
+            output_mode=self.output_mode_combo.currentText(),
+            output_table=self.output_table_edit.text(),
+            backup_before_overwrite=self.backup_checkbox.isChecked(),
+        )
+        table = output.get("table") or {}
+        out_headers = list(table.get("headers") or headers)
+        out_rows = [list(row) for row in (table.get("rows") or rows)]
+        self.last_preview_headers = out_headers
+        self.last_preview_rows = out_rows
+        title = "执行结果" if output.get("ok") else "执行结果（输出未落地）"
+        self.update_table(out_headers, out_rows, title=title)
+        self.current_table_kind = "preview"
+        if output.get("ok"):
+            self.issue_text.setPlainText("\n".join(output.get("logs") or logs) or output.get("message", "输出完成。"))
+            return output.get("message", "输出完成。")
+        issue_text = self._format_issues(output.get("issues", []))
+        if logs:
+            issue_text = issue_text + "\n\n执行日志：\n" + "\n".join(logs)
+        self.issue_text.setPlainText(issue_text)
+        return "执行完成，但输出未落地"
 
     def show_input_table(self):
         self.current_table_kind = "input"

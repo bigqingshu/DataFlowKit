@@ -213,6 +213,19 @@ class StdioWorker:
                 payload.get("job_id", ""),
                 since=int(payload.get("since", 0) or 0),
             )
+        if action == "list_output_modes":
+            return self.engine.list_output_modes()
+        if action == "apply_output":
+            return self.engine.apply_output(
+                headers=payload.get("headers"),
+                rows=payload.get("rows"),
+                logs=payload.get("logs"),
+                settings=payload.get("settings"),
+                output_mode=payload.get("output_mode"),
+                output_table=payload.get("output_table"),
+                backup_before_overwrite=payload.get("backup_before_overwrite"),
+                output_path=payload.get("output_path"),
+            )
         if action == "list_plugins":
             return {
                 "plugins": [],

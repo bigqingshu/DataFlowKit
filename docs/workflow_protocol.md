@@ -294,6 +294,8 @@ Recommended actions:
 - `cancel_job`
 - `get_job_status`
 - `get_job_events`
+- `list_output_modes`
+- `apply_output`
 - `list_plugins`
 
 Runtime identity rules:
@@ -336,6 +338,11 @@ Runtime identity rules:
   `start_job`, `get_job_status`, `get_job_events`, and `cancel_job`.
   `start_job` accepts `job_action = preview_plan | run_plan` and stores emitted
   workflow/node events behind the returned `job_id`.
+- Clients should call `apply_output` after a completed `run_plan` job when they
+  need to honor the plan's output settings. `list_output_modes` returns the
+  backend-supported labels and requirements. The first implementation supports
+  frontend preview output and returns structured issues for SQLite/current-table
+  overwrite/xlsx modes until the corresponding writers are connected.
 
 ### 7.1 Shared Node UI Schema
 

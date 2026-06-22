@@ -135,6 +135,30 @@ class QtHeadlessEngineClient:
     def cancel_job(self, job_id):
         return self.engine.cancel_job(job_id)
 
+    def list_output_modes(self):
+        return self.engine.list_output_modes()
+
+    def apply_output(
+        self,
+        *,
+        headers=None,
+        rows=None,
+        logs=None,
+        output_mode=None,
+        output_table=None,
+        backup_before_overwrite=None,
+        output_path=None,
+    ):
+        return self.engine.apply_output(
+            headers=headers,
+            rows=rows,
+            logs=logs,
+            output_mode=output_mode,
+            output_table=output_table,
+            backup_before_overwrite=backup_before_overwrite,
+            output_path=output_path,
+        )
+
     def validate_config(self, node, preview_headers=None, table_names=None, table_columns=None):
         return self.engine.validate_config(
             copy.deepcopy(node),

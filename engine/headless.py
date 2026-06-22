@@ -18,6 +18,7 @@ from engine.errors import EngineCancelled, PlanValidationError
 from engine.issue_schema import has_error_issues, make_issue
 from engine.job_service import JobService
 from engine.models import EngineRunResult, TableData
+from engine.output_service import OutputService
 from engine.plan_templates import PlanTemplateService
 from engine.safety_policy import resolve_safety_policy
 from workflow.default_configs import default_config_for_type, default_name_for_node
@@ -105,6 +106,7 @@ class HeadlessWorkflowEngine:
         self.now_factory = now_factory or datetime.now
         self.plan_templates = PlanTemplateService(node_id_factory=self.node_id_factory)
         self.jobs = JobService(self)
+        self.outputs = OutputService()
 
     def list_node_types(self, include_unsupported=True):
         return [
@@ -174,6 +176,18 @@ class HeadlessWorkflowEngine:
 
     def cancel_job(self, job_id):
         return self.jobs.cancel_job(job_id)
+
+    def list_output_modes(self):
+        return self.outputs.list_output_modes()
+
+    def apply_output(self, headers=None, rows=None, logs=None, settings=None, **settings_kwargs):
+        return self.outputs.apply_output(
+            headers=headers,
+            rows=rows,
+            logs=logs,
+            settings=settings,
+            **settings_kwargs,
+        )
 
     def apply_plan_command(self, plan, command, preview_headers=None, table_names=None, table_columns=None):
         return apply_workflow_plan_command(
