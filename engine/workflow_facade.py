@@ -257,6 +257,42 @@ class WorkflowFacade:
             }],
         )
 
+    def describe_job_started(self, *, status_prefix="任务"):
+        prefix = str(status_prefix or "任务")
+        return {
+            "ok": True,
+            "status_message": f"{prefix}已启动",
+            "message_panel": self.build_message_panel_state(
+                mode="info",
+                title=prefix,
+                body=f"{prefix}已启动。",
+            ).get("panel") or {},
+        }
+
+    def describe_job_poll_failure(self, *, error=None):
+        message = str(error or "后台任务状态读取失败")
+        return {
+            "ok": False,
+            "status_message": "后台任务状态读取失败",
+            "message_panel": self.build_message_panel_state(
+                mode="error",
+                title="后台任务状态读取失败",
+                body=message,
+            ).get("panel") or {},
+        }
+
+    def describe_job_cancel_failure(self, *, error=None):
+        message = str(error or "取消任务失败")
+        return {
+            "ok": False,
+            "status_message": "取消任务失败",
+            "message_panel": self.build_message_panel_state(
+                mode="error",
+                title="取消任务失败",
+                body=message,
+            ).get("panel") or {},
+        }
+
     def describe_confirmation_prompt(self, *, action="", plan=None, output_settings=None, access_precheck=None):
         action = str(action or "")
         plan = copy.deepcopy(plan or {})
@@ -838,6 +874,11 @@ class WorkflowFacade:
                 },
                 "title": "输入表格",
                 "message": "已切换到输入表格。",
+                "message_panel": self.build_message_panel_state(
+                    mode="info",
+                    title="预览来源",
+                    body="已切换到输入表格。",
+                ).get("panel") or {},
             }
         if kind == "memory" and table_role == "preview":
             headers = list(preview_headers or [])
@@ -852,6 +893,15 @@ class WorkflowFacade:
                         "message": "还没有预览结果。",
                     }],
                     "message": "暂无预览结果",
+                    "message_panel": self.build_message_panel_state(
+                        mode="warning",
+                        title="读取预览来源失败",
+                        issues=[{
+                            "severity": "warning",
+                            "code": "preview_table_missing",
+                            "message": "还没有预览结果。",
+                        }],
+                    ).get("panel") or {},
                 }
             return {
                 "ok": True,
@@ -859,6 +909,11 @@ class WorkflowFacade:
                 "table": {"headers": headers, "rows": rows},
                 "title": "Headless 预览结果",
                 "message": "已切换到预览结果。",
+                "message_panel": self.build_message_panel_state(
+                    mode="info",
+                    title="预览来源",
+                    body="已切换到预览结果。",
+                ).get("panel") or {},
             }
         if kind == "sqlite":
             loaded = self.engine.load_table(
@@ -878,6 +933,11 @@ class WorkflowFacade:
                 },
                 "title": f"SQLite：{table_name}",
                 "message": f"已读取 SQLite 表：{table_name}",
+                "message_panel": self.build_message_panel_state(
+                    mode="info",
+                    title="预览来源",
+                    body=f"已读取 SQLite 表：{table_name}",
+                ).get("panel") or {},
             }
         return {
             "ok": False,
@@ -888,6 +948,15 @@ class WorkflowFacade:
                 "message": f"不支持的预览来源：{kind or 'unknown'}",
             }],
             "message": "读取预览来源失败",
+            "message_panel": self.build_message_panel_state(
+                mode="warning",
+                title="读取预览来源失败",
+                issues=[{
+                    "severity": "error",
+                    "code": "unsupported_preview_source",
+                    "message": f"不支持的预览来源：{kind or 'unknown'}",
+                }],
+            ).get("panel") or {},
         }
 
     def _condition_matches(self, condition, values):

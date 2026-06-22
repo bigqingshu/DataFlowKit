@@ -1336,11 +1336,8 @@ class QtWorkflowMainWindow:
             title=self.current_job_title,
             running=True,
         ).get("progress") or {})
-        self._apply_message_panel(self.engine_client.build_message_panel_state(
-            mode="info",
-            title=str(status_prefix or "任务"),
-            body=f"{status_prefix or '任务'}已启动。",
-        ).get("panel") or {})
+        started_state = self.engine_client.facade.describe_job_started(status_prefix=status_prefix or "任务")
+        self._apply_message_panel(started_state.get("message_panel") or {})
         self.set_workflow_running(True)
         self.job_timer.start()
         self.poll_current_job()
@@ -1353,8 +1350,9 @@ class QtWorkflowMainWindow:
             self.append_job_message(result.get("message", "已请求取消任务。"))
             self.status_bar.showMessage("已请求取消后台任务")
         except Exception as exc:
-            self._apply_message_panel(self.engine_client.build_message_panel_state(mode="error", title="取消任务失败", body=str(exc)).get("panel") or {})
-            self.status_bar.showMessage("取消任务失败")
+            failure = self.engine_client.facade.describe_job_cancel_failure(error=exc)
+            self._apply_message_panel(failure.get("message_panel") or {})
+            self.status_bar.showMessage(failure.get("status_message") or "取消任务失败")
 
     def poll_current_job(self):
         if not self.current_job_id:
@@ -1372,8 +1370,9 @@ class QtWorkflowMainWindow:
         except Exception as exc:
             self.job_timer.stop()
             self.set_workflow_running(False)
-            self._apply_message_panel(self.engine_client.build_message_panel_state(mode="error", title="后台任务状态读取失败", body=str(exc)).get("panel") or {})
-            self.status_bar.showMessage("后台任务状态读取失败")
+            failure = self.engine_client.facade.describe_job_poll_failure(error=exc)
+            self._apply_message_panel(failure.get("message_panel") or {})
+            self.status_bar.showMessage(failure.get("status_message") or "后台任务状态读取失败")
             self.current_job_id = ""
             return
 
@@ -1569,7 +1568,7 @@ class QtWorkflowMainWindow:
             self.status_bar.showMessage("读取预览来源失败")
             return
         if not loaded.get("ok"):
-            self._apply_message_panel(self.engine_client.build_message_panel_state(mode="warning", title="读取预览来源失败", issues=loaded.get("issues", [])).get("panel") or {})
+            self._apply_message_panel(loaded.get("message_panel") or self.engine_client.build_message_panel_state(mode="warning", title="读取预览来源失败", issues=loaded.get("issues", [])).get("panel") or {})
             self.status_bar.showMessage(loaded.get("message", "读取预览来源失败"))
             return
         table = loaded.get("table") or {}
@@ -1589,7 +1588,7 @@ class QtWorkflowMainWindow:
         else:
             self.current_table_kind = "preview"
         self.update_table(headers, rows, title=loaded.get("title") or "表格预览")
-        self._apply_message_panel(self.engine_client.build_message_panel_state(mode="info", title="预览来源", body=loaded.get("message", "")).get("panel") or {})
+        self._apply_message_panel(loaded.get("message_panel") or self.engine_client.build_message_panel_state(mode="info", title="预览来源", body=loaded.get("message", "")).get("panel") or {})
         self.status_bar.showMessage(loaded.get("message", "已切换表格。"))
 
     def _input_table_payload(self):

@@ -111,6 +111,7 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertTrue(preview_loaded["ok"])
         self.assertEqual(preview_loaded["table"]["headers"], ["A", "B"])
         self.assertEqual(preview_loaded["title"], "Headless 预览结果")
+        self.assertEqual(preview_loaded["message_panel"]["title"], "预览来源")
 
         preview_panel = client.build_preview_panel_state(
             current_source={"type": "memory", "table_role": "preview"},
@@ -240,6 +241,18 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertFalse(failure_feedback["ok"])
         self.assertEqual(failure_feedback["feedback"]["status_message"], "执行启动失败")
         self.assertEqual(failure_feedback["feedback"]["issue_message"], "boom")
+
+        started = client.facade.describe_job_started(status_prefix="预览")
+        self.assertEqual(started["status_message"], "预览已启动")
+        self.assertEqual(started["message_panel"]["title"], "预览")
+
+        cancel_failure = client.facade.describe_job_cancel_failure(error="stop failed")
+        self.assertEqual(cancel_failure["status_message"], "取消任务失败")
+        self.assertIn("stop failed", cancel_failure["message_panel"]["body"])
+
+        poll_failure = client.facade.describe_job_poll_failure(error="poll failed")
+        self.assertEqual(poll_failure["status_message"], "后台任务状态读取失败")
+        self.assertIn("poll failed", poll_failure["message_panel"]["body"])
 
         validation = client.validate_workflow_request(SAMPLE_PLAN, execute_actions=True)
         validation_feedback = client.describe_validation_feedback(validation)
