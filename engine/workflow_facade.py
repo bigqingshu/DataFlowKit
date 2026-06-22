@@ -148,6 +148,81 @@ class WorkflowFacade:
             "settings": settings.to_dict(),
         }
 
+    def describe_output_form(self, payload=None, **fallbacks):
+        settings = OutputSettings.from_payload(payload, **fallbacks)
+        modes = self.engine.list_output_modes().get("modes", []) or []
+        mode_choices = [item.get("label") or item.get("mode") for item in modes]
+        mode_meta = {
+            str(item.get("label") or item.get("mode") or ""): dict(item)
+            for item in modes
+        }
+        fields = [
+            {
+                "key": "mode",
+                "label": "输出方式",
+                "type": "select",
+                "choices": mode_choices,
+                "required": True,
+            },
+            {
+                "key": "target",
+                "label": "输出表名",
+                "type": "text",
+                "visible_when": {
+                    "field": "mode",
+                    "in": [
+                        item.get("label") or item.get("mode")
+                        for item in modes
+                        if item.get("requires_target")
+                    ],
+                },
+            },
+            {
+                "key": "db_path",
+                "label": "数据库路径",
+                "type": "text",
+                "visible_when": {
+                    "field": "mode",
+                    "in": [
+                        item.get("label") or item.get("mode")
+                        for item in modes
+                        if item.get("requires_db_path")
+                    ],
+                },
+            },
+            {
+                "key": "path",
+                "label": "输出文件",
+                "type": "text",
+                "visible_when": {
+                    "field": "mode",
+                    "in": [
+                        item.get("label") or item.get("mode")
+                        for item in modes
+                        if item.get("requires_path")
+                    ],
+                },
+            },
+            {
+                "key": "backup_before_overwrite",
+                "label": "覆盖前自动备份旧表",
+                "type": "bool",
+                "visible_when": {
+                    "field": "mode",
+                    "equals": "覆盖当前表",
+                },
+            },
+        ]
+        return {
+            "ok": True,
+            "settings": settings.to_dict(),
+            "form": {
+                "schema_version": "1.0",
+                "fields": fields,
+            },
+            "mode_meta": mode_meta,
+        }
+
     def list_preview_sources(self, *, current_headers=None, current_rows=None, preview_headers=None, preview_rows=None, db_path=None):
         items = [
             {

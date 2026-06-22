@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from ui_qt import app as qt_app
-from ui_qt.config_form import coerce_form_value, format_form_value, value_kind
+from ui_qt.config_form import NodeConfigForm, coerce_form_value, format_form_value, value_kind
 from ui_qt.engine_client import QtHeadlessEngineClient, SAMPLE_PLAN
 from ui_qt.main_window import build_main_window
 from ui_qt.node_ui_metadata import (
@@ -123,6 +123,12 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(panel_state["selected_node"]["node_type_id"], "core.new_columns")
         self.assertTrue(panel_state["node_items"])
 
+        output_form = client.describe_output_form({"output_mode": "覆盖当前表"})
+        self.assertTrue(output_form["ok"])
+        self.assertEqual(output_form["settings"]["mode"], "覆盖当前表")
+        output_fields = {field["key"]: field for field in output_form["form"]["fields"]}
+        self.assertEqual(output_fields["backup_before_overwrite"]["visible_when"], {"field": "mode", "equals": "覆盖当前表"})
+
     def test_config_form_value_helpers_preserve_types(self):
         self.assertEqual(value_kind(True), "bool")
         self.assertEqual(value_kind(3), "int")
@@ -136,6 +142,43 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(coerce_form_value("float", "1.25"), 1.25)
         self.assertEqual(coerce_form_value("json", '["A", "B"]'), ["A", "B"])
         self.assertEqual(coerce_form_value("text", "7"), "7")
+
+    def test_config_form_supports_structured_list_fields(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        schema = get_node_ui_schema("批量更改列名", preview_headers=["A", "B"])
+        node = {
+            "node_type_id": "core.rename_columns",
+            "node_id": "n1",
+            "name": "批量更改列名",
+            "enabled": True,
+            "node_version": "1.0.0",
+            "config": {
+                "mode": "手动映射改名",
+                "mappings": [{"old": "A", "new": "AA"}],
+            },
+        }
+        form = NodeConfigForm(qt, headers=["A", "B"])
+        form.set_node(node, headers=["A", "B"], schema=schema)
+        self.assertEqual(form.config_fields["mappings"]["kind"], "structured_list")
+        editor = form.config_fields["mappings"]["editor"]
+        table = editor.structured_state["table"]
+        self.assertEqual(table.rowCount(), 1)
+        self.assertEqual(table.columnCount(), 2)
+        self.assertIsNotNone(table.cellWidget(0, 0))
+        self.assertIsNotNone(table.cellWidget(0, 1))
+        self.assertEqual(table.cellWidget(0, 0).currentText(), "A")
+        self.assertEqual(table.cellWidget(0, 1).text(), "AA")
+        form._structured_list_add_row(editor)
+        table.setCurrentCell(1, 0)
+        table.cellWidget(1, 0).setCurrentText("B")
+        table.cellWidget(1, 1).setText("BB")
+        converted = form.to_node()
+        self.assertEqual(converted["config"]["mappings"], [{"old": "A", "new": "AA"}, {"old": "B", "new": "BB"}])
+        app.processEvents()
 
     def test_node_ui_metadata_maps_protocol_to_chinese_ui(self):
         self.assertEqual(node_display_label("core.new_columns"), "新建列")
@@ -233,6 +276,8 @@ class Qt6UiShellTests(unittest.TestCase):
         app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
         window = build_main_window(qt)
         controller = window.qt_workflow_controller
+        window.show()
+        app.processEvents()
 
         self.assertEqual(controller.input_summary_label.text(), "当前输入：3 行 x 4 列")
         self.assertEqual(controller.config_header_label.text().startswith("节点类型："), True)
@@ -244,6 +289,7 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(controller.output_mode_combo.currentText(), "输出到主界面预览区")
         self.assertEqual(controller.output_db_path_edit.text(), "")
         self.assertEqual(controller.output_path_edit.text(), "")
+        self.assertFalse(controller.output_form_fields["backup_before_overwrite"]["editor"].isVisible())
 
         controller.add_node_by_type("core.replace")
         self.assertEqual(len(controller.current_plan["nodes"]), 2)
@@ -277,6 +323,11 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertIn("status", controller.last_preview_headers)
         self.assertTrue(controller.table_title.text().startswith("执行结果"))
         controller.output_mode_combo.setCurrentText("保存为SQLite新表")
+        app.processEvents()
+        window.show()
+        app.processEvents()
+        self.assertTrue(controller.output_form_fields["target"]["editor"].isVisible())
+        self.assertTrue(controller.output_form_fields["db_path"]["editor"].isVisible())
         controller.execute_plan()
         self.wait_for_controller_job(app, controller)
         self.assertTrue(controller.table_title.text().startswith("执行结果（输出未落地）"))

@@ -188,6 +188,9 @@ class QtHeadlessEngineClient:
     def build_output_settings(self, payload=None, **fallbacks):
         return self.facade.build_output_settings(payload, **fallbacks)
 
+    def describe_output_form(self, payload=None, **fallbacks):
+        return self.facade.describe_output_form(payload, **fallbacks)
+
     def list_preview_sources(self, **kwargs):
         return self.facade.list_preview_sources(**kwargs)
 

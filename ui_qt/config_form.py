@@ -55,6 +55,18 @@ def coerce_form_value(kind, text, field_name=""):
     return "" if text is None else str(text)
 
 
+def structured_item_default(columns):
+    item = {}
+    for column in columns or []:
+        if not isinstance(column, dict):
+            continue
+        key = str(column.get("key") or "").strip()
+        if not key:
+            continue
+        item[key] = copy.deepcopy(column.get("default", ""))
+    return item
+
+
 class NodeConfigForm:
     """Build editable Qt widgets for a workflow node dict."""
 
@@ -121,6 +133,8 @@ class NodeConfigForm:
                 config[key] = bool(editor.isChecked())
             elif kind == "choice":
                 config[key] = str(editor.currentText())
+            elif kind == "structured_list":
+                config[key] = self._structured_list_value(field)
             elif kind == "long_text":
                 config[key] = str(editor.toPlainText())
             elif kind == "json":
@@ -234,6 +248,8 @@ class NodeConfigForm:
         choices = list(field_schema.get("choices") or choices_for_field(key, headers=self.headers))
         if field_type in {"select", "field_select", "table_select"} or choices:
             kind = "choice"
+        elif field_type == "structured_list":
+            kind = "structured_list"
         elif field_type == "textarea" or is_long_text_field(key):
             kind = "long_text"
         elif field_type == "bool":
@@ -244,18 +260,19 @@ class NodeConfigForm:
             kind = value_kind(value) if value_kind(value) in {"int", "float"} else "text"
         else:
             kind = value_kind(value)
-        editor = self._editor_for_field(key, kind, value, choices)
-        help_text = self._field_tooltip(key, field_schema)
-        if help_text:
-            editor.setToolTip(help_text)
         self.config_fields[key] = {
             "kind": kind,
-            "editor": editor,
+            "editor": None,
             "schema": field_schema,
             "visible_when": field_schema.get("visible_when"),
             "enabled_when": field_schema.get("enabled_when"),
             "depends_on": list(field_schema.get("depends_on") or []),
         }
+        editor = self._editor_for_field(key, kind, value, choices)
+        self.config_fields[key]["editor"] = editor
+        help_text = self._field_tooltip(key, field_schema)
+        if help_text:
+            editor.setToolTip(help_text)
         self._connect_dynamic_refresh(editor, kind)
         return editor
 
@@ -287,12 +304,231 @@ class NodeConfigForm:
             widget.setPlainText(format_form_value(value))
             widget.setMinimumHeight(88)
             return widget
+        if kind == "structured_list":
+            return self._structured_list_editor(key, value)
         if kind == "long_text":
             widget = self.qt.QtWidgets.QPlainTextEdit()
             widget.setPlainText(format_form_value(value))
             widget.setMinimumHeight(76)
             return widget
         return self._line(format_form_value(value))
+
+    def _structured_list_editor(self, key, value):
+        field_schema = self.config_fields.get(key, {}).get("schema", {})
+        item_schema = field_schema.get("item_schema") or {}
+        columns = list(item_schema.get("columns") or [])
+
+        frame = self.qt.QtWidgets.QWidget()
+        layout = self.qt.QtWidgets.QVBoxLayout(frame)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        table = self.qt.QtWidgets.QTableWidget(frame)
+        table.setColumnCount(len(columns))
+        table.setHorizontalHeaderLabels([str(col.get("label") or col.get("key") or "") for col in columns])
+        table.setMinimumHeight(140)
+        table.setSelectionBehavior(self.qt.QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(self.qt.QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        try:
+            table.horizontalHeader().setStretchLastSection(True)
+        except Exception:
+            pass
+
+        button_row = self.qt.QtWidgets.QHBoxLayout()
+        add_button = self.qt.QtWidgets.QPushButton("添加")
+        remove_button = self.qt.QtWidgets.QPushButton("删除")
+        up_button = self.qt.QtWidgets.QPushButton("上移")
+        down_button = self.qt.QtWidgets.QPushButton("下移")
+        for button in [add_button, remove_button, up_button, down_button]:
+            button_row.addWidget(button)
+        button_row.addStretch(1)
+
+        layout.addWidget(table)
+        layout.addLayout(button_row)
+
+        state = {
+            "table": table,
+            "columns": columns,
+            "buttons": {
+                "add": add_button,
+                "remove": remove_button,
+                "up": up_button,
+                "down": down_button,
+            },
+        }
+        frame.structured_state = state
+
+        add_button.clicked.connect(lambda checked=False: self._structured_list_add_row(frame))
+        remove_button.clicked.connect(lambda checked=False: self._structured_list_remove_row(frame))
+        up_button.clicked.connect(lambda checked=False: self._structured_list_move_row(frame, -1))
+        down_button.clicked.connect(lambda checked=False: self._structured_list_move_row(frame, 1))
+        table.itemSelectionChanged.connect(lambda: self._update_structured_list_buttons(frame))
+
+        for item in value or []:
+            self._structured_list_append_row(frame, item if isinstance(item, dict) else {})
+        if table.rowCount() == 0:
+            self._structured_list_append_row(frame, structured_item_default(columns))
+        self._update_structured_list_buttons(frame)
+        return frame
+
+    def _structured_list_append_row(self, frame, item):
+        state = getattr(frame, "structured_state", {})
+        table = state.get("table")
+        columns = state.get("columns") or []
+        if table is None:
+            return
+        row = table.rowCount()
+        table.insertRow(row)
+        for column_index, column in enumerate(columns):
+            key = str(column.get("key") or "")
+            cell_value = item.get(key, column.get("default", "")) if isinstance(item, dict) else column.get("default", "")
+            editor = self._structured_cell_editor(column, cell_value)
+            table.setCellWidget(row, column_index, editor)
+            self._connect_dynamic_refresh(editor, self._structured_column_kind(column))
+        table.setCurrentCell(row, 0)
+
+    def _structured_cell_editor(self, column, value):
+        column_type = str(column.get("type") or "text")
+        choices = list(column.get("choices") or [])
+        if not choices and (column.get("options_source") or {}).get("type") == "preview_headers":
+            choices = list(self.headers)
+        kind = self._structured_column_kind(column)
+        return self._editor_for_field(str(column.get("key") or ""), kind, value, choices)
+
+    def _structured_column_kind(self, column):
+        column_type = str((column or {}).get("type") or "text")
+        if column_type in {"select", "field_select", "table_select"}:
+            return "choice"
+        if column_type == "bool":
+            return "bool"
+        if column_type == "textarea":
+            return "long_text"
+        if column_type == "number":
+            return "text"
+        return "text"
+
+    def _structured_list_value(self, field):
+        editor = field.get("editor")
+        state = getattr(editor, "structured_state", {})
+        table = state.get("table")
+        columns = state.get("columns") or []
+        rows = []
+        if table is None:
+            return rows
+        for row in range(table.rowCount()):
+            item = {}
+            has_value = False
+            for column_index, column in enumerate(columns):
+                key = str(column.get("key") or "")
+                widget = table.cellWidget(row, column_index)
+                if not key or widget is None:
+                    continue
+                kind = self._structured_column_kind(column)
+                if kind == "bool":
+                    value = bool(widget.isChecked())
+                elif kind == "choice":
+                    value = str(widget.currentText())
+                elif kind == "long_text":
+                    value = str(widget.toPlainText())
+                else:
+                    raw = widget.text()
+                    if str(column.get("type") or "") == "number":
+                        value = coerce_form_value("float", raw, key) if "." in str(raw) else coerce_form_value("int", raw, key)
+                    else:
+                        value = str(raw)
+                item[key] = value
+                if value not in ("", None, False):
+                    has_value = True
+            if has_value:
+                rows.append(item)
+        return rows
+
+    def _structured_list_current_row(self, frame):
+        table = getattr(frame, "structured_state", {}).get("table")
+        if table is None:
+            return -1
+        return table.currentRow()
+
+    def _structured_list_add_row(self, frame):
+        columns = getattr(frame, "structured_state", {}).get("columns") or []
+        self._structured_list_append_row(frame, structured_item_default(columns))
+        self._apply_dynamic_state()
+
+    def _structured_list_remove_row(self, frame):
+        state = getattr(frame, "structured_state", {})
+        table = state.get("table")
+        if table is None:
+            return
+        row = table.currentRow()
+        if row < 0:
+            return
+        table.removeRow(row)
+        if table.rowCount() == 0:
+            self._structured_list_append_row(frame, structured_item_default(state.get("columns") or []))
+        self._update_structured_list_buttons(frame)
+        self._apply_dynamic_state()
+
+    def _structured_list_move_row(self, frame, offset):
+        state = getattr(frame, "structured_state", {})
+        table = state.get("table")
+        columns = state.get("columns") or []
+        if table is None:
+            return
+        row = table.currentRow()
+        target = row + int(offset)
+        if row < 0 or target < 0 or target >= table.rowCount():
+            return
+        current = {}
+        other = {}
+        for column_index, column in enumerate(columns):
+            key = str(column.get("key") or column_index)
+            current[key] = self._structured_widget_value(table.cellWidget(row, column_index), column)
+            other[key] = self._structured_widget_value(table.cellWidget(target, column_index), column)
+        for column_index, column in enumerate(columns):
+            key = str(column.get("key") or column_index)
+            self._set_structured_widget_value(table.cellWidget(row, column_index), column, other.get(key))
+            self._set_structured_widget_value(table.cellWidget(target, column_index), column, current.get(key))
+        table.setCurrentCell(target, 0)
+        self._update_structured_list_buttons(frame)
+        self._apply_dynamic_state()
+
+    def _structured_widget_value(self, widget, column):
+        if widget is None:
+            return ""
+        kind = self._structured_column_kind(column)
+        if kind == "bool":
+            return bool(widget.isChecked())
+        if kind == "choice":
+            return str(widget.currentText())
+        if kind == "long_text":
+            return str(widget.toPlainText())
+        return str(widget.text())
+
+    def _set_structured_widget_value(self, widget, column, value):
+        if widget is None:
+            return
+        kind = self._structured_column_kind(column)
+        if kind == "bool":
+            widget.setChecked(bool(value))
+        elif kind == "choice":
+            widget.setCurrentText(format_form_value(value))
+        elif kind == "long_text":
+            widget.setPlainText(format_form_value(value))
+        else:
+            widget.setText(format_form_value(value))
+
+    def _update_structured_list_buttons(self, frame):
+        state = getattr(frame, "structured_state", {})
+        table = state.get("table")
+        buttons = state.get("buttons") or {}
+        row = table.currentRow() if table is not None else -1
+        count = table.rowCount() if table is not None else 0
+        if buttons.get("remove") is not None:
+            buttons["remove"].setEnabled(row >= 0 and count > 0)
+        if buttons.get("up") is not None:
+            buttons["up"].setEnabled(row > 0)
+        if buttons.get("down") is not None:
+            buttons["down"].setEnabled(0 <= row < count - 1)
 
     def _line(self, value="", read_only=False):
         widget = self.qt.QtWidgets.QLineEdit()
@@ -352,6 +588,8 @@ class NodeConfigForm:
                 values[key] = bool(editor.isChecked())
             elif kind == "choice":
                 values[key] = str(editor.currentText())
+            elif kind == "structured_list":
+                values[key] = self._structured_list_value(field)
             elif kind in {"long_text", "json"}:
                 values[key] = str(editor.toPlainText())
             else:

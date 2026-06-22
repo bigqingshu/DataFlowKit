@@ -42,6 +42,7 @@ class QtWorkflowMainWindow:
         self.current_job_messages = []
         self.workflow_action_buttons = []
         self.output_mode_records = []
+        self.output_mode_meta = {}
         self.preview_source_records = []
 
         self._build_ui()
@@ -257,30 +258,40 @@ class QtWorkflowMainWindow:
         progress_layout.addWidget(self.node_progress)
 
         output_group = qt.QtWidgets.QGroupBox("5. 输出设置")
-        output_layout = qt.QtWidgets.QHBoxLayout(output_group)
+        output_layout = qt.QtWidgets.QFormLayout(output_group)
+        output_layout.setContentsMargins(8, 8, 8, 8)
+        output_layout.setSpacing(6)
+        output_form = self.engine_client.describe_output_form()
+        self.output_mode_meta = dict(output_form.get("mode_meta") or {})
+        self.output_mode_records = list(self.output_mode_meta.values())
+        output_fields = {item.get("key"): item for item in (output_form.get("form") or {}).get("fields", [])}
+
         self.output_mode_combo = qt.QtWidgets.QComboBox()
-        try:
-            self.output_mode_records = self.engine_client.list_output_modes().get("modes", [])
-        except Exception:
-            self.output_mode_records = []
-        output_labels = [item.get("label") or item.get("mode") for item in self.output_mode_records]
-        self.output_mode_combo.addItems(output_labels or ["输出到主界面预览区", "保存为SQLite新表", "覆盖当前表", "导出为xlsx"])
+        self.output_mode_combo.setEditable(False)
+        self.output_mode_combo.addItems(output_fields.get("mode", {}).get("choices") or ["输出到主界面预览区", "保存为SQLite新表", "覆盖当前表", "导出为xlsx"])
         self.output_table_edit = qt.QtWidgets.QLineEdit("结果表")
         self.output_db_path_edit = qt.QtWidgets.QLineEdit()
         self.output_db_path_edit.setPlaceholderText("SQLite 数据库路径")
         self.output_path_edit = qt.QtWidgets.QLineEdit()
         self.output_path_edit.setPlaceholderText("xlsx 输出路径")
-        self.backup_checkbox = qt.QtWidgets.QCheckBox("覆盖前自动备份旧表")
+        self.backup_checkbox = qt.QtWidgets.QCheckBox()
         self.backup_checkbox.setChecked(True)
-        output_layout.addWidget(qt.QtWidgets.QLabel("输出方式："))
-        output_layout.addWidget(self.output_mode_combo)
-        output_layout.addWidget(qt.QtWidgets.QLabel("输出表名："))
-        output_layout.addWidget(self.output_table_edit, 1)
-        output_layout.addWidget(qt.QtWidgets.QLabel("数据库："))
-        output_layout.addWidget(self.output_db_path_edit, 1)
-        output_layout.addWidget(qt.QtWidgets.QLabel("文件："))
-        output_layout.addWidget(self.output_path_edit, 1)
-        output_layout.addWidget(self.backup_checkbox)
+
+        self.output_form_fields = {
+            "mode": {"label": qt.QtWidgets.QLabel(output_fields.get("mode", {}).get("label", "输出方式")), "editor": self.output_mode_combo, "schema": output_fields.get("mode", {})},
+            "target": {"label": qt.QtWidgets.QLabel(output_fields.get("target", {}).get("label", "输出表名")), "editor": self.output_table_edit, "schema": output_fields.get("target", {})},
+            "db_path": {"label": qt.QtWidgets.QLabel(output_fields.get("db_path", {}).get("label", "数据库路径")), "editor": self.output_db_path_edit, "schema": output_fields.get("db_path", {})},
+            "path": {"label": qt.QtWidgets.QLabel(output_fields.get("path", {}).get("label", "输出文件")), "editor": self.output_path_edit, "schema": output_fields.get("path", {})},
+            "backup_before_overwrite": {"label": qt.QtWidgets.QLabel(output_fields.get("backup_before_overwrite", {}).get("label", "覆盖前自动备份旧表")), "editor": self.backup_checkbox, "schema": output_fields.get("backup_before_overwrite", {})},
+        }
+        for key in ["mode", "target", "db_path", "path", "backup_before_overwrite"]:
+            field = self.output_form_fields[key]
+            output_layout.addRow(field["label"], field["editor"])
+
+        self.output_mode_combo.currentTextChanged.connect(lambda *_args: self._apply_output_form_state())
+        self.output_db_path_edit.editingFinished.connect(lambda: self.refresh_preview_table_combo())
+        self._apply_output_form_settings(output_form.get("settings") or {})
+        self._apply_output_form_state()
 
         preview_group = qt.QtWidgets.QGroupBox("6. 结果预览")
         preview_layout = qt.QtWidgets.QVBoxLayout(preview_group)
@@ -292,7 +303,6 @@ class QtWorkflowMainWindow:
         self.preview_table_combo = qt.QtWidgets.QComboBox()
         self.preview_table_combo.addItems(["输入表格", "Headless 预览结果"])
         self.preview_table_combo.currentIndexChanged.connect(lambda index: self.show_selected_preview_table())
-        self.output_db_path_edit.editingFinished.connect(lambda: self.refresh_preview_table_combo())
         self.log_button = qt.QtWidgets.QPushButton("显示日志")
         self.log_button.clicked.connect(lambda checked=False: self.show_log_text())
         preview_toolbar.addWidget(self.show_input_button)
@@ -576,6 +586,25 @@ class QtWorkflowMainWindow:
             category=schema.get("category", ""),
             supported_headless=schema.get("capabilities", {}).get("headless_preview"),
         ))
+
+    def _apply_output_form_settings(self, settings):
+        mode = str((settings or {}).get("mode") or "").strip()
+        if mode:
+            index = self.output_mode_combo.findText(mode)
+            if index >= 0:
+                self.output_mode_combo.setCurrentIndex(index)
+        self.output_table_edit.setText(str((settings or {}).get("target") or "结果表"))
+        self.output_db_path_edit.setText(str((settings or {}).get("db_path") or ""))
+        self.output_path_edit.setText(str((settings or {}).get("path") or ""))
+        self.backup_checkbox.setChecked(bool((settings or {}).get("backup_before_overwrite", True)))
+
+    def _apply_output_form_state(self):
+        values = self.current_output_settings()
+        for field in self.output_form_fields.values():
+            schema = field.get("schema") or {}
+            visible = self._condition_matches(schema.get("visible_when"), values)
+            field.get("label").setVisible(visible)
+            field.get("editor").setVisible(visible)
 
     def update_table(self, headers, rows, title="表格预览"):
         self.preview_headers = list(headers or [])
@@ -1034,15 +1063,10 @@ class QtWorkflowMainWindow:
 
     def apply_output_settings_from_plan(self, plan):
         plan = plan or {}
-        settings = self.engine_client.build_output_settings(plan).get("settings") or {}
-        mode = str(settings.get("mode") or "").strip()
-        if mode:
-            index = self.output_mode_combo.findText(mode)
-            if index >= 0:
-                self.output_mode_combo.setCurrentIndex(index)
-        self.output_table_edit.setText(str(settings.get("target") or "结果表"))
-        self.output_db_path_edit.setText(str(settings.get("db_path") or ""))
-        self.output_path_edit.setText(str(settings.get("path") or ""))
+        described = self.engine_client.describe_output_form(plan)
+        self.output_mode_meta = dict(described.get("mode_meta") or self.output_mode_meta)
+        self._apply_output_form_settings(described.get("settings") or {})
+        self._apply_output_form_state()
 
     def current_output_settings(self):
         result = self.engine_client.build_output_settings(
@@ -1053,6 +1077,19 @@ class QtWorkflowMainWindow:
             output_path=self.output_path_edit.text(),
         )
         return result.get("settings") or {}
+
+    def _condition_matches(self, condition, values):
+        if not condition:
+            return True
+        if not isinstance(condition, dict):
+            return True
+        field = condition.get("field")
+        actual = values.get(field)
+        if "equals" in condition:
+            return str(actual) == str(condition.get("equals"))
+        if "in" in condition:
+            return any(str(actual) == str(item) for item in (condition.get("in") or []))
+        return True
 
     def _format_issues(self, issues):
         issues = issues or []
