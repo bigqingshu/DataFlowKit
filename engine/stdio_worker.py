@@ -21,7 +21,10 @@ class StdioWorker:
 
     def __init__(self, engine=None):
         self.engine = engine or HeadlessWorkflowEngine()
-        self.facade = WorkflowFacade(self.engine)
+        self.facade = WorkflowFacade(
+            self.engine,
+            node_id_factory=getattr(self.engine, "node_id_factory", None),
+        )
 
     def handle_request(self, request):
         request_id = ""

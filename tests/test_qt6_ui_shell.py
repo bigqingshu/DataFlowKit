@@ -343,6 +343,36 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(valid_result["feedback"]["status_message"], "节点配置已应用。")
         applied_plan = valid_result["apply_result"]["plan"]
         self.assertEqual(applied_plan["nodes"][0]["config"]["columns_text"], "status=updated")
+        context_payload = valid_result["node_config_context"]
+        self.assertTrue(context_payload["ok"])
+        context_fields = {
+            field["key"]: field
+            for field in context_payload["fields"]
+        }
+        self.assertIn("columns_text", context_fields)
+        self.assertEqual(context_fields["columns_text"]["help_payload"]["key"], "columns_text")
+        self.assertTrue(context_fields["columns_text"]["help_payload"]["sections"])
+
+    def test_facade_describes_shared_node_config_context(self):
+        client = QtHeadlessEngineClient()
+
+        described = client.facade.describe_node_config_context(
+            "字段映射写入表",
+            preview_headers=["源字段"],
+            table_names=["orders", "result"],
+            table_columns={"orders": ["id", "name"], "result": ["row_id", "status"]},
+        )
+
+        self.assertTrue(described["ok"])
+        self.assertIsInstance(described["warning_items"], list)
+        fields = {field["key"]: field for field in described["fields"]}
+        self.assertIn("field_mappings", fields)
+        columns = {
+            column["key"]: column
+            for column in fields["field_mappings"]["item_schema"]["columns"]
+        }
+        self.assertEqual(columns["source_field"]["context_requirements"][0]["kind"], "table_columns")
+        self.assertEqual(columns["target_field"]["action"]["key"], "pick_table_field")
 
     def test_facade_describes_confirmation_prompts(self):
         client = QtHeadlessEngineClient()

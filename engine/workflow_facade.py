@@ -10,7 +10,11 @@ from engine.output_service import OutputSettings
 from engine.plan_templates import PlanTemplateService
 from engine.table_io import load_table_file
 from workflow.plan_commands import apply_plan_command as apply_workflow_plan_command
-from workflow.node_ui_schema import build_node_detail_payload, build_node_ui_catalog
+from workflow.node_ui_schema import (
+    build_field_help_payload,
+    build_node_detail_payload,
+    build_node_ui_catalog,
+)
 
 
 class WorkflowFacade:
@@ -18,8 +22,9 @@ class WorkflowFacade:
 
     def __init__(self, engine=None, *, node_id_factory=None):
         self.engine = engine or HeadlessWorkflowEngine()
+        self.node_id_factory = node_id_factory or getattr(self.engine, "node_id_factory", None)
         self.plan_templates = PlanTemplateService(
-            node_id_factory=node_id_factory or getattr(self.engine, "node_id_factory", None)
+            node_id_factory=self.node_id_factory
         )
 
     def import_table_file(self, path):
@@ -190,7 +195,12 @@ class WorkflowFacade:
         return self.plan_templates.validate_template(copy.deepcopy(plan))
 
     def apply_plan_command(self, plan, command, **kwargs):
-        return apply_workflow_plan_command(copy.deepcopy(plan), command, **kwargs)
+        return apply_workflow_plan_command(
+            copy.deepcopy(plan),
+            command,
+            node_id_factory=self.node_id_factory,
+            **kwargs,
+        )
 
     def describe_plan_command_feedback(self, result, *, success_status="", success_title="计划编辑", failure_status="计划编辑失败"):
         result = copy.deepcopy(result or {})
@@ -835,6 +845,27 @@ class WorkflowFacade:
             "detail": detail,
         }
 
+    def describe_node_config_context(self, node_type_id, *, preview_headers=None, table_names=None, table_columns=None):
+        schema = self.engine.get_node_ui_schema(
+            node_type_id,
+            preview_headers=preview_headers,
+            table_names=table_names,
+            table_columns=table_columns,
+        )
+        fields = []
+        for group in (schema.get("form") or {}).get("groups", []):
+            for field in group.get("fields") or []:
+                help_payload = build_field_help_payload(field.get("key"), field)
+                field_payload = copy.deepcopy(field)
+                field_payload["help_payload"] = help_payload
+                fields.append(field_payload)
+        return {
+            "ok": True,
+            "schema": schema,
+            "fields": fields,
+            "warning_items": copy.deepcopy(schema.get("warning_items") or []),
+        }
+
     def plan_status_text(self, plan=None, *, current_plan_path=None):
         plan = plan or {}
         name = plan.get("plan_name", "未命名计划")
@@ -1131,6 +1162,12 @@ class WorkflowFacade:
             "validation": validation,
             "issues": issues,
             "apply_result": copy.deepcopy(apply_result),
+            "node_config_context": self.describe_node_config_context(
+                node.get("node_type_id") or node.get("type"),
+                preview_headers=preview_headers,
+                table_names=table_names,
+                table_columns=table_columns,
+            ),
             "feedback": self.build_user_feedback(
                 level=feedback_level,
                 code="node_config_applied",
