@@ -275,6 +275,8 @@ Recommended actions:
 
 - `list_node_types`
 - `get_node_type`
+- `list_node_ui_schemas`
+- `get_node_ui_schema`
 - `make_default_node`
 - `validate_plan`
 - `preview_plan`
@@ -295,8 +297,47 @@ Runtime identity rules:
 - `list_node_types` keeps returning legacy display names in `node_types` and
   should also expose stable ids in `node_type_ids` plus full metadata in
   `node_catalog`.
+- `list_node_ui_schemas` and `get_node_ui_schema` return shared UI metadata for
+  menu paths, Chinese labels, warnings, capability badges, and form groups. Qt,
+  Web, HTTP, and other clients should use these actions instead of importing a
+  UI-specific metadata file.
 - Clients that do not need old template compatibility may omit legacy `type`
   when creating nodes.
+
+### 7.1 Shared Node UI Schema
+
+The shared node UI schema lives outside any concrete frontend. It describes how
+to render a node but does not change execution logic.
+
+Example:
+
+```json
+{
+  "node_type_id": "core.new_columns",
+  "display_name": "新建列",
+  "category": "数据处理",
+  "category_label": "数据处理",
+  "menu": {
+    "path": ["数据处理", "新建列"],
+    "order": 2000
+  },
+  "summary": "添加字段，可设置默认值",
+  "warnings": [],
+  "capabilities": {
+    "headless_preview": true,
+    "headless_run": true,
+    "execute_actions": false
+  },
+  "form": {
+    "groups": []
+  },
+  "default_config": {}
+}
+```
+
+Clients may use `form.groups[].fields[]` to build controls. Common field types
+include `text`, `textarea`, `number`, `bool`, `select`, `field_select`, and
+`json`.
 
 ## 8. Runtime Responses
 

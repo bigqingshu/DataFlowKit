@@ -35,6 +35,34 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertTrue(node_type["result"]["supported"])
         self.assertIn("columns_text", node_type["result"]["default_config"])
 
+    def test_node_ui_schema_actions_return_renderable_metadata(self):
+        worker = StdioWorker()
+
+        listed = worker.handle_request(request("list_node_ui_schemas", {
+            "include_unsupported": False,
+            "preview_headers": ["A", "B"],
+        }))
+        schema = worker.handle_request(request("get_node_ui_schema", {
+            "node_type_id": "core.replace",
+            "preview_headers": ["A", "B"],
+        }))
+
+        self.assertTrue(listed["ok"])
+        self.assertIn("node_ui_schemas", listed["result"])
+        self.assertIn("core.new_columns", [item["node_type_id"] for item in listed["result"]["node_ui_schemas"]])
+        self.assertTrue(schema["ok"])
+        self.assertEqual(schema["result"]["node_type_id"], "core.replace")
+        self.assertEqual(schema["result"]["category_label"], "数据处理")
+        self.assertIn("批量替换", schema["result"]["menu"]["path"])
+        target_fields = [
+            field
+            for group in schema["result"]["form"]["groups"]
+            for field in group["fields"]
+            if field["key"] == "target_field"
+        ]
+        self.assertEqual(target_fields[0]["type"], "field_select")
+        self.assertEqual(target_fields[0]["choices"], ["A", "B"])
+
     def test_make_default_node_and_validate_plan(self):
         worker = StdioWorker()
 

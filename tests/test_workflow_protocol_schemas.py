@@ -103,6 +103,8 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
         for action in [
             "list_node_types",
             "get_node_type",
+            "list_node_ui_schemas",
+            "get_node_ui_schema",
             "make_default_node",
             "validate_plan",
             "preview_plan",

@@ -76,6 +76,23 @@ class StdioWorker:
                     include_unsupported=bool(payload.get("include_unsupported", True))
                 ),
             }
+        if action == "list_node_ui_schemas":
+            return {
+                "node_ui_schemas": self.engine.list_node_ui_schemas(
+                    include_unsupported=bool(payload.get("include_unsupported", True)),
+                    preview_headers=payload.get("preview_headers"),
+                    table_names=payload.get("table_names"),
+                    table_columns=payload.get("table_columns"),
+                )
+            }
+        if action == "get_node_ui_schema":
+            node_type = payload.get("node_type") or payload.get("type") or payload.get("node_type_id")
+            return self.engine.get_node_ui_schema(
+                node_type,
+                preview_headers=payload.get("preview_headers"),
+                table_names=payload.get("table_names"),
+                table_columns=payload.get("table_columns"),
+            )
         if action == "get_node_type":
             node_type = payload.get("node_type") or payload.get("type") or payload.get("node_type_id")
             return self.engine.get_node_type(

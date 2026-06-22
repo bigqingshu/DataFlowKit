@@ -49,6 +49,27 @@ class HeadlessWorkflowEngineApiTests(unittest.TestCase):
         self.assertEqual(protocol_node["node_type_id"], "core.new_columns")
         self.assertNotIn("type", protocol_node)
 
+    def test_node_ui_schema_is_available_without_qt_imports(self):
+        engine = self.make_engine()
+
+        schemas = engine.list_node_ui_schemas(include_unsupported=False, preview_headers=["A"])
+        schema = engine.get_node_ui_schema("core.new_columns", preview_headers=["A"])
+
+        self.assertTrue(schemas)
+        self.assertIn("core.new_columns", [item["node_type_id"] for item in schemas])
+        self.assertEqual(schema["node_type_id"], "core.new_columns")
+        self.assertEqual(schema["display_name"], "新建列")
+        self.assertEqual(schema["menu"]["path"], ["数据处理", "新建列"])
+        self.assertTrue(schema["capabilities"]["headless_preview"])
+        self.assertIn("添加字段", schema["summary"])
+        self.assertIn("columns_text", schema["default_config"])
+        field_keys = [
+            field["key"]
+            for group in schema["form"]["groups"]
+            for field in group["fields"]
+        ]
+        self.assertIn("columns_text", field_keys)
+
     def test_validate_plan_reports_unsupported_nodes_without_running(self):
         engine = self.make_engine()
         validation = engine.validate_plan({

@@ -55,6 +55,10 @@ from workflow.protocol_nodes import (
     normalize_node_type_id,
     stable_node_type_id_for_node,
 )
+from workflow.node_ui_schema import (
+    get_node_ui_schema,
+    list_node_ui_schemas,
+)
 
 
 SUPPORTED_DATA_NODE_TYPE_IDS = set(HEADLESS_DATA_NODE_TYPE_IDS)
@@ -101,6 +105,28 @@ class HeadlessWorkflowEngine:
 
     def list_node_catalog(self, include_unsupported=True):
         return list_node_type_definitions(include_unsupported=include_unsupported)
+
+    def list_node_ui_schemas(
+        self,
+        include_unsupported=True,
+        preview_headers=None,
+        table_names=None,
+        table_columns=None,
+    ):
+        return list_node_ui_schemas(
+            include_unsupported=include_unsupported,
+            preview_headers=preview_headers,
+            table_names=table_names,
+            table_columns=table_columns,
+        )
+
+    def get_node_ui_schema(self, node_type, preview_headers=None, table_names=None, table_columns=None):
+        return get_node_ui_schema(
+            node_type,
+            preview_headers=preview_headers,
+            table_names=table_names,
+            table_columns=table_columns,
+        )
 
     def is_node_supported(self, node_type):
         return is_headless_supported_node_type(node_type)

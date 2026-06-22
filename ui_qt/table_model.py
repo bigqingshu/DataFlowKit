@@ -31,8 +31,9 @@ def create_table_model_class(qt: Optional[QtApi] = None):
     """Create a ``QAbstractTableModel`` subclass for the selected Qt binding."""
 
     qt = qt or get_qt()
-    if qt.binding in _model_class_cache:
-        return _model_class_cache[qt.binding]
+    cache_key = (qt.binding, id(qt.QtCore.QAbstractTableModel))
+    if cache_key in _model_class_cache:
+        return _model_class_cache[cache_key]
 
     display_role = qt_enum(qt, "ItemDataRole", "DisplayRole")
     edit_role = qt_enum(qt, "ItemDataRole", "EditRole")
@@ -105,7 +106,7 @@ def create_table_model_class(qt: Optional[QtApi] = None):
             return list(self.headers), [list(row) for row in self.rows]
 
     TableDataModel.__name__ = f"TableDataModel_{qt.binding}"
-    _model_class_cache[qt.binding] = TableDataModel
+    _model_class_cache[cache_key] = TableDataModel
     return TableDataModel
 
 
@@ -114,4 +115,3 @@ def make_table_model(headers=None, rows=None, qt: Optional[QtApi] = None, parent
 
     model_class = create_table_model_class(qt)
     return model_class(headers=headers, rows=rows, parent=parent)
-
