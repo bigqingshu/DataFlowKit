@@ -868,23 +868,49 @@ class QtWorkflowMainWindow:
             described = self.engine_client.describe_node_detail(node_type_id, preview_headers=self.current_headers, **self._table_context())
         except Exception:
             described = {}
+        try:
+            context = self.engine_client.facade.describe_node_config_context(
+                node_type_id,
+                preview_headers=self.current_headers,
+                **self._table_context(),
+            )
+        except Exception:
+            context = {}
         schema = described.get("schema") or self.node_schema_by_id.get(node_type_id) or {}
         detail = described.get("detail") or {}
         if not schema and not detail:
             return
-        self._apply_node_detail_panel(detail, schema)
+        self._apply_node_detail_panel(detail, schema, context)
 
-    def _apply_node_detail_panel(self, detail, schema=None):
+    def _apply_node_detail_panel(self, detail, schema=None, context=None):
         detail = detail or {}
         schema = schema or {}
+        context = context or {}
         title = str(detail.get("title") or schema.get("display_name") or "节点说明")
         category = str(detail.get("category") or schema.get("category_label") or schema.get("category") or "")
         node_type_id = str(detail.get("node_type_id") or schema.get("node_type_id") or "")
         risk = str(detail.get("risk") or schema.get("risk") or "")
         supported = detail.get("supported_headless")
         badges = [str(item) for item in (detail.get("badges") or []) if str(item).strip()]
-        sections = detail.get("sections") or []
+        sections = list(detail.get("sections") or [])
         meta_items = [item for item in (detail.get("meta_items") or []) if isinstance(item, dict)]
+        warning_items = [item for item in (context.get("warning_items") or []) if isinstance(item, dict)]
+        help_sections = [item for item in (context.get("help_sections") or []) if isinstance(item, dict)]
+
+        if warning_items:
+            warning_lines = [str(item.get("message") or "").strip() for item in warning_items if str(item.get("message") or "").strip()]
+            if warning_lines:
+                sections.append({"title": "结构化警告", "lines": warning_lines})
+        if help_sections:
+            preview_lines = []
+            for item in help_sections[:4]:
+                label = str(item.get("label") or item.get("key") or "").strip()
+                first_section = next((section for section in (item.get("sections") or []) if isinstance(section, dict)), {})
+                first_lines = [str(line).strip() for line in (first_section.get("lines") or []) if str(line).strip()]
+                if label and first_lines:
+                    preview_lines.append(f"{label}：{first_lines[0]}")
+            if preview_lines:
+                sections.append({"title": "配置提示", "lines": preview_lines})
 
         self.node_detail_title_label.setText(title)
         if meta_items:
