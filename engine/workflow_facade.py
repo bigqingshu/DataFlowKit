@@ -318,12 +318,29 @@ class WorkflowFacade:
         validation = combined.get("validation") or {}
         jump_validation = combined.get("jump_validation") or {}
         access_precheck = combined.get("access_precheck") or {}
+        sections = []
         text = self.format_validation_text(validation)
+        sections.append({
+            "title": "基础校验",
+            "body": text,
+            "issues": copy.deepcopy(validation.get("issues", []) or []),
+        })
         jump_issues = jump_validation.get("issues", []) or []
         if jump_issues:
             text = text + "\n\n跳转校验：\n" + self.format_issues_text(jump_issues)
+            sections.append({
+                "title": "跳转校验",
+                "body": self.format_issues_text(jump_issues),
+                "summary": str(jump_validation.get("summary") or ""),
+                "issues": copy.deepcopy(jump_issues),
+            })
         access_issues = access_precheck.get("issues", []) or []
         if access_issues:
+            access_body = (
+                str(access_precheck.get("summary", "") or "")
+                + "\n"
+                + self.format_issues_text(access_issues)
+            ).strip()
             text = (
                 text
                 + "\n\n权限预检：\n"
@@ -331,6 +348,12 @@ class WorkflowFacade:
                 + "\n"
                 + self.format_issues_text(access_issues)
             )
+            sections.append({
+                "title": "权限预检",
+                "body": access_body,
+                "summary": str(access_precheck.get("summary") or ""),
+                "issues": copy.deepcopy(access_issues),
+            })
         if not combined.get("ok"):
             status = "校验发现问题"
             level = "warning"
@@ -340,13 +363,21 @@ class WorkflowFacade:
         else:
             status = "校验通过"
             level = "success"
-        return self.build_user_feedback(
+        feedback = self.build_user_feedback(
             level=level,
             code="workflow_validation",
             status_message=status,
             issue_message=text,
             issues=(validation.get("issues", []) or []) + jump_issues + access_issues,
         )
+        payload = feedback.get("feedback") or {}
+        payload["sections"] = sections
+        payload["summary_lines"] = [
+            str(item)
+            for item in [status, jump_validation.get("summary"), access_precheck.get("summary")]
+            if str(item or "").strip()
+        ]
+        return feedback
 
     def format_issues_text(self, issues):
         issues = issues or []

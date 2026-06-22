@@ -665,14 +665,40 @@ class QtWorkflowMainWindow:
         issues = payload.get("issues") or []
         logs = payload.get("logs") or []
         status_message = str(payload.get("status_message") or fallback_status or "")
+        sections = [item for item in (payload.get("sections") or []) if isinstance(item, dict)]
+        summary_lines = [str(item) for item in (payload.get("summary_lines") or []) if str(item).strip()]
+
+        info_blocks = []
+        issue_blocks = []
+        for section in sections:
+            title = str(section.get("title") or "").strip()
+            body = str(section.get("body") or "").strip()
+            block = "\n".join(item for item in [title, body] if item)
+            if not block:
+                continue
+            if section.get("issues"):
+                issue_blocks.append(block)
+            else:
+                info_blocks.append(block)
+        info_message = "\n\n".join(info_blocks)
+        if summary_lines:
+            info_message = "\n".join(summary_lines) + (("\n\n" + info_message) if info_message else "")
+        if issue_blocks:
+            issue_message = "\n\n".join(issue_blocks)
+        elif not issue_message and info_message:
+            issue_message = info_message
 
         self._apply_message_panel(self.engine_client.build_message_panel_state(
             mode=str(payload.get("level") or "info"),
             title=str(payload.get("title") or ""),
-            body=issue_message,
+            body=issue_message if issue_message else info_message,
             issues=issues,
             logs=logs,
         ).get("panel") or {})
+
+        if info_message:
+            title = str((self.current_message_panel or {}).get("title") or payload.get("title") or "")
+            self.info_text.setPlainText("\n\n".join([item for item in [title, info_message] if str(item).strip()]))
 
         if status_message:
             self.status_bar.showMessage(status_message)

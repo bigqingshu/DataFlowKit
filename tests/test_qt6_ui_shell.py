@@ -8,7 +8,7 @@ from unittest.mock import patch
 from ui_qt import app as qt_app
 from ui_qt.config_form import NodeConfigForm, coerce_form_value, format_form_value, value_kind
 from ui_qt.engine_client import QtHeadlessEngineClient, SAMPLE_PLAN
-from ui_qt.main_window import build_main_window
+from ui_qt.main_window import QtWorkflowMainWindow, build_main_window
 from ui_qt.node_ui_metadata import (
     category_label,
     choices_for_field,
@@ -245,6 +245,8 @@ class Qt6UiShellTests(unittest.TestCase):
         validation_feedback = client.describe_validation_feedback(validation)
         self.assertEqual(validation_feedback["feedback"]["status_message"], "校验通过")
         self.assertIn("OK: true", validation_feedback["feedback"]["issue_message"])
+        self.assertEqual(validation_feedback["feedback"]["sections"][0]["title"], "基础校验")
+        self.assertIn("校验通过", validation_feedback["feedback"]["summary_lines"])
 
         message_panel = client.build_message_panel_state(
             mode="warning",
@@ -1073,6 +1075,7 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertEqual(controller.current_plan["nodes"][controller.selected_node_index()].get("config", {}), before_config)
             self.assertIn("目标字段不存在", controller.issue_text.toPlainText())
             self.assertEqual(controller.message_tabs.tabText(controller.message_tabs.currentIndex()), "问题")
+            self.assertIn("节点配置校验失败", controller.info_text.toPlainText())
             controller.toggle_selected_node_enabled()
             self.assertFalse(controller.current_plan["nodes"][controller.selected_node_index()].get("enabled", True))
             controller.toggle_selected_node_enabled()
@@ -1115,6 +1118,31 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertIn("输出设置校验失败", controller.status_bar.currentMessage())
             settings = controller.current_output_settings()
             self.assertEqual(settings["mode"], "保存为SQLite新表")
+
+    def test_controller_feedback_uses_structured_validation_sections(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        controller = QtWorkflowMainWindow(qt)
+
+        feedback = controller.engine_client.describe_validation_feedback({
+            "ok": True,
+            "validation": {"ok": True, "node_count": 1, "issues": []},
+            "jump_validation": {"issues": [], "summary": "跳转链路正常"},
+            "access_precheck": {
+                "issues": [{"severity": "warning", "code": "demo", "message": "将写回数据库"}],
+                "summary": "存在写回风险，请确认目标表",
+            },
+        })
+
+        controller._apply_feedback(feedback)
+
+        self.assertIn("校验发现提示", controller.info_text.toPlainText())
+        self.assertIn("基础校验", controller.info_text.toPlainText())
+        self.assertIn("存在写回风险，请确认目标表", controller.info_text.toPlainText())
+        self.assertIn("将写回数据库", controller.issue_text.toPlainText())
 
     def test_controller_uses_confirmation_prompts_for_clear_and_run(self):
         try:
