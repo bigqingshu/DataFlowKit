@@ -365,6 +365,7 @@ class Qt6UiShellTests(unittest.TestCase):
 
         self.assertTrue(described["ok"])
         self.assertIsInstance(described["warning_items"], list)
+        self.assertTrue(described["help_sections"])
         fields = {field["key"]: field for field in described["fields"]}
         self.assertIn("field_mappings", fields)
         columns = {
@@ -373,6 +374,7 @@ class Qt6UiShellTests(unittest.TestCase):
         }
         self.assertEqual(columns["source_field"]["context_requirements"][0]["kind"], "table_columns")
         self.assertEqual(columns["target_field"]["action"]["key"], "pick_table_field")
+        self.assertEqual(described["help_sections"][0]["sections"][0]["title"], "字段说明")
 
     def test_facade_describes_confirmation_prompts(self):
         client = QtHeadlessEngineClient()

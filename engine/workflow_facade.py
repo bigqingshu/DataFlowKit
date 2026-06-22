@@ -853,16 +853,28 @@ class WorkflowFacade:
             table_columns=table_columns,
         )
         fields = []
+        help_sections = []
         for group in (schema.get("form") or {}).get("groups", []):
             for field in group.get("fields") or []:
                 help_payload = build_field_help_payload(field.get("key"), field)
                 field_payload = copy.deepcopy(field)
                 field_payload["help_payload"] = help_payload
                 fields.append(field_payload)
+                section_lines = [
+                    str(item) for item in (help_payload.get("sections") or [])
+                    if isinstance(item, dict)
+                ]
+                if section_lines:
+                    help_sections.append({
+                        "key": str(field.get("key") or ""),
+                        "label": str(field.get("label") or field.get("key") or ""),
+                        "sections": copy.deepcopy(help_payload.get("sections") or []),
+                    })
         return {
             "ok": True,
             "schema": schema,
             "fields": fields,
+            "help_sections": help_sections,
             "warning_items": copy.deepcopy(schema.get("warning_items") or []),
         }
 
