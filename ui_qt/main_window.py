@@ -36,6 +36,12 @@ class QtWorkflowMainWindow:
         self.current_table_kind = "input"
         self.plan_dir = Path.cwd() / "plan"
         self.node_schema_by_id = {}
+        self.current_job_id = ""
+        self.current_job_action = ""
+        self.current_job_title = ""
+        self.current_job_event_sequence = 0
+        self.current_job_messages = []
+        self.workflow_action_buttons = []
 
         self._build_ui()
         self.refresh_all()
@@ -43,6 +49,9 @@ class QtWorkflowMainWindow:
     def _build_ui(self):
         qt = self.qt
         self.status_bar = self.window.statusBar()
+        self.job_timer = qt.QtCore.QTimer(self.window)
+        self.job_timer.setInterval(100)
+        self.job_timer.timeout.connect(lambda: self.poll_current_job())
         self.toolbar = self.window.addToolBar("Workflow")
         try:
             self.toolbar.setMovable(False)
@@ -225,7 +234,12 @@ class QtWorkflowMainWindow:
         ]:
             button = qt.QtWidgets.QPushButton(text)
             button.clicked.connect(lambda checked=False, cb=callback: cb())
+            self.workflow_action_buttons.append(button)
             action_row.addWidget(button)
+        self.cancel_job_button = qt.QtWidgets.QPushButton("取消任务")
+        self.cancel_job_button.setEnabled(False)
+        self.cancel_job_button.clicked.connect(lambda checked=False: self.cancel_current_job())
+        action_row.addWidget(self.cancel_job_button)
         action_row.addStretch(1)
 
         progress_group = qt.QtWidgets.QGroupBox("执行进度")
@@ -677,44 +691,164 @@ class QtWorkflowMainWindow:
             self.issue_text.setPlainText(self._format_validation(validation))
             self.status_bar.showMessage("预览前校验失败")
             return
-        try:
-            result = self.engine_client.engine.preview_plan(plan, input_table=input_table, stop_index=stop_index)
-        except Exception as exc:
-            self.issue_text.setPlainText(str(exc))
-            self.status_bar.showMessage("预览失败")
-            return
-        self.last_preview_headers = list(result.headers)
-        self.last_preview_rows = [list(row) for row in result.rows]
-        self.update_table(result.headers, result.rows, title=title)
-        self.current_table_kind = "preview"
-        self.issue_text.setPlainText("\n".join(result.logs) or "预览完成，无日志。")
-        self.workflow_progress.setValue(100)
-        self.node_progress.setValue(100)
-        self.workflow_progress_label.setText(f"预览完成：{len(result.rows)} 行 x {len(result.headers)} 列")
-        self.node_progress_label.setText(f"执行步数：{result.steps}")
-        self.status_bar.showMessage(f"预览完成：{len(result.rows)} 行 x {len(result.headers)} 列")
+        self.start_workflow_job(
+            "preview_plan",
+            plan,
+            input_table=input_table,
+            title=title,
+            stop_index=stop_index,
+            status_prefix="预览",
+        )
 
     def execute_plan(self):
         input_table = self._input_table_payload()
         validation = self.validate_plan()
         if not validation.get("ok"):
             return
+        self.start_workflow_job(
+            "run_plan",
+            copy.deepcopy(self.current_plan),
+            input_table=input_table,
+            title="执行结果",
+            execute_actions=False,
+            status_prefix="执行",
+        )
+
+    def start_workflow_job(self, job_action, plan, *, input_table=None, title="", status_prefix="", **options):
+        if self.current_job_id:
+            self.issue_text.setPlainText("当前已有后台任务运行，请等待完成或先取消。")
+            self.status_bar.showMessage("后台任务运行中")
+            return
         try:
-            result = self.engine_client.run_plan(self.current_plan, input_table=input_table)
+            started = self.engine_client.start_job(
+                job_action,
+                plan,
+                input_table=input_table,
+                **options,
+            )
         except Exception as exc:
             self.issue_text.setPlainText(str(exc))
-            self.status_bar.showMessage("执行失败")
+            self.status_bar.showMessage(f"{status_prefix or '任务'}启动失败")
             return
-        self.last_preview_headers = list(result.headers)
-        self.last_preview_rows = [list(row) for row in result.rows]
-        self.update_table(result.headers, result.rows, title="执行结果")
-        self.current_table_kind = "preview"
-        self.issue_text.setPlainText("\n".join(result.logs) or "执行完成，无日志。")
-        self.workflow_progress.setValue(100)
-        self.node_progress.setValue(100)
-        self.workflow_progress_label.setText(f"执行完成：{len(result.rows)} 行 x {len(result.headers)} 列")
-        self.node_progress_label.setText(f"执行步数：{result.steps}")
-        self.status_bar.showMessage("执行完成。")
+
+        self.current_job_id = str(started.get("job_id") or "")
+        self.current_job_action = job_action
+        self.current_job_title = title or "Headless 预览结果"
+        self.current_job_event_sequence = 0
+        self.current_job_messages = []
+        self.workflow_progress.setValue(0)
+        self.node_progress.setValue(0)
+        self.workflow_progress_label.setText(f"{status_prefix or '任务'}已启动：{self.current_job_id}")
+        self.node_progress_label.setText("节点进度：等待事件")
+        self.issue_text.setPlainText(f"{status_prefix or '任务'}已启动。")
+        self.set_workflow_running(True)
+        self.job_timer.start()
+        self.poll_current_job()
+
+    def cancel_current_job(self):
+        if not self.current_job_id:
+            return
+        try:
+            result = self.engine_client.cancel_job(self.current_job_id)
+            self.append_job_message(result.get("message", "已请求取消任务。"))
+            self.status_bar.showMessage("已请求取消后台任务")
+        except Exception as exc:
+            self.issue_text.setPlainText(str(exc))
+            self.status_bar.showMessage("取消任务失败")
+
+    def poll_current_job(self):
+        if not self.current_job_id:
+            self.job_timer.stop()
+            return
+        try:
+            events = self.engine_client.get_job_events(
+                self.current_job_id,
+                since=self.current_job_event_sequence,
+            )
+            self.current_job_event_sequence = int(events.get("next_sequence", self.current_job_event_sequence) or 0)
+            for event in events.get("events", []):
+                self.handle_job_event(event)
+            status = self.engine_client.get_job_status(self.current_job_id, include_result=True)
+        except Exception as exc:
+            self.job_timer.stop()
+            self.set_workflow_running(False)
+            self.issue_text.setPlainText(str(exc))
+            self.status_bar.showMessage("后台任务状态读取失败")
+            self.current_job_id = ""
+            return
+
+        if status.get("done"):
+            self.finish_workflow_job(status)
+
+    def handle_job_event(self, event):
+        event_type = event.get("type", "")
+        message = event.get("message", "")
+        if message:
+            self.append_job_message(message)
+        if event_type == "node_start":
+            node_index = int(event.get("node_index", 0) or 0)
+            node_total = max(1, int(event.get("node_total", 1) or 1))
+            self.workflow_progress.setValue(int(node_index * 100 / node_total))
+            self.node_progress.setValue(0)
+            self.workflow_progress_label.setText(f"总进度：节点 {node_index + 1} / {node_total}")
+            self.node_progress_label.setText(f"当前节点：{event.get('node_name', '')} - 开始")
+        elif event_type == "node_progress":
+            current = event.get("current")
+            total = event.get("total")
+            if total:
+                self.node_progress.setValue(int(float(current or 0) * 100 / max(1.0, float(total))))
+            self.node_progress_label.setText(message or "当前节点：处理中")
+        elif event_type == "node_done":
+            node_index = int(event.get("node_index", 0) or 0)
+            node_total = max(1, int(event.get("node_total", 1) or 1))
+            self.workflow_progress.setValue(int((node_index + 1) * 100 / node_total))
+            self.node_progress.setValue(100)
+            self.node_progress_label.setText(f"当前节点：{event.get('node_name', '')} - 完成")
+        elif event_type == "job_cancel_requested":
+            self.node_progress_label.setText("当前节点：正在取消")
+
+    def append_job_message(self, message):
+        if not message:
+            return
+        self.current_job_messages.append(str(message))
+        self.issue_text.setPlainText("\n".join(self.current_job_messages[-80:]))
+
+    def finish_workflow_job(self, status):
+        self.job_timer.stop()
+        self.set_workflow_running(False)
+        result = status.get("result") or {}
+        table = result.get("table") or {}
+        headers = list(table.get("headers") or [])
+        rows = [list(row) for row in (table.get("rows") or [])]
+        if status.get("status") == "failed":
+            error = status.get("error") or {}
+            self.issue_text.setPlainText(error.get("message") or status.get("message") or "后台任务失败。")
+            self.status_bar.showMessage("后台任务失败")
+        elif headers or rows:
+            self.last_preview_headers = headers
+            self.last_preview_rows = rows
+            self.update_table(headers, rows, title=self.current_job_title)
+            self.current_table_kind = "preview"
+            logs = result.get("logs") or self.current_job_messages
+            self.issue_text.setPlainText("\n".join(logs) or f"{self.current_job_title}完成，无日志。")
+            self.workflow_progress.setValue(100)
+            self.node_progress.setValue(100)
+            self.workflow_progress_label.setText(f"{self.current_job_title}完成：{len(rows)} 行 x {len(headers)} 列")
+            self.node_progress_label.setText(f"执行步数：{result.get('steps', 0)}")
+            self.status_bar.showMessage(f"{self.current_job_title}完成。")
+        else:
+            self.issue_text.setPlainText("\n".join(self.current_job_messages) or status.get("message", "后台任务已结束。"))
+            self.status_bar.showMessage(status.get("message", "后台任务已结束。"))
+        self.current_job_id = ""
+        self.current_job_action = ""
+        self.current_job_title = ""
+        self.current_job_event_sequence = 0
+        self.current_job_messages = []
+
+    def set_workflow_running(self, running):
+        for button in self.workflow_action_buttons:
+            button.setEnabled(not running)
+        self.cancel_job_button.setEnabled(bool(running))
 
     def show_input_table(self):
         self.current_table_kind = "input"

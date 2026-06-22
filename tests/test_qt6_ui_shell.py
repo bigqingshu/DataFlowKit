@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import unittest
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -27,6 +28,14 @@ from workflow.node_ui_schema import get_node_ui_schema
 
 
 class Qt6UiShellTests(unittest.TestCase):
+    def wait_for_controller_job(self, app, controller, timeout=2.0):
+        deadline = time.time() + timeout
+        while controller.current_job_id and time.time() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        app.processEvents()
+        self.assertFalse(controller.current_job_id)
+
     def test_engine_client_previews_sample_plan_by_node_type_id(self):
         client = QtHeadlessEngineClient()
 
@@ -185,8 +194,11 @@ class Qt6UiShellTests(unittest.TestCase):
         controller.toggle_selected_node_enabled()
         controller.node_list.setCurrentRow(0)
         controller.preview_to_selected_node()
+        self.wait_for_controller_job(app, controller)
         self.assertEqual(controller.current_table_kind, "preview")
         self.assertIn("status", controller.last_preview_headers)
+        self.assertEqual(controller.workflow_progress.value(), 100)
+        self.assertFalse(controller.cancel_job_button.isEnabled())
         window.close()
         app.processEvents()
 

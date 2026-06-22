@@ -117,6 +117,24 @@ class QtHeadlessEngineClient:
     def validate_plan_template(self, plan):
         return self.engine.validate_plan_template(copy.deepcopy(plan))
 
+    def start_job(self, job_action, plan, input_table=None, **options):
+        payload = {
+            "job_action": job_action,
+            "plan": copy.deepcopy(plan),
+            "input_data": input_table,
+        }
+        payload.update(options)
+        return self.engine.start_job(job_action, payload)
+
+    def get_job_status(self, job_id, *, include_result=True):
+        return self.engine.get_job_status(job_id, include_result=include_result)
+
+    def get_job_events(self, job_id, *, since=0):
+        return self.engine.get_job_events(job_id, since=since)
+
+    def cancel_job(self, job_id):
+        return self.engine.cancel_job(job_id)
+
     def validate_config(self, node, preview_headers=None, table_names=None, table_columns=None):
         return self.engine.validate_config(
             copy.deepcopy(node),
