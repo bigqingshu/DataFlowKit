@@ -41,6 +41,8 @@ class QtWorkflowMainWindow:
         self.current_job_event_sequence = 0
         self.current_job_messages = []
         self.workflow_action_buttons = []
+        self.node_action_buttons = {}
+        self.run_action_buttons = {}
         self.output_mode_records = []
         self.output_mode_meta = {}
         self.preview_source_records = []
@@ -168,6 +170,7 @@ class QtWorkflowMainWindow:
             button = qt.QtWidgets.QPushButton(text)
             button.clicked.connect(lambda checked=False, cb=callback: cb())
             node_buttons_a.addWidget(button)
+            self.node_action_buttons[text] = button
 
         node_buttons_b = qt.QtWidgets.QHBoxLayout()
         for text, callback in [
@@ -178,6 +181,7 @@ class QtWorkflowMainWindow:
             button = qt.QtWidgets.QPushButton(text)
             button.clicked.connect(lambda checked=False, cb=callback: cb())
             node_buttons_b.addWidget(button)
+            self.node_action_buttons[text] = button
 
         node_layout.addLayout(add_row)
         node_layout.addWidget(self.catalog_tree, 0)
@@ -238,6 +242,7 @@ class QtWorkflowMainWindow:
             button.clicked.connect(lambda checked=False, cb=callback: cb())
             self.workflow_action_buttons.append(button)
             action_row.addWidget(button)
+            self.run_action_buttons[text] = button
         self.cancel_job_button = qt.QtWidgets.QPushButton("取消任务")
         self.cancel_job_button.setEnabled(False)
         self.cancel_job_button.clicked.connect(lambda checked=False: self.cancel_current_job())
@@ -347,6 +352,7 @@ class QtWorkflowMainWindow:
         self.update_table(self.current_headers, self.current_rows, title="输入表格")
         self.show_node_config(self.node_list.currentRow())
         self.status_bar.showMessage(self._plan_status_text())
+        self.refresh_action_states()
 
     def _panel_state(self, *, selected_index=None):
         if selected_index is None:
@@ -429,6 +435,7 @@ class QtWorkflowMainWindow:
         else:
             self.config_form.set_node(None)
             self.config_header_label.setText("未选择节点")
+        self.refresh_action_states()
 
     def selected_node_index(self):
         row = self.node_list.currentRow()
@@ -468,6 +475,7 @@ class QtWorkflowMainWindow:
             self.node_list.setCurrentRow(max(0, min(int(selected), self.node_list.count() - 1)))
         if status_message:
             self.status_bar.showMessage(status_message)
+        self.refresh_action_states()
         return result
 
     def add_node_by_type(self, node_type_id):
@@ -534,6 +542,7 @@ class QtWorkflowMainWindow:
         self.config_header_label.setText(f"节点类型：{display}    节点名称：{node.get('name', '')}")
         self.config_form.set_node(node, headers=self.current_headers, schema=schema)
         self.show_node_detail(node_type_id)
+        self.refresh_action_states()
 
     def apply_node_config(self):
         index = self.selected_node_index()
@@ -837,10 +846,11 @@ class QtWorkflowMainWindow:
         self.current_job_title = title or "Headless 预览结果"
         self.current_job_event_sequence = 0
         self.current_job_messages = []
-        self.workflow_progress.setValue(0)
-        self.node_progress.setValue(0)
-        self.workflow_progress_label.setText(f"{status_prefix or '任务'}已启动：{self.current_job_id}")
-        self.node_progress_label.setText("节点进度：等待事件")
+        self._apply_job_progress_state(self.engine_client.build_job_progress_state(
+            current_job_id=self.current_job_id,
+            title=self.current_job_title,
+            running=True,
+        ).get("progress") or {})
         self.issue_text.setPlainText(f"{status_prefix or '任务'}已启动。")
         self.set_workflow_running(True)
         self.job_timer.start()
@@ -887,26 +897,19 @@ class QtWorkflowMainWindow:
         if message:
             self.append_job_message(message)
         if event_type == "node_start":
-            node_index = int(event.get("node_index", 0) or 0)
-            node_total = max(1, int(event.get("node_total", 1) or 1))
-            self.workflow_progress.setValue(int(node_index * 100 / node_total))
-            self.node_progress.setValue(0)
-            self.workflow_progress_label.setText(f"总进度：节点 {node_index + 1} / {node_total}")
-            self.node_progress_label.setText(f"当前节点：{event.get('node_name', '')} - 开始")
+            pass
         elif event_type == "node_progress":
-            current = event.get("current")
-            total = event.get("total")
-            if total:
-                self.node_progress.setValue(int(float(current or 0) * 100 / max(1.0, float(total))))
-            self.node_progress_label.setText(message or "当前节点：处理中")
+            pass
         elif event_type == "node_done":
-            node_index = int(event.get("node_index", 0) or 0)
-            node_total = max(1, int(event.get("node_total", 1) or 1))
-            self.workflow_progress.setValue(int((node_index + 1) * 100 / node_total))
-            self.node_progress.setValue(100)
-            self.node_progress_label.setText(f"当前节点：{event.get('node_name', '')} - 完成")
+            pass
         elif event_type == "job_cancel_requested":
-            self.node_progress_label.setText("当前节点：正在取消")
+            pass
+        self._apply_job_progress_state(self.engine_client.build_job_progress_state(
+            current_job_id=self.current_job_id,
+            title=self.current_job_title,
+            event=event,
+            running=bool(self.current_job_id),
+        ).get("progress") or {})
 
     def append_job_message(self, message):
         if not message:
@@ -951,10 +954,11 @@ class QtWorkflowMainWindow:
                     self.issue_text.setPlainText(issue_text)
             else:
                 self.issue_text.setPlainText("\n".join(logs) or f"{self.current_job_title}完成，无日志。")
-            self.workflow_progress.setValue(100)
-            self.node_progress.setValue(100)
-            self.workflow_progress_label.setText(f"{self.current_job_title}完成：{len(rows)} 行 x {len(headers)} 列")
-            self.node_progress_label.setText(f"执行步数：{final.get('steps', 0)}")
+            self._apply_job_progress_state(self.engine_client.build_job_progress_state(
+                current_job_id=self.current_job_id,
+                title=self.current_job_title,
+                final=final,
+            ).get("progress") or {})
             self.status_bar.showMessage(final_status_message)
         else:
             self.issue_text.setPlainText("\n".join(self.current_job_messages) or status.get("message", "后台任务已结束。"))
@@ -966,9 +970,44 @@ class QtWorkflowMainWindow:
         self.current_job_messages = []
 
     def set_workflow_running(self, running):
-        for button in self.workflow_action_buttons:
-            button.setEnabled(not running)
-        self.cancel_job_button.setEnabled(bool(running))
+        self.refresh_action_states(is_running=bool(running))
+
+    def refresh_action_states(self, is_running=None):
+        if is_running is None:
+            is_running = bool(self.current_job_id)
+        result = self.engine_client.describe_workflow_actions(
+            plan=self.current_plan,
+            selected_indexes=self.selected_node_indexes(),
+            is_running=bool(is_running),
+        )
+        actions = result.get("actions") or {}
+        button_map = {
+            "delete_nodes": self.node_action_buttons.get("删除"),
+            "move_node_up": self.node_action_buttons.get("上移"),
+            "move_node_down": self.node_action_buttons.get("下移"),
+            "toggle_node_enabled": self.node_action_buttons.get("启用/禁用"),
+            "duplicate_node": self.node_action_buttons.get("复制节点"),
+            "clear_nodes": self.node_action_buttons.get("清空节点"),
+            "preview_selected": self.node_action_buttons.get("预览到当前节点"),
+            "preview_full": self.run_action_buttons.get("预览完整计划"),
+            "execute_plan": self.run_action_buttons.get("执行计划"),
+            "validate_plan": self.run_action_buttons.get("校验"),
+            "cancel_job": self.cancel_job_button,
+            "apply_node_config": self.apply_config_button,
+            "add_node": self.add_node_button,
+            "refresh_catalog": self.refresh_schema_button,
+        }
+        for action_key, button in button_map.items():
+            if button is None:
+                continue
+            button.setEnabled(bool((actions.get(action_key) or {}).get("enabled", False)))
+
+    def _apply_job_progress_state(self, progress):
+        progress = progress or {}
+        self.workflow_progress_label.setText(str(progress.get("workflow_label") or "等待执行"))
+        self.workflow_progress.setValue(int(progress.get("workflow_value", 0) or 0))
+        self.node_progress_label.setText(str(progress.get("node_label") or "节点进度"))
+        self.node_progress.setValue(int(progress.get("node_value", 0) or 0))
 
     def show_input_table(self):
         self._show_preview_source({"type": "memory", "table_role": "input"}, kind="input")

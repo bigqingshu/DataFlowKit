@@ -72,6 +72,12 @@ class QtHeadlessEngineClient:
     def build_workflow_panel_state(self, **kwargs):
         return self.facade.build_workflow_panel_state(**kwargs)
 
+    def describe_workflow_actions(self, **kwargs):
+        return self.facade.describe_workflow_actions(**kwargs)
+
+    def build_job_progress_state(self, **kwargs):
+        return self.facade.build_job_progress_state(**kwargs)
+
     def describe_node_detail(self, node_type_id, *, preview_headers=None):
         return self.facade.describe_node_detail(node_type_id, preview_headers=preview_headers)
 

@@ -100,6 +100,12 @@ class WorkflowFacade:
             selected_node = copy.deepcopy(nodes[int(selected_index)])
             selected_schema = schema_by_id.get(str(selected_node.get("node_type_id") or selected_node.get("type") or ""), {})
 
+        action_state = self.describe_workflow_actions(
+            plan=plan,
+            selected_indexes=[int(selected_index)] if selected_index is not None and 0 <= int(selected_index) < len(nodes) else [],
+            is_running=False,
+        )
+
         return {
             "ok": True,
             "catalog": catalog,
@@ -108,11 +114,96 @@ class WorkflowFacade:
             "selected_node": selected_node,
             "selected_schema": selected_schema,
             "node_items": node_items,
+            "actions": action_state.get("actions") or {},
             "input_summary": f"当前输入：{len(current_rows)} 行 x {len(current_headers)} 列",
             "plan_status": self.plan_status_text(plan, current_plan_path=current_plan_path),
             "table_state": {
                 "input": {"headers": current_headers, "rows": current_rows},
                 "preview": {"headers": preview_headers, "rows": preview_rows},
+            },
+        }
+
+    def describe_workflow_actions(self, *, plan=None, selected_indexes=None, is_running=False):
+        plan = copy.deepcopy(plan or {})
+        nodes = plan.get("nodes", []) or []
+        selected = sorted({int(index) for index in (selected_indexes or []) if 0 <= int(index) < len(nodes)})
+        selected_index = selected[0] if len(selected) == 1 else None
+        has_nodes = bool(nodes)
+        has_selection = bool(selected)
+
+        actions = {
+            "add_node": {"enabled": not is_running},
+            "refresh_catalog": {"enabled": not is_running},
+            "delete_nodes": {"enabled": has_selection and not is_running},
+            "move_node_up": {"enabled": selected_index is not None and selected_index > 0 and not is_running},
+            "move_node_down": {"enabled": selected_index is not None and selected_index < len(nodes) - 1 and not is_running},
+            "toggle_node_enabled": {"enabled": selected_index is not None and not is_running},
+            "duplicate_node": {"enabled": selected_index is not None and not is_running},
+            "clear_nodes": {"enabled": has_nodes and not is_running},
+            "preview_selected": {"enabled": selected_index is not None and not is_running},
+            "preview_full": {"enabled": has_nodes and not is_running},
+            "execute_plan": {"enabled": has_nodes and not is_running},
+            "validate_plan": {"enabled": has_nodes and not is_running},
+            "apply_node_config": {"enabled": selected_index is not None and not is_running},
+            "cancel_job": {"enabled": bool(is_running)},
+        }
+        return {
+            "ok": True,
+            "actions": actions,
+        }
+
+    def build_job_progress_state(self, *, current_job_id="", title="", event=None, final=None, running=False):
+        current_job_id = str(current_job_id or "")
+        title = str(title or "任务")
+        workflow_label = "等待执行"
+        node_label = "节点进度"
+        workflow_value = 0
+        node_value = 0
+
+        if running and current_job_id:
+            workflow_label = f"任务已启动：{current_job_id}"
+            node_label = "节点进度：等待事件"
+
+        event = copy.deepcopy(event or {})
+        event_type = event.get("type", "")
+        if event_type == "node_start":
+            node_index = int(event.get("node_index", 0) or 0)
+            node_total = max(1, int(event.get("node_total", 1) or 1))
+            workflow_value = int(node_index * 100 / node_total)
+            workflow_label = f"总进度：节点 {node_index + 1} / {node_total}"
+            node_label = f"当前节点：{event.get('node_name', '')} - 开始"
+        elif event_type == "node_progress":
+            current = event.get("current")
+            total = event.get("total")
+            if total:
+                node_value = int(float(current or 0) * 100 / max(1.0, float(total)))
+            node_label = event.get("message") or "当前节点：处理中"
+        elif event_type == "node_done":
+            node_index = int(event.get("node_index", 0) or 0)
+            node_total = max(1, int(event.get("node_total", 1) or 1))
+            workflow_value = int((node_index + 1) * 100 / node_total)
+            node_value = 100
+            workflow_label = f"总进度：节点 {node_index + 1} / {node_total}"
+            node_label = f"当前节点：{event.get('node_name', '')} - 完成"
+        elif event_type == "job_cancel_requested":
+            node_label = "当前节点：正在取消"
+
+        final = copy.deepcopy(final or {})
+        if final:
+            rows = list((final.get("table") or {}).get("rows") or [])
+            headers = list((final.get("table") or {}).get("headers") or [])
+            workflow_value = 100
+            node_value = 100
+            workflow_label = f"{title}完成：{len(rows)} 行 x {len(headers)} 列"
+            node_label = f"执行步数：{final.get('steps', 0)}"
+
+        return {
+            "ok": True,
+            "progress": {
+                "workflow_label": workflow_label,
+                "workflow_value": workflow_value,
+                "node_label": node_label,
+                "node_value": node_value,
             },
         }
 

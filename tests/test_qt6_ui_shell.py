@@ -129,6 +129,65 @@ class Qt6UiShellTests(unittest.TestCase):
         output_fields = {field["key"]: field for field in output_form["form"]["fields"]}
         self.assertEqual(output_fields["backup_before_overwrite"]["visible_when"], {"field": "mode", "equals": "覆盖当前表"})
 
+    def test_facade_describes_workflow_actions_and_progress(self):
+        client = QtHeadlessEngineClient()
+
+        idle_actions = client.describe_workflow_actions(
+            plan=SAMPLE_PLAN,
+            selected_indexes=[0],
+            is_running=False,
+        )
+        self.assertTrue(idle_actions["ok"])
+        self.assertTrue(idle_actions["actions"]["delete_nodes"]["enabled"])
+        self.assertFalse(idle_actions["actions"]["move_node_up"]["enabled"])
+        self.assertFalse(idle_actions["actions"]["move_node_down"]["enabled"])
+        self.assertTrue(idle_actions["actions"]["apply_node_config"]["enabled"])
+        self.assertFalse(idle_actions["actions"]["cancel_job"]["enabled"])
+
+        running_actions = client.describe_workflow_actions(
+            plan=SAMPLE_PLAN,
+            selected_indexes=[0],
+            is_running=True,
+        )
+        self.assertFalse(running_actions["actions"]["delete_nodes"]["enabled"])
+        self.assertFalse(running_actions["actions"]["execute_plan"]["enabled"])
+        self.assertTrue(running_actions["actions"]["cancel_job"]["enabled"])
+
+        start_progress = client.build_job_progress_state(
+            current_job_id="job-1",
+            title="预览结果",
+            running=True,
+        )
+        self.assertEqual(start_progress["progress"]["workflow_label"], "任务已启动：job-1")
+        self.assertEqual(start_progress["progress"]["workflow_value"], 0)
+
+        node_progress = client.build_job_progress_state(
+            current_job_id="job-1",
+            title="预览结果",
+            event={
+                "type": "node_progress",
+                "message": "处理中 5/10",
+                "current": 5,
+                "total": 10,
+            },
+            running=True,
+        )
+        self.assertEqual(node_progress["progress"]["node_label"], "处理中 5/10")
+        self.assertEqual(node_progress["progress"]["node_value"], 50)
+
+        final_progress = client.build_job_progress_state(
+            title="执行结果",
+            final={
+                "table": {
+                    "headers": ["A", "B"],
+                    "rows": [["a", "b"]],
+                },
+                "steps": 3,
+            },
+        )
+        self.assertEqual(final_progress["progress"]["workflow_label"], "执行结果完成：1 行 x 2 列")
+        self.assertEqual(final_progress["progress"]["node_label"], "执行步数：3")
+
     def test_config_form_value_helpers_preserve_types(self):
         self.assertEqual(value_kind(True), "bool")
         self.assertEqual(value_kind(3), "int")
@@ -290,6 +349,9 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(controller.output_db_path_edit.text(), "")
         self.assertEqual(controller.output_path_edit.text(), "")
         self.assertFalse(controller.output_form_fields["backup_before_overwrite"]["editor"].isVisible())
+        self.assertTrue(controller.add_node_button.isEnabled())
+        self.assertTrue(controller.apply_config_button.isEnabled())
+        self.assertFalse(controller.cancel_job_button.isEnabled())
 
         controller.add_node_by_type("core.replace")
         self.assertEqual(len(controller.current_plan["nodes"]), 2)
@@ -311,6 +373,12 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertFalse(controller.current_plan["nodes"][controller.selected_node_index()].get("enabled", True))
         controller.toggle_selected_node_enabled()
         controller.node_list.setCurrentRow(0)
+        controller.refresh_action_states(is_running=True)
+        self.assertFalse(controller.add_node_button.isEnabled())
+        self.assertFalse(controller.node_action_buttons["删除"].isEnabled())
+        self.assertFalse(controller.run_action_buttons["执行计划"].isEnabled())
+        self.assertTrue(controller.cancel_job_button.isEnabled())
+        controller.refresh_action_states(is_running=False)
         controller.preview_to_selected_node()
         self.wait_for_controller_job(app, controller)
         self.assertEqual(controller.current_table_kind, "preview")
