@@ -867,6 +867,7 @@ class WorkflowFacade:
         described = self.describe_output_form(payload, **fallbacks)
         settings = copy.deepcopy(described.get("settings") or {})
         fields = []
+        visible_field_keys = []
         values = {
             "mode": settings.get("mode", ""),
             "target": settings.get("target", ""),
@@ -880,11 +881,24 @@ class WorkflowFacade:
             field_payload["visible"] = bool(visible)
             field_payload["value"] = values.get(field.get("key"))
             fields.append(field_payload)
+            if visible:
+                visible_field_keys.append(str(field.get("key") or ""))
+        refresh_preview_sources = "db_path" in visible_field_keys
         return {
             "ok": True,
             "settings": settings,
             "fields": fields,
             "mode_meta": copy.deepcopy(described.get("mode_meta") or {}),
+            "view_state": {
+                "visible_field_keys": visible_field_keys,
+                "refresh_preview_sources": refresh_preview_sources,
+            },
+            "message_panel": self.build_message_panel_state(
+                mode="info",
+                title="输出设置",
+                info_body="当前输出方式已更新。",
+                preferred_tab="info",
+            ).get("panel") or {},
         }
 
     def list_preview_sources(self, *, current_headers=None, current_rows=None, preview_headers=None, preview_rows=None, db_path=None):

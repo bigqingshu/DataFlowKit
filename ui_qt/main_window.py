@@ -1087,6 +1087,9 @@ class QtWorkflowMainWindow:
             if action_button is not None:
                 action_button.setToolTip(str(action.get("label") or ""))
                 action_button.setVisible(bool(action) and visible)
+        view_state = panel_state.get("view_state") or {}
+        if view_state.get("refresh_preview_sources"):
+            self.refresh_preview_table_combo()
 
     def _apply_output_form_state(self):
         self._apply_output_panel_state()
@@ -1103,7 +1106,7 @@ class QtWorkflowMainWindow:
         if editor is not None:
             editor.setText(str(path))
         if field_key == "db_path":
-            self.refresh_preview_table_combo()
+            self._apply_output_form_state()
 
     def _choose_custom_file_path(self, dialog):
         dialog = dialog or {}

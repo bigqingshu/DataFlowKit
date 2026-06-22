@@ -148,6 +148,11 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertTrue(output_panel_fields["path"]["visible"])
         self.assertFalse(output_panel_fields["db_path"]["visible"])
         self.assertEqual(output_panel_fields["path"]["action"]["key"], "browse_output_path")
+        self.assertFalse(output_panel["view_state"]["refresh_preview_sources"])
+
+        sqlite_output_panel = client.build_output_panel_state({"output_mode": "保存为SQLite新表"})
+        self.assertTrue(sqlite_output_panel["view_state"]["refresh_preview_sources"])
+        self.assertIn("db_path", sqlite_output_panel["view_state"]["visible_field_keys"])
 
         node_detail = client.describe_node_detail("core.new_columns", preview_headers=["A"])
         self.assertTrue(node_detail["ok"])
@@ -1242,6 +1247,11 @@ class Qt6UiShellTests(unittest.TestCase):
             controller.execute_plan()
             self.assertTrue(mock_confirm.called)
             self.assertEqual(controller.status_bar.currentMessage(), "已取消执行")
+
+        with patch.object(controller, "refresh_preview_table_combo") as mock_refresh:
+            controller.output_mode_combo.setCurrentText("保存为SQLite新表")
+            app.processEvents()
+            self.assertTrue(mock_refresh.called)
 
         window.close()
         app.processEvents()
