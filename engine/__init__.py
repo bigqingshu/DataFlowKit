@@ -20,6 +20,7 @@ from engine.issue_schema import (
     normalize_issue,
     normalize_issues,
 )
+from engine.job_service import JobService
 from engine.models import EngineRunResult, TableData
 from engine.plan_templates import PlanTemplateService
 from engine.safety_policy import SafetyPolicy, resolve_safety_policy
@@ -30,6 +31,7 @@ __all__ = [
     "EngineRunResult",
     "HeadlessEngineError",
     "HeadlessWorkflowEngine",
+    "JobService",
     "PlanValidationError",
     "PlanTemplateService",
     "SafetyPolicy",

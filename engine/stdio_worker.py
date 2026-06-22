@@ -198,16 +198,21 @@ class StdioWorker:
                 return_context=bool(payload.get("return_context", True)),
             )
             return result.to_dict(include_context=bool(payload.get("return_context", True)))
+        if action == "start_job":
+            job_action = payload.get("job_action") or payload.get("mode") or "preview_plan"
+            return self.engine.start_job(job_action, payload)
         if action == "cancel_job":
-            return {
-                "cancelled": False,
-                "message": "stdio worker 第一版按请求同步执行，暂不维护后台 job。",
-            }
+            return self.engine.cancel_job(payload.get("job_id", ""))
         if action == "get_job_status":
-            return {
-                "status": "unsupported",
-                "message": "stdio worker 第一版按请求同步执行，暂不维护后台 job。",
-            }
+            return self.engine.get_job_status(
+                payload.get("job_id", ""),
+                include_result=bool(payload.get("include_result", True)),
+            )
+        if action == "get_job_events":
+            return self.engine.get_job_events(
+                payload.get("job_id", ""),
+                since=int(payload.get("since", 0) or 0),
+            )
         if action == "list_plugins":
             return {
                 "plugins": [],

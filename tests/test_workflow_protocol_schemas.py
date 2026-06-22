@@ -116,14 +116,27 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
             "make_default_node",
             "validate_plan",
             "preview_plan",
+            "start_job",
             "run_plan",
             "cancel_job",
             "get_job_status",
+            "get_job_events",
             "list_plugins",
         ]:
             self.assertIn(action, actions)
 
-        for event_type in ["workflow_start", "workflow_done", "workflow_cancelled", "node_start", "node_done", "node_error"]:
+        for event_type in [
+            "workflow_start",
+            "workflow_done",
+            "workflow_cancelled",
+            "job_started",
+            "job_done",
+            "job_failed",
+            "job_cancel_requested",
+            "node_start",
+            "node_done",
+            "node_error",
+        ]:
             self.assertIn(event_type, event_types)
 
         self.assertEqual(defs["request"]["required"], ["request_id", "api_version", "action", "payload"])

@@ -290,8 +290,10 @@ Recommended actions:
 - `preview_plan`
 - `preview_node`
 - `run_plan`
+- `start_job`
 - `cancel_job`
 - `get_job_status`
+- `get_job_events`
 - `list_plugins`
 
 Runtime identity rules:
@@ -330,6 +332,10 @@ Runtime identity rules:
   even when the client also sends `execute_actions = true`.
 - Results that include context expose `context.safety_policy` so UIs can display
   the effective mode.
+- Clients that need progress, cancellation, or polling should use
+  `start_job`, `get_job_status`, `get_job_events`, and `cancel_job`.
+  `start_job` accepts `job_action = preview_plan | run_plan` and stores emitted
+  workflow/node events behind the returned `job_id`.
 
 ### 7.1 Shared Node UI Schema
 
@@ -445,6 +451,10 @@ Recommended event types:
 - `workflow_done`
 - `workflow_error`
 - `workflow_cancelled`
+- `job_started`
+- `job_done`
+- `job_failed`
+- `job_cancel_requested`
 - `node_start`
 - `node_progress`
 - `node_done`

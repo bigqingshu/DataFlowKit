@@ -44,8 +44,10 @@
             "preview_plan",
             "preview_node",
             "run_plan",
+            "start_job",
             "cancel_job",
             "get_job_status",
+            "get_job_events",
             "list_plugins"
           ]
         },
@@ -94,6 +96,10 @@
             "workflow_done",
             "workflow_error",
             "workflow_cancelled",
+            "job_started",
+            "job_done",
+            "job_failed",
+            "job_cancel_requested",
             "node_start",
             "node_progress",
             "node_done",

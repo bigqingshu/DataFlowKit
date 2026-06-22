@@ -16,6 +16,7 @@ from datetime import datetime
 from core.data_utils import normalize_rows, safe_cell
 from engine.errors import EngineCancelled, PlanValidationError
 from engine.issue_schema import has_error_issues, make_issue
+from engine.job_service import JobService
 from engine.models import EngineRunResult, TableData
 from engine.plan_templates import PlanTemplateService
 from engine.safety_policy import resolve_safety_policy
@@ -103,6 +104,7 @@ class HeadlessWorkflowEngine:
         self.node_id_factory = node_id_factory or (lambda: "node_" + uuid.uuid4().hex)
         self.now_factory = now_factory or datetime.now
         self.plan_templates = PlanTemplateService(node_id_factory=self.node_id_factory)
+        self.jobs = JobService(self)
 
     def list_node_types(self, include_unsupported=True):
         return [
@@ -160,6 +162,18 @@ class HeadlessWorkflowEngine:
 
     def validate_plan_template(self, plan):
         return self.plan_templates.validate_template(plan)
+
+    def start_job(self, job_action, payload=None):
+        return self.jobs.start_job(job_action, payload)
+
+    def get_job_status(self, job_id, *, include_result=True):
+        return self.jobs.get_job_status(job_id, include_result=include_result)
+
+    def get_job_events(self, job_id, *, since=0):
+        return self.jobs.get_job_events(job_id, since=since)
+
+    def cancel_job(self, job_id):
+        return self.jobs.cancel_job(job_id)
 
     def apply_plan_command(self, plan, command, preview_headers=None, table_names=None, table_columns=None):
         return apply_workflow_plan_command(
