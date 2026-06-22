@@ -363,6 +363,9 @@ Runtime identity rules:
 - `core.match_value_output` and `core.filter` can run headlessly with external
   tables supplied through `initial_context.table_sources`, `initial_context.tables`,
   SQLite `WorkflowServices.db_path`, or prior transit tables.
+- `core.selected_columns_write` runs headlessly for current-table, transit-table,
+  and SQLite targets. SQLite writes still require `execute_actions = true` and
+  `config.enable_write = true`.
 - Clients that need progress, cancellation, or polling should use
   `start_job`, `get_job_status`, `get_job_events`, and `cancel_job`.
   `start_job` accepts `job_action = preview_plan | run_plan` and stores emitted

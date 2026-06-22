@@ -79,6 +79,7 @@ HEADLESS_DATA_NODE_TYPE_IDS = {
     "core.move_columns",
     "core.save_transit",
     "core.filter",
+    "core.selected_columns_write",
 }
 
 HEADLESS_CONTROL_NODE_TYPE_IDS = {

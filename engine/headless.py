@@ -63,6 +63,13 @@ from workflow.nodes.filter_plan_nodes import (
     build_filter_runtime_plan,
     get_required_columns_for_plan_table,
 )
+from workflow.nodes.selected_columns_nodes import (
+    apply_selected_columns_to_memory_table,
+    build_selected_columns_write_payload,
+    get_selected_columns_write_skip_stat,
+    normalize_selected_columns_write_mode,
+    resolve_selected_columns_write_target,
+)
 from workflow.nodes.transit_nodes import apply_save_transit_node
 from workflow.protocol_nodes import (
     DEFAULT_NODE_VERSION,
@@ -665,6 +672,9 @@ class HeadlessWorkflowEngine:
             if node_type_id == "core.save_transit":
                 h, r, stat = self._apply_save_transit_node(headers, rows, config, context, execute_actions)
                 return h, r, stat, None
+            if node_type_id == "core.selected_columns_write":
+                h, r, stat = self._apply_selected_columns_write_node(headers, rows, config, context, execute_actions)
+                return h, r, stat, None
             h, r, stat = self._apply_data_node(headers, rows, node_type_id, config, context, cancel_event)
             return h, r, stat, None
         if node_type_id == "core.jump_anchor":
@@ -844,6 +854,179 @@ class HeadlessWorkflowEngine:
                 offset=source.get("offset", 0),
             )
         return self.tables.load_table(source)
+
+    def _apply_selected_columns_write_node(self, headers, rows, config, context, execute_actions):
+        context.setdefault("transit_tables", {})
+        source_headers, source_rows, source_name = self._read_selected_columns_source_table(
+            config,
+            headers,
+            rows,
+            context,
+        )
+        selected_fields, target_fields, selected_rows = build_selected_columns_write_payload(
+            config,
+            source_headers,
+            source_rows,
+        )
+        target_type, target_name = resolve_selected_columns_write_target(config)
+        allow_preview_write = bool(context.get("allow_selected_columns_write_in_preview", False))
+        config_preview_only = bool(context.get("selected_columns_config_preview_only", False))
+        skip_stat = get_selected_columns_write_skip_stat(
+            config,
+            source_name,
+            selected_fields,
+            selected_rows,
+            execute_actions=execute_actions,
+            allow_preview_write=allow_preview_write,
+            config_preview_only=config_preview_only,
+        )
+        if skip_stat:
+            return list(headers), [list(row) for row in rows], skip_stat
+
+        if target_type == "当前工作表":
+            new_headers, new_rows = apply_selected_columns_to_memory_table(
+                headers,
+                rows,
+                target_fields,
+                selected_rows,
+                config,
+            )
+            return (
+                new_headers,
+                new_rows,
+                f"已写入当前工作表：{len(new_rows)} 行 × {len(new_headers)} 列，结果继续传给后续节点",
+            )
+        if target_type == "中转副表":
+            return self._apply_selected_columns_write_transit_table(
+                headers,
+                rows,
+                config,
+                context,
+                target_name,
+                target_fields,
+                selected_rows,
+            )
+        if target_type == "SQLite表":
+            return self._apply_selected_columns_write_sqlite_table(
+                headers,
+                rows,
+                config,
+                target_name,
+                target_fields,
+                selected_rows,
+            )
+        raise ValueError(f"未知目标类型：{target_type}")
+
+    def _read_selected_columns_source_table(self, config, current_headers, current_rows, context):
+        source_type = str(config.get("source_type", "当前工作流表") or "当前工作流表").strip()
+        if source_type == "当前工作流表":
+            headers = list(current_headers)
+            return headers, normalize_rows(current_rows, len(headers)), "当前工作流表"
+        if source_type == "SQLite表":
+            table = str(config.get("source_sqlite_table", "") or "").strip()
+            if not table:
+                raise ValueError("请选择 SQLite 来源表。")
+            headers, rows = self._load_named_table(table, context)
+            return headers, rows, f"SQLite:{table}"
+        if source_type == "中转副表":
+            name = str(config.get("source_transit_table", "") or "").strip()
+            if not name:
+                raise ValueError("请选择中转来源表。")
+            headers, rows = self._load_transit_table(context, name)
+            return headers, rows, f"中转:{name}"
+        raise ValueError(f"未知来源类型：{source_type}")
+
+    def _read_selected_columns_target_table(self, config, context, current_headers=None, current_rows=None):
+        target_type = str(config.get("target_type", "SQLite表") or "SQLite表").strip()
+        if target_type == "当前工作表":
+            headers = list(current_headers or [])
+            return headers, normalize_rows(current_rows or [], len(headers)), "当前工作表"
+        if target_type == "SQLite表":
+            table = str(config.get("target_table", "") or "").strip()
+            if not table:
+                raise ValueError("请输入 SQLite 目标表。")
+            try:
+                headers, rows = self._load_named_table(table, context)
+            except ValueError:
+                return [], [], f"SQLite:{table}"
+            return headers, rows, f"SQLite:{table}"
+        if target_type == "中转副表":
+            name = str(config.get("target_transit_table", "") or "").strip() or "选定列结果"
+            item = (context.get("transit_tables", {}) or {}).get(name)
+            if not item:
+                return [], [], f"中转:{name}"
+            return list(item.get("headers", []) or []), [list(row) for row in (item.get("rows", []) or [])], f"中转:{name}"
+        raise ValueError(f"未知目标类型：{target_type}")
+
+    def _apply_selected_columns_write_transit_table(self, headers, rows, config, context, target_name, target_fields, selected_rows):
+        old = (context.get("transit_tables", {}) or {}).get(target_name, {}) or {}
+        old_headers = list(old.get("headers", []) or [])
+        old_rows = [list(row) for row in (old.get("rows", []) or [])]
+        new_headers, new_rows = apply_selected_columns_to_memory_table(
+            old_headers,
+            old_rows,
+            target_fields,
+            selected_rows,
+            config,
+        )
+        context.setdefault("transit_tables", {})[target_name] = {
+            "headers": new_headers,
+            "rows": [list(row) for row in new_rows],
+            "source": "选定列写入指定表",
+        }
+        mode = normalize_selected_columns_write_mode(config.get("write_mode", "局部覆盖，保留目标原行数"))
+        context.setdefault("table_access_logs", []).append({
+            "time": self.now_factory().strftime("%Y-%m-%d %H:%M:%S"),
+            "operation": "write_transit_table",
+            "table_name": target_name,
+            "status": "ok",
+            "source_type": "中转副表",
+            "write_mode": mode,
+            "message": f"写入中转副表 {target_name}：{len(new_rows)} 行 × {len(new_headers)} 列，模式 {mode}",
+        })
+        return (
+            list(headers),
+            [list(row) for row in rows],
+            f"已写入中转副表：{target_name}（{len(new_rows)} 行 × {len(new_headers)} 列），主流程数据透传",
+        )
+
+    def _apply_selected_columns_write_sqlite_table(self, headers, rows, config, target_name, target_fields, selected_rows):
+        mode = normalize_selected_columns_write_mode(config.get("write_mode", "复制列到目标表新建字段"))
+        if mode == "覆盖重建目标表":
+            result = self.services.write_table(
+                target_name,
+                {"headers": target_fields, "rows": selected_rows},
+                mode="replace",
+                backup=bool(config.get("backup_before_write", True)),
+            )
+            return (
+                list(headers),
+                [list(row) for row in rows],
+                f"已覆盖重建 SQLite 表：{result.get('table_name', target_name)}（{len(selected_rows)} 行 × {len(target_fields)} 列），主流程数据透传",
+            )
+
+        target_headers, target_rows, _target_label = self._read_selected_columns_target_table(
+            {**config, "target_type": "SQLite表", "target_table": target_name},
+            {},
+        )
+        new_headers, new_rows = apply_selected_columns_to_memory_table(
+            target_headers,
+            target_rows,
+            target_fields,
+            selected_rows,
+            config,
+        )
+        result = self.services.write_table(
+            target_name,
+            {"headers": new_headers, "rows": new_rows},
+            mode="replace",
+            backup=bool(config.get("backup_before_write", True)),
+        )
+        return (
+            list(headers),
+            [list(row) for row in rows],
+            f"已复制选定列到 SQLite 表字段：{result.get('table_name', target_name)}（{len(new_rows)} 行 × {len(new_headers)} 列），主流程数据透传",
+        )
 
     def _apply_save_transit_node(self, headers, rows, config, context, execute_actions):
         context.setdefault("transit_tables", {})
