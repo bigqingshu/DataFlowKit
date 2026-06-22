@@ -1970,6 +1970,78 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertIn("组输出B", link_values)
         app.processEvents()
 
+    def test_config_form_uses_shared_picker_context_for_table_and_field_values(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+
+        schema = {
+            "form": {
+                "groups": [
+                    {
+                        "title": "参数",
+                        "fields": [
+                            {
+                                "key": "lookup_table",
+                                "label": "查找表",
+                                "type": "select",
+                                "options_source": {"type": "table_names"},
+                            },
+                            {
+                                "key": "lookup_field",
+                                "label": "查找字段",
+                                "type": "select",
+                                "options_source": {"type": "table_columns", "table_field": "lookup_table"},
+                            },
+                            {
+                                "key": "extra_tables",
+                                "label": "附加表",
+                                "type": "field_multi_select",
+                                "options_source": {"type": "table_names"},
+                            },
+                            {
+                                "key": "right_table",
+                                "label": "右表",
+                                "type": "select",
+                                "options_source": {"type": "field_values", "field": "extra_tables", "value_kind": "table_names"},
+                            },
+                        ],
+                    }
+                ]
+            }
+        }
+
+        form = NodeConfigForm(qt)
+        form.set_node(
+            {
+                "node_type_id": "demo.shared_context",
+                "node_id": "n1",
+                "name": "共享候选",
+                "enabled": True,
+                "node_version": "1.0.0",
+                "config": {
+                    "lookup_table": "orders",
+                    "lookup_field": "id",
+                    "extra_tables": ["logs", "archive"],
+                    "right_table": "logs",
+                },
+            },
+            table_names=["orders", "logs", "archive"],
+            table_columns={"orders": ["id", "name"], "logs": ["row_id"], "archive": ["archived_at"]},
+            schema=schema,
+        )
+
+        lookup_table = form.config_fields["lookup_table"]["editor"]
+        lookup_field = form.config_fields["lookup_field"]["editor"]
+        right_table = form.config_fields["right_table"]["editor"]
+
+        self.assertIn("orders", [lookup_table.itemText(i) for i in range(lookup_table.count())])
+        self.assertEqual([lookup_field.itemText(i) for i in range(lookup_field.count())], ["id", "name"])
+        self.assertEqual([right_table.itemText(i) for i in range(right_table.count())], ["logs", "archive"])
+        app.processEvents()
+
     def test_controller_handles_plan_reference_picker_actions(self):
         try:
             qt = qt_app.load_qt6()

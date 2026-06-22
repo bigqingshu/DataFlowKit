@@ -14,10 +14,9 @@ from ui_qt.node_ui_metadata import (
     field_help_text,
     is_long_text_field,
     node_field_label,
-    plan_reference_choices,
-    runtime_reference_choices,
 )
 from workflow.filter_config_helpers import filter_join_rule_from_row, filter_join_rule_to_row
+from engine.workflow_facade import WorkflowFacade
 
 
 def value_kind(value):
@@ -101,6 +100,7 @@ class NodeConfigForm:
         }
         self.plan = copy.deepcopy(plan) if isinstance(plan, dict) else {"nodes": []}
         self.action_handler = action_handler
+        self.facade = WorkflowFacade()
         self.widget = qt.QtWidgets.QWidget(parent)
         self.root_layout = qt.QtWidgets.QVBoxLayout(self.widget)
         self.root_layout.setContentsMargins(0, 0, 0, 0)
@@ -414,8 +414,7 @@ class NodeConfigForm:
             "headers": list(self.headers or []),
             "table_names": list(self.table_names or []),
             "table_columns": copy.deepcopy(self.table_columns or {}),
-            "plan_refs": plan_reference_choices(self.plan, action.get("ref_kind") or (schema.get("options_source") or {}).get("ref_kind")),
-            "runtime_refs": runtime_reference_choices(self.plan, action.get("ref_kind") or (schema.get("options_source") or {}).get("ref_kind")),
+            "current_values": self._current_field_values(),
         }
         result = self.action_handler(payload) or {}
         if "value" in result:
@@ -608,16 +607,8 @@ class NodeConfigForm:
     def _structured_cell_editor(self, frame, column, value):
         choices = list(column.get("choices") or [])
         options_source = column.get("options_source") or {}
-        if not choices and options_source.get("type") == "preview_headers":
-            choices = list(self.headers)
-        elif not choices and options_source.get("type") == "table_names":
-            choices = list(self.table_names)
-        elif not choices and options_source.get("type") == "table_columns":
-            choices = self._table_column_choices_for_options_source(options_source)
-        elif not choices and options_source.get("type") == "plan_refs":
-            choices = plan_reference_choices(self.plan, options_source.get("ref_kind"))
-        elif not choices and options_source.get("type") == "runtime_refs":
-            choices = runtime_reference_choices(self.plan, options_source.get("ref_kind"))
+        if not choices:
+            choices = self._choices_for_options_source(options_source)
         kind = self._structured_column_kind(column)
         key = str(column.get("key") or "")
         editor = self._editor_for_field(key, kind, value, choices)
@@ -707,47 +698,28 @@ class NodeConfigForm:
             }
         return {}
 
-    def _table_column_choices_for_options_source(self, options_source, row_values=None):
-        options_source = options_source or {}
-        table_field = str(options_source.get("table_field") or "").strip()
-        selected_table = ""
-        if table_field and isinstance(row_values, dict):
-            selected_table = str(row_values.get(table_field) or "")
-        if not selected_table and table_field:
-            dependency = self.config_fields.get(table_field) or {}
-            selected_table = str(self._field_value_for_action(dependency) or "")
-        return [str(item) for item in (self.table_columns.get(selected_table, []) or [])]
+    def _picker_context_for_options_source(self, options_source, row_values=None):
+        options_source = dict(options_source or {})
+        source_type = str(options_source.get("type") or "")
+        current_values = self._current_field_values()
+        if isinstance(row_values, dict):
+            current_values.update(row_values)
+        if source_type == "preview_headers":
+            return {
+                "source": "preview_headers",
+                "candidates": [str(item) for item in self.headers],
+            }
+        return self.facade.describe_picker_context(
+            plan=self.plan,
+            options_source=options_source,
+            table_names=self.table_names,
+            table_columns=self.table_columns,
+            current_values=current_values,
+        ).get("picker_context") or {}
 
     def _choices_for_options_source(self, options_source, row_values=None):
-        options_source = options_source or {}
-        source_type = str(options_source.get("type") or "")
-        if source_type == "preview_headers":
-            return [str(item) for item in self.headers]
-        if source_type == "table_names":
-            return [str(item) for item in self.table_names]
-        if source_type == "table_columns":
-            return self._table_column_choices_for_options_source(options_source, row_values=row_values)
-        if source_type == "plan_refs":
-            return plan_reference_choices(self.plan, options_source.get("ref_kind"))
-        if source_type == "runtime_refs":
-            return runtime_reference_choices(self.plan, options_source.get("ref_kind"))
-        if source_type == "field_values":
-            field_key = str(options_source.get("field") or "").strip()
-            values = []
-            if field_key and isinstance(row_values, dict) and field_key in row_values:
-                current = row_values.get(field_key)
-            else:
-                dependency = self.config_fields.get(field_key) or {}
-                current = self._field_value_for_action(dependency)
-            if isinstance(current, (list, tuple, set)):
-                values = [str(item) for item in current if str(item).strip()]
-            elif str(current or "").strip():
-                values = [str(current)]
-            if str(options_source.get("value_kind") or "") == "table_names":
-                allowed = set(str(item) for item in self.table_names)
-                values = [item for item in values if item in allowed]
-            return values
-        return []
+        picker_context = self._picker_context_for_options_source(options_source, row_values=row_values)
+        return [str(item) for item in (picker_context.get("candidates") or []) if str(item).strip()]
 
     def _refresh_structured_list_options(self, editor):
         state = getattr(editor, "structured_state", {})
@@ -793,8 +765,7 @@ class NodeConfigForm:
             "headers": list(self.headers or []),
             "table_names": list(getattr(self, "table_names", []) or []),
             "table_columns": copy.deepcopy(getattr(self, "table_columns", {}) or {}),
-            "plan_refs": plan_reference_choices(self.plan, action.get("ref_kind") or ((column_schema or {}).get("options_source") or {}).get("ref_kind")),
-            "runtime_refs": runtime_reference_choices(self.plan, action.get("ref_kind") or ((column_schema or {}).get("options_source") or {}).get("ref_kind")),
+            "current_values": self._current_field_values(),
             "context": {"kind": "structured_cell"},
         }
         result = self.action_handler(payload) or {}
