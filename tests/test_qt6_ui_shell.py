@@ -955,6 +955,22 @@ class Qt6UiShellTests(unittest.TestCase):
             {"field": "match_value_source", "equals": "列字段"},
         )
         self.assertEqual(replace_fields["replace_count"]["validation"], {"integer": True, "min": 0})
+        writeback_schema = get_node_ui_schema(
+            "字段映射写入表",
+            table_names=["orders", "result"],
+            table_columns={"orders": ["id", "name"], "result": ["row_id", "status"]},
+        )
+        writeback_fields = {
+            field["key"]: field
+            for group in writeback_schema["form"]["groups"]
+            for field in group["fields"]
+        }
+        mapping_columns = {
+            item["key"]: item
+            for item in writeback_fields["field_mappings"]["item_schema"]["columns"]
+        }
+        self.assertEqual(mapping_columns["source_field"]["options_source"], {"type": "table_columns", "table_field": "source_table"})
+        self.assertEqual(mapping_columns["target_field"]["action"]["key"], "pick_table_field")
 
     def test_qt6_loader_rejects_qt5_binding(self):
         with self.assertRaises(QtBindingUnavailable):

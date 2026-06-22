@@ -195,6 +195,51 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
         self.assertEqual(fields["mappings"]["type"], "structured_list")
         self.assertEqual(fields["mappings"]["item_schema"]["columns"][0]["key"], "old")
 
+    def test_node_ui_schema_enriches_table_driven_structured_columns(self):
+        from workflow.node_ui_schema import get_node_ui_schema
+
+        schema = get_node_ui_schema(
+            "字段映射写入表",
+            preview_headers=["源字段"],
+            table_names=["orders", "result"],
+            table_columns={"orders": ["id", "name"], "result": ["row_id", "status"]},
+        )
+        fields = {
+            field["key"]: field
+            for group in schema["form"]["groups"]
+            for field in group["fields"]
+        }
+        mapping_columns = {
+            item["key"]: item
+            for item in fields["field_mappings"]["item_schema"]["columns"]
+        }
+        self.assertEqual(mapping_columns["source_field"]["type"], "field_select")
+        self.assertEqual(mapping_columns["source_field"]["options_source"], {"type": "table_columns", "table_field": "source_table"})
+        self.assertEqual(mapping_columns["source_field"]["action"]["key"], "pick_table_field")
+        self.assertEqual(mapping_columns["target_field"]["options_source"], {"type": "table_columns", "table_field": "target_table"})
+
+        filter_schema = get_node_ui_schema(
+            "高级筛选",
+            table_names=["orders"],
+            table_columns={"orders": ["id", "status"]},
+        )
+        filter_fields = {
+            field["key"]: field
+            for group in filter_schema["form"]["groups"]
+            for field in group["fields"]
+        }
+        condition_columns = {
+            item["key"]: item
+            for item in filter_fields["conditions"]["item_schema"]["columns"]
+        }
+        join_columns = {
+            item["key"]: item
+            for item in filter_fields["join_rules"]["item_schema"]["columns"]
+        }
+        self.assertEqual(condition_columns["field"]["options_source"], {"type": "table_columns", "table_field": "source_table"})
+        self.assertEqual(join_columns["left"]["action"]["key"], "pick_table_field")
+        self.assertEqual(join_columns["right"]["options_source"], {"type": "table_columns", "table_field": "source_table"})
+
     def test_node_ui_schema_marks_table_driven_field_actions(self):
         from workflow.node_ui_schema import get_node_ui_schema
 

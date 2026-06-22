@@ -288,6 +288,14 @@ TABLE_FIELD_MULTI_PICKER_RULES = {
     "lookup_fields": {"table_field": "lookup_table"},
 }
 
+STRUCTURED_COLUMN_TABLE_FIELD_RULES = {
+    "field_mappings.source_field": {"table_field": "source_table"},
+    "field_mappings.target_field": {"table_field": "target_table"},
+    "conditions.field": {"table_field": "source_table"},
+    "join_rules.left": {"table_field": "source_table"},
+    "join_rules.right": {"table_field": "source_table"},
+}
+
 TABLE_PICKER_KEYS = {
     "lookup_table",
     "source_table",
@@ -317,20 +325,44 @@ STRUCTURED_LIST_FIELD_COLUMNS = {
         {"key": "target_anchor_id", "label": "目标锚点", "type": "text"},
     ],
     "field_mappings": [
-        {"key": "source_field", "label": "源字段", "type": "field_select", "options_source": {"type": "preview_headers"}},
-        {"key": "target_field", "label": "目标字段", "type": "text"},
+        {"key": "source_field", "label": "源字段", "type": "field_select"},
+        {"key": "target_field", "label": "目标字段", "type": "field_select"},
     ],
     "conditions": [
-        {"key": "field", "label": "字段", "type": "text"},
+        {"key": "field", "label": "字段", "type": "field_select"},
         {"key": "op", "label": "操作", "type": "select", "choices": FIELD_CHOICES.get("op", [])},
         {"key": "value", "label": "值", "type": "text"},
     ],
     "join_rules": [
-        {"key": "left", "label": "左字段", "type": "text"},
+        {"key": "left", "label": "左字段", "type": "field_select"},
         {"key": "op", "label": "操作", "type": "select", "choices": FIELD_CHOICES.get("op", [])},
-        {"key": "right", "label": "右字段", "type": "text"},
+        {"key": "right", "label": "右字段", "type": "field_select"},
     ],
 }
+
+
+def enrich_structured_column_schema(parent_key, column):
+    payload = dict(column or {})
+    key = str(payload.get("key") or "").strip()
+    if not key:
+        return payload
+    rule = STRUCTURED_COLUMN_TABLE_FIELD_RULES.get(f"{parent_key}.{key}")
+    if not rule:
+        return payload
+    options_source = dict(payload.get("options_source") or {})
+    options_source.update({"type": "table_columns", "table_field": rule.get("table_field", "")})
+    payload["options_source"] = options_source
+    action = dict(payload.get("action") or {})
+    action.update({
+        "key": "pick_table_fields" if payload.get("type") == "field_multi_select" else "pick_table_field",
+        "label": "选择字段",
+        "style": "picker",
+        "source": "table_columns",
+        "multiple": payload.get("type") == "field_multi_select",
+        "table_field": rule.get("table_field", ""),
+    })
+    payload["action"] = action
+    return payload
 
 
 NODE_CONFIG_LAYOUTS = {
@@ -890,7 +922,7 @@ def dynamic_rules_for_field(key):
 def structured_list_columns_for_field(key):
     columns = []
     for item in STRUCTURED_LIST_FIELD_COLUMNS.get(key, []):
-        columns.append(dict(item))
+        columns.append(enrich_structured_column_schema(key, item))
     return columns
 
 
