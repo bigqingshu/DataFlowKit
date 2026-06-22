@@ -113,6 +113,9 @@ class QtHeadlessEngineClient:
     def build_preview_panel_state(self, **kwargs):
         return self.facade.build_preview_panel_state(**kwargs)
 
+    def apply_node_config_state(self, plan, **kwargs):
+        return self.facade.apply_node_config_state(copy.deepcopy(plan), **kwargs)
+
     def plan_status_text(self, plan=None, *, current_plan_path=None):
         return self.facade.plan_status_text(plan, current_plan_path=current_plan_path)
 

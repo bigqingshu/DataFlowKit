@@ -926,6 +926,84 @@ class WorkflowFacade:
             "title": title,
         }
 
+    def apply_node_config_state(self, plan, *, index=None, node=None, preview_headers=None, table_names=None, table_columns=None):
+        plan = copy.deepcopy(plan or {})
+        node = copy.deepcopy(node or {})
+        selected_index = None if index is None else int(index)
+        if selected_index is None or selected_index < 0:
+            return {
+                "ok": False,
+                "issues": [{
+                    "severity": "warning",
+                    "code": "selection_required",
+                    "message": "请先选择一个节点。",
+                }],
+                "feedback": self.build_user_feedback(
+                    level="warning",
+                    code="selection_required",
+                    title="节点配置",
+                    status_message="应用节点配置前需要先选择节点",
+                    issue_message="请先选择一个节点。",
+                    issues=[{
+                        "severity": "warning",
+                        "code": "selection_required",
+                        "message": "请先选择一个节点。",
+                    }],
+                ).get("feedback") or {},
+            }
+        if not isinstance(node, dict):
+            raise ValueError("节点配置必须是 JSON object。")
+        if not node.get("node_type_id") and not node.get("type"):
+            raise ValueError("节点必须包含 node_type_id 或 legacy type。")
+
+        validation = self.engine.validate_config(
+            node,
+            preview_headers=preview_headers,
+            table_names=table_names,
+            table_columns=table_columns,
+        )
+        issues = copy.deepcopy(validation.get("issues") or [])
+        if not validation.get("ok"):
+            return {
+                "ok": False,
+                "validation": validation,
+                "issues": issues,
+                "feedback": self.build_user_feedback(
+                    level="warning",
+                    code="node_config_invalid",
+                    title="节点配置校验失败",
+                    status_message="节点配置校验失败",
+                    issue_message=self.format_issues_text(issues),
+                    issues=issues,
+                ).get("feedback") or {},
+            }
+
+        apply_result = self.apply_plan_command(
+            plan,
+            {"type": "replace_node", "index": selected_index, "node": node},
+            preview_headers=preview_headers,
+            table_names=table_names,
+            table_columns=table_columns,
+        )
+        feedback_level = "info" if issues else "success"
+        feedback_title = "节点配置提示" if issues else "节点配置已应用"
+        feedback_status = "节点配置已应用。"
+        feedback_issue_message = self.format_issues_text(issues) if issues else ""
+        return {
+            "ok": bool(apply_result.get("ok")),
+            "validation": validation,
+            "issues": issues,
+            "apply_result": copy.deepcopy(apply_result),
+            "feedback": self.build_user_feedback(
+                level=feedback_level,
+                code="node_config_applied",
+                title=feedback_title,
+                status_message=feedback_status,
+                issue_message=feedback_issue_message,
+                issues=issues,
+            ).get("feedback") or {},
+        }
+
     def load_preview_source(self, source, *, current_headers=None, current_rows=None, preview_headers=None, preview_rows=None):
         source = copy.deepcopy(source or {})
         kind = source.get("type")

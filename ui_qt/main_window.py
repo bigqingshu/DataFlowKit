@@ -634,28 +634,25 @@ class QtWorkflowMainWindow:
             return
         try:
             node = self.config_form.to_node()
-            if not isinstance(node, dict):
-                raise ValueError("节点配置必须是 JSON object。")
-            if not node.get("node_type_id") and not node.get("type"):
-                raise ValueError("节点必须包含 node_type_id 或 legacy type。")
-            validation = self.engine_client.validate_config(node, preview_headers=self.current_headers, **self._table_context())
+            table_context = self._table_context()
+            result = self.engine_client.apply_node_config_state(
+                self.current_plan,
+                index=index,
+                node=node,
+                preview_headers=self.current_headers,
+                table_names=table_context.get("table_names"),
+                table_columns=table_context.get("table_columns"),
+            )
+            validation = result.get("validation") or {}
             self.config_form.set_validation_issues(validation.get("issues", []))
-            if not validation.get("ok"):
-                self._apply_message_panel(self.engine_client.build_message_panel_state(
-                    mode="warning",
-                    title="节点配置校验失败",
-                    issues=validation.get("issues", []),
-                ).get("panel") or {})
-                self.status_bar.showMessage("节点配置校验失败")
+            feedback = {"feedback": result.get("feedback") or {}}
+            self._apply_feedback(feedback)
+            if not result.get("ok"):
                 return
-            issues = validation.get("issues", []) or []
-            if issues:
-                self._apply_message_panel(self.engine_client.build_message_panel_state(
-                    mode="info",
-                    title="节点配置提示",
-                    issues=issues,
-                ).get("panel") or {})
-            self.apply_plan_command({"type": "replace_node", "index": index, "node": node}, status_message="节点配置已应用。")
+            apply_result = result.get("apply_result") or {}
+            if apply_result.get("ok"):
+                self.current_plan = apply_result.get("plan") or self.current_plan
+                self.refresh_all(selected_index=apply_result.get("selected_index", index))
         except Exception as exc:
             self.show_error("配置无效", str(exc))
 

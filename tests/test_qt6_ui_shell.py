@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import copy
 import unittest
 import time
 from pathlib import Path
@@ -7,7 +8,7 @@ from unittest.mock import patch
 
 from ui_qt import app as qt_app
 from ui_qt.config_form import NodeConfigForm, coerce_form_value, format_form_value, value_kind
-from ui_qt.engine_client import QtHeadlessEngineClient, SAMPLE_PLAN
+from ui_qt.engine_client import QtHeadlessEngineClient, SAMPLE_HEADERS, SAMPLE_PLAN
 from ui_qt.main_window import QtWorkflowMainWindow, build_main_window
 from ui_qt.node_ui_metadata import (
     category_label,
@@ -277,6 +278,35 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertIn("hello", message_panel["panel"]["body"])
         self.assertEqual(message_panel["panel"]["preferred_tab"], "issues")
         self.assertIn("hello", message_panel["panel"]["issue_body"])
+
+    def test_facade_applies_node_config_state(self):
+        client = QtHeadlessEngineClient()
+
+        invalid_node = copy.deepcopy(SAMPLE_PLAN["nodes"][0])
+        invalid_node["config"] = dict(invalid_node.get("config") or {})
+        invalid_node["config"]["columns_text"] = "status=ready\n=broken"
+        invalid_result = client.apply_node_config_state(
+            SAMPLE_PLAN,
+            index=0,
+            node=invalid_node,
+            preview_headers=SAMPLE_HEADERS,
+        )
+        self.assertFalse(invalid_result["ok"])
+        self.assertEqual(invalid_result["feedback"]["title"], "节点配置校验失败")
+
+        valid_node = copy.deepcopy(SAMPLE_PLAN["nodes"][0])
+        valid_node["config"] = dict(valid_node.get("config") or {})
+        valid_node["config"]["columns_text"] = "status=updated"
+        valid_result = client.apply_node_config_state(
+            SAMPLE_PLAN,
+            index=0,
+            node=valid_node,
+            preview_headers=SAMPLE_HEADERS,
+        )
+        self.assertTrue(valid_result["ok"])
+        self.assertEqual(valid_result["feedback"]["status_message"], "节点配置已应用。")
+        applied_plan = valid_result["apply_result"]["plan"]
+        self.assertEqual(applied_plan["nodes"][0]["config"]["columns_text"], "status=updated")
 
     def test_facade_describes_confirmation_prompts(self):
         client = QtHeadlessEngineClient()
