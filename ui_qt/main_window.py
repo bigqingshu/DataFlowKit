@@ -566,6 +566,23 @@ class QtWorkflowMainWindow:
         except Exception as exc:
             self.show_error("配置无效", str(exc))
 
+    def _apply_feedback(self, feedback, *, fallback_status="", fallback_issue=""):
+        payload = (feedback or {}).get("feedback") or {}
+        issue_message = str(payload.get("issue_message") or fallback_issue or "")
+        issues = payload.get("issues") or []
+        logs = payload.get("logs") or []
+        status_message = str(payload.get("status_message") or fallback_status or "")
+
+        if issue_message:
+            self.issue_text.setPlainText(issue_message)
+        elif issues:
+            self.issue_text.setPlainText(self._format_issues(issues))
+        elif logs:
+            self.issue_text.setPlainText("\n".join(str(item) for item in logs))
+
+        if status_message:
+            self.status_bar.showMessage(status_message)
+
     def show_selected_node_type_detail(self):
         node_type_id = self.current_node_type_id_from_combo()
         if node_type_id:
@@ -742,29 +759,7 @@ class QtWorkflowMainWindow:
             execute_actions=True,
             output_settings=self.current_output_settings(),
         )
-        validation = combined.get("validation") or {}
-        jump_validation = combined.get("jump_validation") or {}
-        access_precheck = combined.get("access_precheck") or {}
-        text = self._format_validation(validation)
-        jump_issues = jump_validation.get("issues", []) or []
-        if jump_issues:
-            text = text + "\n\n跳转校验：\n" + self._format_issues(jump_issues)
-        access_issues = access_precheck.get("issues", []) or []
-        if access_issues:
-            text = (
-                text
-                + "\n\n权限预检：\n"
-                + access_precheck.get("summary", "")
-                + "\n"
-                + self._format_issues(access_issues)
-            )
-        self.issue_text.setPlainText(text)
-        if not combined.get("ok"):
-            self.status_bar.showMessage("校验发现问题")
-        elif jump_issues or access_issues:
-            self.status_bar.showMessage("校验发现提示")
-        else:
-            self.status_bar.showMessage("校验通过")
+        self._apply_feedback(self.engine_client.describe_validation_feedback(combined))
         return combined
 
     def build_access_precheck(self, plan=None, *, execute_actions=True, stop_index=None, confirmed=False):
@@ -780,7 +775,10 @@ class QtWorkflowMainWindow:
     def preview_to_selected_node(self):
         index = self.selected_node_index()
         if index is None:
-            self.issue_text.setPlainText("请先选择一个节点。")
+            self._apply_feedback(self.engine_client.describe_selection_feedback(
+                selected_index=index,
+                purpose="预览",
+            ))
             return
         self.preview_plan(stop_index=index, title=f"预览到节点 {index + 1}")
 
@@ -797,8 +795,10 @@ class QtWorkflowMainWindow:
             output_settings=self.current_output_settings(),
         )
         if not (validation.get("validation") or {}).get("ok"):
-            self.issue_text.setPlainText(self._format_validation(validation.get("validation") or {}))
-            self.status_bar.showMessage("预览前校验失败")
+            self._apply_feedback(
+                self.engine_client.describe_validation_feedback(validation),
+                fallback_status="预览前校验失败",
+            )
             return
         self.start_workflow_job(
             "preview_plan",
@@ -826,8 +826,7 @@ class QtWorkflowMainWindow:
 
     def start_workflow_job(self, job_action, plan, *, input_table=None, title="", status_prefix="", **options):
         if self.current_job_id:
-            self.issue_text.setPlainText("当前已有后台任务运行，请等待完成或先取消。")
-            self.status_bar.showMessage("后台任务运行中")
+            self._apply_feedback(self.engine_client.describe_job_run_conflict(current_job_id=self.current_job_id))
             return
         try:
             started = self.engine_client.start_job(
@@ -837,8 +836,10 @@ class QtWorkflowMainWindow:
                 **options,
             )
         except Exception as exc:
-            self.issue_text.setPlainText(str(exc))
-            self.status_bar.showMessage(f"{status_prefix or '任务'}启动失败")
+            self._apply_feedback(self.engine_client.describe_job_start_failure(
+                status_prefix=status_prefix or "任务",
+                error=exc,
+            ))
             return
 
         self.current_job_id = str(started.get("job_id") or "")

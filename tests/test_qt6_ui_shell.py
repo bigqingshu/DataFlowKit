@@ -188,6 +188,27 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(final_progress["progress"]["workflow_label"], "执行结果完成：1 行 x 2 列")
         self.assertEqual(final_progress["progress"]["node_label"], "执行步数：3")
 
+    def test_facade_builds_standard_feedback_payloads(self):
+        client = QtHeadlessEngineClient()
+
+        selection_feedback = client.describe_selection_feedback(selected_index=None, purpose="预览")
+        self.assertEqual(selection_feedback["feedback"]["status_message"], "预览前需要先选择节点")
+        self.assertEqual(selection_feedback["feedback"]["issues"][0]["code"], "selection_required")
+
+        conflict_feedback = client.describe_job_run_conflict(current_job_id="job-42")
+        self.assertEqual(conflict_feedback["feedback"]["status_message"], "后台任务运行中")
+        self.assertIn("job-42", conflict_feedback["feedback"]["logs"][0])
+
+        failure_feedback = client.describe_job_start_failure(status_prefix="执行", error="boom")
+        self.assertFalse(failure_feedback["ok"])
+        self.assertEqual(failure_feedback["feedback"]["status_message"], "执行启动失败")
+        self.assertEqual(failure_feedback["feedback"]["issue_message"], "boom")
+
+        validation = client.validate_workflow_request(SAMPLE_PLAN, execute_actions=True)
+        validation_feedback = client.describe_validation_feedback(validation)
+        self.assertEqual(validation_feedback["feedback"]["status_message"], "校验通过")
+        self.assertIn("OK: true", validation_feedback["feedback"]["issue_message"])
+
     def test_config_form_value_helpers_preserve_types(self):
         self.assertEqual(value_kind(True), "bool")
         self.assertEqual(value_kind(3), "int")
@@ -379,6 +400,11 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertFalse(controller.run_action_buttons["执行计划"].isEnabled())
         self.assertTrue(controller.cancel_job_button.isEnabled())
         controller.refresh_action_states(is_running=False)
+        controller.node_list.setCurrentRow(-1)
+        controller.preview_to_selected_node()
+        self.assertIn("请先选择一个节点。", controller.issue_text.toPlainText())
+        self.assertEqual(controller.status_bar.currentMessage(), "预览前需要先选择节点")
+        controller.node_list.setCurrentRow(0)
         controller.preview_to_selected_node()
         self.wait_for_controller_job(app, controller)
         self.assertEqual(controller.current_table_kind, "preview")

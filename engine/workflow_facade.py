@@ -53,6 +53,148 @@ class WorkflowFacade:
     def apply_plan_command(self, plan, command, **kwargs):
         return apply_workflow_plan_command(copy.deepcopy(plan), command, **kwargs)
 
+    def build_user_feedback(self, *,
+        status_message="",
+        issue_message="",
+        issues=None,
+        logs=None,
+        level="info",
+        code="",
+        title="",
+    ):
+        issues = list(issues or [])
+        logs = [str(item) for item in (logs or []) if str(item).strip()]
+        feedback = {
+            "ok": level not in {"error"},
+            "feedback": {
+                "level": str(level or "info"),
+                "code": str(code or ""),
+                "title": str(title or ""),
+                "status_message": str(status_message or ""),
+                "issue_message": str(issue_message or ""),
+                "issues": issues,
+                "logs": logs,
+            },
+        }
+        return feedback
+
+    def describe_selection_feedback(self, *, selected_index=None, purpose=""):
+        if selected_index is not None and int(selected_index) >= 0:
+            return self.build_user_feedback()
+        purpose = str(purpose or "操作")
+        return self.build_user_feedback(
+            level="warning",
+            code="selection_required",
+            status_message=f"{purpose}前需要先选择节点",
+            issue_message="请先选择一个节点。",
+            issues=[{
+                "severity": "warning",
+                "code": "selection_required",
+                "message": "请先选择一个节点。",
+            }],
+        )
+
+    def describe_job_run_conflict(self, *, current_job_id=""):
+        job_id = str(current_job_id or "")
+        return self.build_user_feedback(
+            level="warning",
+            code="job_already_running",
+            status_message="后台任务运行中",
+            issue_message="当前已有后台任务运行，请等待完成或先取消。",
+            logs=[f"当前任务：{job_id}"] if job_id else [],
+            issues=[{
+                "severity": "warning",
+                "code": "job_already_running",
+                "message": "当前已有后台任务运行，请等待完成或先取消。",
+            }],
+        )
+
+    def describe_job_start_failure(self, *, status_prefix="任务", error=None):
+        message = str(error or "任务启动失败")
+        prefix = str(status_prefix or "任务")
+        return self.build_user_feedback(
+            level="error",
+            code="job_start_failed",
+            status_message=f"{prefix}启动失败",
+            issue_message=message,
+            issues=[{
+                "severity": "error",
+                "code": "job_start_failed",
+                "message": message,
+            }],
+        )
+
+    def describe_validation_feedback(self, combined):
+        combined = copy.deepcopy(combined or {})
+        validation = combined.get("validation") or {}
+        jump_validation = combined.get("jump_validation") or {}
+        access_precheck = combined.get("access_precheck") or {}
+        text = self.format_validation_text(validation)
+        jump_issues = jump_validation.get("issues", []) or []
+        if jump_issues:
+            text = text + "\n\n跳转校验：\n" + self.format_issues_text(jump_issues)
+        access_issues = access_precheck.get("issues", []) or []
+        if access_issues:
+            text = (
+                text
+                + "\n\n权限预检：\n"
+                + str(access_precheck.get("summary", "") or "")
+                + "\n"
+                + self.format_issues_text(access_issues)
+            )
+        if not combined.get("ok"):
+            status = "校验发现问题"
+            level = "warning"
+        elif jump_issues or access_issues:
+            status = "校验发现提示"
+            level = "info"
+        else:
+            status = "校验通过"
+            level = "success"
+        return self.build_user_feedback(
+            level=level,
+            code="workflow_validation",
+            status_message=status,
+            issue_message=text,
+            issues=(validation.get("issues", []) or []) + jump_issues + access_issues,
+        )
+
+    def format_issues_text(self, issues):
+        issues = issues or []
+        if not issues:
+            return "无问题。"
+        lines = []
+        for issue in issues:
+            severity = issue.get("severity", "")
+            code = issue.get("code", "")
+            path = issue.get("path", "")
+            message = issue.get("message", "")
+            lines.append(f"[{severity}] {code} {path}".strip())
+            if message:
+                lines.append(message)
+        return "\n".join(lines)
+
+    def format_validation_text(self, validation):
+        validation = validation or {}
+        lines = [
+            "OK: " + ("true" if validation.get("ok") else "false"),
+            f"节点数: {validation.get('node_count', 0)}",
+        ]
+        issues = validation.get("issues", []) or []
+        if not issues:
+            lines.append("无校验问题。")
+            return "\n".join(lines)
+        lines.append("")
+        for issue in issues:
+            node_index = issue.get("node_index")
+            code = issue.get("code", "")
+            severity = issue.get("severity", "")
+            node_type_id = issue.get("node_type_id", "")
+            message = issue.get("message", "")
+            lines.append(f"[{severity}] #{node_index} {code} {node_type_id}")
+            lines.append(message)
+        return "\n".join(lines)
+
     def build_workflow_panel_state(
         self,
         *,

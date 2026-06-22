@@ -78,6 +78,21 @@ class QtHeadlessEngineClient:
     def build_job_progress_state(self, **kwargs):
         return self.facade.build_job_progress_state(**kwargs)
 
+    def build_user_feedback(self, **kwargs):
+        return self.facade.build_user_feedback(**kwargs)
+
+    def describe_selection_feedback(self, **kwargs):
+        return self.facade.describe_selection_feedback(**kwargs)
+
+    def describe_job_run_conflict(self, **kwargs):
+        return self.facade.describe_job_run_conflict(**kwargs)
+
+    def describe_job_start_failure(self, **kwargs):
+        return self.facade.describe_job_start_failure(**kwargs)
+
+    def describe_validation_feedback(self, combined):
+        return self.facade.describe_validation_feedback(copy.deepcopy(combined))
+
     def describe_node_detail(self, node_type_id, *, preview_headers=None):
         return self.facade.describe_node_detail(node_type_id, preview_headers=preview_headers)
 
