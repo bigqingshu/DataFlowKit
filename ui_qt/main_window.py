@@ -291,6 +291,8 @@ class QtWorkflowMainWindow:
         self.show_preview_button.clicked.connect(lambda checked=False: self.show_preview_table())
         self.preview_table_combo = qt.QtWidgets.QComboBox()
         self.preview_table_combo.addItems(["输入表格", "Headless 预览结果"])
+        self.preview_table_combo.currentIndexChanged.connect(lambda index: self.show_selected_preview_table())
+        self.output_db_path_edit.editingFinished.connect(lambda: self.refresh_preview_table_combo())
         self.log_button = qt.QtWidgets.QPushButton("显示日志")
         self.log_button.clicked.connect(lambda checked=False: self.show_log_text())
         preview_toolbar.addWidget(self.show_input_button)
@@ -331,6 +333,7 @@ class QtWorkflowMainWindow:
         self.refresh_template_list(show_status=False)
         self.refresh_node_list()
         self.update_input_summary()
+        self.refresh_preview_table_combo()
         self.update_table(self.current_headers, self.current_rows, title="输入表格")
         self.show_node_config(self.node_list.currentRow())
         self.status_bar.showMessage(self._plan_status_text())
@@ -890,6 +893,7 @@ class QtWorkflowMainWindow:
         title = "执行结果" if output.get("ok") else "执行结果（输出未落地）"
         self.update_table(out_headers, out_rows, title=title)
         self.current_table_kind = "preview"
+        self.refresh_preview_table_combo()
         if output.get("ok"):
             self.issue_text.setPlainText("\n".join(output.get("logs") or logs) or output.get("message", "输出完成。"))
             return output.get("message", "输出完成。")
@@ -915,6 +919,67 @@ class QtWorkflowMainWindow:
 
     def show_log_text(self):
         self.issue_text.setFocus()
+
+    def refresh_preview_table_combo(self):
+        current_key = self._table_source_key(self.preview_table_combo.currentData())
+        items = [
+            ("输入表格", {"type": "input"}),
+            ("Headless 预览结果", {"type": "preview"}),
+        ]
+        db_path = self.output_db_path_edit.text().strip()
+        if db_path:
+            try:
+                result = self.engine_client.list_tables(db_path=db_path)
+                for table_name in result.get("tables", []):
+                    items.append((f"SQLite：{table_name}", {"type": "sqlite", "table_name": table_name}))
+            except Exception as exc:
+                self.issue_text.setPlainText(f"读取 SQLite 表列表失败：{exc}")
+
+        self.preview_table_combo.blockSignals(True)
+        self.preview_table_combo.clear()
+        restore_index = 0
+        for index, (label, source) in enumerate(items):
+            self.preview_table_combo.addItem(label, source)
+            if self._table_source_key(source) == current_key:
+                restore_index = index
+        self.preview_table_combo.setCurrentIndex(restore_index)
+        self.preview_table_combo.blockSignals(False)
+
+    def show_selected_preview_table(self):
+        source = self.preview_table_combo.currentData() or {}
+        kind = source.get("type")
+        if kind == "input":
+            self.show_input_table()
+            return
+        if kind == "preview":
+            self.show_preview_table()
+            return
+        if kind == "sqlite":
+            table_name = source.get("table_name", "")
+            try:
+                loaded = self.engine_client.load_table(
+                    db_path=self.output_db_path_edit.text(),
+                    table_name=table_name,
+                )
+                if not loaded.get("ok"):
+                    self.issue_text.setPlainText(self._format_issues(loaded.get("issues", [])))
+                    self.status_bar.showMessage("读取 SQLite 表失败")
+                    return
+                table = loaded.get("table") or {}
+                headers = list(table.get("headers") or [])
+                rows = [list(row) for row in (table.get("rows") or [])]
+                self.current_table_kind = "sqlite"
+                self.update_table(headers, rows, title=f"SQLite：{table_name}")
+                self.issue_text.setPlainText(f"已读取 SQLite 表：{table_name}")
+                self.status_bar.showMessage(f"已读取 SQLite 表：{table_name}")
+            except Exception as exc:
+                self.issue_text.setPlainText(str(exc))
+                self.status_bar.showMessage("读取 SQLite 表失败")
+
+    def _table_source_key(self, source):
+        if not isinstance(source, dict):
+            return ""
+        return f"{source.get('type', '')}:{source.get('table_name', '')}"
 
     def _input_table_payload(self):
         return {

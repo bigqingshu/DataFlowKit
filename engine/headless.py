@@ -21,6 +21,7 @@ from engine.models import EngineRunResult, TableData
 from engine.output_service import OutputService
 from engine.plan_templates import PlanTemplateService
 from engine.safety_policy import resolve_safety_policy
+from engine.table_data_service import TableDataService
 from engine.workflow_services import WorkflowServices
 from workflow.default_configs import default_config_for_type, default_name_for_node
 from workflow.config_validation import (
@@ -107,6 +108,7 @@ class HeadlessWorkflowEngine:
         self.node_id_factory = node_id_factory or (lambda: "node_" + uuid.uuid4().hex)
         self.now_factory = now_factory or datetime.now
         self.services = services or WorkflowServices()
+        self.tables = TableDataService(db_path=getattr(self.services, "db_path", ""))
         self.plan_templates = PlanTemplateService(node_id_factory=self.node_id_factory)
         self.jobs = JobService(self)
         self.outputs = OutputService(self.services)
@@ -191,6 +193,15 @@ class HeadlessWorkflowEngine:
             settings=settings,
             **settings_kwargs,
         )
+
+    def list_tables(self, db_path=None):
+        return self.tables.list_tables(db_path=db_path)
+
+    def load_table(self, source=None, **kwargs):
+        return self.tables.load_table(source, **kwargs)
+
+    def get_table_page(self, table, *, limit=None, offset=0, source=None):
+        return self.tables.get_table_page(table, limit=limit, offset=offset, source=source)
 
     def apply_plan_command(self, plan, command, preview_headers=None, table_names=None, table_columns=None):
         return apply_workflow_plan_command(

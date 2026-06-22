@@ -229,6 +229,24 @@ class StdioWorker:
                 db_path=payload.get("db_path") or payload.get("output_db_path"),
                 output_path=payload.get("output_path"),
             )
+        if action == "list_tables":
+            return self.engine.list_tables(db_path=payload.get("db_path"))
+        if action == "load_table":
+            return self.engine.load_table(
+                payload.get("source"),
+                db_path=payload.get("db_path"),
+                table_name=payload.get("table_name") or payload.get("table"),
+                path=payload.get("path"),
+                limit=payload.get("limit"),
+                offset=payload.get("offset", 0),
+            )
+        if action == "get_table_page":
+            return self.engine.get_table_page(
+                payload.get("table", {}),
+                limit=payload.get("limit"),
+                offset=payload.get("offset", 0),
+                source=payload.get("source"),
+            )
         if action == "list_plugins":
             return {
                 "plugins": [],

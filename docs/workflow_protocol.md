@@ -300,6 +300,9 @@ Recommended actions:
 - `get_job_events`
 - `list_output_modes`
 - `apply_output`
+- `list_tables`
+- `load_table`
+- `get_table_page`
 - `list_plugins`
 
 Runtime identity rules:
@@ -348,6 +351,9 @@ Runtime identity rules:
   frontend preview updates, SQLite new-table writes, SQLite overwrite with an
   optional backup, and xlsx export through `WorkflowServices`. SQLite modes need
   `db_path`; xlsx export needs `output_path`.
+- Clients should use `list_tables`, `load_table`, and `get_table_page` for
+  table browsing and paging. The first implementation supports SQLite table
+  listing/loading, table files, and inline table paging.
 
 ### 7.1 Shared Node UI Schema
 

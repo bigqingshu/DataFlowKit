@@ -165,6 +165,22 @@ class QtHeadlessEngineClient:
             output_path=output_path,
         )
 
+    def list_tables(self, *, db_path=None):
+        return self.engine.list_tables(db_path=db_path)
+
+    def load_table(self, source=None, *, db_path=None, table_name=None, path=None, limit=None, offset=0):
+        return self.engine.load_table(
+            source,
+            db_path=db_path,
+            table_name=table_name,
+            path=path,
+            limit=limit,
+            offset=offset,
+        )
+
+    def get_table_page(self, table, *, limit=None, offset=0, source=None):
+        return self.engine.get_table_page(table, limit=limit, offset=offset, source=source)
+
     def validate_config(self, node, preview_headers=None, table_names=None, table_columns=None):
         return self.engine.validate_config(
             copy.deepcopy(node),

@@ -127,6 +127,9 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
             "get_job_events",
             "list_output_modes",
             "apply_output",
+            "list_tables",
+            "load_table",
+            "get_table_page",
             "list_plugins",
         ]:
             self.assertIn(action, actions)
