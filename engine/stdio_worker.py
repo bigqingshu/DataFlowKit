@@ -247,6 +247,18 @@ class StdioWorker:
                 offset=payload.get("offset", 0),
                 source=payload.get("source"),
             )
+        if action == "analyze_jumps":
+            return self.engine.analyze_jumps(
+                payload.get("plan"),
+                nodes=payload.get("nodes"),
+            )
+        if action == "validate_jumps":
+            return self.engine.validate_jumps(
+                payload.get("plan"),
+                nodes=payload.get("nodes"),
+            )
+        if action == "format_jump_issue":
+            return {"text": self.engine.format_jump_issue(payload.get("issue", {}))}
         if action == "list_plugins":
             return {
                 "plugins": [],

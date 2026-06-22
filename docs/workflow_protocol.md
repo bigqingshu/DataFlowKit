@@ -303,6 +303,9 @@ Recommended actions:
 - `list_tables`
 - `load_table`
 - `get_table_page`
+- `analyze_jumps`
+- `validate_jumps`
+- `format_jump_issue`
 - `list_plugins`
 
 Runtime identity rules:
@@ -354,6 +357,9 @@ Runtime identity rules:
 - Clients should use `list_tables`, `load_table`, and `get_table_page` for
   table browsing and paging. The first implementation supports SQLite table
   listing/loading, table files, and inline table paging.
+- Clients should use `analyze_jumps`, `validate_jumps`, and `format_jump_issue`
+  for jump-anchor relations and jump precheck display instead of importing
+  Tkinter jump manager helpers.
 
 ### 7.1 Shared Node UI Schema
 

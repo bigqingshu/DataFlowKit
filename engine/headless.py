@@ -16,6 +16,7 @@ from datetime import datetime
 from core.data_utils import normalize_rows, safe_cell
 from engine.errors import EngineCancelled, PlanValidationError
 from engine.issue_schema import has_error_issues, make_issue
+from engine.jump_analysis_service import JumpAnalysisService
 from engine.job_service import JobService
 from engine.models import EngineRunResult, TableData
 from engine.output_service import OutputService
@@ -108,6 +109,7 @@ class HeadlessWorkflowEngine:
         self.node_id_factory = node_id_factory or (lambda: "node_" + uuid.uuid4().hex)
         self.now_factory = now_factory or datetime.now
         self.services = services or WorkflowServices()
+        self.jumps = JumpAnalysisService()
         self.tables = TableDataService(db_path=getattr(self.services, "db_path", ""))
         self.plan_templates = PlanTemplateService(node_id_factory=self.node_id_factory)
         self.jobs = JobService(self)
@@ -202,6 +204,15 @@ class HeadlessWorkflowEngine:
 
     def get_table_page(self, table, *, limit=None, offset=0, source=None):
         return self.tables.get_table_page(table, limit=limit, offset=offset, source=source)
+
+    def analyze_jumps(self, plan=None, *, nodes=None):
+        return self.jumps.analyze_plan(plan, nodes=nodes)
+
+    def validate_jumps(self, plan=None, *, nodes=None):
+        return self.jumps.validate_jumps(plan, nodes=nodes)
+
+    def format_jump_issue(self, issue):
+        return self.jumps.format_issue(issue)
 
     def apply_plan_command(self, plan, command, preview_headers=None, table_names=None, table_columns=None):
         return apply_workflow_plan_command(

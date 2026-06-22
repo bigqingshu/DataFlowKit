@@ -689,9 +689,22 @@ class QtWorkflowMainWindow:
 
     def validate_plan(self):
         validation = self.engine_client.validate_plan(self.current_plan)
-        self.issue_text.setPlainText(self._format_validation(validation))
-        self.status_bar.showMessage("校验通过" if validation.get("ok") else "校验发现问题")
-        return validation
+        jump_validation = self.engine_client.validate_jumps(self.current_plan)
+        combined = dict(validation)
+        combined["jump_validation"] = jump_validation
+        combined["ok"] = bool(validation.get("ok")) and bool(jump_validation.get("ok"))
+        text = self._format_validation(validation)
+        jump_issues = jump_validation.get("issues", []) or []
+        if jump_issues:
+            text = text + "\n\n跳转校验：\n" + self._format_issues(jump_issues)
+        self.issue_text.setPlainText(text)
+        if not combined.get("ok"):
+            self.status_bar.showMessage("校验发现问题")
+        elif jump_issues:
+            self.status_bar.showMessage("校验发现提示")
+        else:
+            self.status_bar.showMessage("校验通过")
+        return combined
 
     def preview_to_selected_node(self):
         index = self.selected_node_index()

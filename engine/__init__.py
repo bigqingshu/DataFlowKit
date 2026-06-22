@@ -20,6 +20,7 @@ from engine.issue_schema import (
     normalize_issue,
     normalize_issues,
 )
+from engine.jump_analysis_service import JumpAnalysisService
 from engine.job_service import JobService
 from engine.models import EngineRunResult, TableData
 from engine.output_service import OutputService, OutputSettings
@@ -34,6 +35,7 @@ __all__ = [
     "EngineRunResult",
     "HeadlessEngineError",
     "HeadlessWorkflowEngine",
+    "JumpAnalysisService",
     "JobService",
     "OutputService",
     "OutputSettings",

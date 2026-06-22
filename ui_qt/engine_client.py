@@ -181,6 +181,15 @@ class QtHeadlessEngineClient:
     def get_table_page(self, table, *, limit=None, offset=0, source=None):
         return self.engine.get_table_page(table, limit=limit, offset=offset, source=source)
 
+    def analyze_jumps(self, plan):
+        return self.engine.analyze_jumps(copy.deepcopy(plan))
+
+    def validate_jumps(self, plan):
+        return self.engine.validate_jumps(copy.deepcopy(plan))
+
+    def format_jump_issue(self, issue):
+        return self.engine.format_jump_issue(copy.deepcopy(issue))
+
     def validate_config(self, node, preview_headers=None, table_names=None, table_columns=None):
         return self.engine.validate_config(
             copy.deepcopy(node),
