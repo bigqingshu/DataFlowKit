@@ -311,6 +311,12 @@ Runtime identity rules:
   nodes. This keeps node-id generation and edit semantics out of concrete UIs.
 - Clients that do not need old template compatibility may omit legacy `type`
   when creating nodes.
+- `preview_plan` always runs with `execute_actions = false` and
+  `dry_run = true`.
+- `run_plan` may receive `dry_run = true`; this forces `execute_actions = false`
+  even when the client also sends `execute_actions = true`.
+- Results that include context expose `context.safety_policy` so UIs can display
+  the effective mode.
 
 ### 7.1 Shared Node UI Schema
 
@@ -376,6 +382,20 @@ For failures:
       "path": "/nodes"
     }
   ]
+}
+```
+
+Issue objects should follow the shared shape:
+
+```json
+{
+  "severity": "error",
+  "code": "invalid_nodes",
+  "message": "plan.nodes 必须是 list。",
+  "path": "/nodes",
+  "node_index": 0,
+  "node_type_id": "core.replace",
+  "suggestion": ""
 }
 ```
 

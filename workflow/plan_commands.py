@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import uuid
 
+from engine.issue_schema import has_error_issues, make_issue
 from workflow.default_configs import default_config_for_type, default_name_for_node
 from workflow.plan_migration import migrate_node
 from workflow.protocol_nodes import (
@@ -240,7 +241,7 @@ def _optional_int(value):
 
 def _result(plan, changed, selected_index, issues, command_type):
     return {
-        "ok": not any(issue.get("severity") == "error" for issue in issues),
+        "ok": not has_error_issues(issues),
         "changed": bool(changed),
         "command": command_type,
         "plan": plan,
@@ -250,12 +251,7 @@ def _result(plan, changed, selected_index, issues, command_type):
 
 
 def _issue(severity, code, message, *, path=""):
-    return {
-        "severity": severity,
-        "code": code,
-        "message": message,
-        "path": path,
-    }
+    return make_issue(severity, code, message, path=path)
 
 
 def _default_node_id():

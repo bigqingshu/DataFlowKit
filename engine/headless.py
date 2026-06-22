@@ -15,7 +15,9 @@ from datetime import datetime
 
 from core.data_utils import normalize_rows, safe_cell
 from engine.errors import EngineCancelled, PlanValidationError
+from engine.issue_schema import has_error_issues, make_issue
 from engine.models import EngineRunResult, TableData
+from engine.safety_policy import resolve_safety_policy
 from workflow.default_configs import default_config_for_type, default_name_for_node
 from workflow.nodes.data_common import (
     MAX_EXPANDED_ROWS,
@@ -279,7 +281,7 @@ class HeadlessWorkflowEngine:
                 else:
                     anchor_ids[anchor_id] = idx
 
-        ok = not any(issue.get("severity") == "error" for issue in issues)
+        ok = not has_error_issues(issues)
         return {
             "ok": ok,
             "issues": issues,
@@ -289,11 +291,16 @@ class HeadlessWorkflowEngine:
         }
 
     def preview_plan(self, plan, input_table=None, *, stop_index=None, **kwargs):
+        kwargs.pop("execute_actions", None)
+        kwargs.pop("dry_run", None)
+        kwargs.pop("safety_mode", None)
         return self.run_plan(
             plan,
             input_table=input_table,
             stop_index=stop_index,
             execute_actions=False,
+            dry_run=True,
+            safety_mode="preview",
             **kwargs,
         )
 
@@ -303,6 +310,8 @@ class HeadlessWorkflowEngine:
         input_table=None,
         *,
         execute_actions=False,
+        dry_run=False,
+        safety_mode=None,
         stop_index=None,
         start_index=0,
         initial_context=None,
@@ -312,6 +321,13 @@ class HeadlessWorkflowEngine:
         max_steps=None,
         return_context=True,
     ):
+        policy = resolve_safety_policy(
+            safety_mode,
+            execute_actions=execute_actions,
+            dry_run=dry_run,
+        )
+        execute_actions = policy.execute_actions
+
         validation = self.validate_plan(plan, stop_index=stop_index, start_index=start_index)
         if not validation["ok"]:
             raise PlanValidationError("计划包含 headless 引擎无法执行的问题", validation["issues"])
@@ -320,7 +336,7 @@ class HeadlessWorkflowEngine:
         table = self._resolve_input_table(plan, input_table)
         headers = list(table.headers)
         rows = [list(row) for row in table.rows]
-        context = self._make_context(initial_context, progress_callback, cancel_event)
+        context = self._make_context(initial_context, progress_callback, cancel_event, policy)
         logs = []
         anchors = self._collect_jump_anchors(nodes)
         end = len(nodes) - 1 if stop_index is None else int(stop_index)
@@ -618,7 +634,7 @@ class HeadlessWorkflowEngine:
             return TableData.from_payload(headers=plan.get("headers", []), rows=plan.get("rows", []))
         return TableData()
 
-    def _make_context(self, initial_context, progress_callback, cancel_event):
+    def _make_context(self, initial_context, progress_callback, cancel_event, safety_policy=None):
         context = copy.deepcopy(initial_context) if isinstance(initial_context, dict) else {}
         context.setdefault("transit_tables", {})
         context.setdefault("loop_states", {})
@@ -626,6 +642,10 @@ class HeadlessWorkflowEngine:
         context.setdefault("condition_flags", {})
         context.setdefault("jump_logs", [])
         context.setdefault("table_access_policy", "audit")
+        policy = safety_policy or resolve_safety_policy()
+        context["execute_actions"] = bool(policy.execute_actions)
+        context["dry_run"] = bool(policy.dry_run)
+        context["safety_policy"] = policy.to_dict()
         if progress_callback is not None:
             context["progress_callback"] = progress_callback
         if cancel_event is not None:
@@ -730,11 +750,11 @@ class HeadlessWorkflowEngine:
         return payload
 
     def _issue(self, severity, code, node_index, node_type, message, *, node_type_id=""):
-        return {
-            "severity": severity,
-            "code": code,
-            "node_index": node_index,
-            "node_type": node_type,
-            "node_type_id": node_type_id,
-            "message": message,
-        }
+        return make_issue(
+            severity,
+            code,
+            message,
+            node_index=node_index,
+            node_type=node_type,
+            node_type_id=node_type_id,
+        )

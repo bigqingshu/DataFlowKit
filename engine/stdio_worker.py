@@ -139,6 +139,8 @@ class StdioWorker:
                 stop_index=self._optional_int(payload.get("stop_at", payload.get("stop_index"))),
                 start_index=int(payload.get("start_index", 0) or 0),
                 initial_context=payload.get("context"),
+                dry_run=bool(payload.get("dry_run", True)),
+                safety_mode=payload.get("safety_mode"),
                 return_context=bool(payload.get("return_context", True)),
             )
             return result.to_dict(include_context=bool(payload.get("return_context", True)))
@@ -147,6 +149,8 @@ class StdioWorker:
                 payload.get("plan", {}),
                 input_table=payload.get("input_data", payload.get("input_table")),
                 execute_actions=bool(payload.get("execute_actions", True)),
+                dry_run=bool(payload.get("dry_run", False)),
+                safety_mode=payload.get("safety_mode"),
                 stop_index=self._optional_int(payload.get("stop_at", payload.get("stop_index"))),
                 start_index=int(payload.get("start_index", 0) or 0),
                 initial_context=payload.get("context"),

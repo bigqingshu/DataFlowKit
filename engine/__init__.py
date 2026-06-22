@@ -13,7 +13,15 @@ from engine.errors import (
     UnsupportedNodeError,
 )
 from engine.headless import HeadlessWorkflowEngine
+from engine.issue_schema import (
+    has_error_issues,
+    is_error_issue,
+    make_issue,
+    normalize_issue,
+    normalize_issues,
+)
 from engine.models import EngineRunResult, TableData
+from engine.safety_policy import SafetyPolicy, resolve_safety_policy
 from engine.stdio_worker import StdioWorker
 
 __all__ = [
@@ -22,7 +30,14 @@ __all__ = [
     "HeadlessEngineError",
     "HeadlessWorkflowEngine",
     "PlanValidationError",
+    "SafetyPolicy",
     "StdioWorker",
     "TableData",
     "UnsupportedNodeError",
+    "has_error_issues",
+    "is_error_issue",
+    "make_issue",
+    "normalize_issue",
+    "normalize_issues",
+    "resolve_safety_policy",
 ]

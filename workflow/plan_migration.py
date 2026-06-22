@@ -12,6 +12,7 @@ from __future__ import annotations
 import copy
 import uuid
 
+from engine.issue_schema import has_error_issues, make_issue
 from workflow.protocol_nodes import (
     DEFAULT_NODE_VERSION,
     WORKFLOW_PROTOCOL_VERSION,
@@ -192,7 +193,7 @@ def _migrate_node(node, factory, issues, summary, *, path, nested):
 
 def _result(plan, changed, issues, summary, target_version):
     return {
-        "ok": not any(issue.get("severity") == "error" for issue in issues),
+        "ok": not has_error_issues(issues),
         "changed": bool(changed),
         "protocol_version": str(target_version or WORKFLOW_PROTOCOL_VERSION),
         "plan": plan,
@@ -217,12 +218,7 @@ def _new_summary():
 
 
 def _issue(severity, code, message, *, path=""):
-    return {
-        "severity": severity,
-        "code": code,
-        "message": message,
-        "path": path,
-    }
+    return make_issue(severity, code, message, path=path)
 
 
 def _default_node_id():
