@@ -679,6 +679,8 @@ class NodeConfigForm:
                 kind = self._structured_column_kind(column)
                 if kind == "bool":
                     value = bool(widget.isChecked())
+                elif kind == "field_multi_select":
+                    value = list(getattr(widget, "multi_select_value", []))
                 elif kind == "choice":
                     value = str(widget.currentText())
                 elif kind == "long_text":
@@ -765,6 +767,8 @@ class NodeConfigForm:
         kind = self._structured_column_kind(column)
         if kind == "bool":
             return bool(widget.isChecked())
+        if kind == "field_multi_select":
+            return list(getattr(widget, "multi_select_value", []))
         if kind == "choice":
             return str(widget.currentText())
         if kind == "long_text":
@@ -777,6 +781,10 @@ class NodeConfigForm:
         kind = self._structured_column_kind(column)
         if kind == "bool":
             widget.setChecked(bool(value))
+        elif kind == "field_multi_select":
+            values = coerce_multi_select_value(value)
+            widget.multi_select_value = values
+            widget.setText(format_multi_select_summary(values))
         elif kind == "choice":
             widget.setCurrentText(format_form_value(value))
         elif kind == "long_text":

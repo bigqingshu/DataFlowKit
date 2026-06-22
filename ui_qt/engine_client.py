@@ -99,8 +99,13 @@ class QtHeadlessEngineClient:
     def describe_confirmation_prompt(self, **kwargs):
         return self.facade.describe_confirmation_prompt(**kwargs)
 
-    def describe_node_detail(self, node_type_id, *, preview_headers=None):
-        return self.facade.describe_node_detail(node_type_id, preview_headers=preview_headers)
+    def describe_node_detail(self, node_type_id, *, preview_headers=None, table_names=None, table_columns=None):
+        return self.facade.describe_node_detail(
+            node_type_id,
+            preview_headers=preview_headers,
+            table_names=table_names,
+            table_columns=table_columns,
+        )
 
     def build_output_panel_state(self, payload=None, **fallbacks):
         return self.facade.build_output_panel_state(payload, **fallbacks)
@@ -111,10 +116,12 @@ class QtHeadlessEngineClient:
     def plan_status_text(self, plan=None, *, current_plan_path=None):
         return self.facade.plan_status_text(plan, current_plan_path=current_plan_path)
 
-    def get_node_ui_schema(self, node_type_id, preview_headers=None):
+    def get_node_ui_schema(self, node_type_id, preview_headers=None, table_names=None, table_columns=None):
         return self.engine.get_node_ui_schema(
             node_type_id,
             preview_headers=preview_headers,
+            table_names=table_names,
+            table_columns=table_columns,
         )
 
     def make_default_node(self, node_type_id, preview_headers=None, *, include_legacy_type=False):

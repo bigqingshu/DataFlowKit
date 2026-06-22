@@ -51,6 +51,26 @@ class QtWorkflowMainWindow:
         self._build_ui()
         self.refresh_all()
 
+    def _table_context(self):
+        table_names = []
+        table_columns = {}
+        try:
+            listed = self.engine_client.list_tables(db_path=self.output_db_path_edit.text().strip() or None)
+        except Exception:
+            listed = {}
+        for item in listed.get("tables") or []:
+            name = str((item or {}).get("name") or "").strip()
+            if not name:
+                continue
+            table_names.append(name)
+            headers = (item or {}).get("headers") or []
+            if headers:
+                table_columns[name] = [str(header) for header in headers]
+        return {
+            "table_names": table_names,
+            "table_columns": table_columns,
+        }
+
     def _build_ui(self):
         qt = self.qt
         self.status_bar = self.window.statusBar()
@@ -415,6 +435,7 @@ class QtWorkflowMainWindow:
             preview_rows=self.last_preview_rows,
             current_plan_path=self.current_plan_path,
             include_unsupported=True,
+            **self._table_context(),
         )
 
     def refresh_catalog(self):
@@ -512,6 +533,7 @@ class QtWorkflowMainWindow:
             self.current_plan,
             command,
             preview_headers=self.current_headers,
+            **self._table_context(),
         )
         if not result.get("ok"):
             self.issue_text.setPlainText(self._format_issues(result.get("issues", [])))
@@ -595,7 +617,8 @@ class QtWorkflowMainWindow:
         schema = panel_state.get("selected_schema") or self.node_schema_by_id.get(node_type_id, {})
         display = schema.get("display_name") or node.get("type") or node_type_id
         self.config_header_label.setText(f"节点类型：{display}    节点名称：{node.get('name', '')}")
-        self.config_form.set_node(node, headers=self.current_headers, schema=schema)
+        table_context = self._table_context()
+        self.config_form.set_node(node, headers=self.current_headers, table_names=table_context.get("table_names"), schema=schema)
         self.show_node_detail(node_type_id)
         self.refresh_action_states()
 
@@ -609,7 +632,7 @@ class QtWorkflowMainWindow:
                 raise ValueError("节点配置必须是 JSON object。")
             if not node.get("node_type_id") and not node.get("type"):
                 raise ValueError("节点必须包含 node_type_id 或 legacy type。")
-            validation = self.engine_client.validate_config(node, preview_headers=self.current_headers)
+            validation = self.engine_client.validate_config(node, preview_headers=self.current_headers, **self._table_context())
             self.config_form.set_validation_issues(validation.get("issues", []))
             if not validation.get("ok"):
                 self._apply_message_panel(self.engine_client.build_message_panel_state(
@@ -732,6 +755,7 @@ class QtWorkflowMainWindow:
         self.current_plan["headers"] = list(self.current_headers)
         self.current_plan["rows"] = [list(row) for row in self.current_rows]
         self.config_form.set_headers(self.current_headers)
+        self.config_form.set_table_names(self._table_context().get("table_names"))
         self.refresh_catalog()
         self.update_input_summary()
         self.update_table(self.current_headers, self.current_rows, title=state.get("table_title") or "输入表格")
@@ -782,7 +806,7 @@ class QtWorkflowMainWindow:
 
     def show_node_detail(self, node_type_id):
         try:
-            described = self.engine_client.describe_node_detail(node_type_id, preview_headers=self.current_headers)
+            described = self.engine_client.describe_node_detail(node_type_id, preview_headers=self.current_headers, **self._table_context())
         except Exception:
             described = {}
         schema = described.get("schema") or self.node_schema_by_id.get(node_type_id) or {}
@@ -836,11 +860,31 @@ class QtWorkflowMainWindow:
         field_key = str(payload.get("field_key") or "")
         action = payload.get("action") or {}
         action_key = str(action.get("key") or "")
-        if action_key in {"pick_preview_header", "pick_table_name"}:
+        if action_key == "pick_table_name":
+            return self._pick_single_table_for_field(field_key, payload)
+        if action_key == "pick_preview_header":
             return self._pick_single_value_for_field(field_key, payload)
         if action_key == "pick_preview_headers":
             return self._pick_multi_values_for_field(field_key, payload)
         return {}
+
+    def _pick_single_table_for_field(self, field_key, payload):
+        candidates = [str(item) for item in (payload.get("table_names") or []) if str(item).strip()]
+        if not candidates:
+            self.status_bar.showMessage("当前没有可选数据表。")
+            return {}
+        current = str(payload.get("value") or "")
+        value, accepted = self.qt.QtWidgets.QInputDialog.getItem(
+            self.window,
+            f"选择{field_key}",
+            "可用数据表：",
+            candidates,
+            max(0, candidates.index(current)) if current in candidates else 0,
+            False,
+        )
+        if not accepted:
+            return {}
+        return {"value": value}
 
     def _pick_single_value_for_field(self, field_key, payload):
         candidates = [str(item) for item in (payload.get("headers") or []) if str(item).strip()]

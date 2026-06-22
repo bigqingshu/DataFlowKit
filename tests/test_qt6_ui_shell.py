@@ -572,6 +572,69 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(combo.currentText(), "结果表")
         app.processEvents()
 
+    def test_structured_list_cells_support_multi_select_picker_actions(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        schema = {
+            "form": {
+                "groups": [
+                    {
+                        "title": "参数",
+                        "fields": [
+                            {
+                                "key": "rules",
+                                "type": "structured_list",
+                                "item_schema": {
+                                    "columns": [
+                                        {
+                                            "key": "fields",
+                                            "label": "字段列表",
+                                            "type": "field_multi_select",
+                                            "options_source": {"type": "preview_headers"},
+                                        }
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+        node = {
+            "node_type_id": "demo.multi_field_picker",
+            "node_id": "n1",
+            "name": "多字段选择",
+            "enabled": True,
+            "node_version": "1.0.0",
+            "config": {
+                "rules": [{"fields": ["A"]}],
+            },
+        }
+        calls = []
+
+        def action_handler(payload):
+            calls.append(payload)
+            return {"value": ["B", "C"]}
+
+        form = NodeConfigForm(qt, headers=["A", "B", "C"], action_handler=action_handler)
+        form.set_node(node, headers=["A", "B", "C"], schema=schema)
+        editor = form.config_fields["rules"]["editor"]
+        table = editor.structured_state["table"]
+        cell_container = table.cellWidget(0, 0)
+        button = cell_container.findChild(qt.QtWidgets.QPushButton)
+        line_edit = cell_container.findChild(qt.QtWidgets.QLineEdit)
+        self.assertIsNotNone(button)
+        self.assertIsNotNone(line_edit)
+        button.click()
+        self.assertEqual(calls[0]["action"]["key"], "pick_preview_headers")
+        self.assertEqual(calls[0]["headers"], ["A", "B", "C"])
+        self.assertEqual(line_edit.text(), "B、C")
+        self.assertEqual(form.to_node()["config"]["rules"], [{"fields": ["B", "C"]}])
+        app.processEvents()
+
     def test_node_ui_metadata_maps_protocol_to_chinese_ui(self):
         self.assertEqual(node_display_label("core.new_columns"), "新建列")
         self.assertEqual(category_label("数据处理"), "数据处理")
@@ -788,6 +851,33 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertTrue(mock_confirm.called)
             self.assertEqual(controller.status_bar.currentMessage(), "已取消执行")
 
+        window.close()
+        app.processEvents()
+
+    def test_controller_passes_table_context_to_forms_and_detail(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+        controller.output_db_path_edit.setText("demo.db")
+
+        with patch.object(controller.engine_client, "list_tables", return_value={
+            "tables": [
+                {"name": "orders", "headers": ["id", "name"]},
+                {"name": "logs", "headers": ["row_id"]},
+            ]
+        }) as mock_list_tables, patch.object(controller.engine_client, "describe_node_detail", wraps=controller.engine_client.describe_node_detail) as mock_describe_detail:
+            controller.refresh_catalog()
+            controller.show_node_detail("core.replace")
+            controller.show_node_config(0)
+
+        self.assertTrue(mock_list_tables.called)
+        self.assertEqual(controller.config_form.table_names, ["orders", "logs"])
+        self.assertEqual(mock_describe_detail.call_args.kwargs["table_names"], ["orders", "logs"])
+        self.assertEqual(mock_describe_detail.call_args.kwargs["table_columns"], {"orders": ["id", "name"], "logs": ["row_id"]})
         window.close()
         app.processEvents()
 

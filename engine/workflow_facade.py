@@ -395,6 +395,8 @@ class WorkflowFacade:
         preview_rows=None,
         current_plan_path=None,
         include_unsupported=True,
+        table_names=None,
+        table_columns=None,
     ):
         plan = copy.deepcopy(plan or {})
         current_headers = list(current_headers or [])
@@ -404,6 +406,8 @@ class WorkflowFacade:
         catalog = self.list_node_ui_catalog(
             include_unsupported=include_unsupported,
             preview_headers=current_headers,
+            table_names=table_names,
+            table_columns=table_columns,
         ).get("catalog") or {}
         schemas = catalog.get("items") or []
         schema_by_id = {item.get("node_type_id"): item for item in schemas}
@@ -538,8 +542,13 @@ class WorkflowFacade:
             },
         }
 
-    def describe_node_detail(self, node_type_id, *, preview_headers=None):
-        schema = self.engine.get_node_ui_schema(node_type_id, preview_headers=preview_headers)
+    def describe_node_detail(self, node_type_id, *, preview_headers=None, table_names=None, table_columns=None):
+        schema = self.engine.get_node_ui_schema(
+            node_type_id,
+            preview_headers=preview_headers,
+            table_names=table_names,
+            table_columns=table_columns,
+        )
         detail = build_node_detail_payload(
             node_type_id,
             display_name=schema.get("display_name", ""),
