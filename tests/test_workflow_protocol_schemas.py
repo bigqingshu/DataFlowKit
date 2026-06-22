@@ -430,6 +430,35 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
         self.assertEqual(transit_context["label"], "中转表")
         self.assertEqual(transit_context["candidates"], ["中转A", "组输出B"])
 
+        table_context = facade.describe_picker_context(
+            field_key="lookup_table",
+            action_key="pick_table_name",
+            table_names=["orders", "logs"],
+        )["picker_context"]
+        self.assertEqual(table_context["source"], "table_names")
+        self.assertEqual(table_context["candidates"], ["orders", "logs"])
+
+        table_field_context = facade.describe_picker_context(
+            field_key="lookup_field",
+            action_key="pick_table_field",
+            options_source={"type": "table_columns", "table_field": "lookup_table"},
+            table_columns={"orders": ["id", "name"], "logs": ["row_id"]},
+            current_values={"lookup_table": "orders"},
+        )["picker_context"]
+        self.assertEqual(table_field_context["source"], "table_columns")
+        self.assertEqual(table_field_context["table_field"], "lookup_table")
+        self.assertEqual(table_field_context["table_name"], "orders")
+        self.assertEqual(table_field_context["candidates"], ["id", "name"])
+
+        field_values_context = facade.describe_picker_context(
+            field_key="right_table",
+            options_source={"type": "field_values", "field": "extra_tables", "value_kind": "table_names"},
+            table_names=["orders", "logs", "archive"],
+            current_values={"extra_tables": ["orders", "archive", "missing"]},
+        )["picker_context"]
+        self.assertEqual(field_values_context["source"], "field_values")
+        self.assertEqual(field_values_context["candidates"], ["orders", "archive"])
+
         jump_schema = get_node_ui_schema("core.loop_judge", preview_headers=["A"])
         jump_fields = {
             field["key"]: field

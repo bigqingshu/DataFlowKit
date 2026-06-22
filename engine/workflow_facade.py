@@ -401,11 +401,18 @@ class WorkflowFacade:
             }],
         )
 
-    def describe_picker_context(self, *, plan=None, field_key="", action_key="", ref_kind="", options_source=None):
+    def describe_picker_context(self, *, plan=None, field_key="", action_key="", ref_kind="", options_source=None, table_names=None, table_columns=None, current_values=None):
         field_key = str(field_key or "").strip()
         action_key = str(action_key or "").strip()
         ref_kind = str(ref_kind or "").strip()
         options_source = dict(options_source or {})
+        table_names = [str(item) for item in (table_names or []) if str(item).strip()]
+        table_columns = {
+            str(key): [str(item) for item in (values or []) if str(item).strip()]
+            for key, values in dict(table_columns or {}).items()
+            if str(key).strip()
+        }
+        current_values = dict(current_values or {})
 
         source_type = str(options_source.get("type") or "").strip()
         if not ref_kind:
@@ -415,6 +422,8 @@ class WorkflowFacade:
         label = ""
         empty_code = "picker_candidates_missing"
         candidates = []
+        dependency_field = ""
+        dependency_value = ""
 
         if action_key == "pick_plan_ref" or source_type == "plan_refs":
             source = "plan_refs"
@@ -436,6 +445,33 @@ class WorkflowFacade:
             else:
                 label = "运行时引用"
             empty_code = "runtime_refs_missing"
+        elif action_key in {"pick_table_name", "pick_table_names"} or source_type == "table_names":
+            source = "table_names"
+            label = "数据表"
+            empty_code = "table_names_missing"
+            candidates = list(table_names)
+        elif action_key in {"pick_table_field", "pick_table_fields"} or source_type == "table_columns":
+            source = "table_columns"
+            label = "表字段"
+            empty_code = "table_columns_missing"
+            dependency_field = str(options_source.get("table_field") or "").strip()
+            if dependency_field:
+                dependency_value = str(current_values.get(dependency_field) or "").strip()
+            if dependency_value:
+                candidates = list(table_columns.get(dependency_value, []) or [])
+        elif source_type == "field_values":
+            dependency_field = str(options_source.get("field") or "").strip()
+            dependency_value = current_values.get(dependency_field)
+            if isinstance(dependency_value, (list, tuple, set)):
+                candidates = [str(item) for item in dependency_value if str(item).strip()]
+            elif str(dependency_value or "").strip():
+                candidates = [str(dependency_value)]
+            if str(options_source.get("value_kind") or "") == "table_names":
+                source = "field_values"
+                label = "数据表"
+                empty_code = "table_names_missing"
+                allowed = set(table_names)
+                candidates = [item for item in candidates if item in allowed]
 
         candidates = [str(item) for item in (candidates or []) if str(item).strip()]
         return {
@@ -449,6 +485,8 @@ class WorkflowFacade:
                 "candidates": candidates,
                 "candidate_count": len(candidates),
                 "empty_code": empty_code,
+                "table_field": dependency_field,
+                "table_name": dependency_value,
             },
         }
 

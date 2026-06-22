@@ -1747,6 +1747,72 @@ class Qt6UiShellTests(unittest.TestCase):
         window.close()
         app.processEvents()
 
+    def test_controller_uses_shared_table_picker_context(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+
+        with patch.object(controller.qt.QtWidgets.QInputDialog, "getItem", return_value=("logs", True)):
+            result = controller._pick_single_table_for_field(
+                "lookup_table",
+                {
+                    "action": {"key": "pick_table_name"},
+                    "table_names": ["orders", "logs"],
+                    "value": "orders",
+                },
+            )
+
+        self.assertEqual(result["value"], "logs")
+
+        controller.config_form.set_node(
+            {
+                "node_type_id": "demo.lookup_field_picker",
+                "node_id": "n1",
+                "name": "表字段选择",
+                "enabled": True,
+                "node_version": "1.0.0",
+                "config": {
+                    "lookup_table": "orders",
+                    "lookup_field": "id",
+                },
+            },
+            table_names=["orders", "logs"],
+            table_columns={"orders": ["id", "name"], "logs": ["row_id"]},
+            schema={
+                "form": {
+                    "groups": [
+                        {
+                            "title": "参数",
+                            "fields": [
+                                {"key": "lookup_table", "type": "table_select", "options_source": {"type": "table_names"}},
+                                {"key": "lookup_field", "type": "field_select", "options_source": {"type": "table_columns", "table_field": "lookup_table"}},
+                            ],
+                        }
+                    ]
+                }
+            },
+        )
+
+        with patch.object(controller.qt.QtWidgets.QInputDialog, "getItem", return_value=("name", True)):
+            result = controller._pick_single_table_field_for_field(
+                "lookup_field",
+                {
+                    "action": {"key": "pick_table_field", "table_field": "lookup_table"},
+                    "schema": {"options_source": {"type": "table_columns", "table_field": "lookup_table"}},
+                    "table_columns": {"orders": ["id", "name"], "logs": ["row_id"]},
+                    "value": "id",
+                },
+            )
+
+        self.assertEqual(result["value"], "name")
+        window.close()
+        app.processEvents()
+
     def test_config_form_uses_plan_reference_choices(self):
         try:
             qt = qt_app.load_qt6()

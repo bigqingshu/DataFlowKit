@@ -1039,7 +1039,13 @@ class QtWorkflowMainWindow:
         return {"value": value}
 
     def _pick_single_table_for_field(self, field_key, payload):
-        candidates = [str(item) for item in (payload.get("table_names") or []) if str(item).strip()]
+        picker_context = self.engine_client.describe_picker_context(
+            field_key=field_key,
+            action_key="pick_table_name",
+            options_source=payload.get("options_source") or (payload.get("schema") or {}).get("options_source") or {},
+            table_names=payload.get("table_names") or [],
+        ).get("picker_context") or {}
+        candidates = [str(item) for item in (picker_context.get("candidates") or payload.get("table_names") or []) if str(item).strip()]
         if not candidates:
             self._apply_feedback(self.engine_client.describe_picker_feedback(
                 action_key="pick_table_name",
@@ -1061,7 +1067,14 @@ class QtWorkflowMainWindow:
         return {"value": value}
 
     def _pick_multi_tables_for_field(self, field_key, payload):
-        candidates = [str(item) for item in (payload.get("table_names") or []) if str(item).strip()]
+        picker_context = self.engine_client.describe_picker_context(
+            field_key=field_key,
+            action_key="pick_table_names",
+            options_source=payload.get("options_source") or (payload.get("schema") or {}).get("options_source") or {},
+            table_names=payload.get("table_names") or [],
+            current_values=self._current_picker_values(payload),
+        ).get("picker_context") or {}
+        candidates = [str(item) for item in (picker_context.get("candidates") or payload.get("table_names") or []) if str(item).strip()]
         if not candidates:
             self._apply_feedback(self.engine_client.describe_picker_feedback(
                 action_key="pick_table_names",
@@ -1171,12 +1184,16 @@ class QtWorkflowMainWindow:
     def _pick_multi_table_fields_for_field(self, field_key, payload):
         action = payload.get("action") or {}
         schema = payload.get("schema") or {}
-        table_field = str(action.get("table_field") or (schema.get("options_source") or {}).get("table_field") or "").strip()
-        table_name = ""
-        if table_field:
-            table_name = str(self._current_config_field_value(table_field) or "")
-        table_columns = payload.get("table_columns") or {}
-        candidates = [str(item) for item in (table_columns.get(table_name, []) or []) if str(item).strip()]
+        picker_context = self.engine_client.describe_picker_context(
+            field_key=field_key,
+            action_key="pick_table_fields",
+            options_source=(schema.get("options_source") or {}),
+            table_columns=payload.get("table_columns") or {},
+            current_values=self._current_picker_values(payload),
+        ).get("picker_context") or {}
+        table_field = str(picker_context.get("table_field") or action.get("table_field") or (schema.get("options_source") or {}).get("table_field") or "").strip()
+        table_name = str(picker_context.get("table_name") or "")
+        candidates = [str(item) for item in (picker_context.get("candidates") or []) if str(item).strip()]
         if not table_name:
             self._apply_feedback(self.engine_client.describe_picker_feedback(
                 action_key="pick_table_fields",
@@ -1232,12 +1249,16 @@ class QtWorkflowMainWindow:
     def _pick_single_table_field_for_field(self, field_key, payload):
         action = payload.get("action") or {}
         schema = payload.get("schema") or {}
-        table_field = str(action.get("table_field") or (schema.get("options_source") or {}).get("table_field") or "").strip()
-        table_name = ""
-        if table_field:
-            table_name = str(self._current_config_field_value(table_field) or "")
-        table_columns = payload.get("table_columns") or {}
-        candidates = [str(item) for item in (table_columns.get(table_name, []) or []) if str(item).strip()]
+        picker_context = self.engine_client.describe_picker_context(
+            field_key=field_key,
+            action_key="pick_table_field",
+            options_source=(schema.get("options_source") or {}),
+            table_columns=payload.get("table_columns") or {},
+            current_values=self._current_picker_values(payload),
+        ).get("picker_context") or {}
+        table_field = str(picker_context.get("table_field") or action.get("table_field") or (schema.get("options_source") or {}).get("table_field") or "").strip()
+        table_name = str(picker_context.get("table_name") or "")
+        candidates = [str(item) for item in (picker_context.get("candidates") or []) if str(item).strip()]
         if not table_name:
             self._apply_feedback(self.engine_client.describe_picker_feedback(
                 action_key="pick_table_field",
@@ -1274,6 +1295,18 @@ class QtWorkflowMainWindow:
         if not field:
             return ""
         return self.config_form._field_value_for_action(field)
+
+    def _current_picker_values(self, payload):
+        values = {}
+        try:
+            values.update(self.config_form._current_field_values())
+        except Exception:
+            pass
+        if isinstance(payload, dict):
+            extra = payload.get("current_values") or {}
+            if isinstance(extra, dict):
+                values.update(extra)
+        return values
 
     def _apply_output_form_settings(self, settings):
         mode = str((settings or {}).get("mode") or "").strip()
