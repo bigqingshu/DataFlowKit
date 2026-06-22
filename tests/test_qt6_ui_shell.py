@@ -295,6 +295,7 @@ class Qt6UiShellTests(unittest.TestCase):
         })
         self.assertEqual(imported_state["state"]["table_title"], "输入表格")
         self.assertIn("demo.csv", imported_state["state"]["status_message"])
+        self.assertEqual(imported_state["state"]["message_panel"]["title"], "导入输入表格")
 
         loaded_state = client.build_loaded_plan_state({
             "path": "plan\\demo.json",
@@ -303,6 +304,7 @@ class Qt6UiShellTests(unittest.TestCase):
         })
         self.assertEqual(loaded_state["state"]["plan_path"], "plan\\demo.json")
         self.assertEqual(loaded_state["state"]["issue_message"], "已迁移旧字段")
+        self.assertEqual(loaded_state["state"]["message_panel"]["mode"], "warning")
 
         saved_state = client.build_saved_plan_state({
             "path": "plan\\saved.json",
@@ -310,6 +312,7 @@ class Qt6UiShellTests(unittest.TestCase):
         }, SAMPLE_PLAN)
         self.assertEqual(saved_state["state"]["plan_path"], "plan\\saved.json")
         self.assertIn("已保存", saved_state["state"]["status_message"])
+        self.assertEqual(saved_state["state"]["message_panel"]["title"], "保存计划")
 
     def test_config_form_value_helpers_preserve_types(self):
         self.assertEqual(value_kind(True), "bool")
@@ -1291,7 +1294,8 @@ class Qt6UiShellTests(unittest.TestCase):
             }):
                 controller.open_plan()
                 self.assertTrue(str(controller.current_plan_path).endswith("demo.json"))
-                self.assertIn("已打开测试计划", controller.info_text.toPlainText())
+                self.assertIn("打开计划", controller.info_text.toPlainText())
+                self.assertIn("已打开测试计划", controller.current_message_panel.get("body", ""))
 
             with patch.object(controller.engine_client, "save_plan_template", return_value={
                 "ok": True,

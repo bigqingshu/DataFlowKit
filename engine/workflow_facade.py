@@ -88,14 +88,20 @@ class WorkflowFacade:
         headers = list(table.get("headers") or [])
         rows = [list(row) for row in (table.get("rows") or [])]
         path = str(imported.get("path") or "")
+        message = f"已导入输入表格：{path}" if path else "已导入输入表格。"
         return {
             "ok": True,
             "state": {
                 "headers": headers,
                 "rows": rows,
                 "table_title": "输入表格",
-                "status_message": f"已导入输入表格：{path}" if path else "已导入输入表格。",
-                "issue_message": f"已导入输入表格：{path}" if path else "已导入输入表格。",
+                "status_message": message,
+                "issue_message": message,
+                "message_panel": self.build_message_panel_state(
+                    mode="success",
+                    title="导入输入表格",
+                    body=message,
+                ).get("panel") or {},
             },
         }
 
@@ -104,6 +110,7 @@ class WorkflowFacade:
         plan = copy.deepcopy(loaded.get("plan") or {})
         path = str(loaded.get("path") or "")
         warning = str(loaded.get("warning") or "")
+        message = warning or (f"已打开计划：{path}" if path else "已打开计划。")
         return {
             "ok": True,
             "state": {
@@ -113,7 +120,12 @@ class WorkflowFacade:
                 "rows": [list(row) for row in (plan.get("rows") or [])],
                 "output_settings": OutputSettings.from_payload(plan).to_dict(),
                 "status_message": f"已打开计划：{path}" if path else "已打开计划。",
-                "issue_message": warning or (f"已打开计划：{path}" if path else "已打开计划。"),
+                "issue_message": message,
+                "message_panel": self.build_message_panel_state(
+                    mode="warning" if warning else "info",
+                    title="打开计划",
+                    body=message,
+                ).get("panel") or {},
             },
         }
 
@@ -121,12 +133,18 @@ class WorkflowFacade:
         saved = copy.deepcopy(saved or {})
         plan = copy.deepcopy(saved.get("plan") or plan or {})
         path = str(saved.get("path") or "")
+        message = f"已保存：{path}" if path else "已保存计划。"
         return {
             "ok": True,
             "state": {
                 "plan": plan,
                 "plan_path": path,
-                "status_message": f"已保存：{path}" if path else "已保存计划。",
+                "status_message": message,
+                "message_panel": self.build_message_panel_state(
+                    mode="success",
+                    title="保存计划",
+                    body=message,
+                ).get("panel") or {},
             },
         }
 

@@ -794,11 +794,12 @@ class QtWorkflowMainWindow:
         self.update_input_summary()
         self.update_table(self.current_headers, self.current_rows, title=state.get("table_title") or "输入表格")
         self.show_node_config(self.node_list.currentRow())
-        self._apply_message_panel(self.engine_client.build_message_panel_state(
+        panel = state.get("message_panel") or self.engine_client.build_message_panel_state(
             mode="success",
             title="导入输入表格",
             body=str(state.get("issue_message") or ""),
-        ).get("panel") or {})
+        ).get("panel") or {}
+        self._apply_message_panel(panel)
         self.status_bar.showMessage(str(state.get("status_message") or "已导入输入表格。"))
 
     def _apply_loaded_plan_state(self, state):
@@ -811,11 +812,12 @@ class QtWorkflowMainWindow:
         self.last_preview_headers = []
         self.last_preview_rows = []
         self.refresh_all()
-        self._apply_message_panel(self.engine_client.build_message_panel_state(
+        panel = state.get("message_panel") or self.engine_client.build_message_panel_state(
             mode="info",
             title="打开计划",
             body=str(state.get("issue_message") or ""),
-        ).get("panel") or {})
+        ).get("panel") or {}
+        self._apply_message_panel(panel)
         self.status_bar.showMessage(str(state.get("status_message") or "已打开计划。"))
 
     def _apply_saved_plan_state(self, state):
@@ -823,6 +825,9 @@ class QtWorkflowMainWindow:
         self.current_plan = copy.deepcopy(state.get("plan") or self.current_plan)
         self.current_plan_path = Path(state["plan_path"]) if state.get("plan_path") else self.current_plan_path
         self.refresh_template_list(show_status=False)
+        panel = state.get("message_panel") or {}
+        if panel:
+            self._apply_message_panel(panel)
         self.status_bar.showMessage(str(state.get("status_message") or "已保存计划。"))
 
     def show_selected_node_type_detail(self):
