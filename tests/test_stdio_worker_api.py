@@ -2,6 +2,8 @@
 import io
 import json
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from engine.stdio_worker import StdioWorker, iter_json_lines
 
@@ -89,6 +91,18 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertTrue(validation["ok"])
         self.assertFalse(validation["result"]["ok"])
         self.assertEqual(validation["result"]["issues"][0]["code"], "unsupported_node")
+
+    def test_import_table_file_uses_backend_facade(self):
+        worker = StdioWorker()
+        with TemporaryDirectory() as temp_dir:
+            csv_path = Path(temp_dir) / "rows.csv"
+            csv_path.write_text("A,B\na,1\nb,2\n", encoding="utf-8")
+
+            response = worker.handle_request(request("import_table_file", {"path": str(csv_path)}))
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"]["table"]["headers"], ["A", "B"])
+        self.assertEqual(response["result"]["table"]["rows"], [["a", "1"], ["b", "2"]])
 
     def test_preview_plan_uses_protocol_input_data_name(self):
         worker = StdioWorker()

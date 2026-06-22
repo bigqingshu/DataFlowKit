@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import copy
 
-from engine import HeadlessWorkflowEngine, PlanValidationError
+from engine import HeadlessWorkflowEngine, PlanValidationError, WorkflowFacade
 
 
 SAMPLE_HEADERS = ["source_file", "sheet_name", "row_index", "text"]
@@ -50,6 +50,7 @@ class QtHeadlessEngineClient:
 
     def __init__(self, engine=None):
         self.engine = engine or HeadlessWorkflowEngine()
+        self.facade = WorkflowFacade(self.engine)
 
     def list_node_catalog(self, include_unsupported=True):
         return self.engine.list_node_catalog(include_unsupported=include_unsupported)
@@ -74,7 +75,7 @@ class QtHeadlessEngineClient:
         )
 
     def apply_plan_command(self, plan, command, preview_headers=None, table_names=None, table_columns=None):
-        return self.engine.apply_plan_command(
+        return self.facade.apply_plan_command(
             copy.deepcopy(plan),
             command,
             preview_headers=preview_headers,
@@ -86,10 +87,10 @@ class QtHeadlessEngineClient:
         return self.engine.validate_plan(copy.deepcopy(plan))
 
     def list_plan_templates(self, plan_dir):
-        return self.engine.list_plan_templates(plan_dir)
+        return self.facade.list_plan_templates(plan_dir)
 
     def load_plan_template(self, path, *, migrate=True):
-        return self.engine.load_plan_template(path, migrate=migrate)
+        return self.facade.load_plan_template(path, migrate=migrate)
 
     def save_plan_template(
         self,
@@ -105,7 +106,7 @@ class QtHeadlessEngineClient:
         output_path=None,
         migrate=True,
     ):
-        return self.engine.save_plan_template(
+        return self.facade.save_plan_template(
             path,
             copy.deepcopy(plan),
             headers=headers,
@@ -119,16 +120,18 @@ class QtHeadlessEngineClient:
         )
 
     def validate_plan_template(self, plan):
-        return self.engine.validate_plan_template(copy.deepcopy(plan))
+        return self.facade.validate_plan_template(copy.deepcopy(plan))
+
+    def import_table_file(self, path):
+        return self.facade.import_table_file(path)
 
     def start_job(self, job_action, plan, input_table=None, **options):
-        payload = {
-            "job_action": job_action,
-            "plan": copy.deepcopy(plan),
-            "input_data": input_table,
-        }
-        payload.update(options)
-        return self.engine.start_job(job_action, payload)
+        return self.facade.start_workflow_job(
+            job_action,
+            copy.deepcopy(plan),
+            input_table=input_table,
+            **options,
+        )
 
     def get_job_status(self, job_id, *, include_result=True):
         return self.engine.get_job_status(job_id, include_result=include_result)
@@ -164,6 +167,15 @@ class QtHeadlessEngineClient:
             db_path=db_path,
             output_path=output_path,
         )
+
+    def build_output_settings(self, payload=None, **fallbacks):
+        return self.facade.build_output_settings(payload, **fallbacks)
+
+    def validate_workflow_request(self, plan, **options):
+        return self.facade.validate_workflow_request(copy.deepcopy(plan), **options)
+
+    def finalize_job_result(self, status, **options):
+        return self.facade.finalize_job_result(copy.deepcopy(status), **options)
 
     def list_tables(self, *, db_path=None):
         return self.engine.list_tables(db_path=db_path)

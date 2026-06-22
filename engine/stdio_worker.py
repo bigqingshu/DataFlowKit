@@ -10,6 +10,7 @@ import traceback
 
 from engine.errors import PlanValidationError
 from engine.headless import HeadlessWorkflowEngine
+from engine.workflow_facade import WorkflowFacade
 
 
 SUPPORTED_API_VERSION = "1.0"
@@ -20,6 +21,7 @@ class StdioWorker:
 
     def __init__(self, engine=None):
         self.engine = engine or HeadlessWorkflowEngine()
+        self.facade = WorkflowFacade(self.engine)
 
     def handle_request(self, request):
         request_id = ""
@@ -99,15 +101,15 @@ class StdioWorker:
                 target_version=payload.get("target_version") or payload.get("protocol_version"),
             )
         if action == "list_plan_templates":
-            return self.engine.list_plan_templates(payload.get("plan_dir", "plan"))
+            return self.facade.list_plan_templates(payload.get("plan_dir", "plan"))
         if action == "load_plan_template":
-            return self.engine.load_plan_template(
+            return self.facade.load_plan_template(
                 payload.get("path", ""),
                 migrate=bool(payload.get("migrate", True)),
                 target_version=payload.get("target_version") or payload.get("protocol_version"),
             )
         if action == "save_plan_template":
-            return self.engine.save_plan_template(
+            return self.facade.save_plan_template(
                 payload.get("path", ""),
                 payload.get("plan", {}),
                 headers=payload.get("headers"),
@@ -121,7 +123,7 @@ class StdioWorker:
                 target_version=payload.get("target_version") or payload.get("protocol_version"),
             )
         if action == "validate_plan_template":
-            return self.engine.validate_plan_template(payload.get("plan", {}))
+            return self.facade.validate_plan_template(payload.get("plan", {}))
         if action == "get_node_type":
             node_type = payload.get("node_type") or payload.get("type") or payload.get("node_type_id")
             return self.engine.get_node_type(
@@ -143,13 +145,15 @@ class StdioWorker:
                 )
             }
         if action == "apply_plan_command":
-            return self.engine.apply_plan_command(
+            return self.facade.apply_plan_command(
                 payload.get("plan", {}),
                 payload.get("command", {}),
                 preview_headers=payload.get("preview_headers"),
                 table_names=payload.get("table_names"),
                 table_columns=payload.get("table_columns"),
             )
+        if action == "import_table_file":
+            return self.facade.import_table_file(payload.get("path", ""))
         if action == "validate_config":
             node = payload.get("node")
             node_or_type = node if isinstance(node, dict) else (

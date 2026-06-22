@@ -10,7 +10,6 @@ from ui_qt.config_form import NodeConfigForm
 from ui_qt.engine_client import QtHeadlessEngineClient, SAMPLE_HEADERS, SAMPLE_PLAN, SAMPLE_ROWS
 from ui_qt.node_ui_metadata import CATEGORY_ORDER, category_label, format_node_detail
 from ui_qt.qt_compat import qt_enum
-from engine.table_io import load_table_file
 from ui_qt.table_model import make_table_model
 
 
@@ -602,9 +601,10 @@ class QtWorkflowMainWindow:
         if not path:
             return
         try:
-            headers, rows = load_table_file(path)
-            self.current_headers = list(headers)
-            self.current_rows = [list(row) for row in rows]
+            imported = self.engine_client.import_table_file(path)
+            table = imported.get("table") or {}
+            self.current_headers = list(table.get("headers") or [])
+            self.current_rows = [list(row) for row in (table.get("rows") or [])]
             self.current_plan["headers"] = list(self.current_headers)
             self.current_plan["rows"] = [list(row) for row in self.current_rows]
             self.config_form.set_headers(self.current_headers)
@@ -612,7 +612,7 @@ class QtWorkflowMainWindow:
             self.update_input_summary()
             self.update_table(self.current_headers, self.current_rows, title="输入表格")
             self.show_node_config(self.node_list.currentRow())
-            self.status_bar.showMessage(f"已导入输入表格：{path}")
+            self.status_bar.showMessage(f"已导入输入表格：{imported.get('path') or path}")
         except Exception as exc:
             self.show_error("导入失败", str(exc))
 
@@ -688,17 +688,14 @@ class QtWorkflowMainWindow:
             self.show_error("保存失败", str(exc))
 
     def validate_plan(self):
-        validation = self.engine_client.validate_plan(self.current_plan)
-        jump_validation = self.engine_client.validate_jumps(self.current_plan)
-        access_precheck = self.build_access_precheck(self.current_plan, execute_actions=True)
-        combined = dict(validation)
-        combined["jump_validation"] = jump_validation
-        combined["access_precheck"] = access_precheck
-        combined["ok"] = (
-            bool(validation.get("ok"))
-            and bool(jump_validation.get("ok"))
-            and bool(access_precheck.get("can_continue", True))
+        combined = self.engine_client.validate_workflow_request(
+            self.current_plan,
+            execute_actions=True,
+            output_settings=self.current_output_settings(),
         )
+        validation = combined.get("validation") or {}
+        jump_validation = combined.get("jump_validation") or {}
+        access_precheck = combined.get("access_precheck") or {}
         text = self._format_validation(validation)
         jump_issues = jump_validation.get("issues", []) or []
         if jump_issues:
@@ -722,17 +719,14 @@ class QtWorkflowMainWindow:
         return combined
 
     def build_access_precheck(self, plan=None, *, execute_actions=True, stop_index=None, confirmed=False):
-        plan = plan or self.current_plan
-        return self.engine_client.precheck_access(
-            plan,
+        result = self.engine_client.validate_workflow_request(
+            plan or self.current_plan,
             execute_actions=execute_actions,
             stop_index=stop_index,
-            db_path=self.output_db_path_edit.text(),
-            output_mode=self.output_mode_combo.currentText(),
-            output_table=self.output_table_edit.text(),
-            table_access_policy=(plan or {}).get("table_access_policy", "audit"),
+            output_settings=self.current_output_settings(),
             confirmed=confirmed,
         )
+        return result.get("access_precheck") or {}
 
     def preview_to_selected_node(self):
         index = self.selected_node_index()
@@ -747,9 +741,14 @@ class QtWorkflowMainWindow:
     def preview_plan(self, stop_index=None, title="Headless 预览结果"):
         input_table = self._input_table_payload()
         plan = copy.deepcopy(self.current_plan)
-        validation = self.engine_client.validate_plan(plan)
-        if not validation.get("ok"):
-            self.issue_text.setPlainText(self._format_validation(validation))
+        validation = self.engine_client.validate_workflow_request(
+            plan,
+            execute_actions=False,
+            stop_index=stop_index,
+            output_settings=self.current_output_settings(),
+        )
+        if not (validation.get("validation") or {}).get("ok"):
+            self.issue_text.setPlainText(self._format_validation(validation.get("validation") or {}))
             self.status_bar.showMessage("预览前校验失败")
             return
         self.start_workflow_job(
@@ -772,6 +771,7 @@ class QtWorkflowMainWindow:
             input_table=input_table,
             title="执行结果",
             execute_actions=True,
+            output_settings=self.current_output_settings(),
             status_prefix="执行",
         )
 
@@ -877,29 +877,44 @@ class QtWorkflowMainWindow:
     def finish_workflow_job(self, status):
         self.job_timer.stop()
         self.set_workflow_running(False)
-        result = status.get("result") or {}
-        table = result.get("table") or {}
+        final = self.engine_client.finalize_job_result(
+            status,
+            job_action=self.current_job_action,
+            logs=self.current_job_messages,
+            output_settings=self.current_output_settings(),
+        )
+        table = final.get("table") or {}
         headers = list(table.get("headers") or [])
         rows = [list(row) for row in (table.get("rows") or [])]
         if status.get("status") == "failed":
-            error = status.get("error") or {}
-            self.issue_text.setPlainText(error.get("message") or status.get("message") or "后台任务失败。")
+            self.issue_text.setPlainText(final.get("display_message") or "后台任务失败。")
             self.status_bar.showMessage("后台任务失败")
         elif headers or rows:
-            logs = result.get("logs") or self.current_job_messages
-            final_status_message = f"{self.current_job_title}完成。"
-            if self.current_job_action == "run_plan":
-                final_status_message = self.finish_execute_output(headers, rows, logs)
+            logs = final.get("logs") or []
+            final_status_message = final.get("display_message") or f"{self.current_job_title}完成。"
+            self.last_preview_headers = headers
+            self.last_preview_rows = rows
+            title = self.current_job_title
+            if self.current_job_action == "run_plan" and not (final.get("output") or {}).get("ok", True):
+                title = "执行结果（输出未落地）"
+            self.update_table(headers, rows, title=title)
+            self.current_table_kind = "preview"
+            self.refresh_preview_table_combo()
+            output = final.get("output") or {}
+            if output:
+                if output.get("ok"):
+                    self.issue_text.setPlainText("\n".join(output.get("logs") or logs) or output.get("message", "输出完成。"))
+                else:
+                    issue_text = self._format_issues(output.get("issues", []))
+                    if logs:
+                        issue_text = issue_text + "\n\n执行日志：\n" + "\n".join(logs)
+                    self.issue_text.setPlainText(issue_text)
             else:
-                self.last_preview_headers = headers
-                self.last_preview_rows = rows
-                self.update_table(headers, rows, title=self.current_job_title)
-                self.current_table_kind = "preview"
                 self.issue_text.setPlainText("\n".join(logs) or f"{self.current_job_title}完成，无日志。")
             self.workflow_progress.setValue(100)
             self.node_progress.setValue(100)
             self.workflow_progress_label.setText(f"{self.current_job_title}完成：{len(rows)} 行 x {len(headers)} 列")
-            self.node_progress_label.setText(f"执行步数：{result.get('steps', 0)}")
+            self.node_progress_label.setText(f"执行步数：{final.get('steps', 0)}")
             self.status_bar.showMessage(final_status_message)
         else:
             self.issue_text.setPlainText("\n".join(self.current_job_messages) or status.get("message", "后台任务已结束。"))
@@ -914,35 +929,6 @@ class QtWorkflowMainWindow:
         for button in self.workflow_action_buttons:
             button.setEnabled(not running)
         self.cancel_job_button.setEnabled(bool(running))
-
-    def finish_execute_output(self, headers, rows, logs):
-        output = self.engine_client.apply_output(
-            headers=headers,
-            rows=rows,
-            logs=logs,
-            output_mode=self.output_mode_combo.currentText(),
-            output_table=self.output_table_edit.text(),
-            backup_before_overwrite=self.backup_checkbox.isChecked(),
-            db_path=self.output_db_path_edit.text(),
-            output_path=self.output_path_edit.text(),
-        )
-        table = output.get("table") or {}
-        out_headers = list(table.get("headers") or headers)
-        out_rows = [list(row) for row in (table.get("rows") or rows)]
-        self.last_preview_headers = out_headers
-        self.last_preview_rows = out_rows
-        title = "执行结果" if output.get("ok") else "执行结果（输出未落地）"
-        self.update_table(out_headers, out_rows, title=title)
-        self.current_table_kind = "preview"
-        self.refresh_preview_table_combo()
-        if output.get("ok"):
-            self.issue_text.setPlainText("\n".join(output.get("logs") or logs) or output.get("message", "输出完成。"))
-            return output.get("message", "输出完成。")
-        issue_text = self._format_issues(output.get("issues", []))
-        if logs:
-            issue_text = issue_text + "\n\n执行日志：\n" + "\n".join(logs)
-        self.issue_text.setPlainText(issue_text)
-        return "执行完成，但输出未落地"
 
     def show_input_table(self):
         self.current_table_kind = "input"
@@ -1034,14 +1020,25 @@ class QtWorkflowMainWindow:
 
     def apply_output_settings_from_plan(self, plan):
         plan = plan or {}
-        mode = str(plan.get("output_mode") or "").strip()
+        settings = self.engine_client.build_output_settings(plan).get("settings") or {}
+        mode = str(settings.get("mode") or "").strip()
         if mode:
             index = self.output_mode_combo.findText(mode)
             if index >= 0:
                 self.output_mode_combo.setCurrentIndex(index)
-        self.output_table_edit.setText(str(plan.get("output_table") or "结果表"))
-        self.output_db_path_edit.setText(str(plan.get("db_path") or plan.get("output_db_path") or ""))
-        self.output_path_edit.setText(str(plan.get("output_path") or ""))
+        self.output_table_edit.setText(str(settings.get("target") or "结果表"))
+        self.output_db_path_edit.setText(str(settings.get("db_path") or ""))
+        self.output_path_edit.setText(str(settings.get("path") or ""))
+
+    def current_output_settings(self):
+        result = self.engine_client.build_output_settings(
+            output_mode=self.output_mode_combo.currentText(),
+            output_table=self.output_table_edit.text(),
+            backup_before_overwrite=self.backup_checkbox.isChecked(),
+            db_path=self.output_db_path_edit.text(),
+            output_path=self.output_path_edit.text(),
+        )
+        return result.get("settings") or {}
 
     def _format_issues(self, issues):
         issues = issues or []

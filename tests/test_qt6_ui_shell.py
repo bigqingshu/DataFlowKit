@@ -22,7 +22,6 @@ from ui_qt.node_ui_metadata import (
     node_summary,
     node_warnings,
 )
-from ui_qt.table_io import load_table_file
 from ui_qt.qt_compat import QtBindingUnavailable
 from workflow.node_ui_schema import get_node_ui_schema
 
@@ -58,6 +57,27 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(node["node_type_id"], "core.new_columns")
         self.assertNotIn("type", node)
         self.assertIn("columns_text", node["config"])
+
+    def test_facade_builds_output_settings_and_combined_validation(self):
+        client = QtHeadlessEngineClient()
+
+        settings = client.build_output_settings(
+            output_mode="保存为SQLite新表",
+            output_table="结果表",
+            db_path="demo.db",
+        )
+        validation = client.validate_workflow_request(
+            SAMPLE_PLAN,
+            execute_actions=True,
+            output_settings=settings["settings"],
+        )
+
+        self.assertTrue(settings["ok"])
+        self.assertEqual(settings["settings"]["mode"], "保存为SQLite新表")
+        self.assertEqual(settings["settings"]["target"], "结果表")
+        self.assertIn("validation", validation)
+        self.assertIn("jump_validation", validation)
+        self.assertIn("access_precheck", validation)
 
     def test_config_form_value_helpers_preserve_types(self):
         self.assertEqual(value_kind(True), "bool")
@@ -143,6 +163,7 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(calls, ["PySide6", "PyQt6"])
 
     def test_table_io_loads_json_rows_and_csv(self):
+        client = QtHeadlessEngineClient()
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             json_path = root / "rows.json"
@@ -150,13 +171,13 @@ class Qt6UiShellTests(unittest.TestCase):
             json_path.write_text('[{"A": "a", "B": 1}, {"A": "b", "B": 2}]', encoding="utf-8")
             csv_path.write_text("A,B\na,1\nb,2\n", encoding="utf-8")
 
-            headers, rows = load_table_file(json_path)
-            self.assertEqual(headers, ["A", "B"])
-            self.assertEqual(rows, [["a", 1], ["b", 2]])
+            imported = client.import_table_file(json_path)
+            self.assertEqual(imported["table"]["headers"], ["A", "B"])
+            self.assertEqual(imported["table"]["rows"], [["a", 1], ["b", 2]])
 
-            headers, rows = load_table_file(csv_path)
-            self.assertEqual(headers, ["A", "B"])
-            self.assertEqual(rows, [["a", "1"], ["b", "2"]])
+            imported = client.import_table_file(csv_path)
+            self.assertEqual(imported["table"]["headers"], ["A", "B"])
+            self.assertEqual(imported["table"]["rows"], [["a", "1"], ["b", "2"]])
 
     def test_original_style_workflow_panel_controller_operations(self):
         try:
@@ -213,7 +234,9 @@ class Qt6UiShellTests(unittest.TestCase):
         self.wait_for_controller_job(app, controller)
         self.assertTrue(controller.table_title.text().startswith("执行结果（输出未落地）"))
         self.assertIn("missing_db_path", controller.issue_text.toPlainText())
-        self.assertIn("执行完成，但输出未落地", controller.status_bar.currentMessage())
+        self.assertIn("输出设置校验失败", controller.status_bar.currentMessage())
+        settings = controller.current_output_settings()
+        self.assertEqual(settings["mode"], "保存为SQLite新表")
         window.close()
         app.processEvents()
 

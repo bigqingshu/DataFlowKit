@@ -30,6 +30,7 @@ from engine.plugin_service import PluginService
 from engine.safety_policy import SafetyPolicy, resolve_safety_policy
 from engine.stdio_worker import StdioWorker
 from engine.table_data_service import TableDataService
+from engine.workflow_facade import WorkflowFacade
 from engine.workflow_services import WorkflowServices
 
 __all__ = [
@@ -48,6 +49,7 @@ __all__ = [
     "SafetyPolicy",
     "StdioWorker",
     "TableDataService",
+    "WorkflowFacade",
     "WorkflowServices",
     "TableData",
     "UnsupportedNodeError",

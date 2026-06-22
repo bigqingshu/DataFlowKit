@@ -3,6 +3,7 @@ import time
 import unittest
 
 from engine.headless import HeadlessWorkflowEngine
+from engine.workflow_facade import WorkflowFacade
 from engine.stdio_worker import StdioWorker
 
 
@@ -91,6 +92,54 @@ class JobServiceTests(unittest.TestCase):
 
         self.assertFalse(response["ok"])
         self.assertIn("未知 job_id", response["message"])
+
+    def test_workflow_facade_finalizes_preview_and_run_results(self):
+        engine = HeadlessWorkflowEngine()
+        facade = WorkflowFacade(engine)
+
+        preview_started = engine.start_job("preview_plan", {
+            "plan": {
+                "nodes": [
+                    {
+                        "node_type_id": "core.new_columns",
+                        "enabled": True,
+                        "config": {"columns_text": "B=b", "value_mode": "按列配置值"},
+                    }
+                ],
+            },
+            "input_data": {"type": "table", "headers": ["A"], "rows": [["a"]]},
+        })
+        preview_status = wait_for_job(engine, preview_started["job_id"])
+        preview_final = facade.finalize_job_result(preview_status, job_action="preview_plan", logs=["done"])
+
+        self.assertTrue(preview_final["ok"])
+        self.assertEqual(preview_final["table"]["headers"], ["A", "B"])
+        self.assertNotIn("output", preview_final)
+
+        run_started = engine.start_job("run_plan", {
+            "plan": {
+                "nodes": [
+                    {
+                        "node_type_id": "core.new_columns",
+                        "enabled": True,
+                        "config": {"columns_text": "B=b", "value_mode": "按列配置值"},
+                    }
+                ],
+            },
+            "input_data": {"type": "table", "headers": ["A"], "rows": [["a"]]},
+            "execute_actions": True,
+        })
+        run_status = wait_for_job(engine, run_started["job_id"])
+        run_final = facade.finalize_job_result(
+            run_status,
+            job_action="run_plan",
+            logs=["done"],
+            output_settings={"mode": "输出到主界面预览区"},
+        )
+
+        self.assertTrue(run_final["ok"])
+        self.assertEqual(run_final["output"]["mode"], "输出到主界面预览区")
+        self.assertEqual(run_final["table"]["headers"], ["A", "B"])
 
 
 if __name__ == "__main__":
