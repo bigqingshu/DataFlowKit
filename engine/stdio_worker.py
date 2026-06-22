@@ -286,11 +286,26 @@ class StdioWorker:
             )
         if action == "format_jump_issue":
             return {"text": self.engine.format_jump_issue(payload.get("issue", {}))}
+        if action == "get_plugin_schema":
+            plugin_id = payload.get("plugin_id") or payload.get("node_type_id")
+            return self.engine.get_plugin_schema(
+                plugin_id,
+                plugins_dir=payload.get("plugins_dir"),
+                preview_headers=payload.get("preview_headers"),
+                table_names=payload.get("table_names"),
+                table_columns=payload.get("table_columns"),
+            )
+        if action == "make_plugin_default_config":
+            plugin_id = payload.get("plugin_id") or payload.get("node_type_id")
+            return self.engine.make_plugin_default_config(
+                plugin_id,
+                plugins_dir=payload.get("plugins_dir"),
+            )
         if action == "list_plugins":
-            return {
-                "plugins": [],
-                "message": "stdio worker 第一版未加载插件注册表。",
-            }
+            return self.engine.list_plugins(
+                plugins_dir=payload.get("plugins_dir"),
+                refresh=payload.get("refresh"),
+            )
         if action == "preview_node":
             raise ValueError("preview_node 暂未实现，请使用单节点 plan 调用 preview_plan。")
         raise ValueError(f"未知 action：{action}")

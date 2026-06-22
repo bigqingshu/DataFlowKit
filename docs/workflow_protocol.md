@@ -312,6 +312,8 @@ Recommended actions:
 - `analyze_jumps`
 - `validate_jumps`
 - `format_jump_issue`
+- `get_plugin_schema`
+- `make_plugin_default_config`
 - `list_plugins`
 
 Runtime identity rules:
@@ -373,6 +375,10 @@ Runtime identity rules:
 - Clients should use `analyze_jumps`, `validate_jumps`, and `format_jump_issue`
   for jump-anchor relations and jump precheck display instead of importing
   Tkinter jump manager helpers.
+- Clients should use `list_plugins`, `get_plugin_schema`, and
+  `make_plugin_default_config` for plugin discovery, plugin node UI metadata,
+  and default plugin-node config. `list_node_catalog` and `list_node_ui_schemas`
+  also include scanned plugin nodes when unsupported nodes are requested.
 
 ### 7.1 Shared Node UI Schema
 

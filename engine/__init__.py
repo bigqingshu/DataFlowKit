@@ -26,6 +26,7 @@ from engine.job_service import JobService
 from engine.models import EngineRunResult, TableData
 from engine.output_service import OutputService, OutputSettings
 from engine.plan_templates import PlanTemplateService
+from engine.plugin_service import PluginService
 from engine.safety_policy import SafetyPolicy, resolve_safety_policy
 from engine.stdio_worker import StdioWorker
 from engine.table_data_service import TableDataService
@@ -43,6 +44,7 @@ __all__ = [
     "OutputSettings",
     "PlanValidationError",
     "PlanTemplateService",
+    "PluginService",
     "SafetyPolicy",
     "StdioWorker",
     "TableDataService",

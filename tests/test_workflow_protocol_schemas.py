@@ -139,6 +139,8 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
             "analyze_jumps",
             "validate_jumps",
             "format_jump_issue",
+            "get_plugin_schema",
+            "make_plugin_default_config",
             "list_plugins",
         ]:
             self.assertIn(action, actions)

@@ -22,6 +22,7 @@ from engine.job_service import JobService
 from engine.models import EngineRunResult, TableData
 from engine.output_service import OutputService
 from engine.plan_templates import PlanTemplateService
+from engine.plugin_service import PluginService
 from engine.safety_policy import resolve_safety_policy
 from engine.table_data_service import TableDataService
 from engine.workflow_services import WorkflowServices
@@ -114,20 +115,27 @@ class HeadlessWorkflowEngine:
         self.jumps = JumpAnalysisService()
         self.tables = TableDataService(db_path=getattr(self.services, "db_path", ""))
         self.plan_templates = PlanTemplateService(node_id_factory=self.node_id_factory)
+        self.plugins = PluginService()
         self.jobs = JobService(self)
         self.outputs = OutputService(self.services)
 
     def list_node_types(self, include_unsupported=True):
         return [
             item["display_name"]
-            for item in list_node_type_definitions(include_unsupported=include_unsupported)
+            for item in self.list_node_catalog(include_unsupported=include_unsupported)
         ]
 
     def list_node_type_ids(self, include_unsupported=True):
-        return list_node_type_ids(include_unsupported=include_unsupported)
+        return [
+            item["node_type_id"]
+            for item in self.list_node_catalog(include_unsupported=include_unsupported)
+        ]
 
     def list_node_catalog(self, include_unsupported=True):
-        return list_node_type_definitions(include_unsupported=include_unsupported)
+        catalog = list_node_type_definitions(include_unsupported=include_unsupported)
+        if include_unsupported:
+            catalog.extend(self.plugins.list_plugin_node_catalog().get("plugins", []))
+        return catalog
 
     def list_node_ui_schemas(
         self,
@@ -136,14 +144,31 @@ class HeadlessWorkflowEngine:
         table_names=None,
         table_columns=None,
     ):
-        return list_node_ui_schemas(
+        schemas = list_node_ui_schemas(
             include_unsupported=include_unsupported,
             preview_headers=preview_headers,
             table_names=table_names,
             table_columns=table_columns,
         )
+        if include_unsupported:
+            schemas.extend(self.plugins.list_plugin_node_ui_schemas(
+                preview_headers=preview_headers,
+                table_names=table_names,
+                table_columns=table_columns,
+            ).get("node_ui_schemas", []))
+        return schemas
 
     def get_node_ui_schema(self, node_type, preview_headers=None, table_names=None, table_columns=None):
+        node_type_id = self._node_type_id_from_value(node_type)
+        if node_type_id.startswith("plugin."):
+            schema = self.plugins.get_plugin_schema(
+                node_type_id,
+                preview_headers=preview_headers,
+                table_names=table_names,
+                table_columns=table_columns,
+            )
+            if schema.get("ok"):
+                return schema["schema"]
         return get_node_ui_schema(
             node_type,
             preview_headers=preview_headers,
@@ -228,6 +253,20 @@ class HeadlessWorkflowEngine:
     def format_access_audit_event(self, event):
         return self.access.format_access_audit_event(event)
 
+    def list_plugins(self, plugins_dir=None, *, refresh=None):
+        return self.plugins.list_plugins(plugins_dir=plugins_dir, refresh=refresh)
+
+    def get_plugin_schema(self, plugin_id, **kwargs):
+        return self.plugins.get_plugin_schema(plugin_id, **kwargs)
+
+    def make_plugin_default_config(self, plugin_id, **kwargs):
+        return {
+            "ok": True,
+            "plugin_id": plugin_id,
+            "config": self.plugins.make_plugin_default_config(plugin_id, **kwargs),
+            "issues": [],
+        }
+
     def analyze_jumps(self, plan=None, *, nodes=None):
         return self.jumps.analyze_plan(plan, nodes=nodes)
 
@@ -238,6 +277,7 @@ class HeadlessWorkflowEngine:
         return self.jumps.format_issue(issue)
 
     def apply_plan_command(self, plan, command, preview_headers=None, table_names=None, table_columns=None):
+        command = self._prepare_plan_command(command)
         return apply_workflow_plan_command(
             plan,
             command,
@@ -246,6 +286,24 @@ class HeadlessWorkflowEngine:
             table_columns=table_columns,
             node_id_factory=self.node_id_factory,
         )
+
+    def _prepare_plan_command(self, command):
+        if not isinstance(command, dict):
+            return command
+        command_type = str(command.get("type") or command.get("command") or "").strip()
+        if command_type != "insert_node" or isinstance(command.get("node"), dict):
+            return command
+        node_type = command.get("node_type_id") or command.get("node_type") or command.get("type")
+        node_type_id = self._node_type_id_from_value(node_type)
+        if not node_type_id.startswith("plugin."):
+            return command
+        prepared = copy.deepcopy(command)
+        prepared["node"] = self.make_default_node(
+            node_type_id,
+            name=command.get("name"),
+            include_legacy_type=bool(command.get("include_legacy_type", True)),
+        )
+        return prepared
 
     def validate_config(self, node_or_type, config=None, preview_headers=None, table_names=None, table_columns=None):
         return validate_node_config(
@@ -269,6 +327,26 @@ class HeadlessWorkflowEngine:
 
     def get_node_schema(self, node_type, preview_headers=None, table_names=None, table_columns=None):
         node_type_id = self._node_type_id_from_value(node_type)
+        if node_type_id.startswith("plugin."):
+            schema = self.plugins.get_plugin_schema(
+                node_type_id,
+                preview_headers=preview_headers,
+                table_names=table_names,
+                table_columns=table_columns,
+            )
+            if schema.get("ok"):
+                plugin_schema = schema["schema"]
+                return {
+                    "node_type_id": node_type_id,
+                    "node_version": DEFAULT_NODE_VERSION,
+                    "display_name": plugin_schema.get("display_name", "插件节点"),
+                    "node_type": "插件节点",
+                    "type": "插件节点",
+                    "supported": False,
+                    "default_name": schema["plugin"].get("name", "插件节点"),
+                    "default_config": schema["default_config"],
+                    "plugin": schema["plugin"],
+                }
         display_name = display_type_for_node_type_id(node_type_id)
         return {
             "node_type_id": node_type_id,
@@ -308,6 +386,13 @@ class HeadlessWorkflowEngine:
     ):
         node_type_id = self._node_type_id_from_value(node_type)
         display_name = display_type_for_node_type_id(node_type_id)
+        if node_type_id.startswith("plugin."):
+            return self.plugins.make_default_plugin_node(
+                node_type_id,
+                node_id=self.node_id_factory(),
+                name=name or "",
+                include_legacy_type=include_legacy_type,
+            )
         node = {
             "node_id": self.node_id_factory(),
             "node_type_id": node_type_id,

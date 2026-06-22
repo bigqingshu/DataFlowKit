@@ -202,6 +202,20 @@ class QtHeadlessEngineClient:
     def format_access_audit_event(self, event):
         return self.engine.format_access_audit_event(copy.deepcopy(event))
 
+    def list_plugins(self, *, plugins_dir=None, refresh=None):
+        return self.engine.list_plugins(plugins_dir=plugins_dir, refresh=refresh)
+
+    def get_plugin_schema(self, plugin_id, preview_headers=None, table_names=None, table_columns=None):
+        return self.engine.get_plugin_schema(
+            plugin_id,
+            preview_headers=preview_headers,
+            table_names=table_names,
+            table_columns=table_columns,
+        )
+
+    def make_plugin_default_config(self, plugin_id):
+        return self.engine.make_plugin_default_config(plugin_id)
+
     def analyze_jumps(self, plan):
         return self.engine.analyze_jumps(copy.deepcopy(plan))
 
