@@ -1182,7 +1182,21 @@ def build_node_detail_payload(node_type_id, *, display_name="", category="", sup
     config_lines = []
     for group in config_groups:
         fields = group.get("fields") or []
-        labels = [str(item.get("label") or item.get("key") or "") for item in fields if str(item.get("label") or item.get("key") or "").strip()]
+        labels = []
+        for item in fields:
+            label = str(item.get("label") or item.get("key") or "").strip()
+            if not label:
+                continue
+            tags = []
+            if item.get("required"):
+                tags.append("必填")
+            if item.get("visible_when"):
+                tags.append("动态显示")
+            if item.get("enabled_when"):
+                tags.append("动态启用")
+            if (item.get("action") or {}).get("key"):
+                tags.append("可选取")
+            labels.append(label + (f"({','.join(tags)})" if tags else ""))
         if labels:
             config_lines.append(f"{group.get('title', '参数')}：" + "、".join(labels[:6]))
     if not config_lines and default_config:

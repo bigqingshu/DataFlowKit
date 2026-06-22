@@ -350,12 +350,17 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(table.columnCount(), 2)
         self.assertIsNotNone(table.cellWidget(0, 0))
         self.assertIsNotNone(table.cellWidget(0, 1))
-        self.assertEqual(table.cellWidget(0, 0).currentText(), "A")
-        self.assertEqual(table.cellWidget(0, 1).text(), "AA")
+        first_combo = table.cellWidget(0, 0).findChild(qt.QtWidgets.QComboBox)
+        second_widget = table.cellWidget(0, 1)
+        second_line = second_widget if hasattr(second_widget, "text") else second_widget.findChild(qt.QtWidgets.QLineEdit)
+        self.assertEqual(first_combo.currentText(), "A")
+        self.assertEqual(second_line.text(), "AA")
         form._structured_list_add_row(editor)
         table.setCurrentCell(1, 0)
-        table.cellWidget(1, 0).setCurrentText("B")
-        table.cellWidget(1, 1).setText("BB")
+        table.cellWidget(1, 0).findChild(qt.QtWidgets.QComboBox).setCurrentText("B")
+        second_widget = table.cellWidget(1, 1)
+        second_line = second_widget if hasattr(second_widget, "text") else second_widget.findChild(qt.QtWidgets.QLineEdit)
+        second_line.setText("BB")
         converted = form.to_node()
         self.assertEqual(converted["config"]["mappings"], [{"old": "A", "new": "AA"}, {"old": "B", "new": "BB"}])
         app.processEvents()
@@ -467,6 +472,44 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(form.to_node()["config"]["fields"], ["B", "C"])
         app.processEvents()
 
+    def test_structured_list_cells_support_schema_actions(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        schema = get_node_ui_schema("批量更改列名", preview_headers=["A", "B"])
+        node = {
+            "node_type_id": "core.rename_columns",
+            "node_id": "n1",
+            "name": "批量更改列名",
+            "enabled": True,
+            "node_version": "1.0.0",
+            "config": {
+                "mode": "手动映射改名",
+                "mappings": [{"old": "A", "new": "AA"}],
+            },
+        }
+        calls = []
+
+        def action_handler(payload):
+            calls.append(payload)
+            return {"value": "B"}
+
+        form = NodeConfigForm(qt, headers=["A", "B"], action_handler=action_handler)
+        form.set_node(node, headers=["A", "B"], schema=schema)
+        editor = form.config_fields["mappings"]["editor"]
+        table = editor.structured_state["table"]
+        cell_container = table.cellWidget(0, 0)
+        button = cell_container.findChild(qt.QtWidgets.QPushButton)
+        combo = cell_container.findChild(qt.QtWidgets.QComboBox)
+        self.assertIsNotNone(button)
+        self.assertIsNotNone(combo)
+        button.click()
+        self.assertEqual(calls[0]["context"]["kind"], "structured_cell")
+        self.assertEqual(combo.currentText(), "B")
+        app.processEvents()
+
     def test_node_ui_metadata_maps_protocol_to_chinese_ui(self):
         self.assertEqual(node_display_label("core.new_columns"), "新建列")
         self.assertEqual(category_label("数据处理"), "数据处理")
@@ -485,6 +528,9 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(detail_payload["category"], "数据处理")
         self.assertEqual(detail_payload["sections"][-1]["title"], "兼容性")
         self.assertTrue(detail_payload["config_summary"])
+        detail_payload_supported = build_node_detail_payload("core.replace", supported_headless=True)
+        self.assertIn("必填", "\n".join(detail_payload_supported["config_summary"]))
+        self.assertIn("动态显示", "\n".join(detail_payload_supported["config_summary"]))
         schema = get_node_ui_schema("core.new_columns", preview_headers=["A"])
         self.assertEqual(schema["schema_version"], "2.0")
         self.assertEqual(schema["form"]["schema_version"], "2.0")
@@ -599,6 +645,7 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertEqual(controller.node_detail_title_label.text(), "批量替换")
             self.assertIn("注意", controller.node_detail_sections.toPlainText())
             self.assertIn("配置项", controller.node_detail_sections.toPlainText())
+            self.assertIn("动态显示", controller.node_detail_sections.toPlainText())
             controller.copy_selected_node()
             self.assertEqual(len(controller.current_plan["nodes"]), 3)
             copied_node = controller.current_plan["nodes"][controller.selected_node_index()]

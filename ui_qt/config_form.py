@@ -546,12 +546,84 @@ class NodeConfigForm:
         table.setCurrentCell(row, 0)
 
     def _structured_cell_editor(self, column, value):
-        column_type = str(column.get("type") or "text")
         choices = list(column.get("choices") or [])
         if not choices and (column.get("options_source") or {}).get("type") == "preview_headers":
             choices = list(self.headers)
         kind = self._structured_column_kind(column)
-        return self._editor_for_field(str(column.get("key") or ""), kind, value, choices)
+        key = str(column.get("key") or "")
+        editor = self._editor_for_field(key, kind, value, choices)
+        action = column.get("action") or {}
+        if not action and (column.get("options_source") or {}).get("type") == "preview_headers" and kind in {"choice", "field_multi_select"}:
+            action = {
+                "key": "pick_preview_headers" if kind == "field_multi_select" else "pick_preview_header",
+                "label": "选择字段",
+                "style": "picker",
+                "source": "preview_headers",
+                "multiple": kind == "field_multi_select",
+            }
+        if not action:
+            return editor
+
+        container = self.qt.QtWidgets.QWidget()
+        layout = self.qt.QtWidgets.QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addWidget(editor, 1)
+        button = self.qt.QtWidgets.QPushButton(str(action.get("label") or "操作"))
+        button.setMaximumWidth(76)
+        button.setToolTip(self._field_action_tooltip(key, action))
+        button.clicked.connect(
+            lambda checked=False, editor_widget=editor, column_schema=copy.deepcopy(column), column_key=key, action_payload=copy.deepcopy(action): self._trigger_structured_cell_action(
+                editor_widget,
+                kind,
+                column_key,
+                column_schema,
+                action_payload,
+            )
+        )
+        layout.addWidget(button)
+        return container
+
+    def _trigger_structured_cell_action(self, editor, kind, column_key, column_schema, action):
+        if not callable(self.action_handler):
+            return
+        payload = {
+            "field_key": column_key,
+            "schema": copy.deepcopy(column_schema or {}),
+            "action": copy.deepcopy(action or {}),
+            "value": self._structured_editor_value(editor, kind),
+            "headers": list(self.headers or []),
+            "context": {"kind": "structured_cell"},
+        }
+        result = self.action_handler(payload) or {}
+        if "value" in result:
+            self._set_structured_editor_value(editor, kind, result.get("value"))
+            self._apply_dynamic_state()
+
+    def _structured_editor_value(self, editor, kind):
+        if kind == "bool":
+            return bool(editor.isChecked())
+        if kind == "field_multi_select":
+            return list(getattr(editor, "multi_select_value", []))
+        if kind == "choice":
+            return str(editor.currentText())
+        if kind == "long_text":
+            return str(editor.toPlainText())
+        return str(editor.text())
+
+    def _set_structured_editor_value(self, editor, kind, value):
+        if kind == "bool":
+            editor.setChecked(bool(value))
+        elif kind == "field_multi_select":
+            values = coerce_multi_select_value(value)
+            editor.multi_select_value = values
+            editor.setText(format_multi_select_summary(values))
+        elif kind == "choice":
+            editor.setCurrentText(format_form_value(value))
+        elif kind == "long_text":
+            editor.setPlainText(format_form_value(value))
+        else:
+            editor.setText(format_form_value(value))
 
     def _structured_column_kind(self, column):
         column_type = str((column or {}).get("type") or "text")
@@ -578,7 +650,7 @@ class NodeConfigForm:
             has_value = False
             for column_index, column in enumerate(columns):
                 key = str(column.get("key") or "")
-                widget = table.cellWidget(row, column_index)
+                widget = self._structured_cell_widget(table.cellWidget(row, column_index), column)
                 if not key or widget is None:
                     continue
                 kind = self._structured_column_kind(column)
@@ -640,15 +712,29 @@ class NodeConfigForm:
         other = {}
         for column_index, column in enumerate(columns):
             key = str(column.get("key") or column_index)
-            current[key] = self._structured_widget_value(table.cellWidget(row, column_index), column)
-            other[key] = self._structured_widget_value(table.cellWidget(target, column_index), column)
+            current[key] = self._structured_widget_value(self._structured_cell_widget(table.cellWidget(row, column_index), column), column)
+            other[key] = self._structured_widget_value(self._structured_cell_widget(table.cellWidget(target, column_index), column), column)
         for column_index, column in enumerate(columns):
             key = str(column.get("key") or column_index)
-            self._set_structured_widget_value(table.cellWidget(row, column_index), column, other.get(key))
-            self._set_structured_widget_value(table.cellWidget(target, column_index), column, current.get(key))
+            self._set_structured_widget_value(self._structured_cell_widget(table.cellWidget(row, column_index), column), column, other.get(key))
+            self._set_structured_widget_value(self._structured_cell_widget(table.cellWidget(target, column_index), column), column, current.get(key))
         table.setCurrentCell(target, 0)
         self._update_structured_list_buttons(frame)
         self._apply_dynamic_state()
+
+    def _structured_cell_widget(self, widget, column):
+        if widget is None:
+            return None
+        if hasattr(widget, "currentText") or hasattr(widget, "text") or hasattr(widget, "toPlainText") or hasattr(widget, "isChecked"):
+            return widget
+        kind = self._structured_column_kind(column)
+        if kind == "choice":
+            return widget.findChild(self.qt.QtWidgets.QComboBox)
+        if kind == "bool":
+            return widget.findChild(self.qt.QtWidgets.QCheckBox)
+        if kind == "long_text":
+            return widget.findChild(self.qt.QtWidgets.QPlainTextEdit)
+        return widget.findChild(self.qt.QtWidgets.QLineEdit)
 
     def _structured_widget_value(self, widget, column):
         if widget is None:
