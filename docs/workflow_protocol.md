@@ -369,6 +369,9 @@ Runtime identity rules:
 - `core.writeback` runs headlessly for SQLite writeback and external-table to
   current-table modes. SQLite updates use `TableAccessManager` transactions and
   still require `execute_actions = true` and `config.enable_write = true`.
+- `core.file_list` and `core.batch_rename` run headlessly. Batch rename only
+  changes files when `execute_actions = true` and `config.actual_rename = true`;
+  otherwise it returns the preview table.
 - Clients that need progress, cancellation, or polling should use
   `start_job`, `get_job_status`, `get_job_events`, and `cancel_job`.
   `start_job` accepts `job_action = preview_plan | run_plan` and stores emitted

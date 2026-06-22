@@ -76,7 +76,7 @@ class HeadlessWorkflowEngineApiTests(unittest.TestCase):
             "nodes": [
                 {"type": "新建列", "config": {"columns_text": "B"}},
                 {"type": "插件节点", "config": {"plugin_id": "demo"}},
-                {"type": "批量重命名", "enabled": False, "config": {}},
+                {"type": "节点组 / 子工作流", "enabled": False, "config": {}},
             ]
         })
 

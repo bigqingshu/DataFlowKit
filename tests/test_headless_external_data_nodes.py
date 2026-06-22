@@ -288,6 +288,65 @@ class HeadlessExternalDataNodesTests(unittest.TestCase):
         self.assertEqual(result.rows, [["A", "Alpha"]])
         self.assertIn("其他表写入当前表", result.logs[0])
 
+    def test_file_list_node_runs_headlessly(self):
+        with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:
+            with open(Path(temp_dir) / "a.txt", "w", encoding="utf-8") as f:
+                f.write("a")
+            with open(Path(temp_dir) / "b.csv", "w", encoding="utf-8") as f:
+                f.write("b")
+            engine = HeadlessWorkflowEngine()
+            plan = {
+                "nodes": [{
+                    "node_type_id": "core.file_list",
+                    "config": {
+                        "directory": temp_dir,
+                        "recursive": False,
+                        "extensions": "txt",
+                    },
+                }]
+            }
+
+            result = engine.preview_plan(plan)
+
+        self.assertEqual(result.headers[0], "文件名")
+        self.assertEqual([row[0] for row in result.rows], ["a.txt"])
+        self.assertIn("读取文件列表 1 项", result.logs[0])
+
+    def test_batch_rename_preview_and_execute_are_headless(self):
+        with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:
+            src = Path(temp_dir) / "old.txt"
+            src.write_text("old", encoding="utf-8")
+            log_path = Path(temp_dir) / "rename_log.csv"
+            engine = HeadlessWorkflowEngine()
+            plan = {
+                "nodes": [{
+                    "node_type_id": "core.batch_rename",
+                    "config": {
+                        "auto_append_ext": True,
+                        "actual_rename": True,
+                        "log_path": str(log_path),
+                    },
+                }],
+                "headers": ["完整路径", "新文件名"],
+                "rows": [[str(src), "new"]],
+            }
+
+            preview = engine.preview_plan(plan)
+
+            self.assertTrue(src.exists())
+            self.assertFalse((Path(temp_dir) / "new.txt").exists())
+            self.assertEqual(preview.rows[0][3], "预览可重命名")
+            self.assertFalse(log_path.exists())
+
+            executed = engine.run_plan(plan, execute_actions=True)
+
+            self.assertFalse(src.exists())
+            self.assertTrue((Path(temp_dir) / "new.txt").exists())
+            self.assertTrue(log_path.exists())
+
+        self.assertEqual(executed.rows[0][3], "已重命名")
+        self.assertIn("实际重命名 1 项", executed.logs[0])
+
 
 if __name__ == "__main__":
     unittest.main()

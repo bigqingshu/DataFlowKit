@@ -58,6 +58,7 @@ DISPLAY_TYPE_BY_NODE_TYPE_ID = {
 
 
 HEADLESS_DATA_NODE_TYPE_IDS = {
+    "core.file_list",
     "core.replace",
     "core.extract",
     "core.datetime_format",
@@ -81,6 +82,7 @@ HEADLESS_DATA_NODE_TYPE_IDS = {
     "core.filter",
     "core.selected_columns_write",
     "core.writeback",
+    "core.batch_rename",
 }
 
 HEADLESS_CONTROL_NODE_TYPE_IDS = {

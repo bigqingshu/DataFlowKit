@@ -10,6 +10,8 @@ validate_plan() as unsupported instead of being partially emulated.
 from __future__ import annotations
 
 import copy
+import csv
+import os
 import uuid
 from datetime import datetime
 
@@ -63,6 +65,12 @@ from workflow.nodes.filter_plan_nodes import (
     build_filter_config_probe_result,
     build_filter_runtime_plan,
     get_required_columns_for_plan_table,
+)
+from workflow.nodes.file_nodes import (
+    BATCH_RENAME_LOG_HEADERS,
+    apply_batch_rename_node,
+    apply_file_list_node,
+    make_numbered_path,
 )
 from workflow.nodes.selected_columns_nodes import (
     apply_selected_columns_to_memory_table,
@@ -692,6 +700,9 @@ class HeadlessWorkflowEngine:
             if node_type_id == "core.writeback":
                 h, r, stat = self._apply_writeback_node(headers, rows, config, context, execute_actions)
                 return h, r, stat, None
+            if node_type_id == "core.batch_rename":
+                h, r, stat = self._apply_batch_rename_node(headers, rows, config, context, execute_actions, cancel_event)
+                return h, r, stat, None
             h, r, stat = self._apply_data_node(headers, rows, node_type_id, config, context, cancel_event)
             return h, r, stat, None
         if node_type_id == "core.jump_anchor":
@@ -712,6 +723,9 @@ class HeadlessWorkflowEngine:
 
     def _apply_data_node(self, headers, rows, node_type_id, config, context, cancel_event):
         node_context = self._make_node_context(context, cancel_event)
+        if node_type_id == "core.file_list":
+            file_context = self._make_file_node_context(context, cancel_event)
+            return apply_file_list_node(headers, rows, config, context=file_context)
         if node_type_id == "core.replace":
             return apply_replace_node(headers, rows, config, context=node_context)
         if node_type_id == "core.extract":
@@ -1141,6 +1155,66 @@ class HeadlessWorkflowEngine:
             table_access=current.get("table_access") if isinstance(current, dict) else None,
             permission_policy=(context or {}).get("table_access_policy") if isinstance(context, dict) else None,
         )
+
+    def _make_file_node_context(self, context, cancel_event):
+        node_context = self._make_node_context(context, cancel_event)
+        node_context.setdefault("default_directory", os.getcwd())
+
+        def report_progress(current=None, total=None, message="", node_name="获取文件列表"):
+            callback = (context or {}).get("progress_callback") if isinstance(context, dict) else None
+            self._emit(callback, {
+                "type": "node_progress",
+                "current": current,
+                "total": total,
+                "message": message,
+                "node_name": node_name,
+            })
+
+        node_context["report_progress"] = report_progress
+        return node_context
+
+    def _make_batch_rename_context(self, context, cancel_event):
+        node_context = self._make_file_node_context(context, cancel_event)
+        node_context.update({
+            "path_exists": os.path.exists,
+            "path_is_dir": os.path.isdir,
+            "make_dirs": lambda path: os.makedirs(path, exist_ok=True),
+            "rename_file": os.rename,
+            "replace_file": os.replace,
+            "make_numbered_path": make_numbered_path,
+        })
+        return node_context
+
+    def _apply_batch_rename_node(self, headers, rows, config, context, execute_actions, cancel_event):
+        node_context = self._make_batch_rename_context(context, cancel_event)
+        result_headers, result_rows, message = apply_batch_rename_node(
+            headers,
+            rows,
+            config,
+            execute_actions=execute_actions,
+            context=node_context,
+        )
+        if node_context.get("batch_rename_do_rename") and bool(config.get("write_log", True)):
+            try:
+                self._write_batch_rename_log(config, node_context)
+            except Exception as exc:
+                changed = node_context.get("batch_rename_changed", 0)
+                message = f"重命名完成 {changed} 项，但日志写入失败：{exc}"
+        if isinstance(context, dict):
+            context["batch_rename_log_rows"] = list(node_context.get("batch_rename_log_rows", []))
+            context["batch_rename_changed"] = node_context.get("batch_rename_changed", 0)
+            context["batch_rename_preview_ok"] = node_context.get("batch_rename_preview_ok", 0)
+            context["batch_rename_skipped"] = node_context.get("batch_rename_skipped", 0)
+            context["batch_rename_do_rename"] = bool(node_context.get("batch_rename_do_rename"))
+        return result_headers, result_rows, message
+
+    def _write_batch_rename_log(self, config, node_context):
+        log_path = config.get("log_path") or os.path.abspath("rename_log.csv")
+        os.makedirs(os.path.dirname(os.path.abspath(log_path)), exist_ok=True)
+        with open(log_path, "w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(BATCH_RENAME_LOG_HEADERS)
+            writer.writerows(node_context.get("batch_rename_log_rows", []))
 
     def _apply_save_transit_node(self, headers, rows, config, context, execute_actions):
         context.setdefault("transit_tables", {})
