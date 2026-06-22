@@ -6,7 +6,6 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 
-from engine.plan_io import build_plan_document, list_plan_templates, load_plan, save_plan as save_plan_file
 from ui_qt.config_form import NodeConfigForm
 from ui_qt.engine_client import QtHeadlessEngineClient, SAMPLE_HEADERS, SAMPLE_PLAN, SAMPLE_ROWS
 from ui_qt.node_ui_metadata import CATEGORY_ORDER, category_label, format_node_detail
@@ -347,7 +346,8 @@ class QtWorkflowMainWindow:
 
     def refresh_template_list(self, show_status=True):
         self.plan_template_combo.clear()
-        templates = list_plan_templates(self.plan_dir)
+        result = self.engine_client.list_plan_templates(self.plan_dir)
+        templates = result.get("templates", [])
         if not templates:
             if show_status:
                 self.status_bar.showMessage(f"模板刷新完成：0 个。")
@@ -602,7 +602,11 @@ class QtWorkflowMainWindow:
 
     def load_plan_path(self, path):
         try:
-            loaded = load_plan(path)
+            loaded = self.engine_client.load_plan_template(path)
+            if not loaded.get("ok"):
+                self.issue_text.setPlainText(self._format_issues(loaded.get("issues", [])))
+                self.status_bar.showMessage("打开失败：计划模板校验未通过")
+                return
             data = loaded["plan"]
             self.current_plan_path = Path(loaded["path"])
             self.current_plan = data
@@ -629,7 +633,8 @@ class QtWorkflowMainWindow:
                 return
             path = Path(selected)
         try:
-            self.current_plan = build_plan_document(
+            saved = self.engine_client.save_plan_template(
+                path,
                 self.current_plan,
                 headers=self.current_headers,
                 rows=self.current_rows,
@@ -637,7 +642,11 @@ class QtWorkflowMainWindow:
                 output_table=self.output_table_edit.text(),
                 backup_before_overwrite=self.backup_checkbox.isChecked(),
             )
-            saved = save_plan_file(path, self.current_plan)
+            if not saved.get("ok"):
+                self.issue_text.setPlainText(self._format_issues(saved.get("issues", [])))
+                self.status_bar.showMessage("保存失败：计划模板校验未通过")
+                return
+            self.current_plan = saved.get("plan") or self.current_plan
             self.current_plan_path = Path(saved["path"])
             self.refresh_template_list(show_status=False)
             self.status_bar.showMessage(f"已保存：{path}")

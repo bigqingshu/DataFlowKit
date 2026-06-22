@@ -278,6 +278,10 @@ Recommended actions:
 - `list_node_ui_schemas`
 - `get_node_ui_schema`
 - `migrate_plan`
+- `list_plan_templates`
+- `load_plan_template`
+- `save_plan_template`
+- `validate_plan_template`
 - `apply_plan_command`
 - `validate_config`
 - `validate_plan_configs`
@@ -308,6 +312,10 @@ Runtime identity rules:
 - Clients can call `migrate_plan` after loading older templates. The service adds
   missing `node_id`, `node_type_id`, and `node_version` fields while preserving
   legacy `type` and unknown extension fields.
+- Clients should use `list_plan_templates`, `load_plan_template`,
+  `save_plan_template`, and `validate_plan_template` for workflow plan template
+  files. These actions keep template scanning, JSON recovery, migration, and
+  save-time validation behind the backend boundary.
 - Clients should use `apply_plan_command` for plan edits such as inserting,
   deleting, moving, duplicating, enabling, disabling, clearing, or replacing
   nodes. This keeps node-id generation and edit semantics out of concrete UIs.
@@ -570,6 +578,11 @@ Current plan templates usually contain:
 These files remain valid. The shared `migrate_plan` action performs this step without mutating the input plan.
 It returns `{ok, changed, plan, issues, summary}` so frontends can show warnings
 only when the migration finds invalid shapes.
+
+`load_plan_template` returns the loaded plan plus migration and validation
+metadata without writing the migrated result back to disk. `save_plan_template`
+builds the plan document, migrates a copy, validates it, and only writes when no
+error-level issues remain.
 
 A migration step may add:
 

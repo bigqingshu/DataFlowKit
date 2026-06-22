@@ -21,6 +21,7 @@ from engine.issue_schema import (
     normalize_issues,
 )
 from engine.models import EngineRunResult, TableData
+from engine.plan_templates import PlanTemplateService
 from engine.safety_policy import SafetyPolicy, resolve_safety_policy
 from engine.stdio_worker import StdioWorker
 
@@ -30,6 +31,7 @@ __all__ = [
     "HeadlessEngineError",
     "HeadlessWorkflowEngine",
     "PlanValidationError",
+    "PlanTemplateService",
     "SafetyPolicy",
     "StdioWorker",
     "TableData",

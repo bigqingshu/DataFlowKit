@@ -85,6 +85,38 @@ class QtHeadlessEngineClient:
     def validate_plan(self, plan):
         return self.engine.validate_plan(copy.deepcopy(plan))
 
+    def list_plan_templates(self, plan_dir):
+        return self.engine.list_plan_templates(plan_dir)
+
+    def load_plan_template(self, path, *, migrate=True):
+        return self.engine.load_plan_template(path, migrate=migrate)
+
+    def save_plan_template(
+        self,
+        path,
+        plan,
+        *,
+        headers=None,
+        rows=None,
+        output_mode=None,
+        output_table=None,
+        backup_before_overwrite=None,
+        migrate=True,
+    ):
+        return self.engine.save_plan_template(
+            path,
+            copy.deepcopy(plan),
+            headers=headers,
+            rows=rows,
+            output_mode=output_mode,
+            output_table=output_table,
+            backup_before_overwrite=backup_before_overwrite,
+            migrate=migrate,
+        )
+
+    def validate_plan_template(self, plan):
+        return self.engine.validate_plan_template(copy.deepcopy(plan))
+
     def validate_config(self, node, preview_headers=None, table_names=None, table_columns=None):
         return self.engine.validate_config(
             copy.deepcopy(node),

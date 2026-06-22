@@ -98,6 +98,28 @@ class StdioWorker:
                 payload.get("plan", {}),
                 target_version=payload.get("target_version") or payload.get("protocol_version"),
             )
+        if action == "list_plan_templates":
+            return self.engine.list_plan_templates(payload.get("plan_dir", "plan"))
+        if action == "load_plan_template":
+            return self.engine.load_plan_template(
+                payload.get("path", ""),
+                migrate=bool(payload.get("migrate", True)),
+                target_version=payload.get("target_version") or payload.get("protocol_version"),
+            )
+        if action == "save_plan_template":
+            return self.engine.save_plan_template(
+                payload.get("path", ""),
+                payload.get("plan", {}),
+                headers=payload.get("headers"),
+                rows=payload.get("rows"),
+                output_mode=payload.get("output_mode"),
+                output_table=payload.get("output_table"),
+                backup_before_overwrite=payload.get("backup_before_overwrite"),
+                migrate=bool(payload.get("migrate", True)),
+                target_version=payload.get("target_version") or payload.get("protocol_version"),
+            )
+        if action == "validate_plan_template":
+            return self.engine.validate_plan_template(payload.get("plan", {}))
         if action == "get_node_type":
             node_type = payload.get("node_type") or payload.get("type") or payload.get("node_type_id")
             return self.engine.get_node_type(

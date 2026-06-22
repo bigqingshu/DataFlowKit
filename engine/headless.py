@@ -17,6 +17,7 @@ from core.data_utils import normalize_rows, safe_cell
 from engine.errors import EngineCancelled, PlanValidationError
 from engine.issue_schema import has_error_issues, make_issue
 from engine.models import EngineRunResult, TableData
+from engine.plan_templates import PlanTemplateService
 from engine.safety_policy import resolve_safety_policy
 from workflow.default_configs import default_config_for_type, default_name_for_node
 from workflow.config_validation import (
@@ -101,6 +102,7 @@ class HeadlessWorkflowEngine:
         self.max_target_cells = int(max_target_cells or MAX_TARGET_CELLS)
         self.node_id_factory = node_id_factory or (lambda: "node_" + uuid.uuid4().hex)
         self.now_factory = now_factory or datetime.now
+        self.plan_templates = PlanTemplateService(node_id_factory=self.node_id_factory)
 
     def list_node_types(self, include_unsupported=True):
         return [
@@ -142,6 +144,22 @@ class HeadlessWorkflowEngine:
             target_version=target_version,
             node_id_factory=self.node_id_factory,
         )
+
+    def list_plan_templates(self, plan_dir):
+        return self.plan_templates.list_templates(plan_dir)
+
+    def load_plan_template(self, path, *, migrate=True, target_version=None):
+        return self.plan_templates.load_template(
+            path,
+            migrate=migrate,
+            target_version=target_version,
+        )
+
+    def save_plan_template(self, path, plan, **options):
+        return self.plan_templates.save_template(path, plan, **options)
+
+    def validate_plan_template(self, plan):
+        return self.plan_templates.validate_template(plan)
 
     def apply_plan_command(self, plan, command, preview_headers=None, table_names=None, table_columns=None):
         return apply_workflow_plan_command(
