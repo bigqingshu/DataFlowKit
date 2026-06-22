@@ -288,9 +288,15 @@ TABLE_FIELD_MULTI_PICKER_RULES = {
     "lookup_fields": {"table_field": "lookup_table"},
 }
 
+TABLE_FIELD_PICKER_RULES = {
+    "output_fields": {"table_field": "source_table"},
+}
+
 STRUCTURED_COLUMN_TABLE_FIELD_RULES = {
     "field_mappings.source_field": {"table_field": "source_table"},
     "field_mappings.target_field": {"table_field": "target_table"},
+    "match_rules.source_field": {"table_field": "source_table"},
+    "match_rules.target_field": {"table_field": "target_table"},
     "conditions.field": {"table_field": "source_table"},
     "join_rules.left": {"table_field": "source_table"},
     "join_rules.right": {"table_field": "source_table"},
@@ -337,6 +343,10 @@ STRUCTURED_LIST_FIELD_COLUMNS = {
         {"key": "left", "label": "左字段", "type": "field_select"},
         {"key": "op", "label": "操作", "type": "select", "choices": FIELD_CHOICES.get("op", [])},
         {"key": "right", "label": "右字段", "type": "field_select"},
+    ],
+    "match_rules": [
+        {"key": "source_field", "label": "来源字段", "type": "field_select"},
+        {"key": "target_field", "label": "目标字段", "type": "field_select"},
     ],
 }
 
@@ -418,6 +428,45 @@ NODE_CONFIG_LAYOUTS = {
             ],
         },
     ],
+    "core.filter": [
+        {
+            "title": "筛选条件",
+            "fields": ["logic", "conditions", "remove_duplicates"],
+        },
+        {
+            "title": "关联表",
+            "fields": ["source_table", "extra_tables", "join_logic", "join_rules"],
+        },
+        {
+            "title": "输出控制",
+            "fields": ["output_fields", "result_limit", "max_intermediate"],
+        },
+    ],
+    "core.writeback": [
+        {
+            "title": "写回目标",
+            "fields": ["writeback_direction", "source_table", "target_table"],
+        },
+        {
+            "title": "匹配规则",
+            "fields": ["use_match_rules", "match_rules", "field_mappings"],
+        },
+        {
+            "title": "写回策略",
+            "fields": [
+                "overwrite_policy",
+                "source_empty_policy",
+                "source_empty_fixed",
+                "no_match_policy",
+                "multi_match_policy",
+                "duplicate_target_policy",
+            ],
+        },
+        {
+            "title": "执行控制",
+            "fields": ["enable_write", "backup_before_write", "output_preview_table", "sequential_insert_missing_rows"],
+        },
+    ],
 }
 
 
@@ -434,6 +483,30 @@ FIELD_HELP_TEXTS = {
     "replace_count": "0 表示替换全部命中。",
     "match_value_source": "匹配值可以手动输入，也可以来自字段。",
     "replace_value_source": "替换值可以手动输入，也可以来自字段。",
+    "logic": "条件之间的组合关系，决定多条筛选条件如何一起生效。",
+    "conditions": "按列表配置筛选条件，每条条件可以指定字段、操作和比较值。",
+    "source_table": "作为主要字段来源的数据表。表字段候选项会随之切换。",
+    "extra_tables": "需要参与联合筛选的附加数据表。",
+    "join_logic": "多条关联规则之间的组合关系。",
+    "join_rules": "定义主表与附加表之间的字段关联条件。",
+    "output_fields": "筛选后保留输出的字段列表。为空时通常表示保留全部字段。",
+    "result_limit": "限制最终输出结果的最大行数。",
+    "max_intermediate": "限制中间计算过程允许展开的最大记录数。",
+    "writeback_direction": "控制当前表与目标表之间的写回方向。",
+    "target_table": "写回目标表。目标字段候选项会随之切换。",
+    "use_match_rules": "开启后，只有匹配规则命中的记录才会参与写回。",
+    "match_rules": "配置来源表和目标表之间的记录匹配规则。",
+    "field_mappings": "配置来源字段写入目标字段的映射关系。",
+    "overwrite_policy": "目标表已有值时的覆盖策略。",
+    "source_empty_policy": "来源值为空时的写回处理方式。",
+    "source_empty_fixed": "当来源空值策略要求填写固定值时使用。",
+    "no_match_policy": "来源记录在目标表中未匹配到时的处理方式。",
+    "multi_match_policy": "一条来源记录匹配到多条目标记录时的处理方式。",
+    "duplicate_target_policy": "目标表存在重复匹配键时的处理方式。",
+    "enable_write": "关闭时只做预览，不真正写入目标表。",
+    "backup_before_write": "真正写入前是否先备份目标表。",
+    "output_preview_table": "写回后是否生成预览结果表供界面查看。",
+    "sequential_insert_missing_rows": "找不到目标记录时是否允许按顺序补写新行。",
 }
 
 FIELD_VALIDATION_RULES = {
@@ -454,6 +527,8 @@ FIELD_VALIDATION_RULES = {
     "n_chars": {"integer": True, "min": 0},
     "part_index": {"integer": True, "min": 1},
     "between_occurrence": {"integer": True, "min": 1},
+    "result_limit": {"integer": True, "min": 1},
+    "max_intermediate": {"integer": True, "min": 1},
 }
 
 FIELD_DYNAMIC_RULES = {
@@ -577,6 +652,22 @@ FIELD_DYNAMIC_RULES = {
     "template": {
         "visible_when": {"field": "format_mode", "equals": "占位符模板"},
         "depends_on": ["format_mode"],
+    },
+    "join_logic": {
+        "visible_when": {"field": "extra_tables", "truthy": True},
+        "depends_on": ["extra_tables"],
+    },
+    "join_rules": {
+        "visible_when": {"field": "extra_tables", "truthy": True},
+        "depends_on": ["extra_tables", "source_table"],
+    },
+    "source_empty_fixed": {
+        "visible_when": {"field": "source_empty_policy", "equals": "填写固定值"},
+        "depends_on": ["source_empty_policy"],
+    },
+    "match_rules": {
+        "visible_when": {"field": "use_match_rules", "equals": True},
+        "depends_on": ["use_match_rules", "source_table", "target_table"],
     },
 }
 
@@ -906,6 +997,10 @@ def options_source_for_field(key):
         payload = dict(TABLE_FIELD_MULTI_PICKER_RULES[key])
         payload["type"] = "table_columns"
         return payload
+    if key in TABLE_FIELD_PICKER_RULES:
+        payload = dict(TABLE_FIELD_PICKER_RULES[key])
+        payload["type"] = "table_columns"
+        return payload
     if key in TABLE_PICKER_KEYS:
         return {"type": "table_names"}
     return None
@@ -929,6 +1024,16 @@ def action_for_field(key):
         }
     if key in TABLE_FIELD_MULTI_PICKER_RULES:
         table_field = TABLE_FIELD_MULTI_PICKER_RULES[key].get("table_field")
+        return {
+            "key": "pick_table_fields",
+            "label": "选择字段",
+            "style": "picker",
+            "source": "table_columns",
+            "multiple": True,
+            "table_field": table_field,
+        }
+    if key in TABLE_FIELD_PICKER_RULES:
+        table_field = TABLE_FIELD_PICKER_RULES[key].get("table_field")
         return {
             "key": "pick_table_fields",
             "label": "选择字段",
@@ -1018,6 +1123,8 @@ def config_field_schema(key, value=None, *, headers=None, table_names=None, tabl
     elif key in FIELD_MULTI_PICKER_KEYS:
         field_type = "field_multi_select"
     elif key in TABLE_FIELD_MULTI_PICKER_RULES:
+        field_type = "field_multi_select"
+    elif key in TABLE_FIELD_PICKER_RULES:
         field_type = "field_multi_select"
     elif key in TABLE_PICKER_KEYS:
         field_type = "table_select"

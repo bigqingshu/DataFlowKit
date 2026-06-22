@@ -240,6 +240,25 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
         self.assertEqual(join_columns["left"]["action"]["key"], "pick_table_field")
         self.assertEqual(join_columns["right"]["options_source"], {"type": "table_columns", "table_field": "source_table"})
 
+        filter_group_titles = [group["title"] for group in filter_schema["form"]["groups"]]
+        self.assertEqual(filter_group_titles, ["筛选条件", "关联表", "输出控制"])
+        self.assertEqual(filter_fields["output_fields"]["type"], "field_multi_select")
+        self.assertEqual(filter_fields["output_fields"]["options_source"], {"type": "table_columns", "table_field": "source_table"})
+        self.assertEqual(filter_fields["output_fields"]["action"]["key"], "pick_table_fields")
+        self.assertEqual(filter_fields["join_rules"]["visible_when"], {"field": "extra_tables", "truthy": True})
+
+        writeback_group_titles = [group["title"] for group in schema["form"]["groups"]]
+        self.assertEqual(writeback_group_titles, ["写回目标", "匹配规则", "写回策略", "执行控制"])
+        self.assertEqual(fields["match_rules"]["type"], "structured_list")
+        self.assertEqual(fields["match_rules"]["visible_when"], {"field": "use_match_rules", "equals": True})
+        match_columns = {
+            item["key"]: item
+            for item in fields["match_rules"]["item_schema"]["columns"]
+        }
+        self.assertEqual(match_columns["source_field"]["options_source"], {"type": "table_columns", "table_field": "source_table"})
+        self.assertEqual(match_columns["target_field"]["action"]["key"], "pick_table_field")
+        self.assertEqual(fields["source_empty_fixed"]["visible_when"], {"field": "source_empty_policy", "equals": "填写固定值"})
+
     def test_node_ui_schema_marks_table_driven_field_actions(self):
         from workflow.node_ui_schema import get_node_ui_schema
 
