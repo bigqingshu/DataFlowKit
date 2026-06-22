@@ -111,6 +111,8 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertTrue(preview_loaded["ok"])
         self.assertEqual(preview_loaded["table"]["headers"], ["A", "B"])
         self.assertEqual(preview_loaded["title"], "Headless 预览结果")
+        self.assertEqual(preview_loaded["view_state"]["table_kind"], "preview")
+        self.assertEqual(preview_loaded["view_state"]["table_title"], "Headless 预览结果")
         self.assertEqual(preview_loaded["message_panel"]["title"], "预览来源")
 
         preview_panel = client.build_preview_panel_state(
@@ -1074,6 +1076,8 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertFalse(controller.cancel_job_button.isEnabled())
 
         with patch("ui_qt.main_window.QtWorkflowMainWindow._confirm_prompt", return_value=True):
+            controller.show_input_table()
+            self.assertEqual(controller.current_table_kind, "input")
             controller.add_node_by_type("core.replace")
             self.assertEqual(len(controller.current_plan["nodes"]), 2)
             self.assertEqual(controller.config_form.config_fields["target_field"]["action_button"].text(), "选择字段")
@@ -1124,6 +1128,8 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertEqual(controller.current_table_kind, "preview")
             self.assertIn("status", controller.last_preview_headers)
             self.assertTrue(controller.table_title.text().startswith("执行结果"))
+            controller.show_preview_table()
+            self.assertEqual(controller.current_table_kind, "preview")
             controller.output_mode_combo.setCurrentText("保存为SQLite新表")
             app.processEvents()
             window.show()

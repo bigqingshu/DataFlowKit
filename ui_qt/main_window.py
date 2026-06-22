@@ -1473,10 +1473,10 @@ class QtWorkflowMainWindow:
         self.node_progress.setValue(int(progress.get("node_value", 0) or 0))
 
     def show_input_table(self):
-        self._show_preview_source({"type": "memory", "table_role": "input"}, kind="input")
+        self._show_preview_source({"type": "memory", "table_role": "input"})
 
     def show_preview_table(self):
-        self._show_preview_source({"type": "memory", "table_role": "preview"}, kind="preview")
+        self._show_preview_source({"type": "memory", "table_role": "preview"})
 
     def show_log_text(self):
         self.message_tabs.setCurrentWidget(self.log_text)
@@ -1533,27 +1533,17 @@ class QtWorkflowMainWindow:
             return
         if not loaded.get("ok"):
             self._apply_message_panel(loaded.get("message_panel") or self.engine_client.build_message_panel_state(mode="warning", title="读取预览来源失败", issues=loaded.get("issues", [])).get("panel") or {})
-            self.status_bar.showMessage(loaded.get("message", "读取预览来源失败"))
+            view_state = loaded.get("view_state") or {}
+            self.status_bar.showMessage(str(view_state.get("status_message") or loaded.get("message", "读取预览来源失败")))
             return
         table = loaded.get("table") or {}
         headers = list(table.get("headers") or [])
         rows = [list(row) for row in (table.get("rows") or [])]
-        resolved_source = loaded.get("source") or source or {}
-        source_type = resolved_source.get("type")
-        source_role = resolved_source.get("table_role")
-        if kind:
-            self.current_table_kind = kind
-        elif source_type == "memory" and source_role == "input":
-            self.current_table_kind = "input"
-        elif source_type == "memory" and source_role == "preview":
-            self.current_table_kind = "preview"
-        elif source_type == "sqlite":
-            self.current_table_kind = "sqlite"
-        else:
-            self.current_table_kind = "preview"
-        self.update_table(headers, rows, title=loaded.get("title") or "表格预览")
+        view_state = loaded.get("view_state") or {}
+        self.current_table_kind = str(kind or view_state.get("table_kind") or "preview")
+        self.update_table(headers, rows, title=str(view_state.get("table_title") or loaded.get("title") or "表格预览"))
         self._apply_message_panel(loaded.get("message_panel") or self.engine_client.build_message_panel_state(mode="info", title="预览来源", body=loaded.get("message", "")).get("panel") or {})
-        self.status_bar.showMessage(loaded.get("message", "已切换表格。"))
+        self.status_bar.showMessage(str(view_state.get("status_message") or loaded.get("message", "已切换表格。")))
 
     def _input_table_payload(self):
         return {

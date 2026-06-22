@@ -940,6 +940,12 @@ class WorkflowFacade:
                 },
                 "title": "输入表格",
                 "message": "已切换到输入表格。",
+                "view_state": {
+                    "table_title": "输入表格",
+                    "table_kind": "input",
+                    "status_message": "已切换到输入表格。",
+                    "has_table": True,
+                },
                 "message_panel": self.build_message_panel_state(
                     mode="info",
                     title="预览来源",
@@ -959,6 +965,12 @@ class WorkflowFacade:
                         "message": "还没有预览结果。",
                     }],
                     "message": "暂无预览结果",
+                    "view_state": {
+                        "table_title": "Headless 预览结果",
+                        "table_kind": "preview",
+                        "status_message": "暂无预览结果",
+                        "has_table": False,
+                    },
                     "message_panel": self.build_message_panel_state(
                         mode="warning",
                         title="读取预览来源失败",
@@ -975,6 +987,12 @@ class WorkflowFacade:
                 "table": {"headers": headers, "rows": rows},
                 "title": "Headless 预览结果",
                 "message": "已切换到预览结果。",
+                "view_state": {
+                    "table_title": "Headless 预览结果",
+                    "table_kind": "preview",
+                    "status_message": "已切换到预览结果。",
+                    "has_table": True,
+                },
                 "message_panel": self.build_message_panel_state(
                     mode="info",
                     title="预览来源",
@@ -999,6 +1017,12 @@ class WorkflowFacade:
                 },
                 "title": f"SQLite：{table_name}",
                 "message": f"已读取 SQLite 表：{table_name}",
+                "view_state": {
+                    "table_title": f"SQLite：{table_name}",
+                    "table_kind": "sqlite",
+                    "status_message": f"已读取 SQLite 表：{table_name}",
+                    "has_table": True,
+                },
                 "message_panel": self.build_message_panel_state(
                     mode="info",
                     title="预览来源",
@@ -1014,6 +1038,12 @@ class WorkflowFacade:
                 "message": f"不支持的预览来源：{kind or 'unknown'}",
             }],
             "message": "读取预览来源失败",
+            "view_state": {
+                "table_title": "表格预览",
+                "table_kind": "preview",
+                "status_message": "读取预览来源失败",
+                "has_table": False,
+            },
             "message_panel": self.build_message_panel_state(
                 mode="warning",
                 title="读取预览来源失败",
