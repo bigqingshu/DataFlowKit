@@ -614,6 +614,7 @@ class NodeConfigForm:
         kind = self._structured_column_kind(column)
         key = str(column.get("key") or "")
         editor = self._editor_for_field(key, kind, value, choices)
+        editor.setToolTip(self._field_tooltip(key, column))
         self._connect_structured_refresh(editor, kind, frame)
         action = column.get("action") or {}
         if not action:
@@ -628,7 +629,7 @@ class NodeConfigForm:
         layout.addWidget(editor, 1)
         button = self.qt.QtWidgets.QPushButton(str(action.get("label") or "操作"))
         button.setMaximumWidth(76)
-        button.setToolTip(self._field_action_tooltip(key, action))
+        button.setToolTip(self._field_tooltip(key, column) or self._field_action_tooltip(key, action))
         button.clicked.connect(
             lambda checked=False, editor_widget=editor, column_schema=copy.deepcopy(column), column_key=key, action_payload=copy.deepcopy(action): self._trigger_structured_cell_action(
                 editor_widget,

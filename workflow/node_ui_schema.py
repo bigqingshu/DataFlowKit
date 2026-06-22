@@ -379,22 +379,32 @@ def enrich_structured_column_schema(parent_key, column):
     key = str(payload.get("key") or "").strip()
     if not key:
         return payload
-    rule = STRUCTURED_COLUMN_TABLE_FIELD_RULES.get(f"{parent_key}.{key}")
-    if not rule:
-        return payload
     options_source = dict(payload.get("options_source") or {})
-    options_source.update({"type": "table_columns", "table_field": rule.get("table_field", "")})
-    payload["options_source"] = options_source
-    action = dict(payload.get("action") or {})
-    action.update({
-        "key": "pick_table_fields" if payload.get("type") == "field_multi_select" else "pick_table_field",
-        "label": "选择字段",
-        "style": "picker",
-        "source": "table_columns",
-        "multiple": payload.get("type") == "field_multi_select",
-        "table_field": rule.get("table_field", ""),
-    })
-    payload["action"] = action
+    rule = STRUCTURED_COLUMN_TABLE_FIELD_RULES.get(f"{parent_key}.{key}")
+    if rule:
+        options_source.update({"type": "table_columns", "table_field": rule.get("table_field", "")})
+        payload["options_source"] = options_source
+        action = dict(payload.get("action") or {})
+        action.update({
+            "key": "pick_table_fields" if payload.get("type") == "field_multi_select" else "pick_table_field",
+            "label": "选择字段",
+            "style": "picker",
+            "source": "table_columns",
+            "multiple": payload.get("type") == "field_multi_select",
+            "table_field": rule.get("table_field", ""),
+        })
+        payload["action"] = action
+    payload["ui_capabilities"] = {
+        "allows_manual_input": True,
+        "supports_picker": bool(payload.get("action")),
+        "depends_on_plan": str((payload.get("options_source") or {}).get("type") or "") == "plan_refs",
+        "depends_on_runtime": str((payload.get("options_source") or {}).get("type") or "") == "runtime_refs",
+    }
+    if payload.get("type") == "field_multi_select" or bool((payload.get("action") or {}).get("multiple")):
+        payload["ui_capabilities"]["supports_multi_select"] = True
+    help_sections = field_help_sections(key, payload)
+    if help_sections:
+        payload["help_sections"] = help_sections
     return payload
 
 

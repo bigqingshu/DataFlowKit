@@ -1008,6 +1008,67 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(form.to_node()["config"]["rules"], [{"table_name": "orders", "field_name": "name"}])
         app.processEvents()
 
+    def test_structured_list_cells_expose_shared_tooltips(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+
+        schema = get_node_ui_schema(
+            "字段映射写入表",
+            preview_headers=["源字段"],
+            table_names=["orders", "result"],
+            table_columns={"orders": ["id", "name"], "result": ["row_id", "status"]},
+        )
+        form = NodeConfigForm(
+            qt,
+            table_names=["orders", "result"],
+            table_columns={"orders": ["id", "name"], "result": ["row_id", "status"]},
+        )
+        form.set_node(
+            {
+                "node_type_id": "字段映射写入表",
+                "node_id": "n1",
+                "name": "写回",
+                "enabled": True,
+                "node_version": "1.0.0",
+                "config": {
+                    "writeback_direction": "当前表写入SQLite目标表",
+                    "source_table": "orders",
+                    "target_table": "result",
+                    "use_match_rules": True,
+                    "match_rules": [{"source_field": "id", "target_field": "row_id"}],
+                    "field_mappings": [{"source_field": "name", "target_field": "status"}],
+                    "overwrite_policy": "目标已有值且不同才覆盖",
+                    "source_empty_policy": "跳过",
+                    "source_empty_fixed": "",
+                    "no_match_policy": "跳过并记录",
+                    "multi_match_policy": "跳过并记录",
+                    "duplicate_target_policy": "跳过重复并记录异常",
+                    "enable_write": False,
+                    "backup_before_write": True,
+                    "output_preview_table": True,
+                    "sequential_insert_missing_rows": True,
+                },
+            },
+            table_names=["orders", "result"],
+            table_columns={"orders": ["id", "name"], "result": ["row_id", "status"]},
+            schema=schema,
+        )
+
+        frame = form.config_fields["field_mappings"]["editor"]
+        table = frame.structured_state["table"]
+        cell = table.cellWidget(0, 1)
+        button = cell.findChild(qt.QtWidgets.QPushButton)
+        combo = cell.findChild(qt.QtWidgets.QComboBox)
+
+        self.assertIsNotNone(button)
+        self.assertIsNotNone(combo)
+        self.assertIn("字段说明", combo.toolTip())
+        self.assertIn("字段说明", button.toolTip())
+        app.processEvents()
+
     def test_controller_handles_single_table_field_picker_actions(self):
         try:
             qt = qt_app.load_qt6()

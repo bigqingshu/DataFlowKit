@@ -239,6 +239,8 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
         self.assertEqual(condition_columns["field"]["options_source"], {"type": "table_columns", "table_field": "source_table"})
         self.assertEqual(join_columns["left"]["action"]["key"], "pick_table_field")
         self.assertEqual(join_columns["right"]["options_source"], {"type": "table_columns", "table_field": "source_table"})
+        self.assertTrue(join_columns["left"]["ui_capabilities"]["supports_picker"])
+        self.assertEqual(join_columns["left"]["help_sections"][0]["title"], "字段说明")
 
         filter_group_titles = [group["title"] for group in filter_schema["form"]["groups"]]
         self.assertEqual(filter_group_titles, ["筛选条件", "关联表", "输出控制"])
@@ -260,6 +262,7 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
         }
         self.assertEqual(match_columns["source_field"]["options_source"], {"type": "table_columns", "table_field": "source_table"})
         self.assertEqual(match_columns["target_field"]["action"]["key"], "pick_table_field")
+        self.assertTrue(match_columns["target_field"]["ui_capabilities"]["supports_picker"])
         self.assertEqual(fields["source_empty_fixed"]["visible_when"], {"field": "source_empty_policy", "equals": "填写固定值"})
         self.assertEqual(fields["target_table"]["type"], "table_select")
         self.assertEqual(fields["target_table"]["options_source"], {"type": "table_names"})
