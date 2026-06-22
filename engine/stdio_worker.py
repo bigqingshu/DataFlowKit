@@ -326,6 +326,27 @@ class StdioWorker:
                 plugins_dir=payload.get("plugins_dir"),
                 refresh=payload.get("refresh"),
             )
+        if action == "validate_plugin_config":
+            plugin_id = payload.get("plugin_id") or payload.get("node_type_id")
+            return self.engine.validate_plugin_config(
+                plugin_id,
+                params=payload.get("params"),
+                input_table=payload.get("input_table"),
+                context=payload.get("context"),
+                config=payload.get("config"),
+                plugins_dir=payload.get("plugins_dir"),
+            )
+        if action == "run_plugin":
+            plugin_id = payload.get("plugin_id") or payload.get("node_type_id")
+            return self.engine.run_plugin(
+                plugin_id,
+                input_table=payload.get("input_table"),
+                params=payload.get("params"),
+                context=payload.get("context"),
+                config=payload.get("config"),
+                execute_actions=bool(payload.get("execute_actions", False)),
+                plugins_dir=payload.get("plugins_dir"),
+            )
         if action == "preview_node":
             raise ValueError("preview_node 暂未实现，请使用单节点 plan 调用 preview_plan。")
         raise ValueError(f"未知 action：{action}")

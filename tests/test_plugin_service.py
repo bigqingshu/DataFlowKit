@@ -45,6 +45,11 @@ class PluginServiceTests(unittest.TestCase):
             schema = service.get_plugin_schema("plugin.demo")
             default_config = service.make_plugin_default_config("demo")
             node = service.make_default_plugin_node("plugin.demo", node_id="node_demo", include_legacy_type=False)
+            run = service.run_plugin(
+                "demo",
+                input_table={"headers": ["A"], "rows": [["x"]]},
+                params={"field": "A", "limit": 1},
+            )
 
         self.assertTrue(listed["ok"])
         self.assertEqual(listed["count"], 1)
@@ -60,6 +65,9 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(node["node_type_id"], "plugin.demo")
         self.assertNotIn("type", node)
         self.assertEqual(node["config"]["plugin_id"], "demo")
+        self.assertTrue(run["ok"])
+        self.assertEqual(run["result"]["headers"], ["A"])
+        self.assertEqual(run["result"]["rows"], [["x"]])
 
     def test_headless_catalog_and_plan_command_include_plugins(self):
         with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:
@@ -75,16 +83,28 @@ class PluginServiceTests(unittest.TestCase):
                 {"nodes": []},
                 {"type": "insert_node", "node_type_id": "plugin.demo", "include_legacy_type": False},
             )
+            result = engine.preview_plan({
+                "nodes": [{
+                    "node_type_id": "plugin.demo",
+                    "config": {"plugin_id": "demo", "params": {}},
+                }],
+                "headers": ["A"],
+                "rows": [["x"]],
+            })
 
         self.assertIn("plugin.demo", [item["node_type_id"] for item in catalog])
+        self.assertTrue([item for item in catalog if item["node_type_id"] == "plugin.demo"][0]["supported_headless"])
         self.assertIn("plugin.demo", [item["node_type_id"] for item in schemas])
         self.assertEqual(node_schema["default_config"]["params"]["field"], "A")
-        self.assertFalse(node_schema["supported"])
+        self.assertTrue(node_schema["supported"])
         self.assertEqual(made["config"]["plugin_id"], "demo")
         self.assertTrue(command["ok"])
         inserted = command["plan"]["nodes"][0]
         self.assertEqual(inserted["node_type_id"], "plugin.demo")
         self.assertEqual(inserted["config"]["params"]["limit"], 3)
+        self.assertEqual(result.headers, ["A"])
+        self.assertEqual(result.rows, [["x"]])
+        self.assertIn("插件 Demo 完成", result.logs[0])
 
     def test_stdio_worker_exposes_plugin_service_actions(self):
         with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:
@@ -100,6 +120,12 @@ class PluginServiceTests(unittest.TestCase):
                 "plugin_id": "demo",
                 "plugins_dir": temp_dir,
             }))
+            run = worker.handle_request(request("run_plugin", {
+                "plugin_id": "demo",
+                "plugins_dir": temp_dir,
+                "input_table": {"headers": ["A"], "rows": [["x"]]},
+                "params": {"field": "A", "limit": 1},
+            }))
 
         self.assertTrue(listed["ok"])
         self.assertEqual(listed["result"]["plugins"][0]["node_type_id"], "plugin.demo")
@@ -107,6 +133,8 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(schema["result"]["schema"]["display_name"], "插件 / Demo")
         self.assertTrue(default_config["ok"])
         self.assertEqual(default_config["result"]["config"]["params"]["field"], "A")
+        self.assertTrue(run["ok"])
+        self.assertEqual(run["result"]["result"]["headers"], ["A"])
 
     def test_missing_plugin_schema_returns_issue(self):
         with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:

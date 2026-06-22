@@ -11,6 +11,10 @@ from pathlib import Path
 
 from engine.issue_schema import has_error_issues, make_issue
 from plugin_runtime.scanner import scan_plugins
+from workflow.nodes.plugin_nodes import (
+    make_plugin_input_data,
+    normalize_plugin_run_result,
+)
 from workflow.protocol_nodes import DEFAULT_NODE_VERSION
 
 
@@ -89,8 +93,8 @@ class PluginService:
             "warnings": plugin["warnings"],
             "risk": plugin["risk"],
             "capabilities": {
-                "headless_preview": False,
-                "headless_run": False,
+                "headless_preview": _plugin_is_headless_runnable(item),
+                "headless_run": _plugin_is_headless_runnable(item),
                 "execute_actions": True,
                 "plugin": True,
                 "import_ok": bool(plugin.get("import_ok")),
@@ -122,13 +126,99 @@ class PluginService:
                     "node_type_id": plugin["node_type_id"],
                     "display_name": plugin["display_name"],
                     "category": "插件",
-                    "supported_headless": False,
+                    "supported_headless": _plugin_is_headless_runnable(self.registry.get(plugin["plugin_id"], {})),
                     "plugin_id": plugin["plugin_id"],
                     "load_status": plugin["load_status"],
                 }
                 for plugin in listed.get("plugins", [])
             ],
             "errors": listed.get("errors", []),
+        }
+
+    def is_plugin_headless_runnable(self, plugin_id, *, plugins_dir=None):
+        self._ensure_loaded(plugins_dir)
+        key = self._resolve_plugin_key(plugin_id)
+        return bool(key and _plugin_is_headless_runnable(self.registry.get(key, {})))
+
+    def validate_plugin_config(self, plugin_id, params=None, *, input_table=None, context=None, config=None, plugins_dir=None):
+        self._ensure_loaded(plugins_dir)
+        key = self._resolve_plugin_key(plugin_id)
+        if not key:
+            return _plugin_failure("plugin_not_found", f"未找到插件：{plugin_id}", "/plugin_id")
+        item = self.registry.get(key, {})
+        module = item.get("module")
+        if not _plugin_is_headless_runnable(item):
+            return _plugin_failure(
+                "plugin_not_headless_runnable",
+                f"插件暂不支持 headless 内置执行：{key}",
+                "/plugin_id",
+            )
+        params = dict(params if params is not None else (config or {}).get("params", {}))
+        input_data = _make_plugin_service_input_data(key, input_table, context)
+        plugin_context = _make_plugin_service_context(key, config=config, context=context)
+        validate = getattr(module, "validate_params", None)
+        if callable(validate):
+            try:
+                ok_msg = validate(params, input_data, plugin_context)
+            except Exception as exc:
+                return _plugin_failure("plugin_config_error", str(exc), "/params")
+            if isinstance(ok_msg, tuple):
+                ok, message = ok_msg
+                if not ok:
+                    return _plugin_failure("plugin_config_invalid", message or "插件参数校验失败", "/params")
+            elif ok_msg is False:
+                return _plugin_failure("plugin_config_invalid", "插件参数校验失败", "/params")
+        return {"ok": True, "plugin_id": key, "issues": []}
+
+    def run_plugin(self, plugin_id, input_table=None, params=None, *, context=None, config=None, execute_actions=False, plugins_dir=None):
+        self._ensure_loaded(plugins_dir)
+        key = self._resolve_plugin_key(plugin_id)
+        if not key:
+            return _plugin_failure("plugin_not_found", f"未找到插件：{plugin_id}", "/plugin_id")
+        item = self.registry.get(key, {})
+        module = item.get("module")
+        if not _plugin_is_headless_runnable(item):
+            return _plugin_failure(
+                "plugin_not_headless_runnable",
+                f"插件暂不支持 headless 内置执行：{key}",
+                "/plugin_id",
+            )
+        params = dict(params if params is not None else (config or {}).get("params", {}))
+        input_data = _make_plugin_service_input_data(key, input_table, context)
+        plugin_context = _make_plugin_service_context(
+            key,
+            config=config,
+            context=context,
+            execute_actions=execute_actions,
+        )
+        validation = self.validate_plugin_config(
+            key,
+            params,
+            input_table=input_table,
+            context=context,
+            config=config,
+            plugins_dir=plugins_dir,
+        )
+        if not validation.get("ok"):
+            return validation
+        try:
+            result = module.run(input_data, params, plugin_context)
+            normalized = normalize_plugin_run_result(
+                result,
+                input_data,
+                input_data.get("headers", []),
+                input_data.get("rows", []),
+            )
+        except Exception as exc:
+            return _plugin_failure("plugin_run_error", str(exc), "/run")
+        return {
+            "ok": True,
+            "plugin_id": key,
+            "plugin": self._public_plugin(key, item),
+            "result": normalized,
+            "input_data": input_data,
+            "context": plugin_context,
+            "issues": [],
         }
 
     def list_plugin_node_ui_schemas(self, plugins_dir=None, *, preview_headers=None, table_names=None, table_columns=None):
@@ -322,6 +412,51 @@ def _plugin_badges(item):
     else:
         badges.append("独立环境")
     return badges
+
+
+def _plugin_is_headless_runnable(item):
+    item = item or {}
+    return bool(item.get("import_ok") and item.get("module") is not None)
+
+
+def _make_plugin_service_input_data(plugin_id, input_table=None, context=None):
+    input_table = input_table or {}
+    headers = list(input_table.get("headers", []) or [])
+    rows = [list(row) for row in (input_table.get("rows", []) or [])]
+    input_tables = {}
+    if isinstance(context, dict):
+        input_tables.update(context.get("input_tables", {}) or {})
+        for name, table in (context.get("transit_tables", {}) or {}).items():
+            input_tables.setdefault(f"中转:{name}", {
+                "type": "table",
+                "headers": list((table or {}).get("headers", []) or []),
+                "rows": [list(row) for row in ((table or {}).get("rows", []) or [])],
+            })
+    input_tables.setdefault("当前表", {"type": "table", "headers": headers, "rows": rows})
+    input_tables.setdefault("workflow_current", {"type": "table", "headers": headers, "rows": rows})
+    input_tables.setdefault("primary", {"type": "table", "headers": headers, "rows": rows})
+    return make_plugin_input_data(plugin_id, headers, rows, input_tables)
+
+
+def _make_plugin_service_context(plugin_id, *, config=None, context=None, execute_actions=False):
+    context = context or {}
+    return {
+        "plugin_id": plugin_id,
+        "node_name": (config or {}).get("name") or (config or {}).get("node_name") or "插件节点",
+        "is_preview": not bool(execute_actions),
+        "execute_actions": bool(execute_actions),
+        "is_config_probe": bool(context.get("is_config_probe")) if isinstance(context, dict) else False,
+        "transit_tables": (context or {}).get("transit_tables", {}) if isinstance(context, dict) else {},
+        "input_tables": (context or {}).get("input_tables", {}) if isinstance(context, dict) else {},
+        "safety_policy": (context or {}).get("safety_policy", {}) if isinstance(context, dict) else {},
+    }
+
+
+def _plugin_failure(code, message, path):
+    return {
+        "ok": False,
+        "issues": [make_issue("error", code, message, path=path, source="PluginService")],
+    }
 
 
 def _plugin_config_form_groups(default_config, parameter_schema):

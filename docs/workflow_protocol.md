@@ -319,6 +319,8 @@ Recommended actions:
 - `get_plugin_schema`
 - `make_plugin_default_config`
 - `list_plugins`
+- `validate_plugin_config`
+- `run_plugin`
 
 Runtime identity rules:
 
@@ -372,6 +374,10 @@ Runtime identity rules:
 - `core.file_list` and `core.batch_rename` run headlessly. Batch rename only
   changes files when `execute_actions = true` and `config.actual_rename = true`;
   otherwise it returns the preview table.
+- Imported `plugin.<plugin_id>` nodes can run headlessly through
+  `PluginService.run_plugin`. External-process plugins remain discoverable, but
+  are reported as not headless-runnable until the process runner is moved behind
+  the same service boundary.
 - Clients that need progress, cancellation, or polling should use
   `start_job`, `get_job_status`, `get_job_events`, and `cancel_job`.
   `start_job` accepts `job_action = preview_plan | run_plan` and stores emitted

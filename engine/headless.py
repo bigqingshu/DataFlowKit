@@ -72,6 +72,14 @@ from workflow.nodes.file_nodes import (
     apply_file_list_node,
     make_numbered_path,
 )
+from workflow.nodes.plugin_nodes import (
+    build_plugin_failure_output,
+    build_plugin_final_output,
+    build_plugin_status_text,
+    normalize_plugin_logs,
+    plugin_log_items_to_table,
+    should_save_plugin_output_as_transit,
+)
 from workflow.nodes.selected_columns_nodes import (
     apply_selected_columns_to_memory_table,
     build_selected_columns_write_payload,
@@ -316,6 +324,12 @@ class HeadlessWorkflowEngine:
             "issues": [],
         }
 
+    def validate_plugin_config(self, plugin_id, **kwargs):
+        return self.plugins.validate_plugin_config(plugin_id, **kwargs)
+
+    def run_plugin(self, plugin_id, **kwargs):
+        return self.plugins.run_plugin(plugin_id, **kwargs)
+
     def analyze_jumps(self, plan=None, *, nodes=None):
         return self.jumps.analyze_plan(plan, nodes=nodes)
 
@@ -372,6 +386,9 @@ class HeadlessWorkflowEngine:
         )
 
     def is_node_supported(self, node_type):
+        node_type_id = self._node_type_id_from_value(node_type)
+        if node_type_id.startswith("plugin."):
+            return self.plugins.is_plugin_headless_runnable(node_type_id)
         return is_headless_supported_node_type(node_type)
 
     def get_node_schema(self, node_type, preview_headers=None, table_names=None, table_columns=None):
@@ -391,7 +408,7 @@ class HeadlessWorkflowEngine:
                     "display_name": plugin_schema.get("display_name", "插件节点"),
                     "node_type": "插件节点",
                     "type": "插件节点",
-                    "supported": False,
+                    "supported": self.is_node_supported(node_type_id),
                     "default_name": schema["plugin"].get("name", "插件节点"),
                     "default_config": schema["default_config"],
                     "plugin": schema["plugin"],
@@ -690,6 +707,9 @@ class HeadlessWorkflowEngine:
         node_type_id = self._node_type_id_from_node(node)
         node_label = self._node_label(node, node_type_id)
         config = node.get("config", {}) or {}
+        if node_type_id.startswith("plugin."):
+            h, r, stat = self._apply_plugin_node(headers, rows, node_type_id, config, context, execute_actions)
+            return h, r, stat, None
         if node_type_id in SUPPORTED_DATA_NODE_TYPE_IDS:
             if node_type_id == "core.save_transit":
                 h, r, stat = self._apply_save_transit_node(headers, rows, config, context, execute_actions)
@@ -1215,6 +1235,135 @@ class HeadlessWorkflowEngine:
             writer = csv.writer(f)
             writer.writerow(BATCH_RENAME_LOG_HEADERS)
             writer.writerows(node_context.get("batch_rename_log_rows", []))
+
+    def _apply_plugin_node(self, headers, rows, node_type_id, config, context, execute_actions):
+        plugin_id = str(config.get("plugin_id") or node_type_id.split(".", 1)[1]).strip()
+        params = dict(config.get("params", {}) or {})
+        failure_policy = config.get("plugin_failure_policy", "停止工作流")
+        result = self.plugins.run_plugin(
+            plugin_id,
+            input_table={"headers": headers, "rows": rows},
+            params=params,
+            context=context,
+            config=config,
+            execute_actions=execute_actions,
+        )
+        plugin_name = plugin_id
+        plugin = result.get("plugin") if isinstance(result, dict) else None
+        if isinstance(plugin, dict):
+            plugin_name = plugin.get("name") or plugin_id
+
+        if not result.get("ok"):
+            issue = (result.get("issues") or [{}])[0]
+            message = issue.get("message") or "插件执行失败"
+            log_items = normalize_plugin_logs(
+                [{"level": "ERROR", "message": message}],
+                plugin_id=plugin_id,
+                node_name=config.get("name") or "插件节点",
+                now_text=self.now_factory().strftime("%Y-%m-%d %H:%M:%S"),
+            )
+            self._save_plugin_log_outputs(plugin_id, plugin_name, config, log_items, context, execute_actions)
+            if failure_policy == "停止工作流":
+                raise ValueError(message)
+            new_headers, new_rows = build_plugin_failure_output(
+                plugin_id,
+                message,
+                "",
+                headers,
+                rows,
+                failure_policy,
+            )
+            stat = build_plugin_status_text(
+                plugin_name,
+                plugin_id,
+                False,
+                failure_policy,
+                message,
+                {"ok": False},
+                [],
+                [],
+                log_items,
+            )
+            return new_headers, new_rows, stat
+
+        normalized = result["result"]
+        new_headers = list(normalized.get("headers", headers))
+        new_rows = [list(row) for row in normalized.get("rows", rows)]
+        log_items = normalize_plugin_logs(
+            normalized.get("logs", []),
+            plugin_id=plugin_id,
+            node_name=config.get("name") or "插件节点",
+            now_text=self.now_factory().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        log_saved_parts = self._save_plugin_log_outputs(plugin_id, plugin_name, config, log_items, context, execute_actions)
+        transit_parts = self._save_plugin_result_transit_output(config, plugin_id, context, new_headers, new_rows)
+        output_mode = config.get("output_mode", "使用插件返回结果")
+        final_headers, final_rows = build_plugin_final_output(
+            headers,
+            rows,
+            new_headers,
+            new_rows,
+            output_mode,
+        )
+        stat = build_plugin_status_text(
+            plugin_name,
+            plugin_id,
+            True,
+            failure_policy,
+            normalized.get("message", ""),
+            normalized.get("summary", {}),
+            transit_parts,
+            log_saved_parts,
+            log_items,
+        )
+        return final_headers, final_rows, stat
+
+    def _save_plugin_result_transit_output(self, config, plugin_id, context, headers, rows):
+        if not should_save_plugin_output_as_transit(config):
+            return []
+        name = str(config.get("transit_name") or plugin_id or "插件输出").strip() or "插件输出"
+        mode = str(config.get("transit_conflict_mode") or "覆盖").strip()
+        old = (context.get("transit_tables", {}) or {}).get(name, {}) if isinstance(context, dict) else {}
+        if mode == "追加" and old:
+            from workflow.nodes.transit_nodes import append_headers_rows
+
+            new_headers, new_rows = append_headers_rows(
+                old.get("headers", []) or [],
+                old.get("rows", []) or [],
+                headers,
+                rows,
+            )
+        else:
+            new_headers = list(headers)
+            new_rows = [list(row) for row in rows]
+        if isinstance(context, dict):
+            context.setdefault("transit_tables", {})[name] = {
+                "headers": new_headers,
+                "rows": [list(row) for row in new_rows],
+                "source": "插件输出",
+            }
+        return [f"中转副表：{name}"]
+
+    def _save_plugin_log_outputs(self, plugin_id, plugin_name, config, log_items, context, execute_actions):
+        if not log_items:
+            return []
+        saved = []
+        if bool(config.get("save_plugin_log_transit", False)) and (execute_actions or bool(config.get("plugin_log_in_preview", False))):
+            name = str(config.get("plugin_log_transit_name") or f"{plugin_name}_日志").strip() or f"{plugin_name}_日志"
+            log_headers, log_rows = plugin_log_items_to_table(log_items)
+            if isinstance(context, dict):
+                context.setdefault("transit_tables", {})[name] = {
+                    "headers": log_headers,
+                    "rows": [list(row) for row in log_rows],
+                    "source": "插件日志",
+                }
+            saved.append(f"中转副表：{name}")
+        if bool(config.get("save_plugin_log_sqlite", False)) and execute_actions:
+            log_headers, log_rows = plugin_log_items_to_table(log_items)
+            table_name = str(config.get("plugin_log_table") or f"{plugin_id}_日志").strip() or "插件日志"
+            self.services.write_table(table_name, {"headers": log_headers, "rows": log_rows}, mode="append", backup=False)
+            saved.append(f"SQLite日志：{len(log_rows)}条")
+        return saved
 
     def _apply_save_transit_node(self, headers, rows, config, context, execute_actions):
         context.setdefault("transit_tables", {})
