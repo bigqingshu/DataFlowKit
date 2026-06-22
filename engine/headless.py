@@ -72,6 +72,13 @@ from workflow.nodes.file_nodes import (
     apply_file_list_node,
     make_numbered_path,
 )
+from workflow.nodes.loop_nodes import (
+    apply_loop_judge_to_state,
+    build_loop_judge_output,
+    build_loop_start_output,
+    init_loop_state_from_source,
+    take_next_loop_item,
+)
 from workflow.nodes.plugin_nodes import (
     build_plugin_failure_output,
     build_plugin_final_output,
@@ -654,6 +661,8 @@ class HeadlessWorkflowEngine:
                     context,
                     anchors,
                     nodes,
+                    node_index=idx,
+                    end_index=end,
                     execute_actions=execute_actions,
                     cancel_event=cancel_event,
                 )
@@ -703,7 +712,20 @@ class HeadlessWorkflowEngine:
         })
         return result
 
-    def _apply_node(self, headers, rows, node, context, anchors, nodes, *, execute_actions=False, cancel_event=None):
+    def _apply_node(
+        self,
+        headers,
+        rows,
+        node,
+        context,
+        anchors,
+        nodes,
+        *,
+        node_index=0,
+        end_index=None,
+        execute_actions=False,
+        cancel_event=None,
+    ):
         node_type_id = self._node_type_id_from_node(node)
         node_label = self._node_label(node, node_type_id)
         config = node.get("config", {}) or {}
@@ -739,6 +761,27 @@ class HeadlessWorkflowEngine:
         if node_type_id == "core.conditional_jump":
             headers, rows, stat, jump_to = self._apply_conditional_jump(headers, rows, config, context, anchors)
             return headers, rows, stat, jump_to
+        if node_type_id == "core.loop_start":
+            h, r, stat, jump_to = self._apply_loop_start_node(
+                headers,
+                rows,
+                config,
+                context,
+                nodes,
+                node_index=node_index,
+                end_index=end_index,
+            )
+            return h, r, stat, jump_to
+        if node_type_id == "core.loop_judge":
+            h, r, stat, jump_to = self._apply_loop_judge_node(
+                headers,
+                rows,
+                config,
+                context,
+                nodes,
+                node_index=node_index,
+            )
+            return h, r, stat, jump_to
         raise ValueError(f"HeadlessWorkflowEngine 暂不支持节点：{node_label}")
 
     def _apply_data_node(self, headers, rows, node_type_id, config, context, cancel_event):
@@ -1435,6 +1478,215 @@ class HeadlessWorkflowEngine:
             path = f"{options.get('base_name', '中转数据')}.xlsx"
         result = self.services.export_xlsx(path, {"headers": headers, "rows": rows}, sheet_name=options.get("base_name", "中转数据"))
         return f"xlsx：{result.get('path', path)}"
+
+    def _apply_loop_start_node(self, headers, rows, config, context, nodes, *, node_index=0, end_index=None):
+        context.setdefault("loop_states", {})
+        context.setdefault("transit_tables", {})
+        loop_id = str(config.get("loop_id", "loop") or "loop").strip() or "loop"
+        state = context["loop_states"].get(loop_id)
+        if state is None:
+            source_headers, source_rows, source_name = self._read_loop_source_table(
+                headers,
+                rows,
+                config,
+                context,
+            )
+            state = init_loop_state_from_source(source_headers, source_rows, source_name, config)
+            context["loop_states"][loop_id] = state
+
+        start_result = take_next_loop_item(state)
+        table_name = start_result.get("table_name", "当前循环项") or "当前循环项"
+        current_headers = list(start_result.get("current_headers", []) or [])
+        transit_rows = [list(row) for row in (start_result.get("transit_rows", []) or [])]
+        self._write_context_transit_table(
+            context,
+            table_name,
+            current_headers,
+            transit_rows,
+            source=start_result.get("transit_source", f"循环:{loop_id}:当前项"),
+            operation="write_transit_table",
+            write_mode="覆盖当前循环项",
+            message=(
+                f"循环执行起点写入空当前项中转副表 {table_name}"
+                if start_result.get("no_pending")
+                else f"循环执行起点写入当前项中转副表 {table_name}：1 行 × {len(current_headers)} 列"
+            ),
+        )
+        result_headers, result_rows, stat, ctrl = build_loop_start_output(
+            headers,
+            rows,
+            start_result,
+            output_current_as_table=config.get("output_current_as_table", True),
+        )
+        jump_to = None
+        if ctrl.get("no_pending"):
+            judge_idx = self._find_loop_judge_index(loop_id, node_index, end_index, nodes)
+            if judge_idx is not None:
+                jump_to = judge_idx + 1
+                target_text = f"节点 {jump_to + 1}" if end_index is None or jump_to <= end_index else "结束"
+                stat += f"；无待执行项，跳过循环体到{target_text}"
+        return result_headers, result_rows, stat, jump_to
+
+    def _read_loop_source_table(self, headers, rows, config, context):
+        source_type = str(config.get("source_type", "当前表") or "当前表").strip()
+        if source_type == "当前表":
+            fixed_headers = list(headers)
+            return fixed_headers, normalize_rows(rows, len(fixed_headers)), "当前表"
+        if source_type == "SQLite表":
+            table_name = str(config.get("source_table", "") or "").strip()
+            if not table_name:
+                raise ValueError("循环执行起点未选择 SQLite 来源表。")
+            source_headers, source_rows = self._load_named_table(table_name, context)
+            return source_headers, source_rows, f"SQLite:{table_name}"
+        if source_type == "中转副表":
+            name = str(config.get("transit_table", "") or "").strip()
+            if not name:
+                raise ValueError("循环执行起点未选择中转副表。")
+            source_headers, source_rows = self._load_transit_table(context, name)
+            self._record_table_access_log(
+                context,
+                "read_transit_table",
+                name,
+                "ok",
+                "中转副表",
+                "",
+                f"循环执行起点读取中转副表 {name}：{len(source_rows)} 行 × {len(source_headers)} 列",
+            )
+            return source_headers, source_rows, f"中转:{name}"
+        fixed_headers = list(headers)
+        return fixed_headers, normalize_rows(rows, len(fixed_headers)), "当前表"
+
+    def _apply_loop_judge_node(self, headers, rows, config, context, nodes, *, node_index=0):
+        loop_id = str(config.get("loop_id", "") or "").strip()
+        if not loop_id:
+            raise ValueError("循环判断回跳节点未绑定循环执行起点。")
+        state = context.setdefault("loop_states", {}).get(loop_id)
+        if not state:
+            raise ValueError(f"未找到循环状态：{loop_id}。请确认循环执行起点在本节点之前。")
+        judge_result = apply_loop_judge_to_state(
+            headers,
+            rows,
+            config,
+            state,
+            now_text=self.now_factory().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        if judge_result.get("no_current"):
+            ctrl = judge_result.get("ctrl", {}) or {}
+            return list(headers), [list(row) for row in rows], judge_result["stat"], ctrl.get("jump_to")
+
+        result_headers = judge_result["result_headers"]
+        result_row = judge_result["result_row"]
+        results = context.setdefault("loop_results", {}).setdefault(
+            loop_id,
+            {"headers": list(result_headers), "rows": []},
+        )
+        results["headers"] = list(result_headers)
+        results["rows"].append(list(result_row))
+
+        result_name = str(config.get("result_table_name", "循环结果") or "循环结果").strip() or "循环结果"
+        result_rows = [list(row) for row in results["rows"]]
+        self._write_context_transit_table(
+            context,
+            result_name,
+            result_headers,
+            result_rows,
+            source=f"循环:{loop_id}:结果",
+            operation="write_transit_table",
+            write_mode="覆盖循环结果",
+            message=f"循环判断回跳写入结果中转副表 {result_name}：{len(result_rows)} 行 × {len(result_headers)} 列",
+        )
+
+        queue_name = judge_result["queue_name"]
+        queue_headers = judge_result["queue_headers"]
+        queue_rows = judge_result["queue_rows"]
+        self._write_context_transit_table(
+            context,
+            queue_name,
+            queue_headers,
+            queue_rows,
+            source=f"循环:{loop_id}:队列",
+            operation="write_transit_table",
+            write_mode="覆盖循环队列",
+            message=f"循环判断回跳写入队列中转副表 {queue_name}：{len(queue_rows)} 行 × {len(queue_headers)} 列",
+        )
+
+        result_headers, result_rows, stat, ctrl = build_loop_judge_output(
+            headers,
+            rows,
+            config,
+            state,
+            judge_result,
+            results["rows"],
+        )
+        jump_to = ctrl.get("jump_to") if isinstance(ctrl, dict) else None
+        if jump_to == "__LOOP_START__":
+            jump_to = self._find_loop_start_index(loop_id, node_index, nodes)
+            if jump_to is None:
+                raise RuntimeError(f"未找到循环起点：{loop_id}")
+        return result_headers, result_rows, stat, jump_to
+
+    def _write_context_transit_table(
+        self,
+        context,
+        table_name,
+        headers,
+        rows,
+        *,
+        source="",
+        operation="write_transit_table",
+        write_mode="",
+        message="",
+    ):
+        context.setdefault("transit_tables", {})[table_name] = {
+            "headers": list(headers or []),
+            "rows": [list(row) for row in (rows or [])],
+            "source": source,
+        }
+        self._record_table_access_log(
+            context,
+            operation,
+            table_name,
+            "ok",
+            "中转副表",
+            write_mode,
+            message,
+        )
+
+    def _record_table_access_log(self, context, operation, table_name, status, source_type, write_mode, message):
+        context.setdefault("table_access_logs", []).append({
+            "time": self.now_factory().strftime("%Y-%m-%d %H:%M:%S"),
+            "operation": operation,
+            "table_name": table_name,
+            "status": status,
+            "source_type": source_type,
+            "write_mode": write_mode,
+            "message": message,
+        })
+
+    def _find_loop_start_index(self, loop_id, current_idx, nodes):
+        for idx in range(int(current_idx) - 1, -1, -1):
+            node = nodes[idx]
+            if (
+                isinstance(node, dict)
+                and node.get("enabled", True)
+                and self._node_type_id_from_node(node) == "core.loop_start"
+                and str((node.get("config") or {}).get("loop_id", "") or "").strip() == loop_id
+            ):
+                return idx
+        return None
+
+    def _find_loop_judge_index(self, loop_id, start_idx, end_idx, nodes):
+        last_idx = len(nodes) - 1 if end_idx is None else min(int(end_idx), len(nodes) - 1)
+        for idx in range(int(start_idx) + 1, last_idx + 1):
+            node = nodes[idx]
+            if (
+                isinstance(node, dict)
+                and node.get("enabled", True)
+                and self._node_type_id_from_node(node) == "core.loop_judge"
+                and str((node.get("config") or {}).get("loop_id", "") or "").strip() == loop_id
+            ):
+                return idx
+        return None
 
     def _apply_condition_check(self, headers, rows, config, context):
         flag_name = str(config.get("flag_name", "") or "").strip()

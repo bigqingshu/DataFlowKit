@@ -374,6 +374,10 @@ Runtime identity rules:
 - `core.file_list` and `core.batch_rename` run headlessly. Batch rename only
   changes files when `execute_actions = true` and `config.actual_rename = true`;
   otherwise it returns the preview table.
+- `core.loop_start` and `core.loop_judge` run headlessly. The runtime keeps
+  loop queues/results in `context.loop_states` and `context.loop_results`, writes
+  the current item/result/queue transit tables to `context.transit_tables`, and
+  resolves loop back-jumps without any UI window methods.
 - Imported `plugin.<plugin_id>` nodes can run headlessly through
   `PluginService.run_plugin`. External-process plugins remain discoverable, but
   are reported as not headless-runnable until the process runner is moved behind
