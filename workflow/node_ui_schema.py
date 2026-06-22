@@ -1440,6 +1440,26 @@ def build_node_detail_payload(node_type_id, *, display_name="", category="", sup
             "lines": ["当前 headless 预览暂不支持该节点，可保存计划后回到旧 UI 执行。"],
         })
 
+    capability_lines = []
+    if required_fields:
+        capability_lines.append("必填字段：" + "、".join(list(dict.fromkeys(required_fields))[:6]))
+    if dynamic_fields:
+        capability_lines.append("动态字段：" + "、".join(list(dict.fromkeys(dynamic_fields))[:6]))
+    if action_fields:
+        capability_lines.append("可选取字段：" + "、".join(list(dict.fromkeys(action_fields))[:6]))
+    if capability_lines:
+        sections.append({
+            "title": "表单能力",
+            "lines": capability_lines,
+        })
+
+    compatibility = {
+        "headless_preview": bool(supported),
+        "headless_run": bool(supported),
+        "legacy_ui_required": not bool(supported),
+        "risk": meta.get("risk", "unknown"),
+    }
+
     return {
         "node_type_id": stable_id,
         "title": resolved_display_name,
@@ -1454,6 +1474,7 @@ def build_node_detail_payload(node_type_id, *, display_name="", category="", sup
             "dynamic_fields": list(dict.fromkeys(dynamic_fields)),
             "action_fields": list(dict.fromkeys(action_fields)),
         },
+        "compatibility": compatibility,
         "risk": meta.get("risk", "unknown"),
         "supported_headless": bool(supported),
         "sections": sections,
