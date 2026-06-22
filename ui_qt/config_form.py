@@ -14,6 +14,8 @@ from ui_qt.node_ui_metadata import (
     field_help_text,
     is_long_text_field,
     node_field_label,
+    plan_reference_choices,
+    runtime_reference_choices,
 )
 
 
@@ -88,7 +90,7 @@ def structured_item_default(columns):
 class NodeConfigForm:
     """Build editable Qt widgets for a workflow node dict."""
 
-    def __init__(self, qt, parent=None, headers=None, table_names=None, table_columns=None, action_handler=None):
+    def __init__(self, qt, parent=None, headers=None, table_names=None, table_columns=None, plan=None, action_handler=None):
         self.qt = qt
         self.headers = list(headers or [])
         self.table_names = list(table_names or [])
@@ -96,6 +98,7 @@ class NodeConfigForm:
             str(key): [str(item) for item in (values or [])]
             for key, values in dict(table_columns or {}).items()
         }
+        self.plan = copy.deepcopy(plan) if isinstance(plan, dict) else {"nodes": []}
         self.action_handler = action_handler
         self.widget = qt.QtWidgets.QWidget(parent)
         self.root_layout = qt.QtWidgets.QVBoxLayout(self.widget)
@@ -126,6 +129,10 @@ class NodeConfigForm:
         }
         self._refresh_dynamic_options()
 
+    def set_plan(self, plan):
+        self.plan = copy.deepcopy(plan) if isinstance(plan, dict) else {"nodes": []}
+        self._refresh_dynamic_options()
+
     def set_validation_issues(self, issues=None):
         self.validation_issues = list(issues or [])
         self._apply_validation_state()
@@ -148,13 +155,15 @@ class NodeConfigForm:
             "issues": list(self.validation_issues or []),
         }
 
-    def set_node(self, node, headers=None, table_names=None, table_columns=None, schema=None):
+    def set_node(self, node, headers=None, table_names=None, table_columns=None, plan=None, schema=None):
         if headers is not None:
             self.set_headers(headers)
         if table_names is not None:
             self.set_table_names(table_names)
         if table_columns is not None:
             self.set_table_columns(table_columns)
+        if plan is not None:
+            self.set_plan(plan)
         self.node = copy.deepcopy(node) if isinstance(node, dict) else None
         self.schema = copy.deepcopy(schema) if isinstance(schema, dict) else {}
         self.node_fields = {}
@@ -393,6 +402,8 @@ class NodeConfigForm:
             "headers": list(self.headers or []),
             "table_names": list(self.table_names or []),
             "table_columns": copy.deepcopy(self.table_columns or {}),
+            "plan_refs": plan_reference_choices(self.plan, action.get("ref_kind") or (schema.get("options_source") or {}).get("ref_kind")),
+            "runtime_refs": runtime_reference_choices(self.plan, action.get("ref_kind") or (schema.get("options_source") or {}).get("ref_kind")),
         }
         result = self.action_handler(payload) or {}
         if "value" in result:
@@ -442,7 +453,7 @@ class NodeConfigForm:
                 continue
             options_source = schema.get("options_source") or {}
             source_type = str(options_source.get("type") or "")
-            if source_type not in {"preview_headers", "table_names", "table_columns"}:
+            if source_type not in {"preview_headers", "table_names", "table_columns", "plan_refs", "runtime_refs"}:
                 continue
             current = str(editor.currentText())
             editor.blockSignals(True)
@@ -451,6 +462,10 @@ class NodeConfigForm:
                 values = [str(item) for item in self.headers]
             elif source_type == "table_names":
                 values = [str(item) for item in self.table_names]
+            elif source_type == "plan_refs":
+                values = plan_reference_choices(self.plan, options_source.get("ref_kind"))
+            elif source_type == "runtime_refs":
+                values = runtime_reference_choices(self.plan, options_source.get("ref_kind"))
             else:
                 table_field = str(options_source.get("table_field") or "").strip()
                 selected_table = ""
@@ -592,6 +607,10 @@ class NodeConfigForm:
             choices = list(self.table_names)
         elif not choices and options_source.get("type") == "table_columns":
             choices = self._table_column_choices_for_options_source(options_source)
+        elif not choices and options_source.get("type") == "plan_refs":
+            choices = plan_reference_choices(self.plan, options_source.get("ref_kind"))
+        elif not choices and options_source.get("type") == "runtime_refs":
+            choices = runtime_reference_choices(self.plan, options_source.get("ref_kind"))
         kind = self._structured_column_kind(column)
         key = str(column.get("key") or "")
         editor = self._editor_for_field(key, kind, value, choices)
@@ -648,6 +667,24 @@ class NodeConfigForm:
                 "multiple": kind == "field_multi_select",
                 "table_field": str((options_source or {}).get("table_field") or ""),
             }
+        if source_type == "plan_refs":
+            ref_kind = str((options_source or {}).get("ref_kind") or "")
+            return {
+                "key": "pick_plan_ref",
+                "label": "选择循环" if ref_kind == "loop_id" else "选择锚点",
+                "style": "picker",
+                "source": "plan_refs",
+                "ref_kind": ref_kind,
+            }
+        if source_type == "runtime_refs":
+            ref_kind = str((options_source or {}).get("ref_kind") or "")
+            return {
+                "key": "pick_runtime_ref",
+                "label": "选择中转表" if ref_kind == "transit_table" else "选择中转名称",
+                "style": "picker",
+                "source": "runtime_refs",
+                "ref_kind": ref_kind,
+            }
         return {}
 
     def _table_column_choices_for_options_source(self, options_source, row_values=None):
@@ -689,6 +726,10 @@ class NodeConfigForm:
                     values = [str(item) for item in self.table_names]
                 elif source_type == "table_columns":
                     values = self._table_column_choices_for_options_source(options_source, row_values=row_values)
+                elif source_type == "plan_refs":
+                    values = plan_reference_choices(self.plan, options_source.get("ref_kind"))
+                elif source_type == "runtime_refs":
+                    values = runtime_reference_choices(self.plan, options_source.get("ref_kind"))
                 else:
                     continue
                 current = str(widget.currentText())
@@ -711,6 +752,8 @@ class NodeConfigForm:
             "headers": list(self.headers or []),
             "table_names": list(getattr(self, "table_names", []) or []),
             "table_columns": copy.deepcopy(getattr(self, "table_columns", {}) or {}),
+            "plan_refs": plan_reference_choices(self.plan, action.get("ref_kind") or ((column_schema or {}).get("options_source") or {}).get("ref_kind")),
+            "runtime_refs": runtime_reference_choices(self.plan, action.get("ref_kind") or ((column_schema or {}).get("options_source") or {}).get("ref_kind")),
             "context": {"kind": "structured_cell"},
         }
         result = self.action_handler(payload) or {}

@@ -241,19 +241,23 @@ class QtWorkflowMainWindow:
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
-        config_group = qt.QtWidgets.QGroupBox("4. 节点配置")
-        config_layout = qt.QtWidgets.QVBoxLayout(config_group)
+        self.node_tabs = qt.QtWidgets.QTabWidget()
+
+        config_page = qt.QtWidgets.QWidget()
+        config_layout = qt.QtWidgets.QVBoxLayout(config_page)
+        config_layout.setContentsMargins(8, 8, 8, 8)
+        config_layout.setSpacing(6)
         self.config_header_label = qt.QtWidgets.QLabel("未选择节点")
         self.config_header_label.setWordWrap(True)
-        self.config_form = NodeConfigForm(qt, headers=self.current_headers, action_handler=self._handle_config_field_action)
+        self.config_form = NodeConfigForm(qt, headers=self.current_headers, plan=self.current_plan, action_handler=self._handle_config_field_action)
         self.apply_config_button = qt.QtWidgets.QPushButton("应用节点配置")
         self.apply_config_button.clicked.connect(lambda checked=False: self.apply_node_config())
         config_layout.addWidget(self.config_header_label)
         config_layout.addWidget(self.config_form.widget, 1)
         config_layout.addWidget(self.apply_config_button)
 
-        detail_group = qt.QtWidgets.QGroupBox("节点说明")
-        detail_layout = qt.QtWidgets.QVBoxLayout(detail_group)
+        detail_page = qt.QtWidgets.QWidget()
+        detail_layout = qt.QtWidgets.QVBoxLayout(detail_page)
         detail_layout.setContentsMargins(8, 8, 8, 8)
         detail_layout.setSpacing(6)
         self.node_detail_title_label = qt.QtWidgets.QLabel("未选择节点")
@@ -271,6 +275,9 @@ class QtWorkflowMainWindow:
         detail_layout.addWidget(self.node_detail_meta_label)
         detail_layout.addWidget(self.node_detail_badges_label)
         detail_layout.addWidget(self.node_detail_sections)
+
+        self.node_tabs.addTab(config_page, "节点配置")
+        self.node_tabs.addTab(detail_page, "节点说明")
 
         action_row = qt.QtWidgets.QHBoxLayout()
         for text, callback in [
@@ -292,19 +299,25 @@ class QtWorkflowMainWindow:
 
         progress_group = qt.QtWidgets.QGroupBox("执行进度")
         progress_layout = qt.QtWidgets.QVBoxLayout(progress_group)
+        progress_layout.setContentsMargins(8, 6, 8, 6)
+        progress_layout.setSpacing(4)
         self.workflow_progress_label = qt.QtWidgets.QLabel("等待执行")
         self.workflow_progress = qt.QtWidgets.QProgressBar()
         self.workflow_progress.setRange(0, 100)
+        self.workflow_progress.setFixedHeight(10)
+        self.workflow_progress.setTextVisible(False)
         self.node_progress_label = qt.QtWidgets.QLabel("节点进度")
         self.node_progress = qt.QtWidgets.QProgressBar()
         self.node_progress.setRange(0, 100)
+        self.node_progress.setFixedHeight(10)
+        self.node_progress.setTextVisible(False)
         progress_layout.addWidget(self.workflow_progress_label)
         progress_layout.addWidget(self.workflow_progress)
         progress_layout.addWidget(self.node_progress_label)
         progress_layout.addWidget(self.node_progress)
 
-        output_group = qt.QtWidgets.QGroupBox("5. 输出设置")
-        output_layout = qt.QtWidgets.QFormLayout(output_group)
+        output_page = qt.QtWidgets.QWidget()
+        output_layout = qt.QtWidgets.QFormLayout(output_page)
         output_layout.setContentsMargins(8, 8, 8, 8)
         output_layout.setSpacing(6)
         output_panel = self.engine_client.build_output_panel_state()
@@ -359,8 +372,10 @@ class QtWorkflowMainWindow:
         self.output_db_path_edit.editingFinished.connect(lambda: self.refresh_preview_table_combo())
         self._apply_output_panel_state(output_panel)
 
-        preview_group = qt.QtWidgets.QGroupBox("6. 结果预览")
-        preview_layout = qt.QtWidgets.QVBoxLayout(preview_group)
+        preview_page = qt.QtWidgets.QWidget()
+        preview_layout = qt.QtWidgets.QVBoxLayout(preview_page)
+        preview_layout.setContentsMargins(8, 8, 8, 8)
+        preview_layout.setSpacing(6)
         preview_toolbar = qt.QtWidgets.QHBoxLayout()
         self.show_input_button = qt.QtWidgets.QPushButton("输入表")
         self.show_preview_button = qt.QtWidgets.QPushButton("结果表")
@@ -389,33 +404,51 @@ class QtWorkflowMainWindow:
             pass
 
         self.message_tabs = qt.QtWidgets.QTabWidget()
-        self.message_tabs.setMaximumHeight(180)
+        self.message_tabs.setSizePolicy(
+            qt.QtWidgets.QSizePolicy.Policy.Expanding,
+            qt.QtWidgets.QSizePolicy.Policy.Expanding,
+        )
         self.issue_text = qt.QtWidgets.QPlainTextEdit()
         self.issue_text.setReadOnly(True)
         self.log_text = qt.QtWidgets.QPlainTextEdit()
         self.log_text.setReadOnly(True)
         self.info_text = qt.QtWidgets.QPlainTextEdit()
         self.info_text.setReadOnly(True)
+        for editor in [self.info_text, self.issue_text, self.log_text]:
+            editor.setSizePolicy(
+                qt.QtWidgets.QSizePolicy.Policy.Expanding,
+                qt.QtWidgets.QSizePolicy.Policy.Expanding,
+            )
         self.message_tabs.addTab(self.info_text, "说明")
         self.message_tabs.addTab(self.issue_text, "问题")
         self.message_tabs.addTab(self.log_text, "日志")
         preview_layout.addLayout(preview_toolbar)
         preview_layout.addWidget(self.table_title)
         preview_layout.addWidget(self.table_view, 1)
-        preview_layout.addWidget(self.message_tabs)
 
-        layout.addWidget(config_group, 2)
-        layout.addWidget(detail_group)
+        message_page = qt.QtWidgets.QWidget()
+        message_layout = qt.QtWidgets.QVBoxLayout(message_page)
+        message_layout.setContentsMargins(8, 8, 8, 8)
+        message_layout.setSpacing(6)
+        message_layout.addWidget(self.message_tabs, 1)
+
+        self.result_tabs = qt.QtWidgets.QTabWidget()
+        self.result_tabs.addTab(preview_page, "预览")
+        self.result_tabs.addTab(output_page, "输出")
+        self.result_tabs.addTab(message_page, "消息")
+
+        layout.addWidget(self.node_tabs, 2)
         layout.addLayout(action_row)
         layout.addWidget(progress_group)
-        layout.addWidget(output_group)
-        layout.addWidget(preview_group, 3)
+        layout.addWidget(self.result_tabs, 3)
         return panel
 
-    def refresh_all(self):
+    def refresh_all(self, *, selected_index=None):
         self.refresh_catalog()
         self.refresh_template_list(show_status=False)
         self.refresh_node_list()
+        if selected_index is not None and 0 <= int(selected_index) < self.node_list.count():
+            self.node_list.setCurrentRow(int(selected_index))
         self.update_input_summary()
         self.refresh_preview_table_combo()
         self.update_table(self.current_headers, self.current_rows, title="输入表格")
@@ -632,6 +665,7 @@ class QtWorkflowMainWindow:
             headers=self.current_headers,
             table_names=table_context.get("table_names"),
             table_columns=table_context.get("table_columns"),
+            plan=self.current_plan,
             schema=schema,
         )
         self.show_node_detail(node_type_id)
@@ -696,9 +730,14 @@ class QtWorkflowMainWindow:
         self.issue_text.setPlainText(issue_text)
         self.log_text.setPlainText("\n".join(logs))
         preferred_tab = str(panel.get("preferred_tab") or "").strip().lower()
+        switch_outer_tab = bool(panel.get("switch_result_tab", preferred_tab in {"issues", "logs"}))
         if preferred_tab == "issues":
+            if switch_outer_tab and hasattr(self, "result_tabs"):
+                self.result_tabs.setCurrentWidget(self.message_tabs.parentWidget())
             self.message_tabs.setCurrentWidget(self.issue_text)
         elif preferred_tab == "logs":
+            if switch_outer_tab and hasattr(self, "result_tabs"):
+                self.result_tabs.setCurrentWidget(self.message_tabs.parentWidget())
             self.message_tabs.setCurrentWidget(self.log_text)
         else:
             self.message_tabs.setCurrentWidget(self.info_text)
@@ -770,6 +809,7 @@ class QtWorkflowMainWindow:
         self.config_form.set_headers(self.current_headers)
         self.config_form.set_table_names(table_context.get("table_names"))
         self.config_form.set_table_columns(table_context.get("table_columns"))
+        self.config_form.set_plan(self.current_plan)
         self.refresh_catalog()
         self.update_input_summary()
         self.update_table(self.current_headers, self.current_rows, title=state.get("table_title") or "输入表格")
@@ -900,7 +940,61 @@ class QtWorkflowMainWindow:
             return self._pick_single_value_for_field(field_key, payload)
         if action_key == "pick_preview_headers":
             return self._pick_multi_values_for_field(field_key, payload)
+        if action_key == "pick_plan_ref":
+            return self._pick_plan_reference_for_field(field_key, payload)
+        if action_key == "pick_runtime_ref":
+            return self._pick_runtime_reference_for_field(field_key, payload)
         return {}
+
+    def _pick_plan_reference_for_field(self, field_key, payload):
+        action = payload.get("action") or {}
+        ref_kind = str(action.get("ref_kind") or "").strip()
+        candidates = [str(item) for item in (payload.get("plan_refs") or []) if str(item).strip()]
+        if not candidates:
+            self._apply_feedback(self.engine_client.describe_picker_feedback(
+                action_key="pick_plan_ref",
+                field_key=field_key,
+                candidates=candidates,
+                ref_kind=ref_kind,
+            ))
+            return {}
+        current = str(payload.get("value") or "")
+        value, accepted = self.qt.QtWidgets.QInputDialog.getItem(
+            self.window,
+            f"选择{field_key}",
+            "可用循环：" if ref_kind == "loop_id" else "可用锚点：",
+            candidates,
+            max(0, candidates.index(current)) if current in candidates else 0,
+            False,
+        )
+        if not accepted:
+            return {}
+        return {"value": value}
+
+    def _pick_runtime_reference_for_field(self, field_key, payload):
+        action = payload.get("action") or {}
+        ref_kind = str(action.get("ref_kind") or "").strip()
+        candidates = [str(item) for item in (payload.get("runtime_refs") or []) if str(item).strip()]
+        if not candidates:
+            self._apply_feedback(self.engine_client.describe_picker_feedback(
+                action_key="pick_runtime_ref",
+                field_key=field_key,
+                candidates=candidates,
+                ref_kind=ref_kind,
+            ))
+            return {}
+        current = str(payload.get("value") or "")
+        value, accepted = self.qt.QtWidgets.QInputDialog.getItem(
+            self.window,
+            f"选择{field_key}",
+            "可用中转表：" if ref_kind == "transit_table" else "可用中转名称：",
+            candidates,
+            max(0, candidates.index(current)) if current in candidates else 0,
+            False,
+        )
+        if not accepted:
+            return {}
+        return {"value": value}
 
     def _pick_single_table_for_field(self, field_key, payload):
         candidates = [str(item) for item in (payload.get("table_names") or []) if str(item).strip()]
@@ -1431,6 +1525,8 @@ class QtWorkflowMainWindow:
             title="执行日志",
             logs=self.current_job_messages[-80:],
         ).get("panel") or {})
+        if self.current_job_id and hasattr(self, "result_tabs"):
+            self.result_tabs.setCurrentIndex(0)
 
     def finish_workflow_job(self, status):
         self.job_timer.stop()
@@ -1453,14 +1549,19 @@ class QtWorkflowMainWindow:
             self.last_preview_rows = rows
             self.update_table(headers, rows, title=str(view_state.get("table_title") or self.current_job_title or "执行结果"))
             self.current_table_kind = str(view_state.get("table_kind") or "preview")
+            if hasattr(self, "result_tabs"):
+                self.result_tabs.setCurrentIndex(0)
             if view_state.get("should_refresh_preview_sources"):
                 self.refresh_preview_table_combo()
-            self._apply_message_panel(final.get("message_panel") or self.engine_client.build_message_panel_state(
+            success_panel = final.get("message_panel") or self.engine_client.build_message_panel_state(
                 mode="success",
                 title=self.current_job_title,
                 body=f"{self.current_job_title}完成，无日志。",
                 logs=final.get("logs") or [],
-            ).get("panel") or {})
+            ).get("panel") or {}
+            success_panel = dict(success_panel)
+            success_panel["switch_result_tab"] = False
+            self._apply_message_panel(success_panel)
             self._apply_job_progress_state(self.engine_client.build_job_progress_state(
                 current_job_id=self.current_job_id,
                 title=self.current_job_title,
@@ -1528,6 +1629,8 @@ class QtWorkflowMainWindow:
         self._show_preview_source({"type": "memory", "table_role": "preview"})
 
     def show_log_text(self):
+        if hasattr(self, "result_tabs"):
+            self.result_tabs.setCurrentWidget(self.message_tabs.parentWidget())
         self.message_tabs.setCurrentWidget(self.log_text)
         self.log_text.setFocus()
 

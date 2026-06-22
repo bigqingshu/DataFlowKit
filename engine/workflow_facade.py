@@ -322,11 +322,12 @@ class WorkflowFacade:
             }],
         )
 
-    def describe_picker_feedback(self, *, action_key="", field_key="", table_name="", table_field="", candidates=None):
+    def describe_picker_feedback(self, *, action_key="", field_key="", table_name="", table_field="", candidates=None, ref_kind=""):
         action_key = str(action_key or "").strip()
         field_key = str(field_key or "").strip()
         table_name = str(table_name or "").strip()
         table_field = str(table_field or "").strip()
+        ref_kind = str(ref_kind or "").strip()
         candidates = [str(item) for item in (candidates or []) if str(item).strip()]
 
         title = "字段选择"
@@ -355,6 +356,18 @@ class WorkflowFacade:
                 status_message = f"数据表 {table_name} 暂无可选字段。"
                 issue_message = status_message
                 code = "table_columns_missing"
+        elif action_key == "pick_plan_ref":
+            title = "计划引用选择"
+            label = "循环" if ref_kind == "loop_id" else "锚点" if ref_kind == "anchor_id" else "计划引用"
+            status_message = f"当前计划没有可用{label}。"
+            issue_message = f"字段 {field_key or label} 依赖当前计划中的{label}，请先添加对应节点或填写自定义值。"
+            code = "plan_refs_missing"
+        elif action_key == "pick_runtime_ref":
+            title = "运行时引用选择"
+            label = "中转表" if ref_kind == "transit_table" else "中转名称" if ref_kind == "transit_name" else "运行时引用"
+            status_message = f"当前计划没有可用{label}。"
+            issue_message = f"字段 {field_key or label} 依赖前序节点产生的{label}，请先配置相关节点或填写自定义值。"
+            code = "runtime_refs_missing"
 
         if candidates:
             return self.build_user_feedback()
@@ -371,6 +384,7 @@ class WorkflowFacade:
                 "field": field_key,
                 "table_name": table_name,
                 "table_field": table_field,
+                "ref_kind": ref_kind,
                 "action": action_key,
             }],
         )

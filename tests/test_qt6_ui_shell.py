@@ -295,6 +295,26 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertIn("lookup_table", picker_feedback["feedback"]["issue_message"])
         self.assertEqual(picker_feedback["feedback"]["issues"][0]["code"], "table_context_required")
 
+        plan_ref_feedback = client.describe_picker_feedback(
+            action_key="pick_plan_ref",
+            field_key="loop_id",
+            ref_kind="loop_id",
+            candidates=[],
+        )
+        self.assertEqual(plan_ref_feedback["feedback"]["status_message"], "当前计划没有可用循环。")
+        self.assertIn("请先添加对应节点或填写自定义值", plan_ref_feedback["feedback"]["issue_message"])
+        self.assertEqual(plan_ref_feedback["feedback"]["issues"][0]["code"], "plan_refs_missing")
+
+        runtime_ref_feedback = client.describe_picker_feedback(
+            action_key="pick_runtime_ref",
+            field_key="transit_table",
+            ref_kind="transit_table",
+            candidates=[],
+        )
+        self.assertEqual(runtime_ref_feedback["feedback"]["status_message"], "当前计划没有可用中转表。")
+        self.assertIn("请先配置相关节点或填写自定义值", runtime_ref_feedback["feedback"]["issue_message"])
+        self.assertEqual(runtime_ref_feedback["feedback"]["issues"][0]["code"], "runtime_refs_missing")
+
     def test_facade_applies_node_config_state(self):
         client = QtHeadlessEngineClient()
 
@@ -1201,6 +1221,15 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(controller.output_mode_combo.currentText(), "输出到主界面预览区")
         self.assertEqual(controller.output_db_path_edit.text(), "")
         self.assertEqual(controller.output_path_edit.text(), "")
+        self.assertEqual(controller.node_tabs.count(), 2)
+        self.assertEqual(controller.node_tabs.tabText(0), "节点配置")
+        self.assertEqual(controller.node_tabs.tabText(1), "节点说明")
+        self.assertEqual(controller.node_tabs.currentIndex(), 0)
+        self.assertEqual(controller.result_tabs.count(), 3)
+        self.assertEqual(controller.result_tabs.tabText(0), "预览")
+        self.assertEqual(controller.result_tabs.tabText(1), "输出")
+        self.assertEqual(controller.result_tabs.tabText(2), "消息")
+        self.assertEqual(controller.result_tabs.currentIndex(), 0)
         self.assertEqual(controller.node_detail_title_label.text(), "新建列")
         self.assertIn("说明", controller.node_detail_sections.toPlainText())
         self.assertFalse(controller.output_form_fields["backup_before_overwrite"]["editor"].isVisible())
@@ -1218,7 +1247,9 @@ class Qt6UiShellTests(unittest.TestCase):
             controller.config_form.config_fields["match_value_source"]["editor"].setCurrentText("列字段")
             app.processEvents()
             self.assertFalse(controller.config_form.config_fields["match_value_field"]["label"].isHidden())
+            controller.node_tabs.setCurrentIndex(1)
             controller.show_node_detail("core.replace")
+            self.assertEqual(controller.node_tabs.currentIndex(), 1)
             self.assertEqual(controller.node_detail_title_label.text(), "批量替换")
             self.assertIn("注意", controller.node_detail_sections.toPlainText())
             self.assertIn("配置项", controller.node_detail_sections.toPlainText())
@@ -1233,6 +1264,7 @@ class Qt6UiShellTests(unittest.TestCase):
             controller.apply_node_config()
             self.assertEqual(controller.current_plan["nodes"][controller.selected_node_index()].get("config", {}), before_config)
             self.assertIn("目标字段不存在", controller.issue_text.toPlainText())
+            self.assertEqual(controller.result_tabs.tabText(controller.result_tabs.currentIndex()), "消息")
             self.assertEqual(controller.message_tabs.tabText(controller.message_tabs.currentIndex()), "问题")
             self.assertIn("节点配置校验失败", controller.info_text.toPlainText())
             controller.toggle_selected_node_enabled()
@@ -1249,15 +1281,18 @@ class Qt6UiShellTests(unittest.TestCase):
             controller.preview_to_selected_node()
             self.assertIn("请先选择一个节点。", controller.issue_text.toPlainText())
             self.assertEqual(controller.status_bar.currentMessage(), "预览前需要先选择节点")
+            self.assertEqual(controller.result_tabs.tabText(controller.result_tabs.currentIndex()), "消息")
             controller.node_list.setCurrentRow(0)
             controller.preview_to_selected_node()
             self.wait_for_controller_job(app, controller)
+            self.assertEqual(controller.result_tabs.tabText(controller.result_tabs.currentIndex()), "预览")
             self.assertEqual(controller.current_table_kind, "preview")
             self.assertIn("status", controller.last_preview_headers)
             self.assertEqual(controller.workflow_progress.value(), 100)
             self.assertFalse(controller.cancel_job_button.isEnabled())
             controller.execute_plan()
             self.wait_for_controller_job(app, controller)
+            self.assertEqual(controller.result_tabs.tabText(controller.result_tabs.currentIndex()), "预览")
             self.assertEqual(controller.current_table_kind, "preview")
             self.assertIn("status", controller.last_preview_headers)
             self.assertTrue(controller.table_title.text().startswith("执行结果"))
@@ -1267,6 +1302,8 @@ class Qt6UiShellTests(unittest.TestCase):
             app.processEvents()
             window.show()
             app.processEvents()
+            controller.result_tabs.setCurrentIndex(1)
+            app.processEvents()
             self.assertTrue(controller.output_form_fields["target"]["editor"].isVisible())
             self.assertTrue(controller.output_form_fields["db_path"]["editor"].isVisible())
             self.assertTrue(controller.output_form_fields["db_path"]["action_button"].isVisible())
@@ -1274,7 +1311,9 @@ class Qt6UiShellTests(unittest.TestCase):
             self.wait_for_controller_job(app, controller)
             self.assertTrue(controller.table_title.text().startswith("执行结果（输出未落地）"))
             self.assertIn("missing_db_path", controller.issue_text.toPlainText())
+            self.assertEqual(controller.result_tabs.tabText(controller.result_tabs.currentIndex()), "预览")
             controller.show_log_text()
+            self.assertEqual(controller.result_tabs.tabText(controller.result_tabs.currentIndex()), "消息")
             self.assertEqual(controller.message_tabs.tabText(controller.message_tabs.currentIndex()), "日志")
             self.assertIn("输出设置校验失败", controller.status_bar.currentMessage())
             settings = controller.current_output_settings()
@@ -1304,6 +1343,7 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertIn("基础校验", controller.info_text.toPlainText())
         self.assertIn("存在写回风险，请确认目标表", controller.info_text.toPlainText())
         self.assertIn("将写回数据库", controller.issue_text.toPlainText())
+        self.assertEqual(controller.result_tabs.tabText(controller.result_tabs.currentIndex()), "消息")
         self.assertEqual(controller.message_tabs.tabText(controller.message_tabs.currentIndex()), "问题")
 
     def test_controller_uses_confirmation_prompts_for_clear_and_run(self):
@@ -1359,6 +1399,7 @@ class Qt6UiShellTests(unittest.TestCase):
 
         self.assertTrue(mock_list_tables.called)
         self.assertEqual(controller.config_form.table_names, ["orders", "logs"])
+        self.assertEqual(controller.config_form.plan.get("nodes"), controller.current_plan.get("nodes"))
         self.assertEqual(mock_describe_detail.call_args.kwargs["table_names"], ["orders", "logs"])
         self.assertEqual(mock_describe_detail.call_args.kwargs["table_columns"], {"orders": ["id", "name"], "logs": ["row_id"]})
         window.close()
@@ -1422,6 +1463,231 @@ class Qt6UiShellTests(unittest.TestCase):
             )
 
         self.assertEqual(result["value"], ["id"])
+        window.close()
+        app.processEvents()
+
+    def test_config_form_uses_plan_reference_choices(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+
+        form = NodeConfigForm(qt, plan={
+            "nodes": [
+                {"node_type_id": "core.loop_start", "config": {"loop_id": "Loop_A"}},
+                {"node_type_id": "core.jump_anchor", "config": {"anchor_id": "ANCHOR_END"}},
+            ]
+        })
+        schema = {
+            "form": {
+                "groups": [
+                    {
+                        "title": "参数",
+                        "fields": [
+                            {
+                                "key": "loop_id",
+                                "label": "循环 ID",
+                                "type": "select",
+                                "options_source": {"type": "plan_refs", "ref_kind": "loop_id"},
+                                "action": {"key": "pick_plan_ref", "label": "选择循环", "ref_kind": "loop_id"},
+                            },
+                            {
+                                "key": "jump_rules",
+                                "label": "跳转规则",
+                                "type": "structured_list",
+                                "item_schema": {
+                                    "type": "object",
+                                    "columns": [
+                                        {"key": "value", "label": "值", "type": "text"},
+                                        {
+                                            "key": "target_anchor_id",
+                                            "label": "目标锚点",
+                                            "type": "select",
+                                            "options_source": {"type": "plan_refs", "ref_kind": "anchor_id"},
+                                            "action": {"key": "pick_plan_ref", "label": "选择锚点", "ref_kind": "anchor_id"},
+                                        },
+                                    ],
+                                },
+                            },
+                        ],
+                    }
+                ]
+            }
+        }
+        form.set_node(
+            {
+                "node_type_id": "core.loop_judge",
+                "node_id": "n1",
+                "name": "循环判断",
+                "enabled": True,
+                "node_version": "1.0.0",
+                "config": {
+                    "loop_id": "",
+                    "jump_rules": [{"value": "TRUE", "target_anchor_id": ""}],
+                },
+            },
+            schema=schema,
+        )
+
+        loop_editor = form.config_fields["loop_id"]["editor"]
+        loop_values = [loop_editor.itemText(i) for i in range(loop_editor.count())]
+        self.assertIn("Loop_A", loop_values)
+
+        jump_editor = form.config_fields["jump_rules"]["editor"]
+        table = jump_editor.structured_state["table"]
+        cell_widget = form._structured_cell_widget(
+            table.cellWidget(0, 1),
+            {"key": "target_anchor_id", "type": "select"},
+        )
+        anchor_values = [cell_widget.itemText(i) for i in range(cell_widget.count())]
+        self.assertIn("ANCHOR_END", anchor_values)
+        app.processEvents()
+
+    def test_config_form_uses_runtime_reference_choices(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+
+        form = NodeConfigForm(qt, plan={
+            "nodes": [
+                {"node_type_id": "core.save_transit", "config": {"transit_name": "中转A"}},
+                {"node_type_id": "core.group", "config": {"save_to_transit": True, "output_transit_name": "组输出B"}},
+            ]
+        })
+        schema = {
+            "form": {
+                "groups": [
+                    {
+                        "title": "参数",
+                        "fields": [
+                            {
+                                "key": "transit_table",
+                                "label": "中转表",
+                                "type": "select",
+                                "options_source": {"type": "runtime_refs", "ref_kind": "transit_table"},
+                                "action": {"key": "pick_runtime_ref", "label": "选择中转表", "ref_kind": "transit_table"},
+                            },
+                            {
+                                "key": "links",
+                                "label": "关联",
+                                "type": "structured_list",
+                                "item_schema": {
+                                    "type": "object",
+                                    "columns": [
+                                        {
+                                            "key": "target_transit_table",
+                                            "label": "目标中转表",
+                                            "type": "select",
+                                            "options_source": {"type": "runtime_refs", "ref_kind": "transit_table"},
+                                            "action": {"key": "pick_runtime_ref", "label": "选择中转表", "ref_kind": "transit_table"},
+                                        }
+                                    ],
+                                },
+                            },
+                        ],
+                    }
+                ]
+            }
+        }
+        form.set_node(
+            {
+                "node_type_id": "core.loop_start",
+                "node_id": "n1",
+                "name": "循环起点",
+                "enabled": True,
+                "node_version": "1.0.0",
+                "config": {
+                    "transit_table": "",
+                    "links": [{"target_transit_table": ""}],
+                },
+            },
+            schema=schema,
+        )
+
+        transit_editor = form.config_fields["transit_table"]["editor"]
+        transit_values = [transit_editor.itemText(i) for i in range(transit_editor.count())]
+        self.assertIn("中转A", transit_values)
+        self.assertIn("组输出B", transit_values)
+
+        links_editor = form.config_fields["links"]["editor"]
+        table = links_editor.structured_state["table"]
+        cell_widget = form._structured_cell_widget(
+            table.cellWidget(0, 0),
+            {"key": "target_transit_table", "type": "select"},
+        )
+        link_values = [cell_widget.itemText(i) for i in range(cell_widget.count())]
+        self.assertIn("中转A", link_values)
+        self.assertIn("组输出B", link_values)
+        app.processEvents()
+
+    def test_controller_handles_plan_reference_picker_actions(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+
+        with patch.object(controller.qt.QtWidgets.QInputDialog, "getItem", return_value=("Loop_A", True)):
+            result = controller._pick_plan_reference_for_field(
+                "loop_id",
+                {
+                    "action": {"key": "pick_plan_ref", "ref_kind": "loop_id"},
+                    "plan_refs": ["Loop_A", "Loop_B"],
+                    "value": "Loop_B",
+                },
+            )
+        self.assertEqual(result["value"], "Loop_A")
+
+        no_result = controller._pick_plan_reference_for_field(
+            "default_anchor_id",
+            {
+                "action": {"key": "pick_plan_ref", "ref_kind": "anchor_id"},
+                "plan_refs": [],
+                "value": "",
+            },
+        )
+        self.assertEqual(no_result, {})
+        self.assertIn("计划引用选择", controller.info_text.toPlainText())
+        self.assertIn("请先添加对应节点或填写自定义值", controller.issue_text.toPlainText())
+        window.close()
+        app.processEvents()
+
+    def test_controller_handles_runtime_reference_picker_actions(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+
+        with patch.object(controller.qt.QtWidgets.QInputDialog, "getItem", return_value=("中转A", True)):
+            result = controller._pick_runtime_reference_for_field(
+                "transit_table",
+                {
+                    "action": {"key": "pick_runtime_ref", "ref_kind": "transit_table"},
+                    "runtime_refs": ["中转A", "组输出B"],
+                    "value": "组输出B",
+                },
+            )
+        self.assertEqual(result["value"], "中转A")
+
+        no_result = controller._pick_runtime_reference_for_field(
+            "transit_table",
+            {
+                "action": {"key": "pick_runtime_ref", "ref_kind": "transit_table"},
+                "runtime_refs": [],
+                "value": "",
+            },
+        )
+        self.assertEqual(no_result, {})
+        self.assertIn("运行时引用选择", controller.info_text.toPlainText())
+        self.assertIn("请先配置相关节点或填写自定义值", controller.issue_text.toPlainText())
         window.close()
         app.processEvents()
 

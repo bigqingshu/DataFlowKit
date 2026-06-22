@@ -279,6 +279,96 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
         self.assertEqual(fields["lookup_fields"]["action"]["key"], "pick_table_fields")
         self.assertEqual(fields["lookup_fields"]["action"]["table_field"], "lookup_table")
 
+    def test_node_ui_schema_exposes_plan_reference_metadata(self):
+        from workflow.node_ui_schema import get_node_ui_schema, plan_reference_choices
+
+        plan = {
+            "nodes": [
+                {"node_type_id": "core.loop_start", "config": {"loop_id": "Loop_A"}},
+                {"node_type_id": "core.loop_start", "config": {"loop_id": "Loop_A"}},
+                {"node_type_id": "core.jump_anchor", "config": {"anchor_id": "ANCHOR_END"}},
+                {"node_type_id": "core.jump_anchor", "config": {"anchor_id": "ANCHOR_NEXT"}},
+            ]
+        }
+
+        self.assertEqual(plan_reference_choices(plan, "loop_id"), ["Loop_A"])
+        self.assertEqual(plan_reference_choices(plan, "anchor_id"), ["ANCHOR_END", "ANCHOR_NEXT"])
+
+        loop_schema = get_node_ui_schema("core.loop_judge", preview_headers=["A"])
+        loop_fields = {
+            field["key"]: field
+            for group in loop_schema["form"]["groups"]
+            for field in group["fields"]
+        }
+        self.assertEqual(loop_fields["loop_id"]["options_source"], {"type": "plan_refs", "ref_kind": "loop_id"})
+        self.assertEqual(loop_fields["loop_id"]["action"]["key"], "pick_plan_ref")
+
+        jump_schema = get_node_ui_schema("core.conditional_jump", preview_headers=["A"])
+        jump_fields = {
+            field["key"]: field
+            for group in jump_schema["form"]["groups"]
+            for field in group["fields"]
+        }
+        self.assertEqual(jump_fields["default_anchor_id"]["options_source"], {"type": "plan_refs", "ref_kind": "anchor_id"})
+        jump_columns = {
+            item["key"]: item
+            for item in jump_fields["jump_rules"]["item_schema"]["columns"]
+        }
+        self.assertEqual(jump_columns["target_anchor_id"]["type"], "select")
+        self.assertEqual(jump_columns["target_anchor_id"]["options_source"], {"type": "plan_refs", "ref_kind": "anchor_id"})
+        self.assertEqual(jump_columns["target_anchor_id"]["action"]["key"], "pick_plan_ref")
+
+    def test_node_ui_schema_exposes_runtime_reference_metadata_and_capabilities(self):
+        from workflow.node_ui_schema import get_node_ui_schema, runtime_reference_choices
+
+        plan = {
+            "nodes": [
+                {"node_type_id": "core.save_transit", "config": {"transit_name": "中转A"}},
+                {"node_type_id": "core.group", "config": {"save_to_transit": True, "output_transit_name": "组输出B"}},
+            ]
+        }
+
+        self.assertEqual(runtime_reference_choices(plan, "transit_name"), ["中转A", "组输出B"])
+        self.assertEqual(runtime_reference_choices(plan, "transit_table"), ["中转A", "组输出B"])
+
+        loop_schema = get_node_ui_schema("core.loop_start", preview_headers=["A"])
+        loop_fields = {
+            field["key"]: field
+            for group in loop_schema["form"]["groups"]
+            for field in group["fields"]
+        }
+        self.assertEqual(loop_fields["transit_table"]["options_source"], {"type": "runtime_refs", "ref_kind": "transit_table"})
+        self.assertEqual(loop_fields["transit_table"]["action"]["key"], "pick_runtime_ref")
+        self.assertTrue(loop_fields["transit_table"]["ui_capabilities"]["supports_picker"])
+        self.assertTrue(loop_fields["transit_table"]["ui_capabilities"]["depends_on_runtime"])
+        self.assertTrue(loop_fields["transit_table"]["ui_capabilities"]["allows_manual_input"])
+
+        group_schema = get_node_ui_schema("core.group", preview_headers=["A"])
+        group_fields = {
+            field["key"]: field
+            for group in group_schema["form"]["groups"]
+            for field in group["fields"]
+        }
+        self.assertEqual(group_fields["input_transit_table"]["options_source"], {"type": "runtime_refs", "ref_kind": "transit_table"})
+        self.assertEqual(group_fields["output_transit_name"]["options_source"], {"type": "runtime_refs", "ref_kind": "transit_name"})
+
+        write_schema = get_node_ui_schema("选定列写入指定表", preview_headers=["A"])
+        write_fields = {
+            field["key"]: field
+            for group in write_schema["form"]["groups"]
+            for field in group["fields"]
+        }
+        self.assertEqual(write_fields["source_transit_table"]["action"]["key"], "pick_runtime_ref")
+        self.assertEqual(write_fields["target_transit_table"]["options_source"], {"type": "runtime_refs", "ref_kind": "transit_table"})
+
+        jump_schema = get_node_ui_schema("core.loop_judge", preview_headers=["A"])
+        jump_fields = {
+            field["key"]: field
+            for group in jump_schema["form"]["groups"]
+            for field in group["fields"]
+        }
+        self.assertTrue(jump_fields["loop_id"]["ui_capabilities"]["depends_on_plan"])
+
     def test_field_help_payload_exposes_shared_help_sections(self):
         from workflow.node_ui_schema import build_field_help_payload, get_node_ui_schema
 
@@ -303,6 +393,31 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
         match_payload = build_field_help_payload("match_value_field", fields["match_value_field"])
         match_joined = "\n".join(match_payload["sections"][0]["lines"])
         self.assertIn("动态显示", match_joined)
+
+    def test_plan_reference_fields_expose_shared_help_guidance(self):
+        from workflow.node_ui_schema import build_field_help_payload, get_node_ui_schema
+
+        schema = get_node_ui_schema("core.loop_judge", preview_headers=["A"])
+        fields = {
+            field["key"]: field
+            for group in schema["form"]["groups"]
+            for field in group["fields"]
+        }
+        loop_payload = build_field_help_payload("loop_id", fields["loop_id"])
+        loop_lines = "\n".join(loop_payload["sections"][0]["lines"])
+        self.assertIn("候选来源：当前计划中的循环执行起点", loop_lines)
+        self.assertIn("请先添加循环执行起点", loop_lines)
+
+        jump_schema = get_node_ui_schema("core.conditional_jump", preview_headers=["A"])
+        jump_fields = {
+            field["key"]: field
+            for group in jump_schema["form"]["groups"]
+            for field in group["fields"]
+        }
+        anchor_payload = build_field_help_payload("default_anchor_id", jump_fields["default_anchor_id"])
+        anchor_lines = "\n".join(anchor_payload["sections"][0]["lines"])
+        self.assertIn("候选来源：当前计划中的跳转锚点", anchor_lines)
+        self.assertIn("请先添加跳转锚点节点", anchor_lines)
 
     def test_plugin_manifest_schema_keeps_current_manifest_shapes(self):
         schema = load_schema("plugin_manifest.schema.json")

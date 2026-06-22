@@ -305,11 +305,16 @@ STRUCTURED_COLUMN_TABLE_FIELD_RULES = {
 TABLE_PICKER_KEYS = {
     "lookup_table",
     "source_table",
-    "transit_table",
     "input_sqlite_table",
-    "input_transit_table",
     "output_sqlite_table",
-    "output_transit_name",
+}
+
+RUNTIME_REF_FIELD_RULES = {
+    "transit_table": {"ref_kind": "transit_table", "label": "中转表"},
+    "input_transit_table": {"ref_kind": "transit_table", "label": "中转表"},
+    "output_transit_name": {"ref_kind": "transit_name", "label": "中转输出名"},
+    "source_transit_table": {"ref_kind": "transit_table", "label": "中转表"},
+    "target_transit_table": {"ref_kind": "transit_table", "label": "中转表"},
 }
 
 
@@ -328,7 +333,19 @@ STRUCTURED_LIST_FIELD_COLUMNS = {
     ],
     "jump_rules": [
         {"key": "value", "label": "匹配值", "type": "text"},
-        {"key": "target_anchor_id", "label": "目标锚点", "type": "text"},
+        {
+            "key": "target_anchor_id",
+            "label": "目标锚点",
+            "type": "select",
+            "options_source": {"type": "plan_refs", "ref_kind": "anchor_id"},
+            "action": {
+                "key": "pick_plan_ref",
+                "label": "选择锚点",
+                "style": "picker",
+                "source": "plan_refs",
+                "ref_kind": "anchor_id",
+            },
+        },
     ],
     "field_mappings": [
         {"key": "source_field", "label": "源字段", "type": "field_select"},
@@ -507,6 +524,10 @@ FIELD_HELP_TEXTS = {
     "backup_before_write": "真正写入前是否先备份目标表。",
     "output_preview_table": "写回后是否生成预览结果表供界面查看。",
     "sequential_insert_missing_rows": "找不到目标记录时是否允许按顺序补写新行。",
+    "loop_id": "引用当前计划中某个循环执行起点的 loop_id。优先从已有循环节点中选择，仍可手动输入自定义值。",
+    "anchor_id": "为当前计划定义一个可跳转到的锚点标识。后续跳转节点会引用这个值。",
+    "target_anchor_id": "引用当前计划中的锚点 ID，用于无条件跳转或条件跳转目标。优先从已有锚点中选择。",
+    "default_anchor_id": "当条件值未命中任何跳转规则时使用的默认锚点。优先从已有锚点中选择。",
 }
 
 FIELD_VALIDATION_RULES = {
@@ -923,6 +944,70 @@ def config_field_label(key):
     return CONFIG_FIELD_LABELS.get(key, key.replace("_", " "))
 
 
+def _unique_non_empty(values):
+    result = []
+    seen = set()
+    for item in values or []:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def plan_reference_choices(plan=None, ref_kind=""):
+    nodes = []
+    if isinstance(plan, dict):
+        nodes = list(plan.get("nodes") or [])
+    elif isinstance(plan, list):
+        nodes = list(plan)
+
+    ref_kind = str(ref_kind or "").strip()
+    values = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        node_type_id = normalize_node_type_id(node.get("node_type_id") or node.get("type"))
+        config = node.get("config") or {}
+        if not isinstance(config, dict):
+            continue
+        if ref_kind == "loop_id" and node_type_id == "core.loop_start":
+            values.append(config.get("loop_id", ""))
+        elif ref_kind == "anchor_id" and node_type_id == "core.jump_anchor":
+            values.append(config.get("anchor_id", ""))
+    return _unique_non_empty(values)
+
+
+def runtime_reference_choices(plan=None, ref_kind=""):
+    nodes = []
+    if isinstance(plan, dict):
+        nodes = list(plan.get("nodes") or [])
+    elif isinstance(plan, list):
+        nodes = list(plan)
+
+    ref_kind = str(ref_kind or "").strip()
+    values = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        node_type_id = normalize_node_type_id(node.get("node_type_id") or node.get("type"))
+        config = node.get("config") or {}
+        if not isinstance(config, dict):
+            continue
+        if ref_kind == "transit_name":
+            if node_type_id == "core.save_transit":
+                values.append(config.get("transit_name", ""))
+            elif node_type_id == "core.group" and bool(config.get("save_to_transit")):
+                values.append(config.get("output_transit_name", ""))
+        elif ref_kind == "transit_table":
+            if node_type_id == "core.save_transit":
+                values.append(config.get("transit_name", ""))
+            elif node_type_id == "core.group" and bool(config.get("save_to_transit")):
+                values.append(config.get("output_transit_name", ""))
+    return _unique_non_empty(values)
+
+
 def choices_for_field(key, headers=None, table_names=None, table_columns=None):
     headers = [str(item) for item in (headers or [])]
     table_names = [str(item) for item in (table_names or [])]
@@ -982,6 +1067,24 @@ def field_help_sections(key, schema=None):
         action_label = str(action.get("label") or "选择")
         lines.append(f"支持动作：{action_label}")
 
+    options_source = schema.get("options_source") or {}
+    if str(options_source.get("type") or "") == "plan_refs":
+        ref_kind = str(options_source.get("ref_kind") or "")
+        if ref_kind == "loop_id":
+            lines.append("候选来源：当前计划中的循环执行起点")
+            lines.append("若当前没有候选，请先添加循环执行起点，或手动输入要配对的 loop_id")
+        elif ref_kind == "anchor_id":
+            lines.append("候选来源：当前计划中的跳转锚点")
+            lines.append("若当前没有候选，请先添加跳转锚点节点，或手动输入目标锚点 ID")
+    elif str(options_source.get("type") or "") == "runtime_refs":
+        ref_kind = str(options_source.get("ref_kind") or "")
+        if ref_kind == "transit_table":
+            lines.append("候选来源：当前计划中可能生成的中转表名称")
+            lines.append("这类名称通常来自保存中转数据、节点组输出等前置节点；也可手动输入约定名称")
+        elif ref_kind == "transit_name":
+            lines.append("候选来源：当前计划中可复用的中转名称")
+            lines.append("这类名称通常来自保存中转数据、节点组输出等前置节点；也可手动输入约定名称")
+
     if not lines:
         return []
     return [{
@@ -991,6 +1094,12 @@ def field_help_sections(key, schema=None):
 
 
 def options_source_for_field(key):
+    if key == "loop_id":
+        return {"type": "plan_refs", "ref_kind": "loop_id"}
+    if key in {"target_anchor_id", "default_anchor_id"}:
+        return {"type": "plan_refs", "ref_kind": "anchor_id"}
+    if key in RUNTIME_REF_FIELD_RULES:
+        return {"type": "runtime_refs", "ref_kind": RUNTIME_REF_FIELD_RULES[key].get("ref_kind", "")}
     if key in FIELD_PICKER_KEYS or key in FIELD_MULTI_PICKER_KEYS:
         return {"type": "preview_headers"}
     if key in TABLE_FIELD_MULTI_PICKER_RULES:
@@ -1007,6 +1116,31 @@ def options_source_for_field(key):
 
 
 def action_for_field(key):
+    if key == "loop_id":
+        return {
+            "key": "pick_plan_ref",
+            "label": "选择循环",
+            "style": "picker",
+            "source": "plan_refs",
+            "ref_kind": "loop_id",
+        }
+    if key in {"target_anchor_id", "default_anchor_id"}:
+        return {
+            "key": "pick_plan_ref",
+            "label": "选择锚点",
+            "style": "picker",
+            "source": "plan_refs",
+            "ref_kind": "anchor_id",
+        }
+    if key in RUNTIME_REF_FIELD_RULES:
+        rule = RUNTIME_REF_FIELD_RULES.get(key) or {}
+        return {
+            "key": "pick_runtime_ref",
+            "label": f"选择{rule.get('label', '运行时引用')}",
+            "style": "picker",
+            "source": "runtime_refs",
+            "ref_kind": rule.get("ref_kind", ""),
+        }
     if key in FIELD_PICKER_KEYS:
         return {
             "key": "pick_preview_header",
@@ -1149,13 +1283,25 @@ def config_field_schema(key, value=None, *, headers=None, table_names=None, tabl
         "choices": list(choices),
         "default": value,
         "help": field_help_text(key),
+        "ui_capabilities": {
+            "allows_manual_input": True,
+            "supports_picker": False,
+            "depends_on_plan": False,
+            "depends_on_runtime": False,
+        },
     }
     options_source = options_source_for_field(key)
     if options_source:
         schema["options_source"] = options_source
+        source_type = str(options_source.get("type") or "")
+        if source_type == "plan_refs":
+            schema["ui_capabilities"]["depends_on_plan"] = True
+        elif source_type == "runtime_refs":
+            schema["ui_capabilities"]["depends_on_runtime"] = True
     action = action_for_field(key)
     if action:
         schema["action"] = action
+        schema["ui_capabilities"]["supports_picker"] = True
     validation = validation_for_field(key)
     if validation:
         schema["validation"] = validation
