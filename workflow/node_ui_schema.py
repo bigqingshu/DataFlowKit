@@ -1459,6 +1459,35 @@ def build_node_detail_payload(node_type_id, *, display_name="", category="", sup
         "legacy_ui_required": not bool(supported),
         "risk": meta.get("risk", "unknown"),
     }
+    meta_items = []
+    if resolved_category:
+        meta_items.append({
+            "label": "分类",
+            "value": category_label(resolved_category),
+            "key": "category",
+        })
+    if stable_id:
+        meta_items.append({
+            "label": "类型",
+            "value": stable_id,
+            "key": "node_type_id",
+        })
+    if compatibility["risk"]:
+        meta_items.append({
+            "label": "风险",
+            "value": compatibility["risk"],
+            "key": "risk",
+        })
+    meta_items.append({
+        "label": "执行层",
+        "value": "支持 headless" if supported else "仅旧执行链",
+        "key": "execution",
+    })
+    meta_items.append({
+        "label": "兼容性",
+        "value": "可直接预览/执行" if compatibility["headless_preview"] else "需回退旧 UI 执行",
+        "key": "compatibility",
+    })
 
     return {
         "node_type_id": stable_id,
@@ -1474,6 +1503,10 @@ def build_node_detail_payload(node_type_id, *, display_name="", category="", sup
             "dynamic_fields": list(dict.fromkeys(dynamic_fields)),
             "action_fields": list(dict.fromkeys(action_fields)),
         },
+        "meta_items": meta_items,
+        "meta_text": " | ".join(
+            f"{item['label']}：{item['value']}" for item in meta_items if item.get("label") and item.get("value")
+        ),
         "compatibility": compatibility,
         "risk": meta.get("risk", "unknown"),
         "supported_headless": bool(supported),

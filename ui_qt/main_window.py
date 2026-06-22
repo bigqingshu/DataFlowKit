@@ -833,18 +833,29 @@ class QtWorkflowMainWindow:
         supported = detail.get("supported_headless")
         badges = [str(item) for item in (detail.get("badges") or []) if str(item).strip()]
         sections = detail.get("sections") or []
+        meta_items = [item for item in (detail.get("meta_items") or []) if isinstance(item, dict)]
 
         self.node_detail_title_label.setText(title)
-        meta_parts = []
-        if category:
-            meta_parts.append(f"分类：{category}")
-        if node_type_id:
-            meta_parts.append(f"类型：{node_type_id}")
-        if risk:
-            meta_parts.append(f"风险：{risk}")
-        if supported is not None:
-            meta_parts.append("执行层：支持 headless" if supported else "执行层：仅旧执行链")
-        self.node_detail_meta_label.setText(" | ".join(meta_parts))
+        if meta_items:
+            meta_text = str(detail.get("meta_text") or "").strip()
+            if not meta_text:
+                meta_text = " | ".join(
+                    f"{str(item.get('label') or '').strip()}：{str(item.get('value') or '').strip()}"
+                    for item in meta_items
+                    if str(item.get("label") or "").strip() and str(item.get("value") or "").strip()
+                )
+            self.node_detail_meta_label.setText(meta_text)
+        else:
+            meta_parts = []
+            if category:
+                meta_parts.append(f"分类：{category}")
+            if node_type_id:
+                meta_parts.append(f"类型：{node_type_id}")
+            if risk:
+                meta_parts.append(f"风险：{risk}")
+            if supported is not None:
+                meta_parts.append("执行层：支持 headless" if supported else "执行层：仅旧执行链")
+            self.node_detail_meta_label.setText(" | ".join(meta_parts))
         self.node_detail_badges_label.setText(("标签：" + " / ".join(badges)) if badges else "")
 
         blocks = []
