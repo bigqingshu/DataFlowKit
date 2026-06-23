@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 import tempfile
 import unittest
+from pathlib import Path
 
+from engine.plugin_service import PluginService
 from shared.datetime_parse_utils import parse_date_value
 from plugins import visual_mapping_write_plan_plugin_v1 as visual
 
@@ -224,6 +226,93 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertEqual(view_by_id["visual_mapping.linked_rules"]["items"][0]["target_mode"], visual.LINK_TARGET_FIXED_CELL)
         self.assertIn("visual_mapping.edit.rules", [action["action_id"] for action in described["actions"]])
         self.assertIn("linked_rule_default", described["models"])
+
+    def test_plugin_service_applies_visual_mapping_rules_config_patch(self):
+        with tempfile.TemporaryDirectory(dir=".") as temp_dir:
+            app_dir = Path(temp_dir)
+            plugin_data_dir = app_dir / "plugin_data" / visual.PLUGIN_INFO["id"]
+            seed_context = {"plugin_data_dir": str(plugin_data_dir)}
+            visual._save_settings(seed_context, {
+                "version": 1,
+                "configs": {
+                    "default": {
+                        "rules": [{
+                            "id": "old_rule",
+                            "name": "旧规则",
+                            "enabled": True,
+                            "source_locator": {"sheet_name": "Sheet1", "row_index": 1, "col_index": 1},
+                            "mapping": {"content_field": "old_field"},
+                        }],
+                        "features": [],
+                        "global_rules": [],
+                        "linked_rules": [],
+                    }
+                },
+            })
+            service = PluginService(
+                plugins_dir=str(Path.cwd() / "plugins"),
+                app_dir=str(app_dir),
+            )
+            config = {"plugin_id": visual.PLUGIN_INFO["id"], "params": {"config_name": "default"}}
+            replace_patch = {
+                "operation": "replace_item",
+                "target": ["plugin_settings", "configs", "default", "rules"],
+                "index": 0,
+                "value": {
+                    "id": "new_rule",
+                    "name": "新规则",
+                    "enabled": True,
+                    "source_locator": {"sheet_name": "Sheet1", "row_index": 2, "col_index": 3},
+                    "mapping": {"content_field": "write_value"},
+                },
+            }
+            append_patch = {
+                "operation": "append_item",
+                "target": ["plugin_settings", "configs", "default", "rules"],
+                "value": {"id": "second_rule", "name": "第二规则", "mapping": {"content_field": "extra"}},
+            }
+            disable_patch = {
+                "operation": "set_enabled",
+                "target": ["plugin_settings", "configs", "default", "rules"],
+                "index": 1,
+                "enabled": False,
+            }
+
+            replaced = service.apply_plugin_config_patch(
+                "plugin.visual_mapping_write_plan_v1",
+                config=config,
+                patch=replace_patch,
+            )
+            appended = service.apply_plugin_config_patch(
+                "plugin.visual_mapping_write_plan_v1",
+                config=config,
+                patch=append_patch,
+            )
+            disabled = service.apply_plugin_config_patch(
+                "plugin.visual_mapping_write_plan_v1",
+                config=config,
+                patch=disable_patch,
+            )
+            invalid = service.validate_plugin_config_patch(
+                "plugin.visual_mapping_write_plan_v1",
+                config=config,
+                patch={"operation": "append_item", "target": ["plugin_settings", "configs", "default", "features"], "value": {}},
+            )
+
+        self.assertTrue(replaced["ok"])
+        self.assertTrue(appended["ok"])
+        self.assertTrue(disabled["ok"])
+        rules_view = next(
+            view for view in disabled["description"]["views"]
+            if view.get("view_id") == "visual_mapping.rules"
+        )
+        self.assertEqual(disabled["description"]["plugin_extension"]["summary"]["rules"], 2)
+        self.assertEqual(rules_view["items"][0]["name"], "新规则")
+        self.assertEqual(rules_view["items"][0]["content_field"], "write_value")
+        self.assertEqual(rules_view["items"][1]["name"], "第二规则")
+        self.assertFalse(rules_view["items"][1]["enabled"])
+        self.assertFalse(invalid["ok"])
+        self.assertEqual(invalid["issues"][0]["code"], "plugin_config_patch_invalid")
 
     def test_anchor_match_uses_content_field_value(self):
         table_context, content = self.content_context()

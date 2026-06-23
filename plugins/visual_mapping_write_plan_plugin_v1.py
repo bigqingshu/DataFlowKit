@@ -346,6 +346,33 @@ def describe_config(params, context):
     }
 
 
+def validate_config_patch(params, context, patch):
+    try:
+        _preview_config_patch(params or {}, context or {}, patch or {})
+    except ValueError as exc:
+        return False, str(exc)
+    return True, ""
+
+
+def apply_config_patch(params, context, patch):
+    params = dict(params or {})
+    context = dict(context or {})
+    patch = copy.deepcopy(patch or {})
+    settings = _load_settings(context)
+    configs = settings.setdefault("configs", {})
+    config_name, section = _config_patch_target(params, patch)
+    cfg = _ensure_config(copy.deepcopy(configs.get(config_name) or _empty_config()))
+    _apply_config_patch_to_section(cfg, section, patch)
+    configs[config_name] = cfg
+    _save_settings(context, settings)
+    return {
+        "ok": True,
+        "params": params,
+        "changed": True,
+        "message": f"已更新配置 {config_name} 的 {section}",
+    }
+
+
 def _as_text(value):
     return "" if value is None else str(value).strip()
 
@@ -593,6 +620,92 @@ def _ensure_config(cfg):
     cfg.setdefault("linked_rules", [])
     cfg["linked_rules"] = [_ensure_linked_rule(rule) for rule in cfg["linked_rules"] if isinstance(rule, dict)]
     return cfg
+
+
+def _config_patch_target(params, patch):
+    target = patch.get("target") if isinstance(patch, dict) else []
+    config_name = _as_text((params or {}).get("config_name") or "default") or "default"
+    section = _as_text((patch or {}).get("section") or "rules") or "rules"
+    if isinstance(target, (list, tuple)) and target:
+        if len(target) >= 4 and target[0] == "plugin_settings" and target[1] == "configs":
+            config_name = _as_text(target[2]) or config_name
+            section = _as_text(target[3]) or section
+        elif len(target) == 1:
+            section = _as_text(target[0]) or section
+    if section != "rules":
+        raise ValueError(f"当前仅支持修改 rules，收到：{section}")
+    return config_name, section
+
+
+def _preview_config_patch(params, context, patch):
+    settings = _load_settings(context)
+    configs = settings.setdefault("configs", {})
+    config_name, section = _config_patch_target(params, patch)
+    cfg = _ensure_config(copy.deepcopy(configs.get(config_name) or _empty_config()))
+    _apply_config_patch_to_section(cfg, section, patch)
+    return cfg
+
+
+def _apply_config_patch_to_section(cfg, section, patch):
+    if section != "rules":
+        raise ValueError(f"当前仅支持修改 rules，收到：{section}")
+    rules = cfg.setdefault("rules", [])
+    if not isinstance(rules, list):
+        rules = []
+        cfg["rules"] = rules
+    operation = _as_text((patch or {}).get("operation") or "replace_item")
+    if operation == "append_item":
+        rules.append(_ensure_mapping_rule((patch or {}).get("value"), len(rules) + 1))
+        return
+    if operation == "replace_item":
+        index = _config_patch_index(patch, len(rules))
+        rules[index] = _ensure_mapping_rule((patch or {}).get("value"), index + 1)
+        return
+    if operation == "delete_item":
+        index = _config_patch_index(patch, len(rules))
+        rules.pop(index)
+        return
+    if operation == "move_item":
+        index = _config_patch_index(patch, len(rules))
+        to_index = _to_int((patch or {}).get("to_index"), index)
+        if to_index < 0 or to_index >= len(rules):
+            raise ValueError("目标位置超出范围")
+        item = rules.pop(index)
+        rules.insert(to_index, item)
+        return
+    if operation == "set_enabled":
+        index = _config_patch_index(patch, len(rules))
+        if not isinstance(rules[index], dict):
+            rules[index] = _ensure_mapping_rule(rules[index], index + 1)
+        enabled_value = (patch or {}).get("enabled", (patch or {}).get("value", True))
+        rules[index]["enabled"] = enabled_value if isinstance(enabled_value, bool) else _truthy(enabled_value)
+        return
+    raise ValueError(f"不支持的配置修改操作：{operation}")
+
+
+def _config_patch_index(patch, length):
+    if length <= 0:
+        raise ValueError("规则列表为空")
+    index = _to_int((patch or {}).get("index"), -1)
+    if index < 0 or index >= length:
+        raise ValueError("规则索引超出范围")
+    return index
+
+
+def _ensure_mapping_rule(rule, index=1):
+    result = copy.deepcopy(rule) if isinstance(rule, dict) else {}
+    result.setdefault("id", _as_text(result.get("name")) or f"rule_{index}")
+    result.setdefault("name", _as_text(result.get("id")) or f"rule_{index}")
+    result.setdefault("enabled", True)
+    if not isinstance(result.get("source_locator"), dict):
+        result["source_locator"] = {}
+    if not isinstance(result.get("source_match"), dict):
+        result["source_match"] = {"enabled": False, "mode": "包含", "value": ""}
+    if not isinstance(result.get("anchor"), dict):
+        result["anchor"] = {"enabled": False}
+    if not isinstance(result.get("mapping"), dict):
+        result["mapping"] = {"content_field": "", "empty_policy": "跟随节点设置"}
+    return result
 
 
 def _unique_nonempty(values):
