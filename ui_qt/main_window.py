@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 from ui_qt.config_form import NodeConfigForm
+from ui_qt.data_source_window import DataSourceManagerWindow
 from ui_qt.engine_client import QtHeadlessEngineClient, SAMPLE_HEADERS, SAMPLE_PLAN, SAMPLE_ROWS
 from ui_qt.node_ui_metadata import CATEGORY_ORDER, category_label, format_node_detail
 from ui_qt.qt_compat import qt_enum
@@ -50,6 +51,7 @@ class QtWorkflowMainWindow:
         self.output_mode_meta = {}
         self.preview_source_records = []
         self.current_message_panel = {}
+        self.data_source_manager_controller = None
 
         self._build_ui()
         self.refresh_all()
@@ -1993,12 +1995,22 @@ class QtWorkflowMainWindow:
         })
 
     def open_data_source_manager(self):
-        self._apply_message_panel(self.engine_client.build_message_panel_state(
-            mode="info",
-            title="输入数据源管理",
-            body="输入数据源管理窗口将在下一阶段接入；当前可先通过选择表下拉载入 SQLite 表。",
-        ).get("panel") or {})
-        self.status_bar.showMessage("输入数据源管理窗口将在下一阶段接入。")
+        self.data_source_manager_controller = DataSourceManagerWindow(
+            self.qt,
+            engine_client=self.engine_client,
+            parent=self.window,
+            initial_headers=self.current_headers,
+            initial_rows=self.current_rows,
+            initial_source=self.current_input_source,
+            db_path=self.current_data_source_db_path(),
+            on_apply=self._apply_data_source_manager_input,
+        )
+        self.data_source_manager_controller.show()
+        self.status_bar.showMessage("已打开输入数据源管理。")
+
+    def _apply_data_source_manager_input(self, state):
+        self._apply_input_table_state(state)
+        self.refresh_input_table_combo(show_status=False)
 
     def import_table(self):
         path = self._choose_file_path("import_table")

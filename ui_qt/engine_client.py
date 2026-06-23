@@ -304,6 +304,45 @@ class QtHeadlessEngineClient:
     def release_table_handle(self, handle):
         return self.engine.release_table_handle(handle)
 
+    def parse_clipboard_table(self, text, *, first_row_header=True):
+        return self.engine.parse_clipboard_table(text, first_row_header=first_row_header)
+
+    def normalize_table_headers(self, headers):
+        return self.engine.normalize_table_headers(headers)
+
+    def promote_first_row_to_headers(self, table):
+        return self.engine.promote_first_row_to_headers(copy.deepcopy(table))
+
+    def patch_table_cell(self, table, *, row=None, column=None, value=""):
+        return self.engine.patch_table_cell(copy.deepcopy(table), row=row, column=column, value=value)
+
+    def search_table(self, table, keyword):
+        return self.engine.search_table(copy.deepcopy(table), keyword)
+
+    def build_data_source_state(self, table=None, *, source=None, dirty=False, display_name=""):
+        return self.engine.build_data_source_state(
+            copy.deepcopy(table or {}),
+            source=copy.deepcopy(source or {}),
+            dirty=dirty,
+            display_name=display_name,
+        )
+
+    def save_table(self, table=None, *, db_path=None, table_name=None, mode="replace"):
+        return self.engine.save_table(
+            copy.deepcopy(table or {}),
+            db_path=db_path,
+            table_name=table_name,
+            mode=mode,
+        )
+
+    def delete_table(self, *, db_path=None, table_name=None, backup=True, confirmed=False):
+        return self.engine.delete_table(
+            db_path=db_path,
+            table_name=table_name,
+            backup=backup,
+            confirmed=confirmed,
+        )
+
     def build_table_access(self, node):
         return self.engine.build_table_access(copy.deepcopy(node))
 

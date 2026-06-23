@@ -1661,6 +1661,42 @@ class Qt6UiShellTests(unittest.TestCase):
             window.close()
             app.processEvents()
 
+    def test_data_source_manager_loads_table_and_applies_workflow_input(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        with TemporaryDirectory() as temp_dir:
+            db_path = str(Path(temp_dir) / "input.db")
+            TableAccessManager(db_path).write_table(
+                "orders",
+                ["id", "name"],
+                [["1", "Alice"], ["2", "Bob"]],
+                mode="replace",
+            )
+            window = build_main_window(qt)
+            controller = window.qt_workflow_controller
+
+            controller.output_db_path_edit.setText(db_path)
+            controller.open_data_source_manager()
+            manager = controller.data_source_manager_controller
+            manager.refresh_table_combo()
+            manager.table_combo.setCurrentText("orders")
+            manager.load_selected_table()
+            manager.apply_to_workflow()
+            app.processEvents()
+
+            self.assertEqual(manager.current_table()["headers"], ["id", "name"])
+            self.assertEqual(controller.current_headers, ["id", "name"])
+            self.assertEqual(controller.current_rows, [["1", "Alice"], ["2", "Bob"]])
+            self.assertEqual(controller.current_input_source["table_name"], "orders")
+            self.assertEqual(controller.input_summary_label.text(), "当前输入：2 行 x 2 列")
+            self.assertIn("数据源管理窗口", controller.status_bar.currentMessage())
+            manager.window.close()
+            window.close()
+            app.processEvents()
+
     def test_original_style_workflow_panel_controller_operations(self):
         try:
             qt = qt_app.load_qt6()

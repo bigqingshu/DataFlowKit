@@ -311,6 +311,40 @@ class HeadlessWorkflowEngine:
     def release_table_handle(self, handle):
         return self.tables.release_table_handle(handle)
 
+    def parse_clipboard_table(self, text, *, first_row_header=True):
+        return self.tables.parse_clipboard_table(text, first_row_header=first_row_header)
+
+    def normalize_table_headers(self, headers):
+        return self.tables.normalize_table_headers(headers)
+
+    def promote_first_row_to_headers(self, table):
+        return self.tables.promote_first_row_to_headers(table)
+
+    def patch_table_cell(self, table, *, row=None, column=None, value=""):
+        return self.tables.patch_table_cell(table, row=row, column=column, value=value)
+
+    def search_table(self, table, keyword):
+        return self.tables.search_table(table, keyword)
+
+    def build_data_source_state(self, table=None, *, source=None, dirty=False, display_name=""):
+        return self.tables.build_data_source_state(
+            table,
+            source=source,
+            dirty=dirty,
+            display_name=display_name,
+        )
+
+    def save_table(self, table=None, *, db_path=None, table_name=None, mode="replace"):
+        return self.tables.save_table(table, db_path=db_path, table_name=table_name, mode=mode)
+
+    def delete_table(self, *, db_path=None, table_name=None, backup=True, confirmed=False):
+        return self.tables.delete_table(
+            db_path=db_path,
+            table_name=table_name,
+            backup=backup,
+            confirmed=confirmed,
+        )
+
     def build_table_access(self, node):
         return self.access.build_table_access(node)
 
