@@ -2,7 +2,10 @@
 import threading
 import unittest
 from datetime import datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
+from db.table_manager import TableAccessManager
 from engine import HeadlessWorkflowEngine, PlanValidationError, TableData
 
 
@@ -161,6 +164,45 @@ class HeadlessWorkflowEngineApiTests(unittest.TestCase):
         self.assertEqual(events[-1]["type"], "workflow_done")
         self.assertIn("新建列完成", result.logs[0])
         self.assertIn("修改 2 处", result.logs[1])
+        self.assertIn("elapsed_seconds", events[-1])
+
+    def test_filter_node_loads_sqlite_extra_table_from_context_db_path(self):
+        engine = self.make_engine()
+        with TemporaryDirectory() as temp_dir:
+            db_path = str(Path(temp_dir) / "input.db")
+            TableAccessManager(db_path).write_table(
+                "lookup",
+                ["Code", "Name"],
+                [["A", "Alpha"], ["C", "Gamma"]],
+                mode="replace",
+            )
+            plan = {
+                "nodes": [
+                    {
+                        "node_type_id": "core.filter",
+                        "config": {
+                            "conditions": [],
+                            "join_rules": [{"left": "当前表.Code", "op": "等于", "right": "lookup.Code"}],
+                            "extra_tables": ["lookup"],
+                            "output_fields": ["当前表.Code", "lookup.Name"],
+                        },
+                    },
+                ],
+            }
+            events = []
+
+            result = engine.preview_plan(
+                plan,
+                input_table={"headers": ["Code"], "rows": [["A"], ["B"]]},
+                initial_context={"workflow_snapshot": {"db_path": db_path}},
+                progress_callback=events.append,
+            )
+
+            self.assertEqual(result.headers, ["Code", "lookup.Name"])
+            self.assertEqual(result.rows, [["A", "Alpha"]])
+            done_event = next(item for item in events if item.get("type") == "node_done")
+            self.assertIn("elapsed_seconds", done_event)
+            self.assertGreaterEqual(done_event["elapsed_seconds"], 0)
 
     def test_preview_plan_runs_node_type_id_only_nodes(self):
         engine = self.make_engine()

@@ -12,6 +12,7 @@ from __future__ import annotations
 import copy
 import csv
 import os
+import time
 import uuid
 from datetime import datetime
 
@@ -760,6 +761,7 @@ class HeadlessWorkflowEngine:
         max_steps = int(max_steps or max(1000, len(nodes) * 2000))
         cancelled = False
 
+        workflow_started_at = time.perf_counter()
         self._emit(progress_callback, {"type": "workflow_start", "message": "headless workflow start"})
         while pc < len(nodes) and pc <= end:
             try:
@@ -785,6 +787,7 @@ class HeadlessWorkflowEngine:
             self._ensure_node_identity(node)
             self._set_current_node_info(context, node, idx)
             before_shape = (len(rows), len(headers))
+            node_started_at = time.perf_counter()
             self._emit(progress_callback, {
                 "type": "node_start",
                 "node_index": idx,
@@ -809,12 +812,14 @@ class HeadlessWorkflowEngine:
                     cancel_event=cancel_event,
                 )
             except Exception as exc:
+                node_elapsed = time.perf_counter() - node_started_at
                 self._emit(progress_callback, {
                     "type": "node_error",
                     "node_index": idx,
                     "node_total": len(nodes),
                     "node_name": node_label,
                     "node_type_id": node_type_id,
+                    "elapsed_seconds": node_elapsed,
                     "message": f"节点 {idx + 1}.{node_label} 执行失败：{exc}",
                 })
                 if raise_error:
@@ -833,6 +838,7 @@ class HeadlessWorkflowEngine:
                 "node_type_id": node_type_id,
                 "rows": len(rows),
                 "cols": len(headers),
+                "elapsed_seconds": time.perf_counter() - node_started_at,
                 "message": f"完成节点 {idx + 1}.{node_label}：{len(rows)} 行 × {len(headers)} 列",
             })
             pc = self._resolve_next_pc(idx, jump_to, len(nodes))
@@ -850,6 +856,7 @@ class HeadlessWorkflowEngine:
             "type": "workflow_done" if not cancelled else "workflow_cancelled",
             "rows": len(rows),
             "cols": len(headers),
+            "elapsed_seconds": time.perf_counter() - workflow_started_at,
             "message": "headless workflow done" if not cancelled else "headless workflow cancelled",
         })
         return result
@@ -1081,7 +1088,7 @@ class HeadlessWorkflowEngine:
             source = inline_tables.get(name)
 
         if source is None:
-            loaded = self.tables.load_sqlite_table(name)
+            loaded = self.tables.load_sqlite_table(name, db_path=self._context_db_path(context))
         else:
             loaded = self._load_context_table_source(source)
         if not loaded.get("ok"):
@@ -1357,7 +1364,7 @@ class HeadlessWorkflowEngine:
         return manager.read_records(table_name, include_rowid=True, include_row_index=True)
 
     def _make_sqlite_table_manager(self, context, node_type="HeadlessWorkflowEngine"):
-        db_path = str(getattr(self.services, "db_path", "") or "").strip()
+        db_path = self._context_db_path(context) or str(getattr(self.services, "db_path", "") or "").strip()
         if not db_path:
             raise ValueError("请先设置 SQLite 数据库路径。")
         current = (context or {}).get("current_node_info", {}) if isinstance(context, dict) else {}
@@ -1370,6 +1377,24 @@ class HeadlessWorkflowEngine:
             table_access=current.get("table_access") if isinstance(current, dict) else None,
             permission_policy=(context or {}).get("table_access_policy") if isinstance(context, dict) else None,
         )
+
+    def _context_db_path(self, context):
+        if not isinstance(context, dict):
+            return ""
+        snapshot = context.get("workflow_snapshot") or {}
+        if isinstance(snapshot, dict):
+            for key in ("db_path", "input_db_path"):
+                db_path = str(snapshot.get(key) or "").strip()
+                if db_path:
+                    return db_path
+        for key in ("db_path", "input_db_path"):
+            db_path = str(context.get(key) or "").strip()
+            if db_path:
+                return db_path
+        source = context.get("input_source") or context.get("source") or {}
+        if isinstance(source, dict):
+            return str(source.get("db_path") or "").strip()
+        return ""
 
     def _make_file_node_context(self, context, cancel_event):
         node_context = self._make_node_context(context, cancel_event)

@@ -1598,16 +1598,26 @@ class WorkflowFacade:
             "table_access_policy": (plan_copy or {}).get("table_access_policy", "audit"),
         }
 
-    def validate_workflow_request(self, plan=None, *, execute_actions=False, stop_index=None, output_settings=None, confirmed=False):
+    def validate_workflow_request(
+        self,
+        plan=None,
+        *,
+        execute_actions=False,
+        stop_index=None,
+        output_settings=None,
+        workflow_db_path=None,
+        confirmed=False,
+    ):
         plan_copy = copy.deepcopy(plan or {})
         settings = OutputSettings.from_payload(output_settings or {})
+        precheck_db_path = settings.db_path or str(workflow_db_path or "").strip()
         validation = self.engine.validate_plan(plan_copy, stop_index=stop_index)
         jump_validation = self.engine.validate_jumps(plan_copy)
         access_precheck = self.engine.precheck_access(
             plan_copy,
             execute_actions=execute_actions,
             stop_index=stop_index,
-            db_path=settings.db_path,
+            db_path=precheck_db_path,
             output_mode=settings.mode,
             output_table=settings.target,
             table_access_policy=(plan_copy or {}).get("table_access_policy", "audit"),
@@ -1652,7 +1662,7 @@ class WorkflowFacade:
         table = result.get("table") or {}
         headers = list(table.get("headers") or [])
         rows = [list(row) for row in (table.get("rows") or [])]
-        merged_logs = list(result.get("logs") or logs or [])
+        merged_logs = list(logs or result.get("logs") or [])
         payload = {
             "ok": status.get("status") != "failed",
             "status": status.get("status") or "unknown",

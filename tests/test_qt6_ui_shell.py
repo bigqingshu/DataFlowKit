@@ -411,6 +411,20 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(final["view_state"]["table_title"], "执行结果")
         self.assertTrue(final["view_state"]["should_refresh_preview_sources"])
 
+        final_with_ui_logs = client.finalize_job_result({
+            "status": "completed",
+            "message": "任务完成",
+            "result": {
+                "table": {"headers": ["A"], "rows": [["a"]]},
+                "logs": ["raw engine log"],
+                "steps": 1,
+            },
+        }, job_action="preview_plan", logs=["[2026-06-23 14:32:18.237] [INFO] formatted ui log"])
+        self.assertEqual(
+            final_with_ui_logs["logs"],
+            ["[2026-06-23 14:32:18.237] [INFO] formatted ui log"],
+        )
+
     def test_facade_builds_standard_feedback_payloads(self):
         client = QtHeadlessEngineClient()
 
@@ -1737,6 +1751,85 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertEqual(reopened.db_path_edit.text(), db_path)
             self.assertEqual(reopened.table_combo.currentText(), "orders")
             reopened.window.close()
+            window.close()
+            app.processEvents()
+
+    def test_controller_job_context_and_logs_include_db_path_timestamp_and_elapsed(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        with TemporaryDirectory() as temp_dir:
+            db_path = str(Path(temp_dir) / "input.db")
+            window = build_main_window(qt)
+            controller = window.qt_workflow_controller
+            controller.current_input_db_path = db_path
+            captured = {}
+
+            def fake_start_job(job_action, plan, input_table=None, **options):
+                captured["job_action"] = job_action
+                captured["plan"] = copy.deepcopy(plan)
+                captured["input_table"] = copy.deepcopy(input_table)
+                captured["options"] = copy.deepcopy(options)
+                return {"ok": True, "job_id": "job-test", "done": False, "status": "running"}
+
+            def fake_get_job_events(job_id, since=0):
+                return {
+                    "ok": True,
+                    "job_id": job_id,
+                    "next_sequence": 2,
+                    "events": [
+                        {
+                            "type": "node_done",
+                            "message": "完成节点 1.新建列：1 行 × 2 列",
+                            "elapsed_seconds": 2.36,
+                            "timestamp": 1782196338.237,
+                        },
+                        {
+                            "type": "workflow_done",
+                            "rows": 1,
+                            "cols": 2,
+                            "elapsed_seconds": 3.5,
+                            "timestamp": 1782196340.0,
+                        },
+                    ],
+                }
+
+            def fake_get_job_status(job_id, include_result=True):
+                return {
+                    "ok": True,
+                    "job_id": job_id,
+                    "done": True,
+                    "status": "succeeded",
+                    "message": "任务完成。",
+                    "result": {
+                        "table": {"headers": ["A", "B"], "rows": [["a", "b"]]},
+                        "logs": [],
+                        "steps": 1,
+                    },
+                }
+
+            controller.engine_client.start_job = fake_start_job
+            controller.engine_client.get_job_events = fake_get_job_events
+            controller.engine_client.get_job_status = fake_get_job_status
+
+            controller.start_workflow_job(
+                "preview_plan",
+                {"nodes": []},
+                input_table={"headers": ["A"], "rows": [["a"]]},
+                title="预览结果",
+                status_prefix="预览",
+            )
+            app.processEvents()
+
+            context = captured["options"]["context"]
+            self.assertEqual(context["db_path"], db_path)
+            self.assertEqual(context["workflow_snapshot"]["db_path"], db_path)
+            logs = controller.log_text.toPlainText()
+            self.assertRegex(logs, r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\] \[INFO\]")
+            self.assertIn("完成节点 1.新建列：1 行 × 2 列，耗时 2.36 秒", logs)
+            self.assertIn("工作流完成：1 行 × 2 列，总耗时 3.50 秒", logs)
             window.close()
             app.processEvents()
 

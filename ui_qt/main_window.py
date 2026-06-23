@@ -6,6 +6,8 @@ from __future__ import annotations
 import copy
 import html
 import json
+import time
+from datetime import datetime
 from pathlib import Path
 
 from ui_qt.config_form import NodeConfigForm
@@ -46,6 +48,8 @@ class QtWorkflowMainWindow:
         self.current_job_title = ""
         self.current_job_event_sequence = 0
         self.current_job_messages = []
+        self.current_job_started_at = 0.0
+        self.current_job_has_workflow_elapsed = False
         self.workflow_action_buttons = []
         self.node_action_buttons = {}
         self.run_action_buttons = {}
@@ -1948,6 +1952,37 @@ class QtWorkflowMainWindow:
             return source_db_path
         return self.output_db_path_edit.text().strip() if hasattr(self, "output_db_path_edit") else ""
 
+    def current_workflow_context(self):
+        source = copy.deepcopy(self.current_input_source if isinstance(self.current_input_source, dict) else {})
+        db_path = self.current_data_source_db_path()
+        snapshot = {
+            "db_path": db_path,
+            "input_db_path": db_path,
+            "input_source": copy.deepcopy(source),
+        }
+        if source:
+            snapshot["input_table_name"] = str(source.get("table_name") or source.get("table") or "").strip()
+        context = {
+            "workflow_snapshot": snapshot,
+            "input_source": source,
+        }
+        if db_path:
+            context["db_path"] = db_path
+            context["input_db_path"] = db_path
+        return context
+
+    def _merge_workflow_context(self, context=None):
+        merged = self.current_workflow_context()
+        if not isinstance(context, dict):
+            return merged
+        incoming = copy.deepcopy(context)
+        incoming_snapshot = incoming.pop("workflow_snapshot", None)
+        if isinstance(incoming_snapshot, dict):
+            merged_snapshot = merged.setdefault("workflow_snapshot", {})
+            merged_snapshot.update(incoming_snapshot)
+        merged.update(incoming)
+        return merged
+
     def set_current_input_db_path(self, db_path, *, refresh=True, show_status=False):
         db_path = str(db_path or "").strip()
         if not db_path or db_path == self.current_input_db_path:
@@ -2139,6 +2174,7 @@ class QtWorkflowMainWindow:
             self.current_plan,
             execute_actions=True,
             output_settings=self.current_output_settings(),
+            workflow_db_path=self.current_data_source_db_path(),
         )
         self._apply_feedback(self.engine_client.describe_validation_feedback(combined))
         return combined
@@ -2149,6 +2185,7 @@ class QtWorkflowMainWindow:
             execute_actions=execute_actions,
             stop_index=stop_index,
             output_settings=self.current_output_settings(),
+            workflow_db_path=self.current_data_source_db_path(),
             confirmed=confirmed,
         )
         return result.get("access_precheck") or {}
@@ -2174,6 +2211,7 @@ class QtWorkflowMainWindow:
             execute_actions=False,
             stop_index=stop_index,
             output_settings=self.current_output_settings(),
+            workflow_db_path=self.current_data_source_db_path(),
         )
         if not (validation.get("validation") or {}).get("ok"):
             self._apply_feedback(
@@ -2220,6 +2258,11 @@ class QtWorkflowMainWindow:
         if self.current_job_id:
             self._apply_feedback(self.engine_client.describe_job_run_conflict(current_job_id=self.current_job_id))
             return
+        supplied_context = options.pop("context", None)
+        supplied_initial_context = options.pop("initial_context", None)
+        options["context"] = self._merge_workflow_context(
+            supplied_context if supplied_context is not None else supplied_initial_context
+        )
         try:
             started = self.engine_client.start_job(
                 job_action,
@@ -2239,6 +2282,8 @@ class QtWorkflowMainWindow:
         self.current_job_title = title or "Headless 预览结果"
         self.current_job_event_sequence = 0
         self.current_job_messages = []
+        self.current_job_started_at = time.perf_counter()
+        self.current_job_has_workflow_elapsed = False
         self._apply_job_progress_state(self.engine_client.build_job_progress_state(
             current_job_id=self.current_job_id,
             title=self.current_job_title,
@@ -2290,8 +2335,22 @@ class QtWorkflowMainWindow:
     def handle_job_event(self, event):
         event_type = event.get("type", "")
         message = event.get("message", "")
+        level = self._job_event_level(event_type)
+        if event_type in {"node_done", "node_error"}:
+            message = self._message_with_elapsed(message, event.get("elapsed_seconds"), label="耗时")
+        elif event_type in {"workflow_done", "workflow_cancelled"}:
+            rows = event.get("rows")
+            cols = event.get("cols")
+            if event_type == "workflow_cancelled":
+                message = "工作流已取消"
+            else:
+                message = "工作流完成"
+            if rows is not None and cols is not None:
+                message = f"{message}：{rows} 行 × {cols} 列"
+            message = self._message_with_elapsed(message, event.get("elapsed_seconds"), label="总耗时")
+            self.current_job_has_workflow_elapsed = True
         if message:
-            self.append_job_message(message)
+            self.append_job_message(message, level=level, timestamp=event.get("timestamp"))
         if event_type == "node_start":
             pass
         elif event_type == "node_progress":
@@ -2307,10 +2366,10 @@ class QtWorkflowMainWindow:
             running=bool(self.current_job_id),
         ).get("progress") or {})
 
-    def append_job_message(self, message):
+    def append_job_message(self, message, *, level="INFO", timestamp=None):
         if not message:
             return
-        self.current_job_messages.append(str(message))
+        self.current_job_messages.append(self._format_job_log_line(message, level=level, timestamp=timestamp))
         self._apply_message_panel(self.engine_client.build_message_panel_state(
             mode="info",
             title="执行日志",
@@ -2319,9 +2378,53 @@ class QtWorkflowMainWindow:
         if self.current_job_id and hasattr(self, "result_tabs"):
             self.result_tabs.setCurrentIndex(0)
 
+    def _job_event_level(self, event_type):
+        if event_type in {"node_error", "job_failed", "workflow_error"}:
+            return "ERROR"
+        if event_type in {"job_cancel_requested", "workflow_cancelled"}:
+            return "WARN"
+        return "INFO"
+
+    def _message_with_elapsed(self, message, elapsed, *, label="耗时"):
+        message = str(message or "").strip()
+        if elapsed is None or "耗时" in message:
+            return message
+        try:
+            seconds = float(elapsed)
+        except (TypeError, ValueError):
+            return message
+        suffix = f"{label} {seconds:.2f} 秒"
+        if not message:
+            return suffix
+        separator = "；" if message.endswith(("。", "！", "？")) else "，"
+        return f"{message}{separator}{suffix}"
+
+    def _format_job_log_line(self, message, *, level="INFO", timestamp=None):
+        text = str(message or "")
+        if text.startswith("[") and "] [" in text:
+            return text
+        level_text = str(level or "INFO").upper()
+        return f"[{self._format_job_timestamp(timestamp)}] [{level_text}] {text}"
+
+    def _format_job_timestamp(self, timestamp=None):
+        try:
+            if timestamp is None:
+                dt = datetime.now()
+            else:
+                dt = datetime.fromtimestamp(float(timestamp))
+        except Exception:
+            dt = datetime.now()
+        return dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
     def finish_workflow_job(self, status):
         self.job_timer.stop()
         self.set_workflow_running(False)
+        if self.current_job_started_at and not self.current_job_has_workflow_elapsed:
+            level = "ERROR" if status.get("status") == "failed" else "INFO"
+            self.append_job_message(
+                self._message_with_elapsed("工作流结束", time.perf_counter() - self.current_job_started_at, label="总耗时"),
+                level=level,
+            )
         final = self.engine_client.finalize_job_result(
             status,
             job_action=self.current_job_action,
@@ -2372,6 +2475,8 @@ class QtWorkflowMainWindow:
         self.current_job_title = ""
         self.current_job_event_sequence = 0
         self.current_job_messages = []
+        self.current_job_started_at = 0.0
+        self.current_job_has_workflow_elapsed = False
 
     def set_workflow_running(self, running):
         self.refresh_action_states(is_running=bool(running))
