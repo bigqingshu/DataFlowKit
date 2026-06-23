@@ -664,10 +664,11 @@ def _plugin_failure(code, message, path):
 
 def _plugin_config_form_groups(default_config, parameter_schema):
     parameter_fields = []
+    plugin_id = str((default_config or {}).get("plugin_id") or "")
     for field in parameter_schema or []:
         if not isinstance(field, dict):
             continue
-        field_schema = _parameter_field_schema(field)
+        field_schema = _parameter_field_schema(field, plugin_id=plugin_id)
         if field_schema:
             parameter_fields.append(field_schema)
     parameter_help = "插件参数 JSON。具体参数 schema 已在 parameters 字段中返回。"
@@ -732,14 +733,17 @@ def _plugin_config_form_groups(default_config, parameter_schema):
     ]
 
 
-def _parameter_field_schema(field):
+def _parameter_field_schema(field, *, plugin_id=""):
     key = str(field.get("name") or "").strip()
     if not key:
         return {}
+    raw_type = str(field.get("type") or "text").strip().lower()
     field_type = _normalize_parameter_type(field.get("type"))
     schema = {
         "key": f"params.{key}",
         "param_key": key,
+        "plugin_id": str(plugin_id or ""),
+        "plugin_param_type": raw_type,
         "config_path": ["params", key],
         "label": str(field.get("label") or field.get("title") or key),
         "type": field_type,
@@ -747,6 +751,7 @@ def _parameter_field_schema(field):
         "default": copy.deepcopy(field.get("default", "")),
         "help": str(field.get("help") or field.get("description") or ""),
         "required": bool(field.get("required", False)),
+        "allow_custom": bool(field.get("allow_custom", True)),
     }
     if field_type == "field_select":
         schema["options_source"] = {"type": "preview_headers"}
@@ -764,6 +769,34 @@ def _parameter_field_schema(field):
             "style": "picker",
             "source": "preview_headers",
             "multiple": True,
+        }
+    elif raw_type == "table_select":
+        schema["options_source"] = {"type": "table_names"}
+        schema["action"] = {
+            "key": "pick_table_name",
+            "label": "选择表",
+            "style": "picker",
+            "source": "table_names",
+        }
+    elif raw_type == "input_table_select":
+        schema["options_source"] = {"type": "plugin_input_tables"}
+        schema["action"] = {
+            "key": "pick_plugin_input_table",
+            "label": "选择输入表",
+            "style": "picker",
+            "source": "plugin_input_tables",
+        }
+    elif raw_type == "dynamic_select":
+        schema["options_source"] = {
+            "type": "plugin_dynamic_choices",
+            "plugin_id": str(plugin_id or ""),
+            "param_key": key,
+        }
+    elif field_type == "directory":
+        schema["action"] = {
+            "key": "browse_directory",
+            "label": "选择目录",
+            "style": "picker",
         }
     return schema
 
@@ -783,12 +816,17 @@ def _normalize_parameter_type(value):
         "boolean": "bool",
         "select": "select",
         "choice": "select",
+        "dynamic_select": "select",
+        "input_table_select": "select",
+        "table_select": "table_select",
         "field": "field_select",
         "field_select": "field_select",
         "multi_field_select": "field_multi_select",
         "field_multi_select": "field_multi_select",
         "file": "path",
         "path": "path",
+        "folder": "directory",
+        "folder_path": "directory",
         "directory": "directory",
         "dir": "directory",
         "json": "json",

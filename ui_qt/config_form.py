@@ -518,7 +518,7 @@ class NodeConfigForm:
                 continue
             options_source = schema.get("options_source") or {}
             source_type = str(options_source.get("type") or "")
-            if source_type not in {"preview_headers", "table_names", "table_columns", "plan_refs", "runtime_refs", "field_values"}:
+            if source_type not in {"preview_headers", "table_names", "table_columns", "plan_refs", "runtime_refs", "field_values", "plugin_input_tables", "plugin_dynamic_choices"}:
                 continue
             current = str(editor.currentText())
             editor.blockSignals(True)
@@ -797,7 +797,7 @@ class NodeConfigForm:
                     continue
                 options_source = column.get("options_source") or {}
                 values = self._choices_for_options_source(options_source, row_values=row_values)
-                if not values and str(options_source.get("type") or "") not in {"preview_headers", "table_names", "table_columns", "plan_refs", "runtime_refs", "field_values"}:
+                if not values and str(options_source.get("type") or "") not in {"preview_headers", "table_names", "table_columns", "plan_refs", "runtime_refs", "field_values", "plugin_input_tables", "plugin_dynamic_choices"}:
                     continue
                 current = str(widget.currentText())
                 widget.blockSignals(True)

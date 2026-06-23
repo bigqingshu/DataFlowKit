@@ -266,6 +266,15 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertFalse(running_actions["actions"]["legacy_plugin_config"]["enabled"])
         self.assertTrue(running_actions["actions"]["cancel_job"]["enabled"])
 
+        plugin_inputs = client.describe_picker_context(
+            options_source={"type": "plugin_input_tables"},
+            current_values={"input_tables": [{"alias": "明细"}, {"name": "归档"}]},
+        )
+        self.assertEqual(
+            plugin_inputs["picker_context"]["candidates"],
+            ["当前表", "workflow_current", "primary", "明细", "归档"],
+        )
+
         start_progress = client.build_job_progress_state(
             current_job_id="job-1",
             title="预览结果",

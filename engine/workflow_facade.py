@@ -536,6 +536,25 @@ class WorkflowFacade:
                 empty_code = "table_names_missing"
                 allowed = set(table_names)
                 candidates = [item for item in candidates if item in allowed]
+        elif source_type == "plugin_input_tables":
+            source = "plugin_input_tables"
+            label = "插件输入表"
+            empty_code = "plugin_input_tables_missing"
+            aliases = ["当前表", "workflow_current", "primary"]
+            specs = current_values.get("input_tables") or []
+            if isinstance(specs, list):
+                for spec in specs:
+                    if not isinstance(spec, dict):
+                        continue
+                    alias = str(spec.get("alias") or spec.get("name") or spec.get("table_alias") or "").strip()
+                    if alias:
+                        aliases.append(alias)
+            candidates = aliases
+        elif source_type == "plugin_dynamic_choices":
+            source = "plugin_dynamic_choices"
+            label = "插件动态选项"
+            empty_code = "plugin_dynamic_choices_missing"
+            candidates = list(options_source.get("choices") or [])
 
         candidates = [str(item) for item in (candidates or []) if str(item).strip()]
         return {

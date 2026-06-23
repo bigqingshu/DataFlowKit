@@ -136,6 +136,41 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(run["result"]["headers"], ["A"])
         self.assertEqual(run["result"]["rows"], [["x"]])
 
+    def test_plugin_parameter_schema_maps_extended_ui_types(self):
+        with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:
+            plugin = Path(temp_dir) / "extended_plugin.py"
+            plugin.write_text(
+                "\n".join([
+                    "PLUGIN_INFO = {'id': 'extended', 'name': 'Extended', 'api_version': '1.0'}",
+                    "PARAMETER_SCHEMA = [",
+                    "    {'name': 'table_name', 'label': '数据表', 'type': 'table_select', 'default': 'orders'},",
+                    "    {'name': 'input_alias', 'label': '输入表', 'type': 'input_table_select', 'default': '当前表'},",
+                    "    {'name': 'config_name', 'label': '配置', 'type': 'dynamic_select', 'default': 'default', 'allow_custom': True},",
+                    "    {'name': 'directory_path', 'label': '目录', 'type': 'folder_path', 'default': ''},",
+                    "]",
+                    "def run(input_data, params, context):",
+                    "    return {'ok': True, 'output': input_data}",
+                ]),
+                encoding="utf-8",
+            )
+            service = PluginService(plugins_dir=temp_dir, app_dir=temp_dir)
+            schema = service.get_plugin_schema("plugin.extended")
+
+        self.assertTrue(schema["ok"])
+        param_group = next(group for group in schema["schema"]["form"]["groups"] if group["title"] == "插件参数")
+        fields = {field["key"]: field for field in param_group["fields"]}
+        self.assertEqual(fields["params.table_name"]["type"], "table_select")
+        self.assertEqual(fields["params.table_name"]["options_source"], {"type": "table_names"})
+        self.assertEqual(fields["params.table_name"]["action"]["key"], "pick_table_name")
+        self.assertEqual(fields["params.input_alias"]["type"], "select")
+        self.assertEqual(fields["params.input_alias"]["options_source"], {"type": "plugin_input_tables"})
+        self.assertEqual(fields["params.input_alias"]["action"]["key"], "pick_plugin_input_table")
+        self.assertEqual(fields["params.config_name"]["type"], "select")
+        self.assertEqual(fields["params.config_name"]["options_source"]["type"], "plugin_dynamic_choices")
+        self.assertEqual(fields["params.config_name"]["options_source"]["param_key"], "config_name")
+        self.assertEqual(fields["params.directory_path"]["type"], "directory")
+        self.assertEqual(fields["params.directory_path"]["action"]["key"], "browse_directory")
+
     def test_headless_catalog_and_plan_command_include_plugins(self):
         with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:
             write_demo_plugin(temp_dir)

@@ -1087,7 +1087,61 @@ class QtWorkflowMainWindow:
             return self._pick_plan_reference_for_field(field_key, payload)
         if action_key == "pick_runtime_ref":
             return self._pick_runtime_reference_for_field(field_key, payload)
+        if action_key == "pick_plugin_input_table":
+            return self._pick_plugin_input_table_for_field(field_key, payload)
+        if action_key == "browse_directory":
+            return self._browse_directory_for_field(field_key, payload)
+        if action_key == "browse_file":
+            return self._browse_file_for_field(field_key, payload)
         return {}
+
+    def _browse_directory_for_field(self, field_key, payload):
+        current = str(payload.get("value") or "")
+        path = self.qt.QtWidgets.QFileDialog.getExistingDirectory(
+            self.window,
+            f"选择{field_key}",
+            current,
+        )
+        return {"value": path} if path else {}
+
+    def _browse_file_for_field(self, field_key, payload):
+        current = str(payload.get("value") or "")
+        path, _ = self.qt.QtWidgets.QFileDialog.getOpenFileName(
+            self.window,
+            f"选择{field_key}",
+            current,
+            "所有文件 (*.*)",
+        )
+        return {"value": path} if path else {}
+
+    def _pick_plugin_input_table_for_field(self, field_key, payload):
+        picker_context = self.engine_client.describe_picker_context(
+            plan=self.plan,
+            field_key=field_key,
+            action_key="pick_plugin_input_table",
+            options_source=payload.get("options_source") or (payload.get("schema") or {}).get("options_source") or {},
+            current_values=payload.get("current_values") or {},
+        ).get("picker_context") or {}
+        candidates = [str(item) for item in (picker_context.get("candidates") or []) if str(item).strip()]
+        if not candidates:
+            self._apply_feedback(self.engine_client.describe_picker_feedback(
+                action_key="pick_plugin_input_table",
+                field_key=field_key,
+                candidates=candidates,
+            ))
+            return {}
+        current = str(payload.get("value") or "")
+        value, accepted = self.qt.QtWidgets.QInputDialog.getItem(
+            self.window,
+            f"选择{field_key}",
+            "可用输入表：",
+            candidates,
+            max(0, candidates.index(current)) if current in candidates else 0,
+            False,
+        )
+        if not accepted:
+            return {}
+        return {"value": value}
 
     def _pick_plan_reference_for_field(self, field_key, payload):
         action = payload.get("action") or {}
