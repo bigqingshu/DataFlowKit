@@ -33,6 +33,7 @@ class QtWorkflowMainWindow:
         self.current_headers = list(SAMPLE_HEADERS)
         self.current_rows = [list(row) for row in SAMPLE_ROWS]
         self.current_input_source = {"type": "sample"}
+        self.current_input_db_path = ""
         self.preview_headers = list(SAMPLE_HEADERS)
         self.preview_rows = [list(row) for row in SAMPLE_ROWS]
         self.last_preview_headers = []
@@ -61,7 +62,7 @@ class QtWorkflowMainWindow:
         table_names = []
         table_columns = {}
         try:
-            listed = self.engine_client.list_tables(db_path=self.output_db_path_edit.text().strip() or None)
+            listed = self.engine_client.list_tables(db_path=self.current_data_source_db_path() or None)
         except Exception:
             listed = {}
         for item in listed.get("tables") or []:
@@ -155,6 +156,34 @@ class QtWorkflowMainWindow:
             return self.qt.QtGui.QIcon()
         return self.window.style().standardIcon(value)
 
+    def _make_node_tool_button(self, tooltip, callback, icon_name):
+        button = self.qt.QtWidgets.QToolButton()
+        button.setIcon(self._standard_icon(icon_name))
+        button.setToolTip(str(tooltip or ""))
+        button.setAccessibleName(str(tooltip or ""))
+        button.setAutoRaise(True)
+        button.setFixedSize(28, 28)
+        button.setIconSize(self.qt.QtCore.QSize(18, 18))
+        try:
+            button.setToolButtonStyle(qt_enum(self.qt, "ToolButtonStyle", "ToolButtonIconOnly"))
+        except Exception:
+            pass
+        button.clicked.connect(lambda checked=False: callback())
+        return button
+
+    def _polish_node_views(self):
+        self.catalog_tree.setAlternatingRowColors(True)
+        self.node_list.setAlternatingRowColors(True)
+        self.node_list.setStyleSheet(
+            "QListWidget#workflowNodeList { border: 1px solid #d0d5dd; background: #ffffff; }"
+            "QListWidget#workflowNodeList::item { padding: 6px 8px; margin: 1px 2px; border-radius: 4px; }"
+            "QListWidget#workflowNodeList::item:selected { background: #2f6fed; color: white; }"
+            "QListWidget#workflowNodeList::item:selected:!active { background: #8ab4ff; color: #101828; }"
+            "QTreeWidget#nodeCatalogTree { border: 1px solid #d0d5dd; background: #ffffff; }"
+            "QTreeWidget#nodeCatalogTree::item { padding: 4px 6px; }"
+            "QTreeWidget#nodeCatalogTree::item:selected { background: #e7f0ff; color: #101828; }"
+        )
+
     def _build_left_panel(self):
         qt = self.qt
         panel = qt.QtWidgets.QWidget()
@@ -190,41 +219,47 @@ class QtWorkflowMainWindow:
 
         node_group = qt.QtWidgets.QGroupBox("2. 工作流节点")
         node_layout = qt.QtWidgets.QVBoxLayout(node_group)
-        add_row = qt.QtWidgets.QHBoxLayout()
-        self.node_type_combo = qt.QtWidgets.QComboBox()
+        self.node_type_combo = qt.QtWidgets.QComboBox(node_group)
         self.node_type_combo.setMinimumWidth(220)
         self.node_type_combo.currentIndexChanged.connect(lambda index: self.show_selected_node_type_detail())
-        self.add_node_button = qt.QtWidgets.QPushButton("添加节点")
+        self.node_type_combo.hide()
+        self.add_node_button = qt.QtWidgets.QPushButton("添加节点", node_group)
         self.add_node_button.clicked.connect(lambda checked=False: self.add_selected_node_type())
+        self.add_node_button.hide()
+        refresh_row = qt.QtWidgets.QHBoxLayout()
         self.refresh_schema_button = qt.QtWidgets.QPushButton("刷新节点")
         self.refresh_schema_button.clicked.connect(lambda checked=False: self.refresh_catalog())
         self.refresh_plugin_button = qt.QtWidgets.QPushButton("刷新插件")
         self.refresh_plugin_button.clicked.connect(lambda checked=False: self.refresh_plugins())
-        add_row.addWidget(self.node_type_combo, 1)
-        add_row.addWidget(self.add_node_button)
-        add_row.addWidget(self.refresh_schema_button)
-        add_row.addWidget(self.refresh_plugin_button)
+        refresh_row.addStretch(1)
+        refresh_row.addWidget(self.refresh_schema_button)
+        refresh_row.addWidget(self.refresh_plugin_button)
 
         self.catalog_tree = qt.QtWidgets.QTreeWidget()
         self.catalog_tree.setHeaderHidden(True)
         self.catalog_tree.setMaximumHeight(190)
+        self.catalog_tree.setObjectName("nodeCatalogTree")
         self.catalog_tree.itemDoubleClicked.connect(lambda item, column: self.add_catalog_node(item))
         self.catalog_tree.itemSelectionChanged.connect(self.show_catalog_node_detail)
 
         self.node_list = qt.QtWidgets.QListWidget()
+        self.node_list.setObjectName("workflowNodeList")
         self.node_list.setSelectionMode(qt.QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.node_list.setUniformItemSizes(True)
+        self.node_list.setSpacing(2)
         self.node_list.currentRowChanged.connect(self.show_node_config)
+        self._polish_node_views()
 
-        node_buttons_a = qt.QtWidgets.QHBoxLayout()
-        for text, callback in [
-            ("删除", self.delete_selected_node),
-            ("上移", self.move_selected_node_up),
-            ("下移", self.move_selected_node_down),
-            ("启用/禁用", self.toggle_selected_node_enabled),
+        node_list_tools = qt.QtWidgets.QHBoxLayout()
+        node_list_tools.addStretch(1)
+        for text, callback, icon_name in [
+            ("删除", self.delete_selected_node, "SP_TrashIcon"),
+            ("上移", self.move_selected_node_up, "SP_ArrowUp"),
+            ("下移", self.move_selected_node_down, "SP_ArrowDown"),
+            ("启用/禁用", self.toggle_selected_node_enabled, "SP_DialogApplyButton"),
         ]:
-            button = qt.QtWidgets.QPushButton(text)
-            button.clicked.connect(lambda checked=False, cb=callback: cb())
-            node_buttons_a.addWidget(button)
+            button = self._make_node_tool_button(text, callback, icon_name)
+            node_list_tools.addWidget(button)
             self.node_action_buttons[text] = button
 
         node_buttons_b = qt.QtWidgets.QHBoxLayout()
@@ -238,10 +273,10 @@ class QtWorkflowMainWindow:
             node_buttons_b.addWidget(button)
             self.node_action_buttons[text] = button
 
-        node_layout.addLayout(add_row)
         node_layout.addWidget(self.catalog_tree, 0)
+        node_layout.addLayout(node_list_tools)
         node_layout.addWidget(self.node_list, 1)
-        node_layout.addLayout(node_buttons_a)
+        node_layout.addLayout(refresh_row)
         node_layout.addLayout(node_buttons_b)
 
         template_group = qt.QtWidgets.QGroupBox("3. 计划模板")
@@ -591,6 +626,9 @@ class QtWorkflowMainWindow:
         for node_item in panel_state.get("node_items") or []:
             item = self.qt.QtWidgets.QListWidgetItem(node_item.get("summary_text", ""))
             item.setData(self.user_role, node_item.get("index"))
+            if not bool(node_item.get("enabled", True)):
+                item.setForeground(self.qt.QtGui.QBrush(self.qt.QtGui.QColor("#667085")))
+                item.setBackground(self.qt.QtGui.QBrush(self.qt.QtGui.QColor("#f2f4f7")))
             self.node_list.addItem(item)
         if self.node_list.count():
             if selected < 0:
@@ -1877,6 +1915,7 @@ class QtWorkflowMainWindow:
         self.current_headers = list(SAMPLE_HEADERS)
         self.current_rows = [list(row) for row in SAMPLE_ROWS]
         self.current_input_source = {"type": "sample"}
+        self.current_input_db_path = ""
         self.last_preview_headers = []
         self.last_preview_rows = []
         self.refresh_all()
@@ -1890,6 +1929,7 @@ class QtWorkflowMainWindow:
         self.current_headers = list(SAMPLE_HEADERS)
         self.current_rows = [list(row) for row in SAMPLE_ROWS]
         self.current_input_source = {"type": "sample"}
+        self.current_input_db_path = ""
         self.last_preview_headers = []
         self.last_preview_rows = []
         self.current_plan["headers"] = list(self.current_headers)
@@ -1900,7 +1940,21 @@ class QtWorkflowMainWindow:
         self.status_bar.showMessage("已重新载入示例输入。")
 
     def current_data_source_db_path(self):
+        if self.current_input_db_path:
+            return self.current_input_db_path
+        source = self.current_input_source if isinstance(self.current_input_source, dict) else {}
+        source_db_path = str(source.get("db_path") or "").strip()
+        if source_db_path:
+            return source_db_path
         return self.output_db_path_edit.text().strip() if hasattr(self, "output_db_path_edit") else ""
+
+    def set_current_input_db_path(self, db_path, *, refresh=True, show_status=False):
+        db_path = str(db_path or "").strip()
+        if not db_path or db_path == self.current_input_db_path:
+            return
+        self.current_input_db_path = db_path
+        if refresh:
+            self.refresh_input_table_combo(show_status=show_status)
 
     def refresh_input_table_combo(self, *, show_status=True):
         if not hasattr(self, "input_table_combo"):
@@ -1976,6 +2030,7 @@ class QtWorkflowMainWindow:
             self.status_bar.showMessage("载入输入表失败")
             return
         table = loaded.get("table") or {}
+        self.set_current_input_db_path(db_path, refresh=False)
         self._apply_input_table_state({
             "headers": list(table.get("headers") or []),
             "rows": [list(row) for row in (table.get("rows") or [])],
@@ -1999,11 +2054,18 @@ class QtWorkflowMainWindow:
             initial_source=self.current_input_source,
             db_path=self.current_data_source_db_path(),
             on_apply=self._apply_data_source_manager_input,
+            on_db_path_changed=self._handle_data_source_manager_db_path,
         )
         self.data_source_manager_controller.show()
         self.status_bar.showMessage("已打开输入数据源管理。")
 
+    def _handle_data_source_manager_db_path(self, db_path):
+        self.set_current_input_db_path(db_path, refresh=True, show_status=False)
+
     def _apply_data_source_manager_input(self, state):
+        source = (state or {}).get("source") or {}
+        if isinstance(source, dict) and source.get("db_path"):
+            self.set_current_input_db_path(source.get("db_path"), refresh=False)
         self._apply_input_table_state(state)
         self.refresh_input_table_combo(show_status=False)
 

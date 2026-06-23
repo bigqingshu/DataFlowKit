@@ -23,10 +23,12 @@ class DataSourceManagerWindow:
         initial_source=None,
         db_path="",
         on_apply=None,
+        on_db_path_changed=None,
     ):
         self.qt = qt
         self.engine_client = engine_client
         self.on_apply = on_apply
+        self.on_db_path_changed = on_db_path_changed
         self.current_source = copy.deepcopy(initial_source or {"type": "memory"})
         self.dirty = False
         self.search_matches = []
@@ -248,6 +250,8 @@ class DataSourceManagerWindow:
 
     def refresh_table_combo(self, *, show_status=True):
         db_path = self.db_path_edit.text().strip()
+        if db_path and callable(self.on_db_path_changed):
+            self.on_db_path_changed(db_path)
         try:
             listed = self.engine_client.list_tables(db_path=db_path or None)
         except Exception as exc:

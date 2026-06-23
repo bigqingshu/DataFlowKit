@@ -1703,6 +1703,43 @@ class Qt6UiShellTests(unittest.TestCase):
             window.close()
             app.processEvents()
 
+    def test_data_source_manager_remembers_database_and_syncs_input_combo(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        with TemporaryDirectory() as temp_dir:
+            db_path = str(Path(temp_dir) / "input.db")
+            TableAccessManager(db_path).write_table(
+                "orders",
+                ["id", "name"],
+                [["1", "Alice"]],
+                mode="replace",
+            )
+            window = build_main_window(qt)
+            controller = window.qt_workflow_controller
+
+            controller.open_data_source_manager()
+            manager = controller.data_source_manager_controller
+            manager.db_path_edit.setText(db_path)
+            manager.refresh_table_combo()
+            app.processEvents()
+
+            self.assertEqual(controller.current_input_db_path, db_path)
+            self.assertEqual(controller.input_table_combo.currentText(), "orders")
+            manager.window.close()
+
+            controller.open_data_source_manager()
+            reopened = controller.data_source_manager_controller
+            app.processEvents()
+
+            self.assertEqual(reopened.db_path_edit.text(), db_path)
+            self.assertEqual(reopened.table_combo.currentText(), "orders")
+            reopened.window.close()
+            window.close()
+            app.processEvents()
+
     def test_original_style_workflow_panel_controller_operations(self):
         try:
             qt = qt_app.load_qt6()
@@ -1717,6 +1754,8 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(controller.input_summary_label.text(), "当前输入：3 行 x 4 列")
         self.assertEqual(controller.config_header_label.text().startswith("节点类型："), True)
         self.assertGreater(controller.node_type_combo.count(), 0)
+        self.assertTrue(controller.node_type_combo.isHidden())
+        self.assertTrue(controller.add_node_button.isHidden())
         self.assertGreater(controller.catalog_tree.topLevelItemCount(), 0)
         self.assertEqual(controller.node_list.count(), 1)
         self.assertIn("未保存", controller.status_bar.currentMessage())
@@ -1739,7 +1778,8 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(controller.node_detail_title_label.text(), "新建列")
         self.assertIn("说明", controller.node_detail_sections.toPlainText())
         self.assertFalse(controller.output_form_fields["backup_before_overwrite"]["editor"].isVisible())
-        self.assertTrue(controller.add_node_button.isEnabled())
+        self.assertTrue(controller.refresh_schema_button.isEnabled())
+        self.assertTrue(controller.refresh_plugin_button.isEnabled())
         self.assertTrue(controller.apply_config_button.isEnabled())
         self.assertFalse(controller.cancel_job_button.isEnabled())
 
