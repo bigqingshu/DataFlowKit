@@ -402,6 +402,42 @@ class Qt6UiShellTests(unittest.TestCase):
         window.close()
         app.processEvents()
 
+    def test_plugin_structured_list_reads_nested_item_schema_values(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+
+        widget = controller._make_plugin_structured_list_widget(
+            {
+                "view_id": "demo.rules",
+                "kind": "structured_list",
+                "items": [{"name": "rule_1", "mapping": {"content_field": "write_value"}}],
+                "item_schema": {
+                    "columns": [
+                        {"key": "name", "label": "规则", "type": "text"},
+                        {
+                            "key": "mapping.content_field",
+                            "label": "写入字段",
+                            "type": "select",
+                            "config_path": ["mapping", "content_field"],
+                        },
+                    ],
+                },
+            },
+            {"config_schema_version": "demo.config.v1"},
+        )
+
+        table = widget.findChild(qt.QtWidgets.QTableWidget)
+        self.assertIsNotNone(table)
+        self.assertEqual(table.horizontalHeaderItem(1).text(), "写入字段")
+        self.assertEqual(table.item(0, 1).text(), "write_value")
+        window.close()
+        app.processEvents()
+
     def test_facade_describes_workflow_actions_and_progress(self):
         client = QtHeadlessEngineClient()
 

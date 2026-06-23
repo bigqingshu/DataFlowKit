@@ -1090,8 +1090,9 @@ class QtWorkflowMainWindow:
         table.setRowCount(len(items))
         for row, item in enumerate(items):
             for col, column in enumerate(columns):
-                key = str(column.get("key") or "")
-                table.setItem(row, col, qt.QtWidgets.QTableWidgetItem(self._format_plugin_protocol_value(item.get(key))))
+                table.setItem(row, col, qt.QtWidgets.QTableWidgetItem(
+                    self._format_plugin_protocol_value(self._plugin_structured_item_value(item, column))
+                ))
         self._polish_plugin_protocol_table(table)
         if table.rowCount():
             table.selectRow(0)
@@ -1122,6 +1123,28 @@ class QtWorkflowMainWindow:
         frame.plugin_config_buttons = buttons
         layout.addLayout(button_row)
         return frame
+
+    def _plugin_structured_item_value(self, item, column):
+        if not isinstance(item, dict):
+            return None
+        column = column or {}
+        path = column.get("config_path")
+        if isinstance(path, str):
+            path = [part for part in path.split(".") if part]
+        elif not isinstance(path, (list, tuple)):
+            path = []
+        if not path:
+            key = str(column.get("key") or "")
+            if key in item:
+                return item.get(key)
+            if "." in key:
+                path = [part for part in key.split(".") if part]
+        current = item
+        for part in path or []:
+            if not isinstance(current, dict):
+                return None
+            current = current.get(part)
+        return current
 
     def _apply_plugin_structured_list_patch(self, frame, operation, target_offset=None):
         view = copy.deepcopy(getattr(frame, "plugin_config_view", {}) or {})
