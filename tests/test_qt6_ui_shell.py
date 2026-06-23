@@ -269,6 +269,11 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertIn("兼容动作：打开旧版插件设置", controller.node_detail_sections.toPlainText())
             self.assertIn("配置动作：编辑 Demo Items", controller.node_detail_sections.toPlainText())
             self.assertFalse(controller.plugin_config_view_tabs.isHidden())
+            self.assertLess(controller.plugin_config_view_tabs.minimumHeight(), 170)
+            self.assertEqual(
+                controller.plugin_config_view_tabs.sizePolicy().verticalPolicy(),
+                qt.QtWidgets.QSizePolicy.Policy.Ignored,
+            )
             protocol_tab_titles = [
                 controller.plugin_config_view_tabs.tabText(index)
                 for index in range(controller.plugin_config_view_tabs.count())

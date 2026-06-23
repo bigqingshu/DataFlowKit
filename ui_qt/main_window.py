@@ -398,10 +398,12 @@ class QtWorkflowMainWindow:
         self.legacy_plugin_config_button = qt.QtWidgets.QPushButton("打开旧版插件设置")
         self.legacy_plugin_config_button.clicked.connect(lambda checked=False: self.open_legacy_plugin_config())
         self.legacy_plugin_config_button.setVisible(False)
+        config_button_row = qt.QtWidgets.QHBoxLayout()
+        config_button_row.addWidget(self.legacy_plugin_config_button)
+        config_button_row.addWidget(self.apply_config_button, 1)
         config_layout.addWidget(self.config_header_label)
         config_layout.addWidget(self.config_form.widget, 1)
-        config_layout.addWidget(self.legacy_plugin_config_button)
-        config_layout.addWidget(self.apply_config_button)
+        config_layout.addLayout(config_button_row)
 
         detail_page = qt.QtWidgets.QWidget()
         detail_layout = qt.QtWidgets.QVBoxLayout(detail_page)
@@ -420,7 +422,10 @@ class QtWorkflowMainWindow:
         self.node_detail_sections.setMaximumHeight(190)
         self.plugin_config_view_tabs = qt.QtWidgets.QTabWidget()
         self.plugin_config_view_tabs.setVisible(False)
-        self.plugin_config_view_tabs.setMinimumHeight(170)
+        self.plugin_config_view_tabs.setSizePolicy(
+            qt.QtWidgets.QSizePolicy.Policy.Expanding,
+            qt.QtWidgets.QSizePolicy.Policy.Ignored,
+        )
         detail_layout.addWidget(self.node_detail_title_label)
         detail_layout.addWidget(self.node_detail_meta_label)
         detail_layout.addWidget(self.node_detail_badges_label)
