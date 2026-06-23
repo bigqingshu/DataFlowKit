@@ -46,6 +46,8 @@ class PlanTemplateServiceTests(unittest.TestCase):
                 backup_before_overwrite=False,
                 db_path="demo.db",
                 output_path="demo.xlsx",
+                input_source={"type": "sqlite", "db_path": "input.db", "table_name": "orders"},
+                input_db_path="input.db",
             )
 
             self.assertTrue(listed["ok"])
@@ -64,6 +66,8 @@ class PlanTemplateServiceTests(unittest.TestCase):
             self.assertEqual(saved_data["nodes"][0]["node_type_id"], "core.new_columns")
             self.assertEqual(saved_data["db_path"], "demo.db")
             self.assertEqual(saved_data["output_path"], "demo.xlsx")
+            self.assertEqual(saved_data["input_source"]["table_name"], "orders")
+            self.assertEqual(saved_data["input_db_path"], "input.db")
 
     def test_stdio_worker_exposes_plan_template_actions(self):
         with TemporaryDirectory() as temp_dir:
@@ -86,6 +90,8 @@ class PlanTemplateServiceTests(unittest.TestCase):
                 "plan": {"nodes": []},
                 "headers": ["A"],
                 "rows": [["a"]],
+                "input_source": {"type": "sqlite", "db_path": "input.db", "table_name": "orders"},
+                "input_db_path": "input.db",
             }))
 
             self.assertTrue(listed["ok"])
@@ -98,6 +104,9 @@ class PlanTemplateServiceTests(unittest.TestCase):
             self.assertTrue(saved["ok"])
             self.assertTrue(saved["result"]["ok"])
             self.assertTrue(target_path.exists())
+            saved_data = json.loads(target_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved_data["input_source"]["table_name"], "orders")
+            self.assertEqual(saved_data["input_db_path"], "input.db")
 
 
 if __name__ == "__main__":

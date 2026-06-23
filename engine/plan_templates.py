@@ -73,6 +73,8 @@ class PlanTemplateService:
         backup_before_overwrite=None,
         db_path=None,
         output_path=None,
+        input_source=None,
+        input_db_path=None,
         migrate=True,
         target_version=None,
     ):
@@ -86,6 +88,8 @@ class PlanTemplateService:
             backup_before_overwrite=backup_before_overwrite,
             db_path=db_path,
             output_path=output_path,
+            input_source=input_source,
+            input_db_path=input_db_path,
         )
         if not str(document.get("plan_name") or "").strip():
             document["plan_name"] = target.stem or "工作流计划"

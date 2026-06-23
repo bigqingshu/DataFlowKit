@@ -122,6 +122,8 @@ class StdioWorker:
                 backup_before_overwrite=payload.get("backup_before_overwrite"),
                 db_path=payload.get("db_path") or payload.get("output_db_path"),
                 output_path=payload.get("output_path"),
+                input_source=payload.get("input_source"),
+                input_db_path=payload.get("input_db_path"),
                 migrate=bool(payload.get("migrate", True)),
                 target_version=payload.get("target_version") or payload.get("protocol_version"),
             )

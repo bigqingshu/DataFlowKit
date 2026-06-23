@@ -176,6 +176,8 @@ class QtHeadlessEngineClient:
         backup_before_overwrite=None,
         db_path=None,
         output_path=None,
+        input_source=None,
+        input_db_path=None,
         migrate=True,
     ):
         return self.facade.save_plan_template(
@@ -188,6 +190,8 @@ class QtHeadlessEngineClient:
             backup_before_overwrite=backup_before_overwrite,
             db_path=db_path,
             output_path=output_path,
+            input_source=copy.deepcopy(input_source or {}),
+            input_db_path=input_db_path,
             migrate=migrate,
         )
 

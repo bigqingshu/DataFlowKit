@@ -1384,6 +1384,8 @@ class QtWorkflowMainWindow:
         self.current_plan = copy.deepcopy(state.get("plan") or self.current_plan)
         self.current_headers = list(state.get("headers") or [])
         self.current_rows = [list(row) for row in (state.get("rows") or [])]
+        self.current_input_source = copy.deepcopy(state.get("input_source") or self.current_input_source or {})
+        self.set_current_input_db_path(state.get("input_db_path") or "", refresh=False)
         self.apply_output_settings_from_plan(state.get("plan") or {})
         self.last_preview_headers = []
         self.last_preview_rows = []
@@ -2253,6 +2255,8 @@ class QtWorkflowMainWindow:
                 backup_before_overwrite=self.backup_checkbox.isChecked(),
                 db_path=self.output_db_path_edit.text(),
                 output_path=self.output_path_edit.text(),
+                input_source=self.current_input_source,
+                input_db_path=self.current_data_source_db_path(),
             )
             if not saved.get("ok"):
                 self._apply_feedback(self.engine_client.describe_plan_file_failure(

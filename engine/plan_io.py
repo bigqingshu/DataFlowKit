@@ -51,6 +51,8 @@ def build_plan_document(
     backup_before_overwrite=None,
     db_path=None,
     output_path=None,
+    input_source=None,
+    input_db_path=None,
 ):
     """Return a plan copy with current table and output settings attached."""
 
@@ -69,6 +71,10 @@ def build_plan_document(
         result["db_path"] = str(db_path)
     if output_path is not None:
         result["output_path"] = str(output_path)
+    if input_source is not None:
+        result["input_source"] = copy.deepcopy(input_source) if isinstance(input_source, dict) else {}
+    if input_db_path is not None:
+        result["input_db_path"] = str(input_db_path)
     return result
 
 

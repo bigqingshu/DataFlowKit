@@ -623,12 +623,17 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertIn("demo.csv", imported_state["state"]["status_message"])
         self.assertEqual(imported_state["state"]["message_panel"]["title"], "导入输入表格")
 
+        plan_with_input_source = copy.deepcopy(SAMPLE_PLAN)
+        plan_with_input_source["input_source"] = {"type": "sqlite", "db_path": "input.db", "table_name": "orders"}
+        plan_with_input_source["input_db_path"] = "input.db"
         loaded_state = client.build_loaded_plan_state({
             "path": "plan\\demo.json",
-            "plan": SAMPLE_PLAN,
+            "plan": plan_with_input_source,
             "warning": "已迁移旧字段",
         })
         self.assertEqual(loaded_state["state"]["plan_path"], "plan\\demo.json")
+        self.assertEqual(loaded_state["state"]["input_source"]["table_name"], "orders")
+        self.assertEqual(loaded_state["state"]["input_db_path"], "input.db")
         self.assertEqual(loaded_state["state"]["issue_message"], "已迁移旧字段")
         self.assertEqual(loaded_state["state"]["message_panel"]["mode"], "warning")
 
@@ -2702,11 +2707,18 @@ class Qt6UiShellTests(unittest.TestCase):
             with patch.object(controller.engine_client, "load_plan_template", return_value={
                 "ok": True,
                 "path": plan_path,
-                "plan": SAMPLE_PLAN,
+                "plan": {
+                    **SAMPLE_PLAN,
+                    "input_source": {"type": "sqlite", "db_path": "input.db", "table_name": "orders"},
+                    "input_db_path": "input.db",
+                },
                 "warning": "已打开测试计划",
             }):
                 controller.open_plan()
                 self.assertTrue(str(controller.current_plan_path).endswith("demo.json"))
+                self.assertEqual(controller.current_input_db_path, "input.db")
+                self.assertEqual(controller.input_db_path_edit.text(), "input.db")
+                self.assertEqual(controller.current_input_source["table_name"], "orders")
                 self.assertIn("打开计划", controller.info_text.toPlainText())
                 self.assertIn("已打开测试计划", controller.current_message_panel.get("body", ""))
 
@@ -2714,10 +2726,13 @@ class Qt6UiShellTests(unittest.TestCase):
                 "ok": True,
                 "path": save_path,
                 "plan": SAMPLE_PLAN,
-            }):
+            }) as mock_save:
                 controller.current_plan_path = None
                 controller.save_plan()
                 self.assertTrue(str(controller.current_plan_path).endswith("saved.json"))
+                save_kwargs = mock_save.call_args[1]
+                self.assertEqual(save_kwargs["input_db_path"], "input.db")
+                self.assertEqual(save_kwargs["input_source"]["table_name"], "orders")
                 self.assertIn("已保存", controller.status_bar.currentMessage())
 
             self.assertEqual(mock_choose.call_count, 3)

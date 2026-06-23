@@ -32,6 +32,8 @@ class EnginePlanIoTests(unittest.TestCase):
                 backup_before_overwrite=False,
                 db_path="demo.db",
                 output_path="demo.xlsx",
+                input_source={"type": "sqlite", "db_path": "input.db", "table_name": "orders"},
+                input_db_path="input.db",
             )
             saved_path = root / "saved.json"
             saved = save_plan(saved_path, document)
@@ -44,6 +46,8 @@ class EnginePlanIoTests(unittest.TestCase):
             self.assertFalse(document["backup_before_overwrite"])
             self.assertEqual(document["db_path"], "demo.db")
             self.assertEqual(document["output_path"], "demo.xlsx")
+            self.assertEqual(document["input_source"]["table_name"], "orders")
+            self.assertEqual(document["input_db_path"], "input.db")
             self.assertTrue(saved["ok"])
             self.assertEqual(json.loads(saved_path.read_text(encoding="utf-8"))["output_table"], "结果")
 

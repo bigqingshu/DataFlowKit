@@ -118,6 +118,10 @@ class WorkflowFacade:
         path = str(loaded.get("path") or "")
         warning = str(loaded.get("warning") or "")
         message = warning or (f"已打开计划：{path}" if path else "已打开计划。")
+        input_source = copy.deepcopy(plan.get("input_source") or {})
+        if not isinstance(input_source, dict):
+            input_source = {}
+        input_db_path = str(plan.get("input_db_path") or input_source.get("db_path") or "").strip()
         return {
             "ok": True,
             "state": {
@@ -125,6 +129,8 @@ class WorkflowFacade:
                 "plan_path": path,
                 "headers": list(plan.get("headers") or []),
                 "rows": [list(row) for row in (plan.get("rows") or [])],
+                "input_source": input_source,
+                "input_db_path": input_db_path,
                 "output_settings": OutputSettings.from_payload(plan).to_dict(),
                 "status_message": f"已打开计划：{path}" if path else "已打开计划。",
                 "issue_message": message,
