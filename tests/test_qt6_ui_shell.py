@@ -269,6 +269,8 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertIn("旧版设置窗口", controller.node_detail_sections.toPlainText())
             self.assertIn("配置协议", controller.node_detail_sections.toPlainText())
             self.assertIn("兼容动作：打开旧版插件设置", controller.node_detail_sections.toPlainText())
+            self.assertIn("兼容提示：旧版 Tk 设置窗口仅作为兼容 fallback", controller.node_detail_sections.toPlainText())
+            self.assertIn("schema/patch", controller.legacy_plugin_config_button.toolTip())
             self.assertIn("配置动作：编辑 Demo Items", controller.node_detail_sections.toPlainText())
             self.assertFalse(controller.plugin_config_view_tabs.isHidden())
             self.assertLess(controller.plugin_config_view_tabs.minimumHeight(), 170)

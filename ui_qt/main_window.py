@@ -913,6 +913,13 @@ class QtWorkflowMainWindow:
         config_actions = [item for item in actions if str(item.get("kind") or "") != "compatibility"]
         if compatibility_actions:
             lines.append("兼容动作：" + "、".join(str(item.get("label") or item.get("action_id") or "") for item in compatibility_actions[:6]))
+            compatibility_warnings = [
+                str(item.get("warning") or "").strip()
+                for item in compatibility_actions
+                if str(item.get("warning") or "").strip()
+            ]
+            if compatibility_warnings:
+                lines.append("兼容提示：" + "；".join(compatibility_warnings[:3]))
         if config_actions:
             lines.append("配置动作：" + "、".join(str(item.get("label") or item.get("action_id") or "") for item in config_actions[:6]))
         if not lines:
@@ -1216,10 +1223,14 @@ class QtWorkflowMainWindow:
         plugin = schema.get("plugin") if isinstance(schema, dict) and isinstance(schema.get("plugin"), dict) else {}
         custom_window = plugin.get("custom_config_window") if isinstance(plugin.get("custom_config_window"), dict) else {}
         visible = bool(custom_window.get("available"))
+        tooltip = str(
+            custom_window.get("warning")
+            or "兼容旧 Tk 插件设置窗口；标准配置仍以当前表单为主。"
+        )
         self.legacy_plugin_config_button.setVisible(visible)
         self.legacy_plugin_config_button.setEnabled(visible and not bool(self.current_job_id))
         self.legacy_plugin_config_button.setText(str(custom_window.get("label") or "打开旧版插件设置"))
-        self.legacy_plugin_config_button.setToolTip("兼容旧 Tk 插件设置窗口；标准配置仍以当前表单为主。")
+        self.legacy_plugin_config_button.setToolTip(tooltip)
 
     def open_legacy_plugin_config(self):
         index = self.selected_node_index()

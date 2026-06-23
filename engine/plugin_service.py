@@ -455,11 +455,18 @@ class PluginService:
         actions = []
         custom_window = plugin.get("custom_config_window") if isinstance(plugin.get("custom_config_window"), dict) else {}
         if custom_window.get("available"):
+            legacy_warning = str(
+                custom_window.get("warning")
+                or "旧版插件设置窗口仅作为兼容 fallback；标准配置请优先使用 schema/patch 协议。"
+            )
             actions.append({
                 "action_id": "open_legacy_config",
                 "label": str(custom_window.get("label") or "打开旧版插件设置"),
                 "kind": "compatibility",
                 "compatibility": str(custom_window.get("compatibility") or "legacy"),
+                "fallback": True,
+                "deprecated": True,
+                "warning": legacy_warning,
             })
         actions = _merge_plugin_config_items(actions, plugin_extension.get("actions"), "action_id")
 
@@ -659,7 +666,7 @@ class PluginService:
         if item.get("import_error"):
             warnings.append(str(item.get("import_error")))
         if has_custom_config:
-            warnings.append("该插件提供旧版自定义设置窗口，可通过兼容入口打开。")
+            warnings.append("该插件提供旧版自定义设置窗口，仅建议作为兼容 fallback 使用。")
         return {
             "plugin_id": plugin_id,
             "node_type_id": plugin_node_type_id(plugin_id),
@@ -690,6 +697,9 @@ class PluginService:
                 "available": has_custom_config,
                 "label": "打开旧版插件设置",
                 "compatibility": "legacy_tk",
+                "fallback": True,
+                "deprecated": True,
+                "warning": "旧版 Tk 设置窗口仅作为兼容 fallback；标准配置请优先使用 schema/patch 协议。",
             },
             "info": info,
         }
