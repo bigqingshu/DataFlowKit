@@ -63,49 +63,88 @@ READ_STRATEGIES = [
     "win32完整读取",
 ]
 
+GROUP_READ_SETTINGS = 10
+GROUP_FILE_SOURCE = 20
+GROUP_DB_WRITE = 30
+GROUP_CACHE_ERROR = 40
+FIELD_SELECT_EMPTY_TEXT = "当前输入表没有可选字段"
+FIELD_SELECT_INVALID_TEXT = "当前字段不在输入表字段中，仍会保留原值"
+
+
+def _ui_meta(group, group_order, order, **extra):
+    meta = {"group": group, "group_order": group_order, "order": order}
+    meta.update(extra)
+    return meta
+
+
 PARAMETER_UI_METADATA = {
-    "read_engine": {"group": "读取设置", "order": 10},
-    "word_merge_mode": {"group": "读取设置", "order": 20, "advanced": True},
-    "doc_read_strategy": {"group": "读取设置", "order": 30, "advanced": True},
-    "path_source": {"group": "文件来源", "order": 100},
-    "path_field": {
-        "group": "文件来源",
-        "order": 110,
-        "options_source": {"type": "preview_headers"},
-        "visible_when": {"field": "path_source", "equals": "当前表字段=完整文件路径"},
-        "empty_text": "当前输入表没有可选字段",
-    },
-    "dir_field": {
-        "group": "文件来源",
-        "order": 120,
-        "options_source": {"type": "preview_headers"},
-        "visible_when": {"field": "path_source", "equals": "当前表字段=目录路径"},
-        "empty_text": "当前输入表没有可选字段",
-    },
-    "directory_path": {
-        "group": "文件来源",
-        "order": 130,
-        "placeholder": "选择或输入固定目录路径",
-        "visible_when": {"field": "path_source", "equals": "插件参数=固定目录路径"},
-    },
-    "recursive": {
-        "group": "文件来源",
-        "order": 140,
-        "visible_when": {"field": "path_source", "in": ["当前表字段=目录路径", "插件参数=固定目录路径"]},
-    },
-    "file_patterns": {
-        "group": "文件来源",
-        "order": 150,
-        "visible_when": {"field": "path_source", "in": ["当前表字段=目录路径", "插件参数=固定目录路径"]},
-    },
-    "table_name_mode": {"group": "写库设置", "order": 200},
-    "table_prefix": {"group": "写库设置", "order": 210},
-    "write_mode": {"group": "写库设置", "order": 220},
-    "preview_write_db": {"group": "写库设置", "order": 230, "warning": "开启后预览也会写入数据库。"},
-    "enable_cache": {"group": "缓存与失败处理", "order": 300},
-    "force_refresh": {"group": "缓存与失败处理", "order": 310, "enabled_when": {"field": "enable_cache", "equals": True}},
-    "cache_key_mode": {"group": "缓存与失败处理", "order": 320, "enabled_when": {"field": "enable_cache", "equals": True}},
-    "error_policy": {"group": "缓存与失败处理", "order": 330},
+    "read_engine": _ui_meta("读取设置", GROUP_READ_SETTINGS, 10, refresh_on_change=["read_engine"]),
+    "word_merge_mode": _ui_meta("读取设置", GROUP_READ_SETTINGS, 20, advanced=True, depends_on=["read_engine"]),
+    "doc_read_strategy": _ui_meta("读取设置", GROUP_READ_SETTINGS, 30, advanced=True, depends_on=["read_engine"]),
+    "path_source": _ui_meta("文件来源", GROUP_FILE_SOURCE, 100, refresh_on_change=["path_source"]),
+    "path_field": _ui_meta(
+        "文件来源",
+        GROUP_FILE_SOURCE,
+        110,
+        options_source={"type": "preview_headers"},
+        visible_when={"field": "path_source", "equals": "当前表字段=完整文件路径"},
+        depends_on=["path_source"],
+        empty_text=FIELD_SELECT_EMPTY_TEXT,
+        invalid_value_text=FIELD_SELECT_INVALID_TEXT,
+    ),
+    "dir_field": _ui_meta(
+        "文件来源",
+        GROUP_FILE_SOURCE,
+        120,
+        options_source={"type": "preview_headers"},
+        visible_when={"field": "path_source", "equals": "当前表字段=目录路径"},
+        depends_on=["path_source"],
+        empty_text=FIELD_SELECT_EMPTY_TEXT,
+        invalid_value_text=FIELD_SELECT_INVALID_TEXT,
+    ),
+    "directory_path": _ui_meta(
+        "文件来源",
+        GROUP_FILE_SOURCE,
+        130,
+        placeholder="选择或输入固定目录路径",
+        visible_when={"field": "path_source", "equals": "插件参数=固定目录路径"},
+        depends_on=["path_source"],
+        invalid_value_text="请选择有效目录路径",
+    ),
+    "recursive": _ui_meta(
+        "文件来源",
+        GROUP_FILE_SOURCE,
+        140,
+        visible_when={"field": "path_source", "in": ["当前表字段=目录路径", "插件参数=固定目录路径"]},
+        depends_on=["path_source"],
+    ),
+    "file_patterns": _ui_meta(
+        "文件来源",
+        GROUP_FILE_SOURCE,
+        150,
+        visible_when={"field": "path_source", "in": ["当前表字段=目录路径", "插件参数=固定目录路径"]},
+        depends_on=["path_source"],
+    ),
+    "table_name_mode": _ui_meta("写库设置", GROUP_DB_WRITE, 200),
+    "table_prefix": _ui_meta("写库设置", GROUP_DB_WRITE, 210),
+    "write_mode": _ui_meta("写库设置", GROUP_DB_WRITE, 220),
+    "preview_write_db": _ui_meta("写库设置", GROUP_DB_WRITE, 230, warning="开启后预览也会写入数据库。"),
+    "enable_cache": _ui_meta("缓存与失败处理", GROUP_CACHE_ERROR, 300, refresh_on_change=["enable_cache"]),
+    "force_refresh": _ui_meta(
+        "缓存与失败处理",
+        GROUP_CACHE_ERROR,
+        310,
+        enabled_when={"field": "enable_cache", "equals": True},
+        depends_on=["enable_cache"],
+    ),
+    "cache_key_mode": _ui_meta(
+        "缓存与失败处理",
+        GROUP_CACHE_ERROR,
+        320,
+        enabled_when={"field": "enable_cache", "equals": True},
+        depends_on=["enable_cache"],
+    ),
+    "error_policy": _ui_meta("缓存与失败处理", GROUP_CACHE_ERROR, 330),
 }
 
 

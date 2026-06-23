@@ -42,14 +42,53 @@ PLUGIN_INFO = {
 # 参数定义
 # -----------------------------------------------------------------------------
 
+GROUP_INPUT = 10
+GROUP_OUTPUT = 20
+GROUP_CACHE = 30
+FIELD_SELECT_EMPTY_TEXT = "当前输入表没有可选字段"
+FIELD_SELECT_INVALID_TEXT = "当前字段不在输入表字段中，仍会保留原值"
+
+
+def _ui_meta(group, group_order, order, **extra):
+    meta = {"group": group, "group_order": group_order, "order": order}
+    meta.update(extra)
+    return meta
+
+
 PARAMETER_UI_METADATA = {
-    "path_field": {"group": "输入", "order": 10, "options_source": {"type": "preview_headers"}, "empty_text": "当前输入表没有可选字段"},
-    "add_status": {"group": "输出", "order": 100},
-    "output_prefix": {"group": "输出", "order": 110},
-    "sample_table": {"group": "输入", "order": 20, "options_source": {"type": "table_names"}, "empty_text": "当前没有可选数据库表"},
-    "enable_cache": {"group": "缓存", "order": 200},
-    "force_refresh": {"group": "缓存", "order": 210, "enabled_when": {"field": "enable_cache", "equals": True}},
-    "cache_key_mode": {"group": "缓存", "order": 220, "enabled_when": {"field": "enable_cache", "equals": True}},
+    "path_field": _ui_meta(
+        "输入",
+        GROUP_INPUT,
+        10,
+        options_source={"type": "preview_headers"},
+        empty_text=FIELD_SELECT_EMPTY_TEXT,
+        invalid_value_text=FIELD_SELECT_INVALID_TEXT,
+    ),
+    "sample_table": _ui_meta(
+        "输入",
+        GROUP_INPUT,
+        20,
+        options_source={"type": "table_names"},
+        empty_text="当前没有可选数据库表",
+        invalid_value_text="当前表名不在数据库表列表中，仍会保留原值",
+    ),
+    "add_status": _ui_meta("输出", GROUP_OUTPUT, 100),
+    "output_prefix": _ui_meta("输出", GROUP_OUTPUT, 110),
+    "enable_cache": _ui_meta("缓存", GROUP_CACHE, 200, refresh_on_change=["enable_cache"]),
+    "force_refresh": _ui_meta(
+        "缓存",
+        GROUP_CACHE,
+        210,
+        enabled_when={"field": "enable_cache", "equals": True},
+        depends_on=["enable_cache"],
+    ),
+    "cache_key_mode": _ui_meta(
+        "缓存",
+        GROUP_CACHE,
+        220,
+        enabled_when={"field": "enable_cache", "equals": True},
+        depends_on=["enable_cache"],
+    ),
 }
 
 

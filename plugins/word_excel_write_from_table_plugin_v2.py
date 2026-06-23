@@ -56,40 +56,69 @@ OUTPUT_HEADERS = [
     "error",
 ]
 
+GROUP_WRITE_ENGINE = 10
+GROUP_WIN32_ADVANCED = 20
+GROUP_WRITE_STRATEGY = 30
+GROUP_PATH_FIELDS = 40
+GROUP_TARGET_POLICY = 50
+GROUP_DATA_FIELDS = 60
+FIELD_SELECT_EMPTY_TEXT = "当前输入表没有可选字段"
+FIELD_SELECT_INVALID_TEXT = "当前字段不在输入表字段中，仍会保留原值"
+
+
+def _ui_meta(group, group_order, order, **extra):
+    meta = {"group": group, "group_order": group_order, "order": order}
+    meta.update(extra)
+    return meta
+
+
+def _field_ui_meta(group, group_order, order, **extra):
+    meta = _ui_meta(
+        group,
+        group_order,
+        order,
+        options_source={"type": "preview_headers"},
+        empty_text=FIELD_SELECT_EMPTY_TEXT,
+        invalid_value_text=FIELD_SELECT_INVALID_TEXT,
+    )
+    meta.update(extra)
+    return meta
+
+
 PARAMETER_UI_METADATA = {
-    "write_engine": {"group": "写入引擎", "order": 10},
-    "preview_write_files": {"group": "写入引擎", "order": 20, "warning": "开启后预览也会写入文件。"},
-    "win32_reuse_app": {"group": "win32高级设置", "order": 100, "advanced": True, "visible_when": {"field": "write_engine", "equals": "win32"}},
-    "win32_open_retries": {"group": "win32高级设置", "order": 110, "advanced": True, "visible_when": {"field": "write_engine", "equals": "win32"}, "min": 0, "step": 1, "unit": "次"},
-    "win32_retry_interval_ms": {"group": "win32高级设置", "order": 120, "advanced": True, "visible_when": {"field": "write_engine", "equals": "win32"}, "min": 0, "step": 50, "unit": "ms"},
-    "win32_close_settle_ms": {"group": "win32高级设置", "order": 130, "advanced": True, "visible_when": {"field": "write_engine", "equals": "win32"}, "min": 0, "step": 50, "unit": "ms"},
-    "win32_cell_retries": {"group": "win32高级设置", "order": 140, "advanced": True, "visible_when": {"field": "write_engine", "equals": "win32"}, "min": 0, "step": 1, "unit": "次"},
-    "win32_save_retries": {"group": "win32高级设置", "order": 150, "advanced": True, "visible_when": {"field": "write_engine", "equals": "win32"}, "min": 0, "step": 1, "unit": "次"},
-    "word_text_write_mode": {"group": "写入策略", "order": 200, "visible_when": {"field": "write_engine", "equals": "win32"}},
-    "scoped_replace_default": {"group": "写入策略", "order": 210},
-    "target_conflict_policy": {"group": "写入策略", "order": 220},
-    "verify_after_write": {"group": "写入策略", "order": 230},
-    "error_policy": {"group": "写入策略", "order": 240},
-    "allow_empty_text_write": {"group": "写入策略", "order": 250},
-    "path_field": {"group": "路径字段", "order": 300, "options_source": {"type": "preview_headers"}, "empty_text": "当前输入表没有可选字段"},
-    "target_path_field": {"group": "路径字段", "order": 310, "options_source": {"type": "preview_headers"}, "empty_text": "当前输入表没有可选字段"},
-    "target_missing_policy": {"group": "目标文件策略", "order": 400},
-    "target_existing_policy": {"group": "目标文件策略", "order": 410},
-    "same_path_policy": {"group": "目标文件策略", "order": 420},
-    "create_parent_dirs": {"group": "目标文件策略", "order": 430},
-    "backup_mode": {"group": "目标文件策略", "order": 440},
-    "block_type_field": {"group": "写入数据字段", "order": 500, "options_source": {"type": "preview_headers"}, "empty_text": "当前输入表没有可选字段"},
-    "sheet_name_field": {"group": "写入数据字段", "order": 510, "options_source": {"type": "preview_headers"}},
-    "row_index_field": {"group": "写入数据字段", "order": 520, "options_source": {"type": "preview_headers"}},
-    "col_index_field": {"group": "写入数据字段", "order": 530, "options_source": {"type": "preview_headers"}},
-    "cell_address_field": {"group": "写入数据字段", "order": 540, "options_source": {"type": "preview_headers"}},
-    "value_field": {"group": "写入数据字段", "order": 550, "options_source": {"type": "preview_headers"}},
-    "old_text_field": {"group": "写入数据字段", "order": 560, "options_source": {"type": "preview_headers"}},
-    "write_strategy_field": {"group": "写入数据字段", "order": 570, "options_source": {"type": "preview_headers"}},
-    "replace_scope_field": {"group": "写入数据字段", "order": 580, "options_source": {"type": "preview_headers"}},
-    "rule_old_text_field": {"group": "写入数据字段", "order": 590, "options_source": {"type": "preview_headers"}},
-    "rule_new_text_field": {"group": "写入数据字段", "order": 600, "options_source": {"type": "preview_headers"}},
-    "meta_json_field": {"group": "写入数据字段", "order": 610, "options_source": {"type": "preview_headers"}},
+    "write_engine": _ui_meta("写入引擎", GROUP_WRITE_ENGINE, 10, refresh_on_change=["write_engine"]),
+    "preview_write_files": _ui_meta("写入引擎", GROUP_WRITE_ENGINE, 20, warning="开启后预览也会写入文件。"),
+    "win32_reuse_app": _ui_meta("win32高级设置", GROUP_WIN32_ADVANCED, 100, advanced=True, visible_when={"field": "write_engine", "equals": "win32"}, depends_on=["write_engine"]),
+    "win32_open_retries": _ui_meta("win32高级设置", GROUP_WIN32_ADVANCED, 110, advanced=True, visible_when={"field": "write_engine", "equals": "win32"}, depends_on=["write_engine"], min=0, step=1, unit="次"),
+    "win32_retry_interval_ms": _ui_meta("win32高级设置", GROUP_WIN32_ADVANCED, 120, advanced=True, visible_when={"field": "write_engine", "equals": "win32"}, depends_on=["write_engine"], min=0, step=50, unit="ms"),
+    "win32_close_settle_ms": _ui_meta("win32高级设置", GROUP_WIN32_ADVANCED, 130, advanced=True, visible_when={"field": "write_engine", "equals": "win32"}, depends_on=["write_engine"], min=0, step=50, unit="ms"),
+    "win32_cell_retries": _ui_meta("win32高级设置", GROUP_WIN32_ADVANCED, 140, advanced=True, visible_when={"field": "write_engine", "equals": "win32"}, depends_on=["write_engine"], min=0, step=1, unit="次"),
+    "win32_save_retries": _ui_meta("win32高级设置", GROUP_WIN32_ADVANCED, 150, advanced=True, visible_when={"field": "write_engine", "equals": "win32"}, depends_on=["write_engine"], min=0, step=1, unit="次"),
+    "word_text_write_mode": _ui_meta("写入策略", GROUP_WRITE_STRATEGY, 200, visible_when={"field": "write_engine", "equals": "win32"}, depends_on=["write_engine"]),
+    "scoped_replace_default": _ui_meta("写入策略", GROUP_WRITE_STRATEGY, 210),
+    "target_conflict_policy": _ui_meta("写入策略", GROUP_WRITE_STRATEGY, 220),
+    "verify_after_write": _ui_meta("写入策略", GROUP_WRITE_STRATEGY, 230),
+    "error_policy": _ui_meta("写入策略", GROUP_WRITE_STRATEGY, 240),
+    "allow_empty_text_write": _ui_meta("写入策略", GROUP_WRITE_STRATEGY, 250),
+    "path_field": _field_ui_meta("路径字段", GROUP_PATH_FIELDS, 300),
+    "target_path_field": _field_ui_meta("路径字段", GROUP_PATH_FIELDS, 310),
+    "target_missing_policy": _ui_meta("目标文件策略", GROUP_TARGET_POLICY, 400),
+    "target_existing_policy": _ui_meta("目标文件策略", GROUP_TARGET_POLICY, 410),
+    "same_path_policy": _ui_meta("目标文件策略", GROUP_TARGET_POLICY, 420),
+    "create_parent_dirs": _ui_meta("目标文件策略", GROUP_TARGET_POLICY, 430),
+    "backup_mode": _ui_meta("目标文件策略", GROUP_TARGET_POLICY, 440),
+    "block_type_field": _field_ui_meta("写入数据字段", GROUP_DATA_FIELDS, 500),
+    "sheet_name_field": _field_ui_meta("写入数据字段", GROUP_DATA_FIELDS, 510),
+    "row_index_field": _field_ui_meta("写入数据字段", GROUP_DATA_FIELDS, 520),
+    "col_index_field": _field_ui_meta("写入数据字段", GROUP_DATA_FIELDS, 530),
+    "cell_address_field": _field_ui_meta("写入数据字段", GROUP_DATA_FIELDS, 540),
+    "value_field": _field_ui_meta("写入数据字段", GROUP_DATA_FIELDS, 550),
+    "old_text_field": _field_ui_meta("写入数据字段", GROUP_DATA_FIELDS, 560),
+    "write_strategy_field": _field_ui_meta("写入数据字段", GROUP_DATA_FIELDS, 570),
+    "replace_scope_field": _field_ui_meta("写入数据字段", GROUP_DATA_FIELDS, 580),
+    "rule_old_text_field": _field_ui_meta("写入数据字段", GROUP_DATA_FIELDS, 590),
+    "rule_new_text_field": _field_ui_meta("写入数据字段", GROUP_DATA_FIELDS, 600),
+    "meta_json_field": _field_ui_meta("写入数据字段", GROUP_DATA_FIELDS, 610),
 }
 
 
