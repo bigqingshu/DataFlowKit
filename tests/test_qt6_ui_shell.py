@@ -183,6 +183,15 @@ class Qt6UiShellTests(unittest.TestCase):
                     "    params = dict(current_params)",
                     "    params['limit'] = 11",
                     "    return params",
+                    "def describe_config(params, context):",
+                    "    return {",
+                    "        'schema_version': 'demo.config.v1',",
+                    "        'views': [",
+                    "            {'view_id': 'demo.overview', 'title': 'Demo Overview', 'kind': 'summary', 'summary': {'items': 2, 'mode': params.get('mode', 'fast')}},",
+                    "            {'view_id': 'demo.items', 'title': 'Demo Items', 'kind': 'structured_list', 'editor_kind': 'demo.items', 'item_count': 2, 'columns': [{'key': 'name', 'label': '名称'}, {'key': 'enabled', 'label': '启用'}], 'items': [{'name': 'alpha', 'enabled': True}, {'name': 'beta', 'enabled': False}]},",
+                    "        ],",
+                    "        'actions': [{'action_id': 'demo.edit_items', 'label': '编辑 Demo Items', 'kind': 'config_editor', 'editor_kind': 'demo.items'}],",
+                    "    }",
                     "def run(input_data, params, context):",
                     "    return {'ok': True, 'output': input_data}",
                 ]),
@@ -236,6 +245,21 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertIn("旧版设置窗口", controller.node_detail_sections.toPlainText())
             self.assertIn("配置协议", controller.node_detail_sections.toPlainText())
             self.assertIn("兼容动作：打开旧版插件设置", controller.node_detail_sections.toPlainText())
+            self.assertIn("配置动作：编辑 Demo Items", controller.node_detail_sections.toPlainText())
+            self.assertFalse(controller.plugin_config_view_tabs.isHidden())
+            protocol_tab_titles = [
+                controller.plugin_config_view_tabs.tabText(index)
+                for index in range(controller.plugin_config_view_tabs.count())
+            ]
+            self.assertIn("Demo Overview", protocol_tab_titles)
+            self.assertIn("Demo Items", protocol_tab_titles)
+            items_page = controller.plugin_config_view_tabs.widget(protocol_tab_titles.index("Demo Items"))
+            items_table = items_page.findChild(qt.QtWidgets.QTableWidget)
+            self.assertIsNotNone(items_table)
+            self.assertEqual(items_table.rowCount(), 2)
+            self.assertEqual(items_table.horizontalHeaderItem(0).text(), "名称")
+            self.assertEqual(items_table.item(0, 0).text(), "alpha")
+            self.assertEqual(items_table.item(1, 1).text(), "否")
             self.assertIn("Demo plugin", detail["detail"]["description"])
             controller.open_legacy_plugin_config()
             self.assertEqual(controller.current_plan["nodes"][-1]["config"]["params"]["limit"], 11)

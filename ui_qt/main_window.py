@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import html
+import json
 from pathlib import Path
 
 from ui_qt.config_form import NodeConfigForm
@@ -279,10 +280,14 @@ class QtWorkflowMainWindow:
         self.node_detail_sections.setOpenExternalLinks(False)
         self.node_detail_sections.setReadOnly(True)
         self.node_detail_sections.setMaximumHeight(190)
+        self.plugin_config_view_tabs = qt.QtWidgets.QTabWidget()
+        self.plugin_config_view_tabs.setVisible(False)
+        self.plugin_config_view_tabs.setMinimumHeight(170)
         detail_layout.addWidget(self.node_detail_title_label)
         detail_layout.addWidget(self.node_detail_meta_label)
         detail_layout.addWidget(self.node_detail_badges_label)
         detail_layout.addWidget(self.node_detail_sections)
+        detail_layout.addWidget(self.plugin_config_view_tabs, 1)
 
         self.node_tabs.addTab(config_page, "节点配置")
         self.node_tabs.addTab(detail_page, "节点说明")
@@ -686,6 +691,7 @@ class QtWorkflowMainWindow:
             self.config_form.set_node(None)
             self.config_header_label.setText("未选择节点")
             self._update_legacy_plugin_config_button({})
+            self._clear_plugin_config_views()
             return
         node_type_id = self._node_type_id_for_node(node)
         schema = panel_state.get("selected_schema") or self.node_schema_by_id.get(node_type_id, {})
@@ -707,6 +713,7 @@ class QtWorkflowMainWindow:
         self._update_legacy_plugin_config_button(schema)
         self.show_node_detail(node_type_id)
         self._append_plugin_config_detail(plugin_config_description)
+        self._render_plugin_config_views(plugin_config_description)
         self.refresh_action_states()
 
     def _describe_plugin_config_for_node(self, node_type_id, node):
@@ -736,13 +743,153 @@ class QtWorkflowMainWindow:
             lines.append("配置视图：" + "、".join(str(item.get("title") or item.get("view_id") or "") for item in views[:6]))
         if resources:
             lines.append("配置资源：" + "、".join(str(item.get("label") or item.get("resource_id") or "") for item in resources[:6]))
-        if actions:
-            lines.append("兼容动作：" + "、".join(str(item.get("label") or item.get("action_id") or "") for item in actions[:6]))
+        compatibility_actions = [item for item in actions if str(item.get("kind") or "") == "compatibility"]
+        config_actions = [item for item in actions if str(item.get("kind") or "") != "compatibility"]
+        if compatibility_actions:
+            lines.append("兼容动作：" + "、".join(str(item.get("label") or item.get("action_id") or "") for item in compatibility_actions[:6]))
+        if config_actions:
+            lines.append("配置动作：" + "、".join(str(item.get("label") or item.get("action_id") or "") for item in config_actions[:6]))
         if not lines:
             return
         body = "<br>".join(html.escape(line) for line in lines if line)
         if body:
             self.node_detail_sections.append(f"<p><b>配置协议</b><br>{body}</p>")
+
+    def _clear_plugin_config_views(self):
+        if not hasattr(self, "plugin_config_view_tabs"):
+            return
+        self.plugin_config_view_tabs.clear()
+        self.plugin_config_view_tabs.setVisible(False)
+
+    def _render_plugin_config_views(self, described):
+        self._clear_plugin_config_views()
+        if not described.get("ok"):
+            return
+        added = 0
+        for view in described.get("views") or []:
+            if not isinstance(view, dict):
+                continue
+            kind = str(view.get("kind") or "")
+            view_id = str(view.get("view_id") or "")
+            if view_id == "plugin.params" or kind == "form":
+                continue
+            widget = self._make_plugin_config_view_widget(view, described)
+            if widget is None:
+                continue
+            title = str(view.get("title") or view_id or kind or "配置")
+            self.plugin_config_view_tabs.addTab(widget, title[:24])
+            added += 1
+        self.plugin_config_view_tabs.setVisible(added > 0)
+
+    def _make_plugin_config_view_widget(self, view, described):
+        kind = str(view.get("kind") or "")
+        if kind == "summary":
+            return self._make_plugin_summary_widget(view.get("summary") or (described.get("plugin_extension") or {}).get("summary") or {})
+        if kind == "structured_list":
+            return self._make_plugin_structured_list_widget(view)
+        if kind == "resource_list":
+            return self._make_plugin_resource_list_widget(view, described)
+        return self._make_plugin_protocol_text_widget(view)
+
+    def _make_plugin_summary_widget(self, summary):
+        qt = self.qt
+        table = qt.QtWidgets.QTableWidget()
+        rows = [(str(key), self._format_plugin_protocol_value(value)) for key, value in (summary or {}).items()]
+        table.setColumnCount(2)
+        table.setHorizontalHeaderLabels(["项目", "值"])
+        table.setRowCount(len(rows))
+        for row, (key, value) in enumerate(rows):
+            table.setItem(row, 0, qt.QtWidgets.QTableWidgetItem(key))
+            table.setItem(row, 1, qt.QtWidgets.QTableWidgetItem(value))
+        self._polish_plugin_protocol_table(table)
+        return table
+
+    def _make_plugin_structured_list_widget(self, view):
+        qt = self.qt
+        columns = [item for item in (view.get("columns") or []) if isinstance(item, dict)]
+        items = [item for item in (view.get("items") or []) if isinstance(item, dict)]
+        if not columns and items:
+            columns = [{"key": key, "label": key} for key in items[0].keys()]
+        frame = qt.QtWidgets.QWidget()
+        layout = qt.QtWidgets.QVBoxLayout(frame)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        summary_parts = []
+        if view.get("item_count") is not None:
+            summary_parts.append(f"共 {view.get('item_count')} 项")
+        if view.get("editor_kind"):
+            summary_parts.append(f"编辑器：{view.get('editor_kind')}")
+        if summary_parts:
+            label = qt.QtWidgets.QLabel("；".join(summary_parts))
+            label.setWordWrap(True)
+            layout.addWidget(label)
+        table = qt.QtWidgets.QTableWidget()
+        table.setColumnCount(len(columns))
+        table.setHorizontalHeaderLabels([str(column.get("label") or column.get("key") or "") for column in columns])
+        table.setRowCount(len(items))
+        for row, item in enumerate(items):
+            for col, column in enumerate(columns):
+                key = str(column.get("key") or "")
+                table.setItem(row, col, qt.QtWidgets.QTableWidgetItem(self._format_plugin_protocol_value(item.get(key))))
+        self._polish_plugin_protocol_table(table)
+        layout.addWidget(table, 1)
+        return frame
+
+    def _make_plugin_resource_list_widget(self, view, described):
+        qt = self.qt
+        resource_ids = {str(item) for item in (view.get("resource_ids") or [])}
+        resources = [
+            item for item in (described.get("resources") or [])
+            if isinstance(item, dict) and (not resource_ids or str(item.get("resource_id") or "") in resource_ids)
+        ]
+        table = qt.QtWidgets.QTableWidget()
+        table.setColumnCount(4)
+        table.setHorizontalHeaderLabels(["资源", "类型", "存储", "文件"])
+        table.setRowCount(len(resources))
+        for row, resource in enumerate(resources):
+            values = [
+                resource.get("label") or resource.get("resource_id"),
+                resource.get("kind"),
+                resource.get("storage"),
+                resource.get("file"),
+            ]
+            for col, value in enumerate(values):
+                table.setItem(row, col, qt.QtWidgets.QTableWidgetItem(self._format_plugin_protocol_value(value)))
+        self._polish_plugin_protocol_table(table)
+        return table
+
+    def _make_plugin_protocol_text_widget(self, payload):
+        editor = self.qt.QtWidgets.QPlainTextEdit()
+        editor.setReadOnly(True)
+        editor.setPlainText(json.dumps(payload or {}, ensure_ascii=False, indent=2))
+        return editor
+
+    def _polish_plugin_protocol_table(self, table):
+        qt = self.qt
+        table.setAlternatingRowColors(True)
+        table.setWordWrap(False)
+        table.setEditTriggers(qt.QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(qt.QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(qt.QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        try:
+            table.horizontalHeader().setStretchLastSection(True)
+            table.resizeColumnsToContents()
+            table.resizeRowsToContents()
+        except Exception:
+            pass
+
+    def _format_plugin_protocol_value(self, value):
+        if isinstance(value, bool):
+            return "是" if value else "否"
+        if value is None:
+            return ""
+        if isinstance(value, (list, tuple)):
+            text = "、".join(self._format_plugin_protocol_value(item) for item in value)
+        elif isinstance(value, dict):
+            text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        else:
+            text = str(value)
+        return text if len(text) <= 500 else text[:497] + "..."
 
     def _update_legacy_plugin_config_button(self, schema):
         plugin = schema.get("plugin") if isinstance(schema, dict) and isinstance(schema.get("plugin"), dict) else {}
@@ -1039,6 +1186,7 @@ class QtWorkflowMainWindow:
         self._apply_node_detail_panel(detail, schema, context)
 
     def _apply_node_detail_panel(self, detail, schema=None, context=None):
+        self._clear_plugin_config_views()
         detail = detail or {}
         schema = schema or {}
         context = context or {}
