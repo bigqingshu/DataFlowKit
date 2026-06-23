@@ -346,6 +346,8 @@ class PluginService:
                 "file": settings_file,
                 "portable": False,
             })
+        plugin_extension = _describe_plugin_config_extension(module, params, plugin_context)
+        resources = _merge_plugin_config_items(resources, plugin_extension.get("resources"), "resource_id")
 
         actions = []
         custom_window = plugin.get("custom_config_window") if isinstance(plugin.get("custom_config_window"), dict) else {}
@@ -356,6 +358,7 @@ class PluginService:
                 "kind": "compatibility",
                 "compatibility": str(custom_window.get("compatibility") or "legacy"),
             })
+        actions = _merge_plugin_config_items(actions, plugin_extension.get("actions"), "action_id")
 
         views = [{
             "view_id": "plugin.params",
@@ -364,6 +367,7 @@ class PluginService:
             "form": copy.deepcopy((schema.get("form") or {})),
             "config_path": [],
         }]
+        views = _merge_plugin_config_items(views, plugin_extension.get("views"), "view_id")
         if resources:
             views.append({
                 "view_id": "plugin.resources",
@@ -388,8 +392,9 @@ class PluginService:
             "views": views,
             "resources": resources,
             "actions": actions,
-            "warnings": copy.deepcopy(schema.get("warnings") or []),
-            "issues": [],
+            "warnings": copy.deepcopy(schema.get("warnings") or []) + list(plugin_extension.get("warnings") or []),
+            "issues": copy.deepcopy(plugin_extension.get("issues") or []),
+            "plugin_extension": plugin_extension,
         }
 
     def _ensure_runtime_context_snapshot(self, context):
@@ -775,6 +780,45 @@ def _enrich_plugin_dynamic_choices(schema, module, params, context):
             source = dict(options_source)
             source["choices"] = values
             field["options_source"] = source
+
+
+def _describe_plugin_config_extension(module, params, context):
+    descriptor = getattr(module, "describe_config", None)
+    if not callable(descriptor):
+        return {}
+    try:
+        result = descriptor(copy.deepcopy(params or {}), copy.deepcopy(context or {}))
+    except Exception as exc:
+        return {
+            "warnings": [f"插件配置描述失败：{exc}"],
+            "issues": [
+                make_issue(
+                    "warning",
+                    "plugin_config_descriptor_error",
+                    f"插件配置描述失败：{exc}",
+                    path="/plugin_extension",
+                    source="PluginService",
+                )
+            ],
+        }
+    if not isinstance(result, dict):
+        return {}
+    return copy.deepcopy(result)
+
+
+def _merge_plugin_config_items(base, extra, key):
+    result = [copy.deepcopy(item) for item in (base or []) if isinstance(item, dict)]
+    seen = {str(item.get(key) or "") for item in result if str(item.get(key) or "")}
+    for item in extra or []:
+        if not isinstance(item, dict):
+            continue
+        item_key = str(item.get(key) or "").strip()
+        if item_key and item_key in seen:
+            continue
+        result.append(copy.deepcopy(item))
+        if item_key:
+            seen.add(item_key)
+    return result
 
 
 def _plugin_config_form_groups(default_config, parameter_schema):

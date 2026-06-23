@@ -362,3 +362,44 @@ context.get("execute_actions", False)
 ```
 
 预览模式下应只生成预览结果，不应修改真实文件或真实数据库。
+
+## 12. 插件配置描述协议
+
+插件可以可选提供：
+
+```python
+def describe_config(params, context):
+    return {
+        "schema_version": "your_plugin.config.v1",
+        "summary": {},
+        "views": [],
+        "resources": [],
+        "actions": [],
+        "context": {},
+        "models": {},
+        "warnings": [],
+    }
+```
+
+主程序会在 `describe_plugin_config` 中把这些内容合并到标准 `plugin_config.v1`：
+
+- `views`：描述 UI 可展示的配置区域，例如 `summary`、`structured_list`、`form`。
+- `resources`：描述配置文件、缓存或外部资源，不要求 UI 直接读写真实路径。
+- `actions`：描述可触发动作，例如 `config_editor` 或兼容旧窗口入口。
+- `context`：提供候选值和运行上下文快照，例如表名、字段、规则名。
+- `models`：提供默认对象模板，供未来 Qt/.NET/Web 编辑器创建新配置项。
+
+复杂插件不应把配置能力只写进某个界面。推荐先用 `describe_config` 暴露稳定结构，再由不同 UI 根据 `view.kind` 和 `action.editor_kind` 选择渲染方式。
+
+例如可视化映射插件使用：
+
+```text
+schema_version: DataFlowKit.visual_mapping.config.v1
+editor_kind:
+  visual_mapping.rules
+  visual_mapping.features
+  visual_mapping.global_rules
+  visual_mapping.linked_rules
+```
+
+第一阶段 UI 可以只显示摘要和结构化列表；第二阶段再分别实现专用编辑器。这样旧 Tk 配置窗口可以保留为兼容入口，同时新 UI 不需要继承 Tk 窗口内部逻辑。

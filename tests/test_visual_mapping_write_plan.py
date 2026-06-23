@@ -154,6 +154,77 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("新内容表没有可用字段", result["message"])
 
+    def test_describe_config_exposes_visual_mapping_protocol(self):
+        with tempfile.TemporaryDirectory(dir=".") as temp_dir:
+            context = {
+                "plugin_data_dir": temp_dir,
+                "input_tables": {
+                    "文档": {
+                        "type": "table",
+                        "headers": ["source_file", "block_type", "sheet_name", "row_index", "col_index", "cell_address", "text"],
+                        "rows": [["doc.docx", "word_table_cell", "Sheet1", 1, 1, "A1", "old"]],
+                    },
+                    "新内容": {
+                        "type": "table",
+                        "headers": ["target_file", "write_value"],
+                        "rows": [["out.docx", "new"]],
+                    },
+                    "辅助": {
+                        "type": "table",
+                        "headers": ["old", "new"],
+                        "rows": [["old", "new"]],
+                    },
+                },
+            }
+            cfg = {
+                "rules": [{
+                    "id": "Sheet1:R1C1",
+                    "name": "普通规则",
+                    "enabled": True,
+                    "feature_name": "主表",
+                    "source_locator": {"sheet_name": "Sheet1", "row_index": 1, "col_index": 1, "cell_address": "A1"},
+                    "source_match": {"enabled": True, "mode": "包含", "value": "old"},
+                    "anchor": {"enabled": False},
+                    "mapping": {"content_field": "write_value"},
+                }],
+                "features": [{
+                    "name": "主表",
+                    "enabled": True,
+                    "logic": "AND",
+                    "conditions": [{"join": "AND", "sheet_name": "Sheet1", "mode": "包含", "value": "old"}],
+                }],
+                "global_rules": [self.global_replace_rule()],
+                "linked_rules": [self.area_rule()],
+            }
+            visual._save_settings(context, {"version": 1, "configs": {"default": cfg}})
+
+            described = visual.describe_config(
+                {
+                    "config_name": "default",
+                    "doc_table_alias": "文档",
+                    "content_table_alias": "新内容",
+                    "replace_aux_table_alias": "辅助",
+                },
+                context,
+            )
+
+        self.assertEqual(described["schema_version"], "DataFlowKit.visual_mapping.config.v1")
+        self.assertEqual(described["summary"]["rules"], 1)
+        self.assertEqual(described["summary"]["features"], 1)
+        self.assertEqual(described["summary"]["global_rules"], 1)
+        self.assertEqual(described["summary"]["linked_rules"], 1)
+        self.assertIn("write_value", described["context"]["content_fields"])
+        self.assertIn("Sheet1", described["context"]["sheet_names"])
+        self.assertIn("普通规则", described["context"]["rule_names"])
+        self.assertIn("全局:全局替换", described["context"]["rule_names"])
+        view_by_id = {view["view_id"]: view for view in described["views"]}
+        self.assertEqual(view_by_id["visual_mapping.rules"]["items"][0]["content_field"], "write_value")
+        self.assertEqual(view_by_id["visual_mapping.features"]["items"][0]["condition_count"], 1)
+        self.assertEqual(view_by_id["visual_mapping.global_rules"]["items"][0]["batch_rule_count"], 1)
+        self.assertEqual(view_by_id["visual_mapping.linked_rules"]["items"][0]["target_mode"], visual.LINK_TARGET_FIXED_CELL)
+        self.assertIn("visual_mapping.edit.rules", [action["action_id"] for action in described["actions"]])
+        self.assertIn("linked_rule_default", described["models"])
+
     def test_anchor_match_uses_content_field_value(self):
         table_context, content = self.content_context()
         records = [

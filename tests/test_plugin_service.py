@@ -196,6 +196,36 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(described["resources"][0]["file"], "extended_settings.json")
         self.assertEqual(described["views"][1]["kind"], "resource_list")
 
+    def test_plugin_config_description_merges_plugin_extension(self):
+        with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:
+            plugin = Path(temp_dir) / "protocol_plugin.py"
+            plugin.write_text(
+                "\n".join([
+                    "PLUGIN_INFO = {'id': 'protocol_demo', 'name': 'Protocol Demo', 'api_version': '1.0'}",
+                    "PARAMETER_SCHEMA = []",
+                    "def describe_config(params, context):",
+                    "    return {",
+                    "        'schema_version': 'demo.config.v1',",
+                    "        'views': [{'view_id': 'demo.items', 'title': 'Demo Items', 'kind': 'structured_list'}],",
+                    "        'resources': [{'resource_id': 'demo.resource', 'label': 'Demo Resource', 'kind': 'json_file'}],",
+                    "        'actions': [{'action_id': 'demo.edit', 'label': 'Edit Demo', 'kind': 'config_editor'}],",
+                    "        'warnings': ['demo warning'],",
+                    "    }",
+                    "def run(input_data, params, context):",
+                    "    return {'ok': True, 'output': input_data}",
+                ]),
+                encoding="utf-8",
+            )
+            service = PluginService(plugins_dir=temp_dir, app_dir=temp_dir)
+            described = service.describe_plugin_config("plugin.protocol_demo")
+
+        self.assertTrue(described["ok"])
+        self.assertEqual(described["plugin_extension"]["schema_version"], "demo.config.v1")
+        self.assertIn("demo.items", [view["view_id"] for view in described["views"]])
+        self.assertIn("demo.resource", [resource["resource_id"] for resource in described["resources"]])
+        self.assertIn("demo.edit", [action["action_id"] for action in described["actions"]])
+        self.assertIn("demo warning", described["warnings"])
+
     def test_headless_catalog_and_plan_command_include_plugins(self):
         with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:
             write_demo_plugin(temp_dir)

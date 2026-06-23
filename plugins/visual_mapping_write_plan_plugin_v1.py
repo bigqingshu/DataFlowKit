@@ -188,6 +188,164 @@ def get_dynamic_parameter_options(param_name, params, context):
     return []
 
 
+def describe_config(params, context):
+    params = dict(params or {})
+    context = dict(context or {})
+    settings = _load_settings(context)
+    configs = settings.get("configs") or {}
+    config_name = _as_text(params.get("config_name") or "default") or "default"
+    cfg = _ensure_config(copy.deepcopy(configs.get(config_name) or _empty_config()))
+    tables = _all_tables({}, context)
+    doc_table, doc_alias = _pick_table({}, context, params.get("doc_table_alias", "当前表"), "当前表")
+    content_table, content_alias = _pick_table({}, context, params.get("content_table_alias", "新内容表"), "")
+    aux_table, aux_alias = _pick_optional_table({}, context, params.get("replace_aux_table_alias", "替换辅助表"))
+    content_fields, content_rows = _content_rows(content_table)
+    aux_fields, aux_rows = _content_rows(aux_table)
+    source_records = _doc_records(doc_table, params)
+    table_names = list(tables.keys())
+    sheet_names = _unique_nonempty([rec.get("sheet_name") for rec in source_records])
+    feature_names = _unique_nonempty([item.get("name") for item in cfg.get("features", []) if isinstance(item, dict)])
+    normal_rule_names = [item.get("name") or item.get("id") for item in cfg.get("rules", []) if isinstance(item, dict)]
+    global_rule_names = [
+        f"全局:{name}"
+        for name in (_as_text(item.get("name") or item.get("id")) for item in cfg.get("global_rules", []) if isinstance(item, dict))
+        if name
+    ]
+    rule_names = _unique_nonempty(normal_rule_names + global_rule_names)
+    summary = {
+        "config_name": config_name,
+        "available_configs": sorted(configs.keys()) or ["default"],
+        "rules": len(cfg.get("rules", []) or []),
+        "features": len(cfg.get("features", []) or []),
+        "global_rules": len(cfg.get("global_rules", []) or []),
+        "linked_rules": len(cfg.get("linked_rules", []) or []),
+        "doc_table_alias": doc_alias,
+        "content_table_alias": content_alias,
+        "replace_aux_table_alias": aux_alias,
+        "doc_records": len(source_records),
+        "content_rows": len(content_rows),
+        "aux_rows": len(aux_rows),
+    }
+    config_base_path = ["plugin_settings", "configs", config_name]
+    editor_specs = [
+        {
+            "view_id": "visual_mapping.rules",
+            "title": "单元格映射规则",
+            "kind": "structured_list",
+            "editor_kind": "visual_mapping.rules",
+            "config_path": config_base_path + ["rules"],
+            "item_count": summary["rules"],
+            "columns": [
+                {"key": "enabled", "label": "启用"},
+                {"key": "name", "label": "规则"},
+                {"key": "feature_name", "label": "表特征"},
+                {"key": "content_field", "label": "写入字段"},
+                {"key": "source", "label": "来源单元格"},
+            ],
+            "items": _summarize_visual_mapping_rules(cfg.get("rules", []), limit=200),
+        },
+        {
+            "view_id": "visual_mapping.features",
+            "title": "表特征",
+            "kind": "structured_list",
+            "editor_kind": "visual_mapping.features",
+            "config_path": config_base_path + ["features"],
+            "item_count": summary["features"],
+            "columns": [
+                {"key": "name", "label": "名称"},
+                {"key": "condition_count", "label": "条件数"},
+                {"key": "logic", "label": "连接"},
+            ],
+            "items": _summarize_visual_mapping_features(cfg.get("features", []), limit=200),
+        },
+        {
+            "view_id": "visual_mapping.global_rules",
+            "title": "全局搜索替换规则",
+            "kind": "structured_list",
+            "editor_kind": "visual_mapping.global_rules",
+            "config_path": config_base_path + ["global_rules"],
+            "item_count": summary["global_rules"],
+            "columns": [
+                {"key": "enabled", "label": "启用"},
+                {"key": "name", "label": "规则"},
+                {"key": "scope", "label": "范围"},
+                {"key": "condition_count", "label": "条件数"},
+                {"key": "batch_rule_count", "label": "批量规则"},
+            ],
+            "items": _summarize_visual_mapping_global_rules(cfg.get("global_rules", []), limit=200),
+        },
+        {
+            "view_id": "visual_mapping.linked_rules",
+            "title": "联动写入规则",
+            "kind": "structured_list",
+            "editor_kind": "visual_mapping.linked_rules",
+            "config_path": config_base_path + ["linked_rules"],
+            "item_count": summary["linked_rules"],
+            "columns": [
+                {"key": "enabled", "label": "启用"},
+                {"key": "name", "label": "规则"},
+                {"key": "trigger", "label": "触发"},
+                {"key": "target_mode", "label": "定位"},
+                {"key": "value_source", "label": "写入来源"},
+                {"key": "action_count", "label": "动作数"},
+            ],
+            "items": _summarize_visual_mapping_linked_rules(cfg.get("linked_rules", []), limit=200),
+        },
+    ]
+    views = [{
+        "view_id": "visual_mapping.overview",
+        "title": "映射配置总览",
+        "kind": "summary",
+        "protocol": "DataFlowKit.visual_mapping.config.v1",
+        "summary": summary,
+        "config_path": config_base_path,
+    }] + editor_specs
+    actions = [
+        {
+            "action_id": f"visual_mapping.edit.{spec['editor_kind'].split('.')[-1]}",
+            "label": f"编辑{spec['title']}",
+            "kind": "config_editor",
+            "editor_kind": spec["editor_kind"],
+            "config_path": spec["config_path"],
+            "view_id": spec["view_id"],
+        }
+        for spec in editor_specs
+    ]
+    return {
+        "schema_version": "DataFlowKit.visual_mapping.config.v1",
+        "summary": summary,
+        "views": views,
+        "actions": actions,
+        "context": {
+            "table_names": table_names,
+            "doc_headers": list(doc_table.get("headers", []) or []),
+            "content_fields": content_fields,
+            "aux_fields": aux_fields,
+            "sheet_names": sheet_names,
+            "feature_names": feature_names,
+            "rule_names": rule_names,
+            "linked_trigger_options": _linked_trigger_options(cfg),
+            "choices": {
+                "match_modes": ["包含", "等于", "不等于", "正则匹配", "正则不匹配", "为空", "非空"],
+                "batch_targets": list(BATCH_TARGET_CHOICES),
+                "replace_row_policies": list(REPLACE_ROW_POLICY_CHOICES),
+                "linked_target_modes": list(LINK_TARGET_MODES),
+                "linked_value_sources": list(LINK_VALUE_SOURCES),
+                "linked_write_modes": list(LINK_WRITE_MODES),
+                "linked_overflow_policies": list(LINK_OVERFLOW_POLICIES),
+                "slot_judgement_modes": list(SLOT_JUDGEMENT_MODES),
+                "slot_invalid_policies": list(SLOT_INVALID_POLICIES),
+            },
+        },
+        "models": {
+            "rule_default": _default_rule_for_cell({}),
+            "linked_rule_default": _default_linked_rule(1),
+            "empty_config": _empty_config(),
+        },
+        "warnings": list(context.get("settings_warnings") or []),
+    }
+
+
 def _as_text(value):
     return "" if value is None else str(value).strip()
 
@@ -435,6 +593,104 @@ def _ensure_config(cfg):
     cfg.setdefault("linked_rules", [])
     cfg["linked_rules"] = [_ensure_linked_rule(rule) for rule in cfg["linked_rules"] if isinstance(rule, dict)]
     return cfg
+
+
+def _unique_nonempty(values):
+    result = []
+    for value in values or []:
+        text = _as_text(value)
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+def _summarize_visual_mapping_rules(rules, limit=200):
+    items = []
+    for index, rule in enumerate([r for r in (rules or []) if isinstance(r, dict)], start=1):
+        locator = rule.get("source_locator") if isinstance(rule.get("source_locator"), dict) else {}
+        mapping = rule.get("mapping") if isinstance(rule.get("mapping"), dict) else {}
+        items.append({
+            "index": index,
+            "id": _as_text(rule.get("id")),
+            "name": _as_text(rule.get("name") or rule.get("id")) or f"rule_{index}",
+            "enabled": bool(rule.get("enabled", True)),
+            "feature_name": _as_text(rule.get("feature_name")),
+            "content_field": _as_text(mapping.get("content_field")),
+            "source": _format_visual_mapping_locator(locator),
+            "source_match_enabled": bool((rule.get("source_match") or {}).get("enabled", False)),
+            "anchor_enabled": bool((rule.get("anchor") or {}).get("enabled", False)),
+            "batch_rule_count": len(_batch_rules_for_rule(rule)),
+        })
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _summarize_visual_mapping_features(features, limit=200):
+    items = []
+    for index, feature in enumerate([f for f in (features or []) if isinstance(f, dict)], start=1):
+        items.append({
+            "index": index,
+            "name": _as_text(feature.get("name")) or f"feature_{index}",
+            "enabled": bool(feature.get("enabled", True)),
+            "logic": _as_text(feature.get("logic") or "AND") or "AND",
+            "condition_count": len(feature.get("conditions", []) or []),
+        })
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _summarize_visual_mapping_global_rules(rules, limit=200):
+    items = []
+    for index, rule in enumerate([r for r in (rules or []) if isinstance(r, dict)], start=1):
+        items.append({
+            "index": index,
+            "name": _as_text(rule.get("name")) or f"global_{index}",
+            "enabled": bool(rule.get("enabled", True)),
+            "feature_name": _as_text(rule.get("feature_name")),
+            "scope": _as_text(rule.get("scope") or "全部") or "全部",
+            "sheet_name": _as_text(rule.get("sheet_name")),
+            "condition_count": len(rule.get("conditions", []) or []),
+            "batch_rule_count": len(_batch_rules_for_rule(rule)),
+            "event_tags": _normalize_event_tags(rule.get("event_tags")),
+        })
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _summarize_visual_mapping_linked_rules(rules, limit=200):
+    items = []
+    for index, rule in enumerate([_ensure_linked_rule(copy.deepcopy(r)) for r in (rules or []) if isinstance(r, dict)], start=1):
+        items.append({
+            "index": index,
+            "name": _as_text(rule.get("name")) or f"linked_{index}",
+            "enabled": bool(rule.get("enabled", True)),
+            "trigger": _as_text(rule.get("trigger_rule") or LINKED_RULE_ANY) or LINKED_RULE_ANY,
+            "trigger_tags": _normalize_event_tags(rule.get("trigger_tags")),
+            "target_mode": _as_text(rule.get("target_mode") or LINK_TARGET_TRIGGER_OFFSET) or LINK_TARGET_TRIGGER_OFFSET,
+            "value_source": _as_text(rule.get("value_source") or LINK_VALUE_TEMPLATE) or LINK_VALUE_TEMPLATE,
+            "write_mode": _as_text(rule.get("write_mode") or LINK_WRITE_REPLACE) or LINK_WRITE_REPLACE,
+            "area_enabled": bool(rule.get("area_enabled", False)),
+            "overflow_policy": _as_text(rule.get("overflow_policy") or LINK_OVERFLOW_SKIP) or LINK_OVERFLOW_SKIP,
+            "action_count": len(rule.get("actions", []) or []),
+        })
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _format_visual_mapping_locator(locator):
+    sheet = _as_text(locator.get("sheet_name"))
+    row = _as_text(locator.get("row_index"))
+    col = _as_text(locator.get("col_index"))
+    address = _as_text(locator.get("cell_address"))
+    if address:
+        return f"{sheet} {address}".strip()
+    if row or col:
+        return f"{sheet} R{row}C{col}".strip()
+    return sheet
 
 
 def _load_settings(context):
