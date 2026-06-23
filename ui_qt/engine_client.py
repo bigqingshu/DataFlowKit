@@ -407,6 +407,14 @@ class QtHeadlessEngineClient:
             context=copy.deepcopy(context),
         )
 
+    def preview_plugin_config_effect(self, plugin_id, *, config=None, input_table=None, context=None):
+        return self.engine.preview_plugin_config_effect(
+            plugin_id,
+            config=copy.deepcopy(config),
+            input_table=copy.deepcopy(input_table),
+            context=copy.deepcopy(context),
+        )
+
     def validate_plugin_config_patch(self, plugin_id, *, patch=None, config=None, input_table=None, context=None):
         return self.engine.validate_plugin_config_patch(
             plugin_id,

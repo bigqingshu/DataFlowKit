@@ -409,6 +409,33 @@ class PluginService:
             "issues": copy.deepcopy(result.get("issues") or []),
         }
 
+    def preview_plugin_config_effect(self, plugin_id, *, config=None, input_table=None, context=None, plugins_dir=None):
+        schema_result = self.get_plugin_schema(plugin_id, plugins_dir=plugins_dir)
+        if not schema_result.get("ok"):
+            return schema_result
+        key = self._resolve_plugin_key(plugin_id)
+        item = self.registry.get(key, {})
+        module = item.get("module")
+        previewer = getattr(module, "preview_config_effect", None)
+        if not callable(previewer):
+            return _plugin_failure(
+                "plugin_config_effect_unsupported",
+                f"插件未提供配置效果预览接口：{key}",
+                "/preview_config_effect",
+            )
+        current_config = copy.deepcopy(config or schema_result.get("default_config") or {})
+        if not isinstance(current_config, dict):
+            current_config = copy.deepcopy(schema_result.get("default_config") or {})
+        params = copy.deepcopy(current_config.get("params", {}) or {})
+        runtime_context = context if isinstance(context, dict) else {}
+        _input_data, plugin_context = self._make_plugin_config_probe_context(
+            key,
+            current_config,
+            input_table,
+            runtime_context,
+        )
+        return _preview_plugin_config_effect_extension(module, params, plugin_context, plugin_id=key)
+
     def describe_plugin_config(self, plugin_id, *, config=None, input_table=None, context=None, plugins_dir=None):
         schema_result = self.get_plugin_schema(plugin_id, plugins_dir=plugins_dir)
         if not schema_result.get("ok"):
@@ -443,6 +470,7 @@ class PluginService:
                 "portable": False,
             })
         plugin_extension = _describe_plugin_config_extension(module, params, plugin_context)
+        config_effect = _preview_plugin_config_effect_extension(module, params, plugin_context, plugin_id=key)
         resources = _merge_plugin_config_items(resources, plugin_extension.get("resources"), "resource_id")
 
         actions = []
@@ -471,6 +499,13 @@ class PluginService:
             "config_path": [],
         }]
         views = _merge_plugin_config_items(views, plugin_extension.get("views"), "view_id")
+        if config_effect.get("ok"):
+            views = _merge_plugin_config_items(views, [{
+                "view_id": "plugin.config_effect",
+                "title": "配置效果",
+                "kind": "summary",
+                "summary": _plugin_config_effect_summary(config_effect),
+            }], "view_id")
         if resources:
             views.append({
                 "view_id": "plugin.resources",
@@ -502,6 +537,9 @@ class PluginService:
         extension_capabilities = copy.deepcopy(plugin_extension.get("capabilities") or {})
         combined_capabilities = copy.deepcopy(schema.get("capabilities") or {})
         combined_capabilities.update(extension_capabilities)
+        if config_effect.get("ok"):
+            combined_capabilities["config_effect_preview"] = True
+            combined_capabilities["preview_config_effect"] = True
 
         return {
             "ok": True,
@@ -529,6 +567,7 @@ class PluginService:
             "warnings": warning_messages,
             "warning_items": warning_items,
             "issues": copy.deepcopy(plugin_extension.get("issues") or []),
+            "config_effect": config_effect if config_effect.get("ok") else {},
             "plugin_extension": plugin_extension,
         }
 
@@ -782,6 +821,7 @@ def _plugin_capabilities(item, plugin=None):
     )
     has_config_description = callable(getattr(module, "describe_config", None))
     has_config_patch = callable(getattr(module, "validate_config_patch", None)) and callable(getattr(module, "apply_config_patch", None))
+    has_config_effect_preview = callable(getattr(module, "preview_config_effect", None))
     load_status = str(plugin.get("load_status") or item.get("load_status") or "")
     return {
         "headless_preview": _plugin_is_headless_runnable(item),
@@ -794,6 +834,8 @@ def _plugin_capabilities(item, plugin=None):
         "dynamic_options": bool(has_dynamic_options),
         "config_description": bool(has_config_description),
         "config_patch": bool(has_config_patch),
+        "config_effect_preview": bool(has_config_effect_preview),
+        "preview_config_effect": bool(has_config_effect_preview),
         "legacy_custom_config": bool(plugin.get("has_custom_config_window") or callable(getattr(module, "open_config_window", None))),
         "external_only": load_status == "仅独立环境运行",
     }
@@ -990,6 +1032,61 @@ def _describe_plugin_config_extension(module, params, context):
     if not isinstance(result, dict):
         return {}
     return copy.deepcopy(result)
+
+
+def _preview_plugin_config_effect_extension(module, params, context, *, plugin_id=""):
+    previewer = getattr(module, "preview_config_effect", None)
+    if not callable(previewer):
+        return {}
+    try:
+        result = previewer(copy.deepcopy(params or {}), copy.deepcopy(context or {}))
+    except Exception as exc:
+        return _plugin_failure("plugin_config_effect_error", str(exc), "/preview_config_effect")
+    if not isinstance(result, dict):
+        return _plugin_failure(
+            "plugin_config_effect_invalid",
+            "插件配置效果预览接口必须返回 dict。",
+            "/preview_config_effect",
+        )
+    payload = copy.deepcopy(result)
+    if payload.get("ok") is False:
+        if payload.get("issues"):
+            payload.setdefault("plugin_id", plugin_id)
+            return payload
+        return _plugin_failure(
+            "plugin_config_effect_failed",
+            str(payload.get("message") or "插件配置效果预览失败"),
+            "/preview_config_effect",
+        )
+    payload["ok"] = True
+    payload.setdefault("schema_version", "plugin_config_effect.v1")
+    payload.setdefault("plugin_id", plugin_id)
+    payload.setdefault("summary", {})
+    payload.setdefault("warnings", [])
+    payload.setdefault("issues", [])
+    payload.setdefault("required_input_tables", [])
+    payload.setdefault("expected_output_fields", [])
+    payload.setdefault("side_effects", [])
+    return payload
+
+
+def _plugin_config_effect_summary(effect):
+    effect = effect or {}
+    summary = copy.deepcopy(effect.get("summary") or {})
+    result = {}
+    if isinstance(summary, dict):
+        result.update(summary)
+    for key, label in [
+        ("required_input_tables", "需要输入表"),
+        ("expected_output_fields", "预期输出字段"),
+        ("side_effects", "运行影响"),
+        ("warnings", "提示"),
+        ("issues", "问题"),
+    ]:
+        value = effect.get(key)
+        if value not in (None, "", [], {}):
+            result[label] = copy.deepcopy(value)
+    return result
 
 
 def _normalize_plugin_config_warning_items(warnings, *, plugin_id="", source="plugin_config"):

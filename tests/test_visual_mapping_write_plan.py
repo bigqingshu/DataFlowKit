@@ -209,12 +209,22 @@ class VisualMappingWritePlanTests(unittest.TestCase):
                 },
                 dict(context, settings_warnings=["测试警告"]),
             )
+            effect = visual.preview_config_effect(
+                {
+                    "config_name": "default",
+                    "doc_table_alias": "文档",
+                    "content_table_alias": "新内容",
+                    "replace_aux_table_alias": "辅助",
+                },
+                dict(context, settings_warnings=["测试警告"]),
+            )
 
         self.assertEqual(described["schema_version"], "DataFlowKit.visual_mapping.config.v1")
         self.assertEqual(described["protocol_family"], "plugin_complex_config")
         self.assertEqual(described["plugin_id"], visual.PLUGIN_INFO["id"])
         self.assertEqual(described["config_key"], "default")
         self.assertTrue(described["capabilities"]["config_patch"])
+        self.assertTrue(described["capabilities"]["config_effect_preview"])
         self.assertIn("rules", described["capabilities"]["supported_sections"])
         self.assertEqual(described["warnings"][0]["message"], "测试警告")
         self.assertEqual(described["summary"]["rules"], 1)
@@ -273,6 +283,13 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertEqual(linked_schema_columns["value_field"]["options_source"]["key"], "content_fields")
         self.assertIn("visual_mapping.edit.rules", [action["action_id"] for action in described["actions"]])
         self.assertIn("linked_rule_default", described["models"])
+        self.assertEqual(effect["schema_version"], "DataFlowKit.visual_mapping.config_effect.v1")
+        self.assertEqual(effect["summary"]["配置名称"], "default")
+        self.assertEqual(effect["summary"]["单元格映射规则"], 1)
+        self.assertEqual(effect["required_input_tables"][0]["alias"], "文档")
+        self.assertEqual(effect["required_input_tables"][0]["row_count"], 1)
+        self.assertIn("source_file", effect["expected_output_fields"])
+        self.assertIn("file_write", [item["kind"] for item in effect["side_effects"]])
 
     def test_plugin_service_applies_visual_mapping_rules_config_patch(self):
         with tempfile.TemporaryDirectory(dir=".") as temp_dir:

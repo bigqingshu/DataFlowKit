@@ -394,11 +394,98 @@ def describe_config(params, context):
             "schema_config": True,
             "dynamic_options": True,
             "config_patch": True,
+            "config_effect_preview": True,
+            "preview_config_effect": True,
             "legacy_custom_config": True,
             "supported_sections": sorted(CONFIG_SECTIONS),
             "supported_patch_operations": patch_operations,
             "view_kinds": ["summary", "structured_list"],
         },
+    }
+
+
+def preview_config_effect(params, context):
+    params = dict(params or {})
+    context = dict(context or {})
+    described = describe_config(params, context)
+    summary = copy.deepcopy(described.get("summary") or {})
+    table_context = described.get("context") or {}
+    config_name = _as_text(params.get("config_name") or summary.get("config_name") or "default") or "default"
+    tables = _all_tables({}, context)
+    doc_table, doc_alias = _pick_table({}, context, params.get("doc_table_alias", "当前表"), "当前表")
+    content_table, content_alias = _pick_table({}, context, params.get("content_table_alias", "新内容表"), "")
+    aux_table, aux_alias = _pick_optional_table({}, context, params.get("replace_aux_table_alias", "替换辅助表"))
+
+    def table_effect(role, alias, table, *, required=True):
+        headers = list((table or {}).get("headers") or [])
+        rows = list((table or {}).get("rows") or [])
+        return {
+            "role": role,
+            "alias": alias,
+            "required": bool(required),
+            "available": bool(headers or rows),
+            "headers": headers,
+            "row_count": len(rows),
+        }
+
+    required_input_tables = [
+        table_effect("doc_table", doc_alias, doc_table, required=True),
+        table_effect("content_table", content_alias, content_table, required=True),
+        table_effect("replace_aux_table", aux_alias, aux_table, required=False),
+    ]
+    warnings = list(described.get("warnings") or [])
+    if not table_context.get("content_fields"):
+        warnings.append(_config_warning(
+            "visual_mapping_no_content_fields",
+            "新内容表没有可用字段，映射规则可能无法选择写入字段。",
+            view_id="visual_mapping.rules",
+            field="mapping.content_field",
+        ))
+    if not table_context.get("sheet_names"):
+        warnings.append(_config_warning(
+            "visual_mapping_no_sheet_names",
+            "当前文档读取表没有识别到工作表名称，来源单元格候选可能不足。",
+            view_id="visual_mapping.rules",
+            field="source_locator.sheet_name",
+        ))
+
+    return {
+        "schema_version": "DataFlowKit.visual_mapping.config_effect.v1",
+        "protocol_family": CONFIG_PROTOCOL_FAMILY,
+        "plugin_id": PLUGIN_INFO["id"],
+        "config_key": config_name,
+        "summary": {
+            "配置名称": config_name,
+            "可用输入表": sorted(tables.keys()),
+            "单元格映射规则": summary.get("rules", 0),
+            "表特征": summary.get("features", 0),
+            "全局搜索替换规则": summary.get("global_rules", 0),
+            "联动写入规则": summary.get("linked_rules", 0),
+            "文档记录数": summary.get("doc_records", 0),
+            "新内容行数": summary.get("content_rows", 0),
+            "辅助替换行数": summary.get("aux_rows", 0),
+        },
+        "required_input_tables": required_input_tables,
+        "expected_output_fields": list(OUTPUT_HEADERS),
+        "side_effects": [
+            {
+                "kind": "read_plugin_settings",
+                "label": "读取视觉映射插件配置",
+                "config_key": config_name,
+            },
+            {
+                "kind": "read_input_tables",
+                "label": "读取文档读取表、新内容表和可选替换辅助表",
+                "aliases": [item["alias"] for item in required_input_tables if item.get("alias")],
+            },
+            {
+                "kind": "file_write",
+                "label": "正式执行时会按规则写入或生成目标设计文件",
+                "execute_actions_only": True,
+            },
+        ],
+        "warnings": _normalize_config_warnings(warnings),
+        "issues": [],
     }
 
 

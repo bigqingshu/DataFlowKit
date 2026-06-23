@@ -100,6 +100,8 @@ def write_patch_plugin(root):
             "    params = dict(params)",
             "    params[patch.get('key')] = patch.get('value')",
             "    return {'ok': True, 'params': params, 'changed': True, 'message': 'patched'}",
+            "def preview_config_effect(params, context):",
+            "    return {'schema_version': 'patch_demo.effect.v1', 'summary': {'mode': params.get('mode', '')}, 'expected_output_fields': ['A']}",
             "def run(input_data, params, context):",
             "    return {'ok': True, 'output': input_data}",
         ]),
@@ -273,18 +275,27 @@ class PluginServiceTests(unittest.TestCase):
                     "        'views': [{'view_id': 'demo.items', 'title': 'Demo Items', 'kind': 'structured_list'}],",
                     "        'resources': [{'resource_id': 'demo.resource', 'label': 'Demo Resource', 'kind': 'json_file'}],",
                     "        'actions': [{'action_id': 'demo.edit', 'label': 'Edit Demo', 'kind': 'config_editor'}],",
-                    "        'warnings': [",
-                    "            'demo warning',",
-                    "            {'code': 'demo_structured_warning', 'level': 'warning', 'message': 'structured warning', 'view_id': 'demo.items'},",
-                    "        ],",
-                    "    }",
-                    "def run(input_data, params, context):",
-                    "    return {'ok': True, 'output': input_data}",
-                ]),
-                encoding="utf-8",
+            "        'warnings': [",
+            "            'demo warning',",
+            "            {'code': 'demo_structured_warning', 'level': 'warning', 'message': 'structured warning', 'view_id': 'demo.items'},",
+            "        ],",
+            "    }",
+            "def preview_config_effect(params, context):",
+            "    return {",
+            "        'schema_version': 'demo.effect.v1',",
+            "        'summary': {'items': 2},",
+            "        'required_input_tables': [{'alias': '当前表', 'required': True}],",
+            "        'expected_output_fields': ['A', 'B'],",
+            "        'side_effects': [{'kind': 'read_input_tables', 'label': '读取输入表'}],",
+            "    }",
+            "def run(input_data, params, context):",
+            "    return {'ok': True, 'output': input_data}",
+        ]),
+        encoding="utf-8",
             )
             service = PluginService(plugins_dir=temp_dir, app_dir=temp_dir)
             described = service.describe_plugin_config("plugin.protocol_demo")
+            effect = service.preview_plugin_config_effect("plugin.protocol_demo")
 
         self.assertTrue(described["ok"])
         self.assertEqual(described["config_schema_version"], "demo.config.v1")
@@ -294,6 +305,11 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(described["context"]["choices"]["modes"], ["A", "B"])
         self.assertEqual(described["models"]["item_default"], {"name": ""})
         self.assertTrue(described["capabilities"]["config_patch"])
+        self.assertTrue(described["capabilities"]["config_effect_preview"])
+        self.assertEqual(described["config_effect"]["schema_version"], "demo.effect.v1")
+        self.assertIn("plugin.config_effect", [view["view_id"] for view in described["views"]])
+        self.assertTrue(effect["ok"])
+        self.assertEqual(effect["expected_output_fields"], ["A", "B"])
         self.assertEqual(described["plugin_extension"]["schema_version"], "demo.config.v1")
         self.assertIn("demo.items", [view["view_id"] for view in described["views"]])
         self.assertIn("demo.resource", [resource["resource_id"] for resource in described["resources"]])
@@ -426,12 +442,20 @@ class PluginServiceTests(unittest.TestCase):
                 "config": config,
                 "patch": patch,
             }))
+            effect = worker.handle_request(request("preview_plugin_config_effect", {
+                "plugin_id": "plugin.patch_demo",
+                "plugins_dir": temp_dir,
+                "config": config,
+            }))
 
         self.assertTrue(validation["ok"])
         self.assertTrue(validation["result"]["ok"])
         self.assertTrue(applied["ok"])
         self.assertEqual(applied["result"]["config"]["params"]["mode"], "stdio")
         self.assertEqual(applied["result"]["description"]["plugin_extension"]["summary"]["mode"], "stdio")
+        self.assertTrue(effect["ok"])
+        self.assertEqual(effect["result"]["schema_version"], "patch_demo.effect.v1")
+        self.assertEqual(effect["result"]["summary"]["mode"], "old")
 
     def test_external_process_plugin_runs_through_service(self):
         with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:

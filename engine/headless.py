@@ -396,6 +396,9 @@ class HeadlessWorkflowEngine:
     def describe_plugin_config(self, plugin_id, **kwargs):
         return self.plugins.describe_plugin_config(plugin_id, **kwargs)
 
+    def preview_plugin_config_effect(self, plugin_id, **kwargs):
+        return self.plugins.preview_plugin_config_effect(plugin_id, **kwargs)
+
     def validate_plugin_config_patch(self, plugin_id, **kwargs):
         return self.plugins.validate_plugin_config_patch(plugin_id, **kwargs)
 

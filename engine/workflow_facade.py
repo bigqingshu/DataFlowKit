@@ -27,6 +27,7 @@ def _plugin_config_capability_labels(capabilities):
         ("dynamic_options", "动态候选"),
         ("config_description", "配置描述"),
         ("config_patch", "结构化patch"),
+        ("config_effect_preview", "配置效果预览"),
         ("legacy_custom_config", "旧版窗口fallback"),
         ("external_only", "仅独立环境"),
     ]

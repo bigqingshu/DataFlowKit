@@ -198,6 +198,8 @@ class Qt6UiShellTests(unittest.TestCase):
                     "        'actions': [{'action_id': 'demo.edit_items', 'label': '编辑 Demo Items', 'kind': 'config_editor', 'editor_kind': 'demo.items'}],",
                     "        'warnings': [{'code': 'demo_items_warning', 'level': 'warning', 'message': 'Demo Items 需要确认', 'view_id': 'demo.items'}],",
                     "    }",
+                    "def preview_config_effect(params, context):",
+                    "    return {'schema_version': 'demo.effect.v1', 'summary': {'items': len(params.get('items') or [])}, 'expected_output_fields': ['A', 'Demo'], 'side_effects': [{'kind': 'read_input_tables', 'label': '读取输入表'}]}",
                     "def validate_config_patch(params, context, patch):",
                     "    return True, ''",
                     "def apply_config_patch(params, context, patch):",
@@ -272,7 +274,7 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertEqual(controller.node_detail_title_label.text(), "插件 / Demo")
             self.assertIn("插件 ID：demo", controller.node_detail_sections.toPlainText())
             self.assertIn("旧版设置窗口", controller.node_detail_sections.toPlainText())
-            self.assertIn("配置能力：schema配置、动态候选、配置描述、结构化patch、旧版窗口fallback", controller.node_detail_sections.toPlainText())
+            self.assertIn("配置能力：schema配置、动态候选、配置描述、结构化patch、配置效果预览、旧版窗口fallback", controller.node_detail_sections.toPlainText())
             self.assertIn("配置协议", controller.node_detail_sections.toPlainText())
             self.assertIn("Demo Items 需要确认（demo.items/demo_items_warning）", controller.node_detail_sections.toPlainText())
             self.assertIn("兼容动作：打开旧版插件设置", controller.node_detail_sections.toPlainText())
@@ -293,6 +295,7 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertIn("Demo Details", protocol_tab_titles)
             self.assertIn("Demo Preview", protocol_tab_titles)
             self.assertIn("Demo Items", protocol_tab_titles)
+            self.assertIn("配置效果", protocol_tab_titles)
             details_page = controller.plugin_config_view_tabs.widget(protocol_tab_titles.index("Demo Details"))
             details_table = details_page if isinstance(details_page, qt.QtWidgets.QTableWidget) else details_page.findChild(qt.QtWidgets.QTableWidget)
             self.assertIsNotNone(details_table)
@@ -303,6 +306,10 @@ class Qt6UiShellTests(unittest.TestCase):
             preview_editor = preview_page if isinstance(preview_page, qt.QtWidgets.QPlainTextEdit) else preview_page.findChild(qt.QtWidgets.QPlainTextEdit)
             self.assertIsNotNone(preview_editor)
             self.assertEqual(preview_editor.toPlainText(), "mode=fast")
+            effect_page = controller.plugin_config_view_tabs.widget(protocol_tab_titles.index("配置效果"))
+            effect_table = effect_page if isinstance(effect_page, qt.QtWidgets.QTableWidget) else effect_page.findChild(qt.QtWidgets.QTableWidget)
+            self.assertIsNotNone(effect_table)
+            self.assertEqual(effect_table.item(0, 0).text(), "items")
             items_page = controller.plugin_config_view_tabs.widget(protocol_tab_titles.index("Demo Items"))
             items_table = items_page.findChild(qt.QtWidgets.QTableWidget)
             self.assertIsNotNone(items_table)
