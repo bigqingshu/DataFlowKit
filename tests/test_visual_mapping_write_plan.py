@@ -326,6 +326,11 @@ class VisualMappingWritePlanTests(unittest.TestCase):
                 config=config,
                 patch=feature_patch,
             )
+            visual._settings_path({"plugin_data_dir": str(plugin_data_dir)}).write_text("{broken", encoding="utf-8")
+            described_with_warning = service.describe_plugin_config(
+                "plugin.visual_mapping_write_plan_v1",
+                config=config,
+            )
             invalid = service.validate_plugin_config_patch(
                 "plugin.visual_mapping_write_plan_v1",
                 config=config,
@@ -346,6 +351,12 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertTrue(standard_updated["description"]["capabilities"]["config_patch"])
         self.assertEqual(standard_updated["description"]["plugin_extension"]["protocol_family"], "plugin_complex_config")
         self.assertTrue(feature_added["ok"])
+        plugin_warning_items = [
+            item for item in described_with_warning["warning_items"]
+            if item.get("source") == "plugin_config"
+        ]
+        self.assertTrue(plugin_warning_items)
+        self.assertIn(plugin_warning_items[0]["message"], described_with_warning["warnings"])
         rules_view = next(
             view for view in standard_updated["description"]["views"]
             if view.get("view_id") == "visual_mapping.rules"

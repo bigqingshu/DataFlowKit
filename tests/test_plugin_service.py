@@ -261,7 +261,10 @@ class PluginServiceTests(unittest.TestCase):
                     "        'views': [{'view_id': 'demo.items', 'title': 'Demo Items', 'kind': 'structured_list'}],",
                     "        'resources': [{'resource_id': 'demo.resource', 'label': 'Demo Resource', 'kind': 'json_file'}],",
                     "        'actions': [{'action_id': 'demo.edit', 'label': 'Edit Demo', 'kind': 'config_editor'}],",
-                    "        'warnings': ['demo warning'],",
+                    "        'warnings': [",
+                    "            'demo warning',",
+                    "            {'code': 'demo_structured_warning', 'level': 'warning', 'message': 'structured warning', 'view_id': 'demo.items'},",
+                    "        ],",
                     "    }",
                     "def run(input_data, params, context):",
                     "    return {'ok': True, 'output': input_data}",
@@ -284,6 +287,12 @@ class PluginServiceTests(unittest.TestCase):
         self.assertIn("demo.resource", [resource["resource_id"] for resource in described["resources"]])
         self.assertIn("demo.edit", [action["action_id"] for action in described["actions"]])
         self.assertIn("demo warning", described["warnings"])
+        self.assertIn("structured warning", described["warnings"])
+        warning_by_code = {item["code"]: item for item in described["warning_items"]}
+        self.assertEqual(warning_by_code["plugin_config_warning_1"]["message"], "demo warning")
+        self.assertEqual(warning_by_code["plugin_config_warning_1"]["source"], "plugin_config")
+        self.assertEqual(warning_by_code["plugin_config_warning_1"]["plugin_id"], "protocol_demo")
+        self.assertEqual(warning_by_code["demo_structured_warning"]["view_id"], "demo.items")
 
     def test_plugin_config_patch_validates_applies_and_refreshes_description(self):
         with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:

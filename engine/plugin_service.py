@@ -479,6 +479,23 @@ class PluginService:
                 "resource_ids": [item["resource_id"] for item in resources],
             })
 
+        schema_warning_items = _normalize_plugin_config_warning_items(
+            schema.get("warnings") or [],
+            plugin_id=key,
+            source="plugin_schema",
+        )
+        extension_warning_items = _normalize_plugin_config_warning_items(
+            plugin_extension.get("warnings") or [],
+            plugin_id=key,
+            source="plugin_config",
+        )
+        warning_items = schema_warning_items + extension_warning_items
+        warning_messages = [
+            str(item.get("message") or "").strip()
+            for item in warning_items
+            if str(item.get("message") or "").strip()
+        ]
+
         extension_schema_version = str(plugin_extension.get("schema_version") or "").strip()
         protocol_family = str(plugin_extension.get("protocol_family") or "plugin_form_config").strip() or "plugin_form_config"
         config_key = str(plugin_extension.get("config_key") or params.get("config_name") or "").strip()
@@ -509,7 +526,8 @@ class PluginService:
             "context": copy.deepcopy(plugin_extension.get("context") or {}),
             "models": copy.deepcopy(plugin_extension.get("models") or {}),
             "capabilities": combined_capabilities,
-            "warnings": copy.deepcopy(schema.get("warnings") or []) + list(plugin_extension.get("warnings") or []),
+            "warnings": warning_messages,
+            "warning_items": warning_items,
             "issues": copy.deepcopy(plugin_extension.get("issues") or []),
             "plugin_extension": plugin_extension,
         }
@@ -940,6 +958,35 @@ def _describe_plugin_config_extension(module, params, context):
     if not isinstance(result, dict):
         return {}
     return copy.deepcopy(result)
+
+
+def _normalize_plugin_config_warning_items(warnings, *, plugin_id="", source="plugin_config"):
+    result = []
+    source_text = str(source or "plugin_config").strip() or "plugin_config"
+    plugin_text = str(plugin_id or "").strip()
+    for index, warning in enumerate(warnings or [], start=1):
+        if isinstance(warning, dict):
+            item = copy.deepcopy(warning)
+            message = str(item.get("message") or item.get("text") or "").strip()
+            if not message:
+                continue
+            item["message"] = message
+            item.setdefault("level", "warning")
+            item.setdefault("code", f"{source_text}_warning_{index}")
+        else:
+            message = str(warning or "").strip()
+            if not message:
+                continue
+            item = {
+                "code": f"{source_text}_warning_{index}",
+                "level": "warning",
+                "message": message,
+            }
+        item.setdefault("source", source_text)
+        if plugin_text:
+            item.setdefault("plugin_id", plugin_text)
+        result.append(item)
+    return result
 
 
 def _normalize_plugin_config_patch_validation_result(plugin_id, result, patch):
