@@ -145,6 +145,84 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertEqual(response["result"]["table"]["headers"], ["A", "B"])
         self.assertEqual(response["result"]["table"]["rows"], [["a", "1"], ["b", "2"]])
 
+    def test_data_source_table_actions_use_headless_service(self):
+        worker = StdioWorker()
+
+        parsed = worker.handle_request(request("parse_clipboard_table", {
+            "text": "A\tB\nx\ty\nz\tw",
+            "first_row_header": True,
+        }))
+        table = parsed["result"]["table"]
+        patched = worker.handle_request(request("patch_table_cell", {
+            "table": table,
+            "row": 1,
+            "column": 1,
+            "value": "updated",
+        }))
+        searched = worker.handle_request(request("search_table", {
+            "table": patched["result"]["table"],
+            "keyword": "updated",
+        }))
+        state = worker.handle_request(request("build_data_source_state", {
+            "table": patched["result"]["table"],
+            "source": {"type": "clipboard"},
+            "dirty": True,
+            "display_name": "临时输入",
+        }))
+
+        self.assertTrue(parsed["ok"])
+        self.assertEqual(table["headers"], ["A", "B"])
+        self.assertTrue(patched["ok"])
+        self.assertEqual(patched["result"]["table"]["rows"][1][1], "updated")
+        self.assertEqual(searched["result"]["count"], 1)
+        self.assertEqual(searched["result"]["matches"][0]["row"], 1)
+        self.assertEqual(state["result"]["state"]["display_name"], "临时输入")
+        self.assertTrue(state["result"]["state"]["dirty"])
+
+    def test_data_source_save_and_delete_table_actions(self):
+        worker = StdioWorker()
+        with TemporaryDirectory() as temp_dir:
+            db_path = str(Path(temp_dir) / "input.db")
+            table = {"type": "table", "headers": ["id", "name"], "rows": [["1", "Alice"]]}
+
+            saved = worker.handle_request(request("save_table", {
+                "table": table,
+                "db_path": db_path,
+                "table_name": "orders",
+                "mode": "replace",
+            }))
+            loaded = worker.handle_request(request("load_table", {
+                "db_path": db_path,
+                "table_name": "orders",
+            }))
+            refused = worker.handle_request(request("delete_table", {
+                "db_path": db_path,
+                "table_name": "orders",
+                "backup": False,
+                "confirmed": False,
+            }))
+            deleted = worker.handle_request(request("delete_table", {
+                "db_path": db_path,
+                "table_name": "orders",
+                "backup": False,
+                "confirmed": True,
+            }))
+            listed = worker.handle_request(request("list_tables", {"db_path": db_path}))
+
+        table_names = [
+            item.get("name") if isinstance(item, dict) else str(item)
+            for item in listed["result"]["tables"]
+        ]
+        self.assertTrue(saved["ok"])
+        self.assertTrue(saved["result"]["ok"])
+        self.assertEqual(saved["result"]["source"]["table_name"], "orders")
+        self.assertEqual(loaded["result"]["table"]["rows"], [["1", "Alice"]])
+        self.assertTrue(refused["ok"])
+        self.assertFalse(refused["result"]["ok"])
+        self.assertEqual(refused["result"]["issues"][0]["code"], "delete_not_confirmed")
+        self.assertTrue(deleted["result"]["ok"])
+        self.assertNotIn("orders", table_names)
+
     def test_preview_plan_uses_protocol_input_data_name(self):
         worker = StdioWorker()
         response = worker.handle_request(request("preview_plan", {

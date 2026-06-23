@@ -157,6 +157,48 @@ class StdioWorker:
             )
         if action == "import_table_file":
             return self.facade.import_table_file(payload.get("path", ""))
+        if action == "parse_clipboard_table":
+            return self.engine.parse_clipboard_table(
+                payload.get("text", ""),
+                first_row_header=bool(payload.get("first_row_header", True)),
+            )
+        if action == "normalize_table_headers":
+            return self.engine.normalize_table_headers(payload.get("headers", []))
+        if action == "promote_first_row_to_headers":
+            return self.engine.promote_first_row_to_headers(payload.get("table", {}))
+        if action == "patch_table_cell":
+            return self.engine.patch_table_cell(
+                payload.get("table", {}),
+                row=payload.get("row"),
+                column=payload.get("column"),
+                value=payload.get("value", ""),
+            )
+        if action == "search_table":
+            return self.engine.search_table(
+                payload.get("table", {}),
+                payload.get("keyword", ""),
+            )
+        if action == "build_data_source_state":
+            return self.engine.build_data_source_state(
+                payload.get("table", {}),
+                source=payload.get("source"),
+                dirty=bool(payload.get("dirty", False)),
+                display_name=payload.get("display_name", ""),
+            )
+        if action == "save_table":
+            return self.engine.save_table(
+                payload.get("table", {}),
+                db_path=payload.get("db_path"),
+                table_name=payload.get("table_name") or payload.get("table"),
+                mode=payload.get("mode", "replace"),
+            )
+        if action == "delete_table":
+            return self.engine.delete_table(
+                db_path=payload.get("db_path"),
+                table_name=payload.get("table_name") or payload.get("table"),
+                backup=bool(payload.get("backup", True)),
+                confirmed=bool(payload.get("confirmed", False)),
+            )
         if action == "validate_config":
             node = payload.get("node")
             node_or_type = node if isinstance(node, dict) else (
