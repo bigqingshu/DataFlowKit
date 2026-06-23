@@ -1722,14 +1722,29 @@ class Qt6UiShellTests(unittest.TestCase):
 
             controller.output_db_path_edit.setText(db_path)
             controller.refresh_input_table_combo()
+            self.assertEqual(controller.input_table_combo.count(), 0)
+            self.assertFalse(controller.load_input_table_button.isEnabled())
+
+            controller.input_db_path_edit.setText(db_path)
+            controller.apply_input_db_path_from_edit()
+            controller.last_preview_headers = ["old"]
+            controller.last_preview_rows = [["preview"]]
+            controller.node_config_preview_cache = {"node_1": {"headers": ["old"]}}
+            controller.refresh_input_table_combo()
             controller.load_selected_input_table()
             app.processEvents()
 
+            self.assertEqual(controller.current_input_db_path, db_path)
+            self.assertEqual(controller.input_db_path_edit.text(), db_path)
             self.assertEqual(controller.input_table_combo.currentText(), "orders")
             self.assertEqual(controller.current_headers, ["id", "name"])
             self.assertEqual(controller.current_rows, [["1", "Alice"], ["2", "Bob"]])
             self.assertEqual(controller.current_input_source["table_name"], "orders")
+            self.assertEqual(controller.last_preview_headers, [])
+            self.assertEqual(controller.last_preview_rows, [])
+            self.assertEqual(controller.node_config_preview_cache, {})
             self.assertEqual(controller.input_summary_label.text(), "当前输入：2 行 x 2 列")
+            self.assertIn("旧预览结果已清空", controller.current_message_panel.get("body", ""))
             self.assertIn("已载入输入表", controller.status_bar.currentMessage())
             window.close()
             app.processEvents()
@@ -1751,7 +1766,8 @@ class Qt6UiShellTests(unittest.TestCase):
             window = build_main_window(qt)
             controller = window.qt_workflow_controller
 
-            controller.output_db_path_edit.setText(db_path)
+            controller.input_db_path_edit.setText(db_path)
+            controller.apply_input_db_path_from_edit(show_status=False)
             controller.open_data_source_manager()
             manager = controller.data_source_manager_controller
             manager.refresh_table_combo()
@@ -1804,6 +1820,7 @@ class Qt6UiShellTests(unittest.TestCase):
             app.processEvents()
 
             self.assertEqual(controller.current_input_db_path, db_path)
+            self.assertEqual(controller.input_db_path_edit.text(), db_path)
             self.assertEqual(controller.input_table_combo.currentText(), "orders")
             manager.window.close()
 

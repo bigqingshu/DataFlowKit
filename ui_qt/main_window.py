@@ -207,10 +207,24 @@ class QtWorkflowMainWindow:
         source_layout = qt.QtWidgets.QVBoxLayout(source_group)
         self.input_summary_label = qt.QtWidgets.QLabel("")
         self.input_summary_label.setWordWrap(True)
+        input_db_row = qt.QtWidgets.QHBoxLayout()
+        self.input_db_path_edit = qt.QtWidgets.QLineEdit()
+        self.input_db_path_edit.setPlaceholderText("输入 SQLite 数据库路径")
+        self.input_db_path_edit.setToolTip("输入数据源使用的 SQLite 数据库，不再复用输出数据库路径")
+        self.choose_input_db_button = qt.QtWidgets.QPushButton("...")
+        self.choose_input_db_button.setMaximumWidth(36)
+        self.refresh_input_tables_button = qt.QtWidgets.QPushButton("刷新")
+        self.input_db_path_edit.editingFinished.connect(lambda: self.apply_input_db_path_from_edit(show_status=False))
+        self.choose_input_db_button.clicked.connect(lambda checked=False: self.choose_input_db_path())
+        self.refresh_input_tables_button.clicked.connect(lambda checked=False: self.apply_input_db_path_from_edit(show_status=True))
+        input_db_row.addWidget(qt.QtWidgets.QLabel("输入库："))
+        input_db_row.addWidget(self.input_db_path_edit, 1)
+        input_db_row.addWidget(self.choose_input_db_button)
+        input_db_row.addWidget(self.refresh_input_tables_button)
         source_table_row = qt.QtWidgets.QHBoxLayout()
         self.input_table_combo = qt.QtWidgets.QComboBox()
         self.input_table_combo.setMinimumWidth(180)
-        self.input_table_combo.setToolTip("从当前 SQLite 数据库选择表作为工作流输入")
+        self.input_table_combo.setToolTip("从输入 SQLite 数据库选择表作为工作流输入")
         self.load_input_table_button = qt.QtWidgets.QPushButton("载入")
         self.load_input_table_button.clicked.connect(lambda checked=False: self.load_selected_input_table())
         source_table_row.addWidget(qt.QtWidgets.QLabel("选择表："))
@@ -224,6 +238,7 @@ class QtWorkflowMainWindow:
         source_button_row.addWidget(self.data_source_manager_button)
         source_button_row.addWidget(reload_button)
         source_layout.addWidget(self.input_summary_label)
+        source_layout.addLayout(input_db_row)
         source_layout.addLayout(source_table_row)
         source_layout.addLayout(source_button_row)
 
@@ -457,7 +472,6 @@ class QtWorkflowMainWindow:
 
         self.output_mode_combo.currentTextChanged.connect(lambda *_args: self._apply_output_form_state())
         self.output_db_path_edit.editingFinished.connect(lambda: self.refresh_preview_table_combo())
-        self.output_db_path_edit.editingFinished.connect(lambda: self.refresh_input_table_combo(show_status=False))
         self._apply_output_panel_state(output_panel)
 
         preview_page = qt.QtWidgets.QWidget()
@@ -1300,6 +1314,7 @@ class QtWorkflowMainWindow:
         self.current_input_source = copy.deepcopy(state.get("source") or {"type": "file"})
         self.current_plan["headers"] = list(self.current_headers)
         self.current_plan["rows"] = [list(row) for row in self.current_rows]
+        had_preview = self._clear_preview_for_input_change()
         table_context = self._table_context()
         self.config_form.set_headers(self.current_headers)
         self.config_form.set_table_names(table_context.get("table_names"))
@@ -1314,19 +1329,30 @@ class QtWorkflowMainWindow:
             title="导入输入表格",
             body=str(state.get("issue_message") or ""),
         ).get("panel") or {}
+        if had_preview:
+            panel = self.engine_client.build_message_panel_state(
+                mode="warning",
+                title="输入数据源",
+                body="输入已变更，旧预览结果已清空。",
+                preferred_tab="issues",
+            ).get("panel") or panel
         self._apply_message_panel(panel)
-        self.status_bar.showMessage(str(state.get("status_message") or "已导入输入表格。"))
+        status_message = str(state.get("status_message") or "已导入输入表格。")
+        if had_preview:
+            status_message += " 旧预览结果已清空。"
+        self.status_bar.showMessage(status_message)
 
     def _apply_input_table_state(self, state):
         state = state or {}
         self.current_headers = list(state.get("headers") or [])
         self.current_rows = [list(row) for row in (state.get("rows") or [])]
         self.current_input_source = copy.deepcopy(state.get("source") or self.current_input_source or {})
+        source_db_path = str((self.current_input_source or {}).get("db_path") or "").strip()
+        if source_db_path:
+            self.set_current_input_db_path(source_db_path, refresh=False)
         self.current_plan["headers"] = list(self.current_headers)
         self.current_plan["rows"] = [list(row) for row in self.current_rows]
-        self.last_preview_headers = []
-        self.last_preview_rows = []
-        self._clear_node_config_preview_cache()
+        had_preview = self._clear_preview_for_input_change()
         table_context = self._table_context()
         self.config_form.set_headers(self.current_headers)
         self.config_form.set_table_names(table_context.get("table_names"))
@@ -1338,9 +1364,19 @@ class QtWorkflowMainWindow:
         self.update_table(self.current_headers, self.current_rows, title=state.get("table_title") or "输入表格")
         self.show_node_config(self.node_list.currentRow())
         panel = state.get("message_panel")
+        if had_preview:
+            panel = self.engine_client.build_message_panel_state(
+                mode="warning",
+                title="输入数据源",
+                body="输入已变更，旧预览结果已清空。",
+                preferred_tab="issues",
+            ).get("panel") or panel
         if panel:
             self._apply_message_panel(panel)
-        self.status_bar.showMessage(str(state.get("status_message") or "已载入输入表格。"))
+        status_message = str(state.get("status_message") or "已载入输入表格。")
+        if had_preview:
+            status_message += " 旧预览结果已清空。"
+        self.status_bar.showMessage(status_message)
 
     def _apply_loaded_plan_state(self, state):
         state = state or {}
@@ -1950,13 +1986,20 @@ class QtWorkflowMainWindow:
         self.table_model.set_table(self.preview_headers, self.preview_rows)
         self.table_title.setText(f"{title} · {len(self.preview_rows)} 行 x {len(self.preview_headers)} 列")
 
+    def _clear_preview_for_input_change(self):
+        had_preview = bool(self.last_preview_headers or self.last_preview_rows or self.node_config_preview_cache)
+        self.last_preview_headers = []
+        self.last_preview_rows = []
+        self._clear_node_config_preview_cache()
+        return had_preview
+
     def load_sample_plan(self):
         self.current_plan_path = None
         self.current_plan = copy.deepcopy(SAMPLE_PLAN)
         self.current_headers = list(SAMPLE_HEADERS)
         self.current_rows = [list(row) for row in SAMPLE_ROWS]
         self.current_input_source = {"type": "sample"}
-        self.current_input_db_path = ""
+        self.set_current_input_db_path("", refresh=False)
         self.last_preview_headers = []
         self.last_preview_rows = []
         self._clear_node_config_preview_cache()
@@ -1971,7 +2014,7 @@ class QtWorkflowMainWindow:
         self.current_headers = list(SAMPLE_HEADERS)
         self.current_rows = [list(row) for row in SAMPLE_ROWS]
         self.current_input_source = {"type": "sample"}
-        self.current_input_db_path = ""
+        self.set_current_input_db_path("", refresh=False)
         self.last_preview_headers = []
         self.last_preview_rows = []
         self._clear_node_config_preview_cache()
@@ -1983,13 +2026,7 @@ class QtWorkflowMainWindow:
         self.status_bar.showMessage("已重新载入示例输入。")
 
     def current_data_source_db_path(self):
-        if self.current_input_db_path:
-            return self.current_input_db_path
-        source = self.current_input_source if isinstance(self.current_input_source, dict) else {}
-        source_db_path = str(source.get("db_path") or "").strip()
-        if source_db_path:
-            return source_db_path
-        return self.output_db_path_edit.text().strip() if hasattr(self, "output_db_path_edit") else ""
+        return self.current_input_db_path
 
     def current_workflow_context(self):
         source = copy.deepcopy(self.current_input_source if isinstance(self.current_input_source, dict) else {})
@@ -2024,11 +2061,31 @@ class QtWorkflowMainWindow:
 
     def set_current_input_db_path(self, db_path, *, refresh=True, show_status=False):
         db_path = str(db_path or "").strip()
-        if not db_path or db_path == self.current_input_db_path:
-            return
+        changed = db_path != self.current_input_db_path
         self.current_input_db_path = db_path
+        if hasattr(self, "input_db_path_edit") and self.input_db_path_edit.text().strip() != db_path:
+            self.input_db_path_edit.setText(db_path)
+        if not changed and not refresh:
+            return
         if refresh:
             self.refresh_input_table_combo(show_status=show_status)
+
+    def apply_input_db_path_from_edit(self, *, show_status=True):
+        self.set_current_input_db_path(
+            self.input_db_path_edit.text().strip() if hasattr(self, "input_db_path_edit") else "",
+            refresh=True,
+            show_status=show_status,
+        )
+
+    def choose_input_db_path(self):
+        path, _ = self.qt.QtWidgets.QFileDialog.getOpenFileName(
+            self.window,
+            "选择输入 SQLite 数据库",
+            self.current_data_source_db_path(),
+            "SQLite 数据库 (*.db *.sqlite);;所有文件 (*.*)",
+        )
+        if path:
+            self.set_current_input_db_path(path, refresh=True, show_status=True)
 
     def refresh_input_table_combo(self, *, show_status=True):
         if not hasattr(self, "input_table_combo"):
@@ -2066,7 +2123,7 @@ class QtWorkflowMainWindow:
             if db_path:
                 self.status_bar.showMessage(f"输入表列表已刷新：{len(tables)} 个")
             else:
-                self.status_bar.showMessage("请选择 SQLite 数据库后再刷新输入表。")
+                self.status_bar.showMessage("请选择输入 SQLite 数据库后再刷新输入表。")
 
     def load_selected_input_table(self):
         db_path = self.current_data_source_db_path()
@@ -2075,7 +2132,7 @@ class QtWorkflowMainWindow:
             self._apply_message_panel(self.engine_client.build_message_panel_state(
                 mode="warning",
                 title="输入数据源",
-                body="请先在输出/数据库路径中选择 SQLite 数据库。",
+                body="请先选择输入 SQLite 数据库。",
                 preferred_tab="issues",
             ).get("panel") or {})
             self.status_bar.showMessage("载入输入表需要数据库路径。")
