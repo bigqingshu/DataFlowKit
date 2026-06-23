@@ -80,6 +80,7 @@ class PluginService:
         item = self.registry[key]
         plugin = self._public_plugin(key, item)
         default_config = self.make_plugin_default_config(key, plugins_dir=plugins_dir)
+        capabilities = _plugin_capabilities(item, plugin)
         schema = {
             "schema_version": "2.0",
             "node_type_id": plugin["node_type_id"],
@@ -96,15 +97,7 @@ class PluginService:
             "badges": plugin["badges"],
             "warnings": plugin["warnings"],
             "risk": plugin["risk"],
-            "capabilities": {
-                "headless_preview": _plugin_is_headless_runnable(item),
-                "headless_run": _plugin_is_headless_runnable(item),
-                "execute_actions": True,
-                "plugin": True,
-                "import_ok": bool(plugin.get("import_ok")),
-                "available_run_modes": list(plugin.get("available_run_modes") or []),
-                "legacy_custom_config": bool(plugin.get("has_custom_config_window")),
-            },
+            "capabilities": capabilities,
             "form": {
                 "schema_version": PLUGIN_FORM_SCHEMA_VERSION,
                 "dynamic_rules": True,
@@ -775,6 +768,35 @@ def _plugin_badges(item):
 def _plugin_is_headless_runnable(item):
     item = item or {}
     return bool((item.get("import_ok") and item.get("module") is not None) or item.get("external_entry") or item.get("path"))
+
+
+def _plugin_capabilities(item, plugin=None):
+    item = item or {}
+    plugin = plugin or {}
+    module = item.get("module")
+    schema = item.get("schema") or []
+    has_dynamic_options = callable(getattr(module, "get_dynamic_parameter_options", None)) or any(
+        str((field or {}).get("type") or "").strip().lower() == "dynamic_select"
+        for field in schema
+        if isinstance(field, dict)
+    )
+    has_config_description = callable(getattr(module, "describe_config", None))
+    has_config_patch = callable(getattr(module, "validate_config_patch", None)) and callable(getattr(module, "apply_config_patch", None))
+    load_status = str(plugin.get("load_status") or item.get("load_status") or "")
+    return {
+        "headless_preview": _plugin_is_headless_runnable(item),
+        "headless_run": _plugin_is_headless_runnable(item),
+        "execute_actions": True,
+        "plugin": True,
+        "import_ok": bool(plugin.get("import_ok", item.get("import_ok"))),
+        "available_run_modes": list(plugin.get("available_run_modes") or item.get("available_run_modes") or []),
+        "schema_config": bool(schema),
+        "dynamic_options": bool(has_dynamic_options),
+        "config_description": bool(has_config_description),
+        "config_patch": bool(has_config_patch),
+        "legacy_custom_config": bool(plugin.get("has_custom_config_window") or callable(getattr(module, "open_config_window", None))),
+        "external_only": load_status == "仅独立环境运行",
+    }
 
 
 def _plugin_should_run_external(config, item):

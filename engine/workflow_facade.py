@@ -19,6 +19,23 @@ from workflow.node_ui_schema import (
 )
 
 
+def _plugin_config_capability_labels(capabilities):
+    capabilities = capabilities or {}
+    labels = []
+    mapping = [
+        ("schema_config", "schema配置"),
+        ("dynamic_options", "动态候选"),
+        ("config_description", "配置描述"),
+        ("config_patch", "结构化patch"),
+        ("legacy_custom_config", "旧版窗口fallback"),
+        ("external_only", "仅独立环境"),
+    ]
+    for key, label in mapping:
+        if capabilities.get(key):
+            labels.append(label)
+    return labels
+
+
 class WorkflowFacade:
     """Collect UI-neutral workflow operations for desktop and worker clients."""
 
@@ -1148,6 +1165,9 @@ class WorkflowFacade:
         if custom_window.get("available"):
             lines.append("旧版设置窗口：可通过兼容入口打开。")
         capabilities = schema.get("capabilities") or {}
+        capability_labels = _plugin_config_capability_labels(capabilities)
+        if capability_labels:
+            lines.append("配置能力：" + "、".join(capability_labels))
         if capabilities.get("plugin"):
             lines.append("插件节点可按普通工作流节点配置、预览和执行。")
         return lines

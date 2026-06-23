@@ -268,6 +268,7 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertEqual(controller.node_detail_title_label.text(), "插件 / Demo")
             self.assertIn("插件 ID：demo", controller.node_detail_sections.toPlainText())
             self.assertIn("旧版设置窗口", controller.node_detail_sections.toPlainText())
+            self.assertIn("配置能力：schema配置、动态候选、配置描述、结构化patch、旧版窗口fallback", controller.node_detail_sections.toPlainText())
             self.assertIn("配置协议", controller.node_detail_sections.toPlainText())
             self.assertIn("兼容动作：打开旧版插件设置", controller.node_detail_sections.toPlainText())
             self.assertIn("兼容提示：旧版 Tk 设置窗口仅作为兼容 fallback", controller.node_detail_sections.toPlainText())
