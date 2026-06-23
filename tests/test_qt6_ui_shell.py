@@ -184,14 +184,34 @@ class Qt6UiShellTests(unittest.TestCase):
                     "    params['limit'] = 11",
                     "    return params",
                     "def describe_config(params, context):",
+                    "    items = list(params.get('items') or [{'name': 'alpha', 'enabled': True}, {'name': 'beta', 'enabled': False}])",
                     "    return {",
                     "        'schema_version': 'demo.config.v1',",
                     "        'views': [",
-                    "            {'view_id': 'demo.overview', 'title': 'Demo Overview', 'kind': 'summary', 'summary': {'items': 2, 'mode': params.get('mode', 'fast')}},",
-                    "            {'view_id': 'demo.items', 'title': 'Demo Items', 'kind': 'structured_list', 'editor_kind': 'demo.items', 'item_count': 2, 'columns': [{'key': 'name', 'label': '名称'}, {'key': 'enabled', 'label': '启用'}], 'items': [{'name': 'alpha', 'enabled': True}, {'name': 'beta', 'enabled': False}]},",
+                    "            {'view_id': 'demo.overview', 'title': 'Demo Overview', 'kind': 'summary', 'summary': {'items': len(items), 'mode': params.get('mode', 'fast')}},",
+                    "            {'view_id': 'demo.items', 'title': 'Demo Items', 'kind': 'structured_list', 'editor_kind': 'demo.items', 'config_path': ['items'], 'item_count': len(items), 'columns': [{'key': 'name', 'label': '名称'}, {'key': 'enabled', 'label': '启用'}], 'items': items},",
                     "        ],",
                     "        'actions': [{'action_id': 'demo.edit_items', 'label': '编辑 Demo Items', 'kind': 'config_editor', 'editor_kind': 'demo.items'}],",
                     "    }",
+                    "def validate_config_patch(params, context, patch):",
+                    "    return True, ''",
+                    "def apply_config_patch(params, context, patch):",
+                    "    params = dict(params)",
+                    "    items = [dict(item) for item in (params.get('items') or [{'name': 'alpha', 'enabled': True}, {'name': 'beta', 'enabled': False}])]",
+                    "    op = patch.get('operation')",
+                    "    if op == 'append_item':",
+                    "        items.append({'name': 'item_' + str(len(items) + 1), 'enabled': True})",
+                    "    elif op == 'delete_item':",
+                    "        items.pop(int(patch.get('index')))",
+                    "    elif op == 'set_enabled':",
+                    "        items[int(patch.get('index'))]['enabled'] = bool(patch.get('enabled'))",
+                    "    elif op == 'move_item':",
+                    "        item = items.pop(int(patch.get('index')))",
+                    "        items.insert(int(patch.get('to_index')), item)",
+                    "    else:",
+                    "        return {'ok': False, 'message': 'unsupported'}",
+                    "    params['items'] = items",
+                    "    return {'ok': True, 'params': params, 'changed': True, 'message': 'patched'}",
                     "def run(input_data, params, context):",
                     "    return {'ok': True, 'output': input_data}",
                 ]),
@@ -260,6 +280,35 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertEqual(items_table.horizontalHeaderItem(0).text(), "名称")
             self.assertEqual(items_table.item(0, 0).text(), "alpha")
             self.assertEqual(items_table.item(1, 1).text(), "否")
+            items_page.plugin_config_buttons["append_item"].click()
+            app.processEvents()
+
+            def current_items_table():
+                titles = [
+                    controller.plugin_config_view_tabs.tabText(index)
+                    for index in range(controller.plugin_config_view_tabs.count())
+                ]
+                page = controller.plugin_config_view_tabs.widget(titles.index("Demo Items"))
+                return page, page.findChild(qt.QtWidgets.QTableWidget)
+
+            items_page, items_table = current_items_table()
+            self.assertEqual(items_table.rowCount(), 3)
+            self.assertEqual(controller.current_plan["nodes"][-1]["config"]["params"]["items"][-1]["name"], "item_3")
+            items_table.selectRow(0)
+            items_page.plugin_config_buttons["set_enabled"].click()
+            app.processEvents()
+            items_page, items_table = current_items_table()
+            self.assertEqual(items_table.item(0, 1).text(), "否")
+            items_table.selectRow(0)
+            items_page.plugin_config_buttons["move_item_1"].click()
+            app.processEvents()
+            items_page, items_table = current_items_table()
+            self.assertEqual(items_table.item(0, 0).text(), "beta")
+            items_table.selectRow(2)
+            items_page.plugin_config_buttons["delete_item"].click()
+            app.processEvents()
+            _items_page, items_table = current_items_table()
+            self.assertEqual(items_table.rowCount(), 2)
             self.assertIn("Demo plugin", detail["detail"]["description"])
             controller.open_legacy_plugin_config()
             self.assertEqual(controller.current_plan["nodes"][-1]["config"]["params"]["limit"], 11)

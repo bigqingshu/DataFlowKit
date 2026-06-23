@@ -824,6 +824,9 @@ class QtWorkflowMainWindow:
             label.setWordWrap(True)
             layout.addWidget(label)
         table = qt.QtWidgets.QTableWidget()
+        frame.plugin_config_view = copy.deepcopy(view)
+        frame.plugin_config_items = copy.deepcopy(items)
+        frame.plugin_config_table = table
         table.setColumnCount(len(columns))
         table.setHorizontalHeaderLabels([str(column.get("label") or column.get("key") or "") for column in columns])
         table.setRowCount(len(items))
@@ -832,8 +835,95 @@ class QtWorkflowMainWindow:
                 key = str(column.get("key") or "")
                 table.setItem(row, col, qt.QtWidgets.QTableWidgetItem(self._format_plugin_protocol_value(item.get(key))))
         self._polish_plugin_protocol_table(table)
+        if table.rowCount():
+            table.selectRow(0)
         layout.addWidget(table, 1)
+        button_row = qt.QtWidgets.QHBoxLayout()
+        buttons = {}
+        for text, operation, target_offset in [
+            ("新增", "append_item", None),
+            ("删除", "delete_item", None),
+            ("启停", "set_enabled", None),
+            ("上移", "move_item", -1),
+            ("下移", "move_item", 1),
+        ]:
+            button = qt.QtWidgets.QPushButton(text)
+            button.clicked.connect(
+                lambda checked=False, op=operation, offset=target_offset, fr=frame: self._apply_plugin_structured_list_patch(fr, op, offset)
+            )
+            button_row.addWidget(button)
+            buttons[operation if target_offset is None else f"{operation}_{target_offset}"] = button
+        button_row.addStretch(1)
+        frame.plugin_config_buttons = buttons
+        layout.addLayout(button_row)
         return frame
+
+    def _apply_plugin_structured_list_patch(self, frame, operation, target_offset=None):
+        view = copy.deepcopy(getattr(frame, "plugin_config_view", {}) or {})
+        table = getattr(frame, "plugin_config_table", None)
+        items = copy.deepcopy(getattr(frame, "plugin_config_items", []) or [])
+        patch = {
+            "operation": operation,
+            "target": copy.deepcopy(view.get("config_path") or [view.get("view_id") or ""]),
+        }
+        selected_row = table.currentRow() if table is not None else -1
+        if operation in ("delete_item", "set_enabled", "move_item"):
+            if selected_row < 0:
+                self.status_bar.showMessage("请先选择一条配置项。")
+                return
+            patch["index"] = int(selected_row)
+        if operation == "append_item":
+            patch["value"] = {}
+        elif operation == "set_enabled":
+            item = items[selected_row] if 0 <= selected_row < len(items) else {}
+            patch["enabled"] = not bool(item.get("enabled", True))
+        elif operation == "move_item":
+            to_index = selected_row + int(target_offset or 0)
+            if to_index < 0 or to_index >= len(items):
+                self.status_bar.showMessage("配置项已经在边界位置。")
+                return
+            patch["to_index"] = to_index
+        self._apply_plugin_config_patch(patch)
+
+    def _apply_plugin_config_patch(self, patch):
+        index = self.selected_node_index()
+        if index is None:
+            self.status_bar.showMessage("请先选择插件节点。")
+            return
+        try:
+            node = self.config_form.to_node()
+            node_type_id = self._node_type_id_for_node(node)
+            config = copy.deepcopy(node.get("config", {}) or {})
+            plugin_id = config.get("plugin_id") or node_type_id
+            result = self.engine_client.apply_plugin_config_patch(
+                plugin_id,
+                patch=copy.deepcopy(patch),
+                config=config,
+                input_table=self._input_table_payload(),
+                context={
+                    "db_path": self.output_db_path_edit.text().strip(),
+                    "workflow_name": self.current_plan.get("plan_name", ""),
+                },
+            )
+        except Exception as exc:
+            self.show_error("插件配置写回失败", str(exc))
+            return
+        if not result.get("ok"):
+            self._apply_feedback(self.engine_client.build_user_feedback(
+                code="plugin_config_patch_failed",
+                title="插件配置写回失败",
+                level="error",
+                status_message="插件配置写回失败",
+                issue_message="插件配置修改未通过校验或写回失败。",
+                issues=result.get("issues", []),
+            ))
+            return
+        if isinstance(result.get("config"), dict):
+            self.current_plan.setdefault("nodes", [])[index]["config"] = copy.deepcopy(result["config"])
+        self.refresh_node_list()
+        self.node_list.setCurrentRow(index)
+        self.show_node_config(index)
+        self.status_bar.showMessage(str(result.get("message") or "插件配置已更新。"))
 
     def _make_plugin_resource_list_widget(self, view, described):
         qt = self.qt
