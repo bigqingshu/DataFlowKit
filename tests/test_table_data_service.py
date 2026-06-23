@@ -114,12 +114,18 @@ class TableDataServiceTests(unittest.TestCase):
                 "limit": 1,
                 "offset": 1,
             }))
+            actions = worker.handle_request(request("describe_data_source_actions", {
+                "table": {"headers": ["A"], "rows": [["1"]]},
+                "source": {"type": "sqlite", "db_path": db_path, "table_name": "T"},
+            }))
 
             self.assertTrue(listed["ok"])
             self.assertEqual(listed["result"]["tables"], ["T"])
             self.assertTrue(loaded["result"]["ok"])
             self.assertEqual(loaded["result"]["table"]["rows"], [["x"]])
             self.assertEqual(page["result"]["table"]["rows"], [["2"]])
+            self.assertTrue(actions["result"]["actions"]["delete_sqlite"]["enabled"])
+            self.assertTrue(actions["result"]["action_state"]["is_sqlite_source"])
 
     def test_stdio_worker_exposes_table_handle_actions(self):
         worker = StdioWorker()
@@ -165,12 +171,25 @@ class TableDataServiceTests(unittest.TestCase):
             dirty=True,
             display_name="demo",
         )
+        sqlite_actions = TableDataService().describe_data_source_actions(
+            patched,
+            source={"type": "sqlite", "db_path": "input.db", "table_name": "demo"},
+            dirty=False,
+        )
 
         self.assertEqual(promoted["headers"], ["H1", "H1_2"])
         self.assertEqual(patched["rows"], [["a", "changed"]])
         self.assertEqual(matches[0]["cells"][0]["header"], "H1_2")
+        self.assertEqual(state["schema_version"], "data_source_state.v1")
+        self.assertEqual(state["table"], {"type": "table", "headers": ["H1", "H1_2"], "rows": [["a", "changed"]]})
+        self.assertEqual(state["shape"], {"rows": 1, "columns": 2})
         self.assertTrue(state["dirty"])
         self.assertEqual(state["row_count"], 1)
+        self.assertTrue(state["action_state"]["actions"]["patch_cell"]["enabled"])
+        self.assertTrue(state["action_state"]["actions"]["save_sqlite"]["enabled"])
+        self.assertFalse(state["action_state"]["actions"]["delete_sqlite"]["enabled"])
+        self.assertTrue(sqlite_actions["action_state"]["is_sqlite_source"])
+        self.assertTrue(sqlite_actions["actions"]["delete_sqlite"]["requires_confirmation"])
         self.assertEqual(normalize_table_headers(["", "A", "A"]), ["列1", "A", "A_2"])
 
     def test_table_search_navigation_is_ui_free(self):

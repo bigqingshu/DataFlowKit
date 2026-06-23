@@ -349,6 +349,13 @@ class HeadlessWorkflowEngine:
             display_name=display_name,
         )
 
+    def describe_data_source_actions(self, table=None, *, source=None, dirty=False):
+        return self.tables.describe_data_source_actions(
+            table,
+            source=source,
+            dirty=dirty,
+        )
+
     def describe_table_save_modes(self):
         return self.tables.describe_table_save_modes()
 

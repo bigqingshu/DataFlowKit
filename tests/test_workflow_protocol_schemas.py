@@ -122,6 +122,7 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
             "patch_table_cell",
             "search_table",
             "build_data_source_state",
+            "describe_data_source_actions",
             "save_table",
             "delete_table",
             "validate_config",

@@ -45,6 +45,7 @@
             "search_table",
             "build_table_search_navigation",
             "build_data_source_state",
+            "describe_data_source_actions",
             "describe_table_save_modes",
             "normalize_table_save_mode",
             "save_table",

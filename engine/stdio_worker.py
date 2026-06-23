@@ -197,6 +197,12 @@ class StdioWorker:
                 dirty=bool(payload.get("dirty", False)),
                 display_name=payload.get("display_name", ""),
             )
+        if action == "describe_data_source_actions":
+            return self.engine.describe_data_source_actions(
+                payload.get("table", {}),
+                source=payload.get("source"),
+                dirty=bool(payload.get("dirty", False)),
+            )
         if action == "describe_table_save_modes":
             return self.engine.describe_table_save_modes()
         if action == "normalize_table_save_mode":

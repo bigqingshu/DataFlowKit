@@ -37,6 +37,8 @@ TABLE_SAVE_MODES = [
         "description": "追加到已有表；不存在时新建。",
     },
 ]
+DATA_SOURCE_STATE_SCHEMA_VERSION = "data_source_state.v1"
+DATA_SOURCE_ACTIONS_SCHEMA_VERSION = "data_source_actions.v1"
 
 _SAVE_MODE_ALIASES = {}
 for _mode in TABLE_SAVE_MODES:
@@ -192,6 +194,19 @@ class TableDataService:
                 dirty=dirty,
                 display_name=display_name,
             ),
+            "issues": [],
+        }
+
+    def describe_data_source_actions(self, table=None, *, source=None, dirty=False):
+        action_state = build_data_source_action_state(
+            table or {},
+            source=source,
+            dirty=dirty,
+        )
+        return {
+            "ok": True,
+            "action_state": action_state,
+            "actions": dict(action_state.get("actions") or {}),
             "issues": [],
         }
 
@@ -698,14 +713,78 @@ def build_data_source_state(table=None, *, source=None, dirty=False, display_nam
     rows = [list(row) for row in (table_data.get("rows") or [])]
     source_payload = dict(source or {})
     title = str(display_name or source_payload.get("table_name") or source_payload.get("path") or "输入数据源")
+    action_state = build_data_source_action_state(
+        {"type": "table", "headers": headers, "rows": rows},
+        source=source_payload,
+        dirty=dirty,
+    )
     return {
+        "schema_version": DATA_SOURCE_STATE_SCHEMA_VERSION,
         "source": source_payload,
+        "source_type": str(source_payload.get("type") or "memory"),
         "headers": headers,
         "rows": rows,
+        "table": {"type": "table", "headers": headers, "rows": rows},
+        "shape": {"rows": len(rows), "columns": len(headers)},
         "dirty": bool(dirty),
         "display_name": title,
         "row_count": len(rows),
         "column_count": len(headers),
+        "action_state": action_state,
+    }
+
+
+def build_data_source_action_state(table=None, *, source=None, dirty=False):
+    table_data = TableData.from_payload(table or {}).to_dict()
+    headers = list(table_data.get("headers") or [])
+    rows = [list(row) for row in (table_data.get("rows") or [])]
+    source_payload = dict(source or {})
+    source_type = str(source_payload.get("type") or "memory")
+    has_headers = bool(headers)
+    has_rows = bool(rows)
+    has_table = has_headers or has_rows
+    is_sqlite_source = bool(
+        source_type == "sqlite"
+        and str(source_payload.get("db_path") or "").strip()
+        and str(source_payload.get("table_name") or "").strip()
+    )
+
+    def action(label, enabled=True, **extra):
+        payload = {"label": label, "enabled": bool(enabled)}
+        payload.update(extra)
+        return payload
+
+    actions = {
+        "load_clipboard": action("读取剪贴板"),
+        "import_file": action("导入文件"),
+        "clear_table": action("清空", enabled=has_table),
+        "promote_first_row": action("首行作字段名", enabled=has_rows),
+        "search_table": action("搜索", enabled=has_table),
+        "patch_cell": action("编辑单元格", enabled=has_headers and has_rows),
+        "save_sqlite": action(
+            "保存到 SQLite",
+            enabled=has_headers,
+            requires=["db_path", "table_name"],
+            mode_source="describe_table_save_modes",
+        ),
+        "delete_sqlite": action(
+            "删除 SQLite 表",
+            enabled=is_sqlite_source,
+            requires=["db_path", "table_name", "confirmed"],
+            requires_confirmation=True,
+        ),
+        "apply_to_workflow": action("设置为工作流输入", enabled=has_headers),
+    }
+    return {
+        "schema_version": DATA_SOURCE_ACTIONS_SCHEMA_VERSION,
+        "source": source_payload,
+        "source_type": source_type,
+        "dirty": bool(dirty),
+        "has_table": has_table,
+        "has_headers": has_headers,
+        "has_rows": has_rows,
+        "is_sqlite_source": is_sqlite_source,
+        "actions": actions,
     }
 
 
