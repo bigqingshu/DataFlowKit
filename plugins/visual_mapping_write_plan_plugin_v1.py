@@ -330,8 +330,19 @@ def describe_config(params, context):
             "display_columns": copy.deepcopy(spec.get("columns") or []),
             "columns": _visual_mapping_item_schema_columns(
                 section,
+                table_names=table_names,
                 content_fields=content_fields,
+                aux_fields=aux_fields,
                 feature_names=feature_names,
+                sheet_names=sheet_names,
+                rule_names=rule_names,
+                linked_trigger_options=linked_trigger_options,
+            ),
+            "detail_sections": _visual_mapping_item_schema_detail_sections(
+                section,
+                table_names=table_names,
+                content_fields=content_fields,
+                aux_fields=aux_fields,
                 sheet_names=sheet_names,
                 rule_names=rule_names,
                 linked_trigger_options=linked_trigger_options,
@@ -492,12 +503,15 @@ def preview_config_effect(params, context):
 def _visual_mapping_item_schema_columns(
     section,
     *,
+    table_names=None,
     content_fields=None,
+    aux_fields=None,
     feature_names=None,
     sheet_names=None,
     rule_names=None,
     linked_trigger_options=None,
 ):
+    _ = table_names, aux_fields
     content_fields = list(content_fields or [])
     feature_names = list(feature_names or [])
     sheet_names = list(sheet_names or [])
@@ -582,6 +596,143 @@ def _visual_mapping_item_schema_columns(
             select_field("overflow_policy", "溢出处理", LINK_OVERFLOW_POLICIES, allow_custom=False),
         ]
     return common
+
+
+def _visual_mapping_item_schema_detail_sections(
+    section,
+    *,
+    table_names=None,
+    content_fields=None,
+    aux_fields=None,
+    sheet_names=None,
+    rule_names=None,
+    linked_trigger_options=None,
+):
+    table_names = list(table_names or [])
+    content_fields = list(content_fields or [])
+    aux_fields = list(aux_fields or [])
+    sheet_names = list(sheet_names or [])
+    rule_names = list(rule_names or [])
+    linked_trigger_options = list(linked_trigger_options or [])
+    source_choices = ["手动输入"] + [item for item in table_names if item != "手动输入"]
+    value_fields = _unique_nonempty(content_fields + aux_fields)
+    match_modes = ["包含", "等于", "不等于", "正则匹配", "正则不匹配", "为空", "非空"]
+
+    def field(key, label, field_type="text", **extra):
+        item = {"key": key, "label": label, "type": field_type, "config_path": [part for part in key.split(".") if part]}
+        item.update(extra)
+        return item
+
+    def select_field(key, label, choices, **extra):
+        allow_custom = bool(extra.pop("allow_custom", True))
+        return field(key, label, "select", choices=list(choices or []), allow_custom=allow_custom, **extra)
+
+    def structured_section(key, title, columns, *, item_default=None):
+        return {
+            "key": key,
+            "title": title,
+            "kind": "structured_list",
+            "config_path": [key],
+            "patch_operations": ["append_item", "update_item", "replace_item", "delete_item", "move_item", "set_enabled"],
+            "item_default": copy.deepcopy(item_default or {}),
+            "item_schema": {
+                "type": "object",
+                "columns": columns,
+            },
+        }
+
+    def form_section(key, title, fields):
+        return {
+            "key": key,
+            "title": title,
+            "kind": "form",
+            "config_path": [key],
+            "fields": fields,
+        }
+
+    feature_condition_columns = [
+        select_field("join", "连接", ["AND", "OR"], allow_custom=False),
+        select_field("sheet_name", "工作表", sheet_names, options_source={"type": "visual_mapping_context", "key": "sheet_names"}),
+        field("row_index", "行号", "number", min=0, step=1),
+        field("col_index", "列号", "number", min=0, step=1),
+        select_field("mode", "匹配方式", match_modes, allow_custom=False),
+        field("value", "匹配值"),
+    ]
+    simple_condition_columns = [
+        select_field("join", "连接", ["AND", "OR"], allow_custom=False),
+        select_field("mode", "匹配方式", match_modes, allow_custom=False),
+        field("value", "匹配值"),
+    ]
+    batch_rule_columns = [
+        field("enabled", "启用", "bool"),
+        select_field("match_mode", "匹配方式", match_modes, allow_custom=False),
+        select_field("match_value_source", "匹配值来源", source_choices, options_source={"type": "visual_mapping_context", "key": "table_names"}),
+        field("match_value", "匹配值"),
+        select_field("match_value_field", "匹配字段", value_fields, options_source={"type": "visual_mapping_context", "key": "content_fields"}),
+        select_field("match_row_policy", "匹配行策略", REPLACE_ROW_POLICY_CHOICES, allow_custom=False),
+        field("match_row_index", "匹配固定行", "number", min=1, step=1),
+        select_field("replace_mode", "替换方式", ["局部替换匹配字符串", "整格替换为新值"], allow_custom=False),
+        select_field("replace_value_source", "替换值来源", source_choices, options_source={"type": "visual_mapping_context", "key": "table_names"}),
+        field("replace_value", "替换值"),
+        select_field("replace_value_field", "替换字段", value_fields, options_source={"type": "visual_mapping_context", "key": "content_fields"}),
+        select_field("replace_row_policy", "替换行策略", REPLACE_ROW_POLICY_CHOICES, allow_custom=False),
+        field("replace_row_index", "替换固定行", "number", min=1, step=1),
+        field("case_sensitive", "区分大小写", "bool"),
+        field("skip_empty_match_value", "跳过空匹配值", "bool"),
+        field("count", "替换次数", "number", min=0, step=1),
+    ]
+    anchor_fields = [
+        field("enabled", "启用", "bool"),
+        select_field("axis", "方向", ["行", "列"], allow_custom=False),
+        field("index", "行/列序号", "number", min=1, step=1),
+        select_field("match_mode", "匹配方式", match_modes, allow_custom=False),
+        field("value", "匹配值"),
+        field("row_offset", "行偏移", "number", step=1),
+        field("col_offset", "列偏移", "number", step=1),
+    ]
+    source_match_fields = [
+        field("enabled", "启用", "bool"),
+        select_field("logic", "条件连接", ["AND", "OR"], allow_custom=False),
+        select_field("mode", "匹配方式", match_modes, allow_custom=False),
+        field("value", "匹配值"),
+    ]
+    linked_action_columns = [
+        field("enabled", "启用", "bool"),
+        field("name", "动作名称"),
+        select_field("target_mode", "目标方式", LINK_ACTION_TARGET_MODES, allow_custom=False),
+        field("row_offset", "行偏移", "number", step=1),
+        field("col_offset", "列偏移", "number", step=1),
+        select_field("value_source", "写入来源", LINK_VALUE_SOURCES, allow_custom=False),
+        field("fixed_value", "固定值"),
+        select_field("value_field", "新内容字段", content_fields, options_source={"type": "visual_mapping_context", "key": "content_fields"}),
+        field("value_template", "模板"),
+        select_field("write_mode", "写入方式", LINK_WRITE_MODES, allow_custom=False),
+        select_field("empty_policy", "空值策略", ["允许", "跳过"], allow_custom=False),
+    ]
+
+    if section == "rules":
+        return [
+            form_section("source_match", "输入源匹配", source_match_fields),
+            form_section("anchor", "锚点定位", anchor_fields),
+            structured_section("conditions", "内容条件", simple_condition_columns, item_default={"join": "AND", "mode": "包含", "value": ""}),
+            structured_section("batch_rules", "批量替换规则", batch_rule_columns, item_default={"enabled": True, "match_mode": "包含", "match_value_source": "手动输入", "replace_mode": "局部替换匹配字符串", "replace_value_source": "手动输入"}),
+        ]
+    if section == "features":
+        return [
+            structured_section("conditions", "特征条件", feature_condition_columns, item_default={"join": "AND", "sheet_name": "", "row_index": "1", "col_index": "1", "mode": "包含", "value": ""}),
+        ]
+    if section == "global_rules":
+        return [
+            structured_section("conditions", "命中条件", simple_condition_columns, item_default={"join": "AND", "mode": "包含", "value": ""}),
+            structured_section("batch_rules", "批量替换规则", batch_rule_columns, item_default={"enabled": True, "match_mode": "包含", "match_value_source": "手动输入", "replace_mode": "局部替换匹配字符串", "replace_value_source": "手动输入"}),
+        ]
+    if section == "linked_rules":
+        return [
+            form_section("anchor", "锚点定位", anchor_fields),
+            structured_section("conditions", "触发文本条件", simple_condition_columns, item_default={"join": "AND", "mode": "包含", "value": ""}),
+            structured_section("actions", "联动动作", linked_action_columns, item_default={"enabled": True, "name": "新动作", "target_mode": LINK_ACTION_SHARED_SLOT, "value_source": LINK_VALUE_TEMPLATE, "write_mode": LINK_WRITE_REPLACE}),
+        ]
+    return []
 
 
 def validate_config_patch(params, context, patch):

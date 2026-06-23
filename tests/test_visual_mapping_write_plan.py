@@ -253,6 +253,19 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertIn("write_value", rule_schema_columns["mapping.content_field"]["choices"])
         self.assertEqual(rule_schema_columns["source_locator.sheet_name"]["config_path"], ["source_locator", "sheet_name"])
         self.assertIn("Sheet1", rule_schema_columns["source_locator.sheet_name"]["choices"])
+        rule_detail_sections = {
+            section["key"]: section
+            for section in view_by_id["visual_mapping.rules"]["item_schema"]["detail_sections"]
+        }
+        self.assertEqual(rule_detail_sections["source_match"]["kind"], "form")
+        self.assertEqual(rule_detail_sections["anchor"]["kind"], "form")
+        self.assertEqual(rule_detail_sections["batch_rules"]["kind"], "structured_list")
+        batch_columns = {
+            column["key"]: column
+            for column in rule_detail_sections["batch_rules"]["item_schema"]["columns"]
+        }
+        self.assertIn("文档", batch_columns["match_value_source"]["choices"])
+        self.assertIn("old", batch_columns["replace_value_field"]["choices"])
         self.assertIn("append_item", view_by_id["visual_mapping.rules"]["patch_operations"])
         self.assertIn("set_enabled", view_by_id["visual_mapping.rules"]["patch_operations"])
         self.assertEqual(view_by_id["visual_mapping.features"]["items"][0]["condition_count"], 1)
@@ -264,6 +277,15 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         }
         self.assertEqual(feature_schema_columns["logic"]["choices"], ["AND", "OR"])
         self.assertFalse(feature_schema_columns["logic"]["allow_custom"])
+        feature_detail_sections = {
+            section["key"]: section
+            for section in view_by_id["visual_mapping.features"]["item_schema"]["detail_sections"]
+        }
+        feature_condition_columns = {
+            column["key"]: column
+            for column in feature_detail_sections["conditions"]["item_schema"]["columns"]
+        }
+        self.assertIn("Sheet1", feature_condition_columns["sheet_name"]["choices"])
         self.assertEqual(view_by_id["visual_mapping.global_rules"]["items"][0]["batch_rule_count"], 1)
         self.assertEqual(view_by_id["visual_mapping.global_rules"]["item_model_key"], "global_rule_default")
         global_schema_columns = {
@@ -272,6 +294,12 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         }
         self.assertIn(visual.GLOBAL_SCOPE_SPECIAL_OBJECTS, global_schema_columns["scope"]["choices"])
         self.assertIn(visual.BATCH_TARGET_FULL_TEXT, global_schema_columns["batch_target_scope"]["choices"])
+        global_detail_sections = {
+            section["key"]: section
+            for section in view_by_id["visual_mapping.global_rules"]["item_schema"]["detail_sections"]
+        }
+        self.assertIn("conditions", global_detail_sections)
+        self.assertIn("batch_rules", global_detail_sections)
         self.assertEqual(view_by_id["visual_mapping.linked_rules"]["items"][0]["target_mode"], visual.LINK_TARGET_FIXED_CELL)
         self.assertEqual(view_by_id["visual_mapping.linked_rules"]["item_model_key"], "linked_rule_default")
         linked_schema_columns = {
@@ -281,6 +309,17 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertIn(visual.LINK_TARGET_FIXED_CELL, linked_schema_columns["target_mode"]["choices"])
         self.assertIn("普通规则", linked_schema_columns["trigger_rule"]["choices"])
         self.assertEqual(linked_schema_columns["value_field"]["options_source"]["key"], "content_fields")
+        linked_detail_sections = {
+            section["key"]: section
+            for section in view_by_id["visual_mapping.linked_rules"]["item_schema"]["detail_sections"]
+        }
+        self.assertEqual(linked_detail_sections["actions"]["kind"], "structured_list")
+        linked_action_columns = {
+            column["key"]: column
+            for column in linked_detail_sections["actions"]["item_schema"]["columns"]
+        }
+        self.assertIn(visual.LINK_ACTION_SHARED_SLOT, linked_action_columns["target_mode"]["choices"])
+        self.assertIn(visual.LINK_VALUE_TEMPLATE, linked_action_columns["value_source"]["choices"])
         self.assertIn("visual_mapping.edit.rules", [action["action_id"] for action in described["actions"]])
         self.assertIn("linked_rule_default", described["models"])
         self.assertEqual(effect["schema_version"], "DataFlowKit.visual_mapping.config_effect.v1")
