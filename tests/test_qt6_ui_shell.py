@@ -28,6 +28,7 @@ from ui_qt.node_ui_metadata import (
 )
 from ui_qt.qt_compat import QtBindingUnavailable, qt_enum
 from workflow.node_ui_schema import build_node_detail_payload, get_node_ui_schema
+from workflow.node_config_context_cache import build_preview_context_cache
 
 
 class Qt6UiShellTests(unittest.TestCase):
@@ -1959,6 +1960,71 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertIn("输出设置校验失败", controller.status_bar.currentMessage())
             settings = controller.current_output_settings()
             self.assertEqual(settings["mode"], "保存为SQLite新表")
+
+    def test_controller_uses_preview_cache_for_next_node_config_fields(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        controller = QtWorkflowMainWindow(qt)
+        plan = {
+            "headers": ["A"],
+            "rows": [["a"]],
+            "nodes": [
+                {
+                    "node_type_id": "core.new_columns",
+                    "name": "生成字段",
+                    "enabled": True,
+                    "config": {"columns_text": "Generated=1", "conflict_mode": "自动改名"},
+                },
+                {
+                    "node_type_id": "core.replace",
+                    "name": "使用生成字段",
+                    "enabled": True,
+                    "config": {
+                        "target_field": "A",
+                        "match_mode": "包含",
+                        "replace_mode": "局部替换匹配字符串",
+                        "match_value_source": "手动输入",
+                        "match_value": "a",
+                        "replace_value_source": "手动输入",
+                        "replace_value": "b",
+                    },
+                },
+            ],
+        }
+        controller.current_plan = copy.deepcopy(plan)
+        controller.current_headers = ["A"]
+        controller.current_rows = [["a"]]
+        controller.node_config_preview_cache = build_preview_context_cache(
+            plan=plan,
+            stop_index=0,
+            headers=["A", "Generated"],
+            rows=[["a", "g"]],
+        )
+        captured_headers = []
+        original_schema = controller.engine_client.get_node_ui_schema
+
+        def fake_get_node_ui_schema(node_type_id, **kwargs):
+            if node_type_id == "core.replace":
+                captured_headers.append(list(kwargs.get("preview_headers") or []))
+            return original_schema(node_type_id, **kwargs)
+
+        def fail_start_job(*args, **kwargs):
+            raise AssertionError("opening node config must not start a workflow job")
+
+        controller.engine_client.get_node_ui_schema = fake_get_node_ui_schema
+        controller.engine_client.start_job = fail_start_job
+
+        controller.refresh_all(selected_index=1)
+        app.processEvents()
+
+        target_editor = controller.config_form.config_fields["target_field"]["editor"]
+        choices = [target_editor.itemText(i) for i in range(target_editor.count())]
+        self.assertIn(["A", "Generated"], captured_headers)
+        self.assertIn("Generated", choices)
+        self.assertFalse(controller.current_job_id)
 
     def test_controller_feedback_uses_structured_validation_sections(self):
         try:

@@ -17,6 +17,10 @@ from ui_qt.node_ui_metadata import CATEGORY_ORDER, category_label, format_node_d
 from ui_qt.qt_compat import qt_enum
 from ui_qt.table_model import make_table_model
 from ui_qt.table_view_utils import configure_fast_table_view
+from workflow.node_config_context_cache import (
+    build_preview_context_cache,
+    resolve_node_config_headers,
+)
 
 
 class QtWorkflowMainWindow:
@@ -50,6 +54,8 @@ class QtWorkflowMainWindow:
         self.current_job_messages = []
         self.current_job_started_at = 0.0
         self.current_job_has_workflow_elapsed = False
+        self.current_job_stop_index = None
+        self.node_config_preview_cache = {}
         self.workflow_action_buttons = []
         self.node_action_buttons = {}
         self.run_action_buttons = {}
@@ -681,6 +687,7 @@ class QtWorkflowMainWindow:
             ))
             return None
         self.current_plan = result.get("plan") or self.current_plan
+        self._clear_node_config_preview_cache()
         self.refresh_node_list()
         selected = result.get("selected_index")
         if selected is not None and self.node_list.count():
@@ -751,6 +758,18 @@ class QtWorkflowMainWindow:
             return
         self.apply_plan_command({"type": "clear_nodes"}, status_message="节点已清空。")
 
+    def _clear_node_config_preview_cache(self):
+        self.node_config_preview_cache = {}
+
+    def _node_config_headers_for_index(self, index):
+        resolved = resolve_node_config_headers(
+            selected_index=index,
+            current_headers=self.current_headers,
+            preview_cache=self.node_config_preview_cache,
+            plan=self.current_plan,
+        )
+        return list(resolved.get("headers") or [])
+
     def show_node_config(self, row):
         panel_state = self._panel_state(selected_index=row)
         node = panel_state.get("selected_node")
@@ -761,24 +780,35 @@ class QtWorkflowMainWindow:
             self._clear_plugin_config_views()
             return
         node_type_id = self._node_type_id_for_node(node)
+        table_context = self._table_context()
+        config_headers = self._node_config_headers_for_index(row)
         schema = panel_state.get("selected_schema") or self.node_schema_by_id.get(node_type_id, {})
+        if not str(node_type_id or "").startswith("plugin."):
+            try:
+                schema = self.engine_client.get_node_ui_schema(
+                    node_type_id,
+                    preview_headers=config_headers,
+                    table_names=table_context.get("table_names"),
+                    table_columns=table_context.get("table_columns"),
+                ) or schema
+            except Exception:
+                pass
         plugin_config_description = self._describe_plugin_config_for_node(node_type_id, node)
         if plugin_config_description.get("ok") and isinstance(plugin_config_description.get("node_ui_schema"), dict):
             schema = plugin_config_description["node_ui_schema"]
             self.node_schema_by_id[node_type_id] = schema
         display = schema.get("display_name") or node.get("type") or node_type_id
         self.config_header_label.setText(f"节点类型：{display}    节点名称：{node.get('name', '')}")
-        table_context = self._table_context()
         self.config_form.set_node(
             node,
-            headers=self.current_headers,
+            headers=config_headers,
             table_names=table_context.get("table_names"),
             table_columns=table_context.get("table_columns"),
             plan=self.current_plan,
             schema=schema,
         )
         self._update_legacy_plugin_config_button(schema)
-        self.show_node_detail(node_type_id)
+        self.show_node_detail(node_type_id, preview_headers=config_headers)
         self._append_plugin_config_detail(plugin_config_description)
         self._render_plugin_config_views(plugin_config_description)
         self.refresh_action_states()
@@ -1106,11 +1136,12 @@ class QtWorkflowMainWindow:
         updated_node = copy.deepcopy(node)
         updated_node["config"] = copy.deepcopy(result.get("config") or config)
         table_context = self._table_context()
+        config_headers = self._node_config_headers_for_index(index)
         applied = self.engine_client.apply_node_config_state(
             self.current_plan,
             index=index,
             node=updated_node,
-            preview_headers=self.current_headers,
+            preview_headers=config_headers,
             table_names=table_context.get("table_names"),
             table_columns=table_context.get("table_columns"),
         )
@@ -1122,6 +1153,7 @@ class QtWorkflowMainWindow:
         apply_result = applied.get("apply_result") or {}
         if apply_result.get("ok"):
             self.current_plan = apply_result.get("plan") or self.current_plan
+            self._clear_node_config_preview_cache()
             self.refresh_all(selected_index=apply_result.get("selected_index", index))
         self._apply_feedback(self.engine_client.build_user_feedback(
             level="success",
@@ -1138,11 +1170,12 @@ class QtWorkflowMainWindow:
         try:
             node = self.config_form.to_node()
             table_context = self._table_context()
+            config_headers = self._node_config_headers_for_index(index)
             result = self.engine_client.apply_node_config_state(
                 self.current_plan,
                 index=index,
                 node=node,
-                preview_headers=self.current_headers,
+                preview_headers=config_headers,
                 table_names=table_context.get("table_names"),
                 table_columns=table_context.get("table_columns"),
             )
@@ -1155,6 +1188,7 @@ class QtWorkflowMainWindow:
             apply_result = result.get("apply_result") or {}
             if apply_result.get("ok"):
                 self.current_plan = apply_result.get("plan") or self.current_plan
+                self._clear_node_config_preview_cache()
                 self.refresh_all(selected_index=apply_result.get("selected_index", index))
         except Exception as exc:
             self.show_error("配置无效", str(exc))
@@ -1292,6 +1326,7 @@ class QtWorkflowMainWindow:
         self.current_plan["rows"] = [list(row) for row in self.current_rows]
         self.last_preview_headers = []
         self.last_preview_rows = []
+        self._clear_node_config_preview_cache()
         table_context = self._table_context()
         self.config_form.set_headers(self.current_headers)
         self.config_form.set_table_names(table_context.get("table_names"))
@@ -1316,6 +1351,7 @@ class QtWorkflowMainWindow:
         self.apply_output_settings_from_plan(state.get("plan") or {})
         self.last_preview_headers = []
         self.last_preview_rows = []
+        self._clear_node_config_preview_cache()
         self.refresh_all()
         panel = state.get("message_panel") or self.engine_client.build_message_panel_state(
             mode="info",
@@ -1348,15 +1384,16 @@ class QtWorkflowMainWindow:
         if node_type_id:
             self.show_node_detail(node_type_id)
 
-    def show_node_detail(self, node_type_id):
+    def show_node_detail(self, node_type_id, preview_headers=None):
+        headers = self.current_headers if preview_headers is None else list(preview_headers or [])
         try:
-            described = self.engine_client.describe_node_detail(node_type_id, preview_headers=self.current_headers, **self._table_context())
+            described = self.engine_client.describe_node_detail(node_type_id, preview_headers=headers, **self._table_context())
         except Exception:
             described = {}
         try:
             context = self.engine_client.facade.describe_node_config_context(
                 node_type_id,
-                preview_headers=self.current_headers,
+                preview_headers=headers,
                 **self._table_context(),
             )
         except Exception:
@@ -1922,6 +1959,7 @@ class QtWorkflowMainWindow:
         self.current_input_db_path = ""
         self.last_preview_headers = []
         self.last_preview_rows = []
+        self._clear_node_config_preview_cache()
         self.refresh_all()
         self._apply_message_panel(self.engine_client.build_message_panel_state(
             mode="success",
@@ -1936,6 +1974,7 @@ class QtWorkflowMainWindow:
         self.current_input_db_path = ""
         self.last_preview_headers = []
         self.last_preview_rows = []
+        self._clear_node_config_preview_cache()
         self.current_plan["headers"] = list(self.current_headers)
         self.current_plan["rows"] = [list(row) for row in self.current_rows]
         self.update_input_summary()
@@ -2284,6 +2323,8 @@ class QtWorkflowMainWindow:
         self.current_job_messages = []
         self.current_job_started_at = time.perf_counter()
         self.current_job_has_workflow_elapsed = False
+        self.current_job_stop_index = options.get("stop_index", options.get("stop_at"))
+        self._clear_node_config_preview_cache()
         self._apply_job_progress_state(self.engine_client.build_job_progress_state(
             current_job_id=self.current_job_id,
             title=self.current_job_title,
@@ -2441,6 +2482,13 @@ class QtWorkflowMainWindow:
         elif headers or rows:
             self.last_preview_headers = headers
             self.last_preview_rows = rows
+            if self.current_job_action == "preview_plan":
+                self.node_config_preview_cache = build_preview_context_cache(
+                    plan=self.current_plan,
+                    stop_index=self.current_job_stop_index,
+                    headers=headers,
+                    rows=rows,
+                )
             self.update_table(headers, rows, title=str(view_state.get("table_title") or self.current_job_title or "执行结果"))
             self.current_table_kind = str(view_state.get("table_kind") or "preview")
             if hasattr(self, "result_tabs"):
@@ -2477,6 +2525,7 @@ class QtWorkflowMainWindow:
         self.current_job_messages = []
         self.current_job_started_at = 0.0
         self.current_job_has_workflow_elapsed = False
+        self.current_job_stop_index = None
 
     def set_workflow_running(self, running):
         self.refresh_action_states(is_running=bool(running))

@@ -63,9 +63,68 @@ READ_STRATEGIES = [
     "win32完整读取",
 ]
 
+PARAMETER_UI_METADATA = {
+    "read_engine": {"group": "读取设置", "order": 10},
+    "word_merge_mode": {"group": "读取设置", "order": 20, "advanced": True},
+    "doc_read_strategy": {"group": "读取设置", "order": 30, "advanced": True},
+    "path_source": {"group": "文件来源", "order": 100},
+    "path_field": {
+        "group": "文件来源",
+        "order": 110,
+        "options_source": {"type": "preview_headers"},
+        "visible_when": {"field": "path_source", "equals": "当前表字段=完整文件路径"},
+        "empty_text": "当前输入表没有可选字段",
+    },
+    "dir_field": {
+        "group": "文件来源",
+        "order": 120,
+        "options_source": {"type": "preview_headers"},
+        "visible_when": {"field": "path_source", "equals": "当前表字段=目录路径"},
+        "empty_text": "当前输入表没有可选字段",
+    },
+    "directory_path": {
+        "group": "文件来源",
+        "order": 130,
+        "placeholder": "选择或输入固定目录路径",
+        "visible_when": {"field": "path_source", "equals": "插件参数=固定目录路径"},
+    },
+    "recursive": {
+        "group": "文件来源",
+        "order": 140,
+        "visible_when": {"field": "path_source", "in": ["当前表字段=目录路径", "插件参数=固定目录路径"]},
+    },
+    "file_patterns": {
+        "group": "文件来源",
+        "order": 150,
+        "visible_when": {"field": "path_source", "in": ["当前表字段=目录路径", "插件参数=固定目录路径"]},
+    },
+    "table_name_mode": {"group": "写库设置", "order": 200},
+    "table_prefix": {"group": "写库设置", "order": 210},
+    "write_mode": {"group": "写库设置", "order": 220},
+    "preview_write_db": {"group": "写库设置", "order": 230, "warning": "开启后预览也会写入数据库。"},
+    "enable_cache": {"group": "缓存与失败处理", "order": 300},
+    "force_refresh": {"group": "缓存与失败处理", "order": 310, "enabled_when": {"field": "enable_cache", "equals": True}},
+    "cache_key_mode": {"group": "缓存与失败处理", "order": 320, "enabled_when": {"field": "enable_cache", "equals": True}},
+    "error_policy": {"group": "缓存与失败处理", "order": 330},
+}
+
+
+def _with_parameter_ui_metadata(fields):
+    result = []
+    for field in fields:
+        if not isinstance(field, dict):
+            result.append(field)
+            continue
+        merged = dict(field)
+        for key, value in PARAMETER_UI_METADATA.get(str(field.get("name") or ""), {}).items():
+            merged.setdefault(key, value)
+        result.append(merged)
+    return result
+
+
 
 def get_parameter_schema():
-    return [
+    return _with_parameter_ui_metadata([
         {
             "name": "read_engine",
             "label": "读取引擎",
@@ -185,7 +244,7 @@ def get_parameter_schema():
             "choices": ["继续并记录失败", "遇错停止"],
             "default": "继续并记录失败",
         },
-    ]
+    ])
 
 
 def get_table_access_spec(params=None, context=None):

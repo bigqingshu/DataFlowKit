@@ -56,9 +56,59 @@ OUTPUT_HEADERS = [
     "error",
 ]
 
+PARAMETER_UI_METADATA = {
+    "write_engine": {"group": "写入引擎", "order": 10},
+    "preview_write_files": {"group": "写入引擎", "order": 20, "warning": "开启后预览也会写入文件。"},
+    "win32_reuse_app": {"group": "win32高级设置", "order": 100, "advanced": True, "visible_when": {"field": "write_engine", "equals": "win32"}},
+    "win32_open_retries": {"group": "win32高级设置", "order": 110, "advanced": True, "visible_when": {"field": "write_engine", "equals": "win32"}, "min": 0, "step": 1, "unit": "次"},
+    "win32_retry_interval_ms": {"group": "win32高级设置", "order": 120, "advanced": True, "visible_when": {"field": "write_engine", "equals": "win32"}, "min": 0, "step": 50, "unit": "ms"},
+    "win32_close_settle_ms": {"group": "win32高级设置", "order": 130, "advanced": True, "visible_when": {"field": "write_engine", "equals": "win32"}, "min": 0, "step": 50, "unit": "ms"},
+    "win32_cell_retries": {"group": "win32高级设置", "order": 140, "advanced": True, "visible_when": {"field": "write_engine", "equals": "win32"}, "min": 0, "step": 1, "unit": "次"},
+    "win32_save_retries": {"group": "win32高级设置", "order": 150, "advanced": True, "visible_when": {"field": "write_engine", "equals": "win32"}, "min": 0, "step": 1, "unit": "次"},
+    "word_text_write_mode": {"group": "写入策略", "order": 200, "visible_when": {"field": "write_engine", "equals": "win32"}},
+    "scoped_replace_default": {"group": "写入策略", "order": 210},
+    "target_conflict_policy": {"group": "写入策略", "order": 220},
+    "verify_after_write": {"group": "写入策略", "order": 230},
+    "error_policy": {"group": "写入策略", "order": 240},
+    "allow_empty_text_write": {"group": "写入策略", "order": 250},
+    "path_field": {"group": "路径字段", "order": 300, "options_source": {"type": "preview_headers"}, "empty_text": "当前输入表没有可选字段"},
+    "target_path_field": {"group": "路径字段", "order": 310, "options_source": {"type": "preview_headers"}, "empty_text": "当前输入表没有可选字段"},
+    "target_missing_policy": {"group": "目标文件策略", "order": 400},
+    "target_existing_policy": {"group": "目标文件策略", "order": 410},
+    "same_path_policy": {"group": "目标文件策略", "order": 420},
+    "create_parent_dirs": {"group": "目标文件策略", "order": 430},
+    "backup_mode": {"group": "目标文件策略", "order": 440},
+    "block_type_field": {"group": "写入数据字段", "order": 500, "options_source": {"type": "preview_headers"}, "empty_text": "当前输入表没有可选字段"},
+    "sheet_name_field": {"group": "写入数据字段", "order": 510, "options_source": {"type": "preview_headers"}},
+    "row_index_field": {"group": "写入数据字段", "order": 520, "options_source": {"type": "preview_headers"}},
+    "col_index_field": {"group": "写入数据字段", "order": 530, "options_source": {"type": "preview_headers"}},
+    "cell_address_field": {"group": "写入数据字段", "order": 540, "options_source": {"type": "preview_headers"}},
+    "value_field": {"group": "写入数据字段", "order": 550, "options_source": {"type": "preview_headers"}},
+    "old_text_field": {"group": "写入数据字段", "order": 560, "options_source": {"type": "preview_headers"}},
+    "write_strategy_field": {"group": "写入数据字段", "order": 570, "options_source": {"type": "preview_headers"}},
+    "replace_scope_field": {"group": "写入数据字段", "order": 580, "options_source": {"type": "preview_headers"}},
+    "rule_old_text_field": {"group": "写入数据字段", "order": 590, "options_source": {"type": "preview_headers"}},
+    "rule_new_text_field": {"group": "写入数据字段", "order": 600, "options_source": {"type": "preview_headers"}},
+    "meta_json_field": {"group": "写入数据字段", "order": 610, "options_source": {"type": "preview_headers"}},
+}
+
+
+def _with_parameter_ui_metadata(fields):
+    result = []
+    for field in fields:
+        if not isinstance(field, dict):
+            result.append(field)
+            continue
+        merged = dict(field)
+        for key, value in PARAMETER_UI_METADATA.get(str(field.get("name") or ""), {}).items():
+            merged.setdefault(key, value)
+        result.append(merged)
+    return result
+
+
 
 def get_parameter_schema():
-    return [
+    return _with_parameter_ui_metadata([
         {
             "name": "write_engine",
             "label": "写入引擎",
@@ -203,7 +253,7 @@ def get_parameter_schema():
         {"name": "rule_old_text_field", "label": "规则旧值字段", "type": "field_select", "default": "rule_old_text"},
         {"name": "rule_new_text_field", "label": "规则新值字段", "type": "field_select", "default": "rule_new_text"},
         {"name": "meta_json_field", "label": "meta字段", "type": "field_select", "default": "meta_json"},
-    ]
+    ])
 
 
 def get_output_schema(params=None, input_data=None, context=None):

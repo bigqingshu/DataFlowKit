@@ -180,10 +180,10 @@ class PluginServiceTests(unittest.TestCase):
                     "PLUGIN_INFO = {'id': 'extended', 'name': 'Extended', 'api_version': '1.0'}",
                     "SETTINGS_FILE = 'extended_settings.json'",
                     "PARAMETER_SCHEMA = [",
-                    "    {'name': 'table_name', 'label': '数据表', 'type': 'table_select', 'default': 'orders'},",
+                    "    {'name': 'table_name', 'label': '数据表', 'type': 'table_select', 'default': 'orders', 'group': '输入', 'empty_text': '没有表'},",
                     "    {'name': 'input_alias', 'label': '输入表', 'type': 'input_table_select', 'default': '当前表'},",
                     "    {'name': 'config_name', 'label': '配置', 'type': 'dynamic_select', 'default': 'default', 'allow_custom': True},",
-                    "    {'name': 'directory_path', 'label': '目录', 'type': 'folder_path', 'default': ''},",
+                    "    {'name': 'directory_path', 'label': '目录', 'type': 'folder_path', 'default': '', 'visible_when': {'field': 'input_alias', 'equals': '当前表'}, 'enabled_when': {'field': 'config_name', 'truthy': True}},",
                     "]",
                     "def get_dynamic_parameter_options(param_name, params, context):",
                     "    return ['default', 'advanced'] if param_name == 'config_name' else []",
@@ -205,6 +205,8 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(fields["params.table_name"]["type"], "table_select")
         self.assertEqual(fields["params.table_name"]["options_source"], {"type": "table_names"})
         self.assertEqual(fields["params.table_name"]["action"]["key"], "pick_table_name")
+        self.assertEqual(fields["params.table_name"]["group"], "输入")
+        self.assertEqual(fields["params.table_name"]["empty_text"], "没有表")
         self.assertEqual(fields["params.input_alias"]["type"], "select")
         self.assertEqual(fields["params.input_alias"]["options_source"], {"type": "plugin_input_tables"})
         self.assertEqual(fields["params.input_alias"]["action"]["key"], "pick_plugin_input_table")
@@ -213,6 +215,8 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(fields["params.config_name"]["options_source"]["param_key"], "config_name")
         self.assertEqual(fields["params.directory_path"]["type"], "directory")
         self.assertEqual(fields["params.directory_path"]["action"]["key"], "browse_directory")
+        self.assertEqual(fields["params.directory_path"]["visible_when"], {"field": "params.input_alias", "equals": "当前表"})
+        self.assertEqual(fields["params.directory_path"]["enabled_when"], {"field": "params.config_name", "truthy": True})
         described_fields = {
             field["key"]: field
             for group in described["node_ui_schema"]["form"]["groups"]

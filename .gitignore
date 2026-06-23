@@ -250,3 +250,13 @@ rename_log.csv
 plugins/hex转烧录EE文件.py
 plugins/*hex*.py
 plugins/*HEX*.py
+
+# Local tool/runtime directories
+Python38/
+.idea/
+tmp*/
+workflow/_codex_write_probe.tmp
+
+# .NET local build outputs
+ui_net/**/bin/
+ui_net/**/obj/

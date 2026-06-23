@@ -41,8 +41,33 @@ PLUGIN_INFO = {
 # -----------------------------------------------------------------------------
 # 参数定义
 # -----------------------------------------------------------------------------
+
+PARAMETER_UI_METADATA = {
+    "path_field": {"group": "输入", "order": 10, "options_source": {"type": "preview_headers"}, "empty_text": "当前输入表没有可选字段"},
+    "add_status": {"group": "输出", "order": 100},
+    "output_prefix": {"group": "输出", "order": 110},
+    "sample_table": {"group": "输入", "order": 20, "options_source": {"type": "table_names"}, "empty_text": "当前没有可选数据库表"},
+    "enable_cache": {"group": "缓存", "order": 200},
+    "force_refresh": {"group": "缓存", "order": 210, "enabled_when": {"field": "enable_cache", "equals": True}},
+    "cache_key_mode": {"group": "缓存", "order": 220, "enabled_when": {"field": "enable_cache", "equals": True}},
+}
+
+
+def _with_parameter_ui_metadata(fields):
+    result = []
+    for field in fields:
+        if not isinstance(field, dict):
+            result.append(field)
+            continue
+        merged = dict(field)
+        for key, value in PARAMETER_UI_METADATA.get(str(field.get("name") or ""), {}).items():
+            merged.setdefault(key, value)
+        result.append(merged)
+    return result
+
+
 def get_parameter_schema():
-    return [
+    return _with_parameter_ui_metadata([
         {
             "name": "path_field",
             "label": "文件路径字段",
@@ -92,7 +117,7 @@ def get_parameter_schema():
             "options": ["快速签名", "文件Hash"],
             "help": "快速签名=路径+大小+修改时间；文件Hash=额外计算sha256，更准确但更慢。",
         },
-    ]
+    ])
 
 
 def get_output_schema(params=None, input_data=None, context=None):

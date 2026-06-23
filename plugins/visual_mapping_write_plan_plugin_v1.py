@@ -45,6 +45,9 @@ PLUGIN_INFO = {
 }
 
 SETTINGS_FILE = "visual_mapping_write_plan_settings.json"
+CONFIG_SCHEMA_VERSION = "DataFlowKit.visual_mapping.config.v1"
+CONFIG_PROTOCOL_FAMILY = "plugin_complex_config"
+CONFIG_SECTIONS = {"rules", "features", "global_rules", "linked_rules"}
 MAX_AREA_SCAN_ROWS = 100000
 FEATURE_ANY_LABEL = "不限制"
 SHEET_ALL_LABEL = "所有表"
@@ -312,7 +315,10 @@ def describe_config(params, context):
         for spec in editor_specs
     ]
     return {
-        "schema_version": "DataFlowKit.visual_mapping.config.v1",
+        "schema_version": CONFIG_SCHEMA_VERSION,
+        "protocol_family": CONFIG_PROTOCOL_FAMILY,
+        "plugin_id": PLUGIN_INFO["id"],
+        "config_key": config_name,
         "summary": summary,
         "views": views,
         "actions": actions,
@@ -339,36 +345,61 @@ def describe_config(params, context):
         },
         "models": {
             "rule_default": _default_rule_for_cell({}),
+            "feature_default": _ensure_feature({}, 1),
+            "global_rule_default": _ensure_global_rule({}, 1),
             "linked_rule_default": _default_linked_rule(1),
             "empty_config": _empty_config(),
         },
-        "warnings": list(context.get("settings_warnings") or []),
+        "warnings": _normalize_config_warnings(context.get("settings_warnings") or []),
+        "capabilities": {
+            "schema_config": True,
+            "dynamic_options": True,
+            "config_patch": True,
+            "legacy_custom_config": True,
+            "supported_sections": sorted(CONFIG_SECTIONS),
+            "supported_patch_operations": [
+                "append_item",
+                "update_item",
+                "replace_item",
+                "remove_item",
+                "delete_item",
+                "move_item",
+                "set_enabled",
+            ],
+            "view_kinds": ["summary", "structured_list"],
+        },
     }
 
 
 def validate_config_patch(params, context, patch):
     try:
-        _preview_config_patch(params or {}, context or {}, patch or {})
+        normalized = _normalize_config_patch(params or {}, patch or {})
+        _preview_config_patch(params or {}, context or {}, normalized)
     except ValueError as exc:
-        return False, str(exc)
-    return True, ""
+        return {
+            "ok": False,
+            "message": str(exc),
+            "issues": [_config_patch_issue("visual_mapping_config_patch_invalid", str(exc))],
+        }
+    return {"ok": True, "patch": normalized, "issues": []}
 
 
 def apply_config_patch(params, context, patch):
     params = dict(params or {})
     context = dict(context or {})
-    patch = copy.deepcopy(patch or {})
+    normalized = _normalize_config_patch(params, patch or {})
     settings = _load_settings(context)
     configs = settings.setdefault("configs", {})
-    config_name, section = _config_patch_target(params, patch)
+    config_name, section = _config_patch_target(params, normalized)
     cfg = _ensure_config(copy.deepcopy(configs.get(config_name) or _empty_config()))
-    _apply_config_patch_to_section(cfg, section, patch)
+    _apply_config_patch_to_section(cfg, section, normalized)
     configs[config_name] = cfg
     _save_settings(context, settings)
     return {
         "ok": True,
         "params": params,
         "changed": True,
+        "patch": normalized,
         "message": f"已更新配置 {config_name} 的 {section}",
     }
 
@@ -622,19 +653,91 @@ def _ensure_config(cfg):
     return cfg
 
 
+def _config_patch_issue(code, message, path="/patch"):
+    return {"level": "error", "code": code, "message": message, "path": path, "source": PLUGIN_INFO["id"]}
+
+
+def _config_warning(code, message, *, level="warning", view_id="", field="", hint=""):
+    warning = {"code": code, "level": level, "message": message}
+    if view_id:
+        warning["view_id"] = view_id
+    if field:
+        warning["field"] = field
+    if hint:
+        warning["hint"] = hint
+    return warning
+
+
+def _normalize_config_warnings(warnings):
+    result = []
+    for index, warning in enumerate(warnings or [], start=1):
+        if isinstance(warning, dict):
+            item = copy.deepcopy(warning)
+            item.setdefault("level", "warning")
+            item.setdefault("code", f"plugin_warning_{index}")
+            item.setdefault("message", _as_text(item.get("message")))
+            result.append(item)
+        else:
+            message = _as_text(warning)
+            if message:
+                result.append(_config_warning(f"plugin_warning_{index}", message))
+    return result
+
+
 def _config_patch_target(params, patch):
-    target = patch.get("target") if isinstance(patch, dict) else []
-    config_name = _as_text((params or {}).get("config_name") or "default") or "default"
-    section = _as_text((patch or {}).get("section") or "rules") or "rules"
+    patch = patch or {}
+    target = patch.get("path") or patch.get("target") or []
+    config_name = _as_text(patch.get("config_name") or (params or {}).get("config_name") or "default") or "default"
+    section = _as_text(patch.get("section") or "")
+    if isinstance(target, str):
+        target = [part for part in target.split(".") if part]
     if isinstance(target, (list, tuple)) and target:
         if len(target) >= 4 and target[0] == "plugin_settings" and target[1] == "configs":
             config_name = _as_text(target[2]) or config_name
             section = _as_text(target[3]) or section
         elif len(target) == 1:
             section = _as_text(target[0]) or section
-    if section != "rules":
-        raise ValueError(f"当前仅支持修改 rules，收到：{section}")
+    section = section or "rules"
+    if section not in CONFIG_SECTIONS:
+        raise ValueError(f"当前不支持修改 {section}，支持：{', '.join(sorted(CONFIG_SECTIONS))}")
     return config_name, section
+
+
+def _normalize_config_patch(params, patch):
+    patch = copy.deepcopy(patch or {})
+    config_name, section = _config_patch_target(params, patch)
+    operation = _as_text(patch.get("operation") or "replace_item") or "replace_item"
+    operation_alias = {
+        "update_item": "replace_item",
+        "remove_item": "delete_item",
+    }
+    operation = operation_alias.get(operation, operation)
+    path = patch.get("path") or patch.get("target") or ["plugin_settings", "configs", config_name, section]
+    if isinstance(path, str):
+        path = [part for part in path.split(".") if part]
+    normalized = {
+        "schema_version": _as_text(patch.get("schema_version") or CONFIG_SCHEMA_VERSION),
+        "config_name": config_name,
+        "section": section,
+        "operation": operation,
+        "path": list(path or ["plugin_settings", "configs", config_name, section]),
+    }
+    for key in ("target_id", "enabled"):
+        if key in patch:
+            normalized[key] = copy.deepcopy(patch.get(key))
+    if "target_index" in patch:
+        normalized["target_index"] = patch.get("target_index")
+    elif "index" in patch:
+        normalized["target_index"] = patch.get("index")
+    elif isinstance(path, (list, tuple)) and len(path) >= 5:
+        normalized["target_index"] = path[4]
+    if "payload" in patch:
+        normalized["payload"] = copy.deepcopy(patch.get("payload"))
+    elif "value" in patch:
+        normalized["payload"] = copy.deepcopy(patch.get("value"))
+    if "to_index" in patch:
+        normalized["to_index"] = patch.get("to_index")
+    return normalized
 
 
 def _preview_config_patch(params, context, patch):
@@ -647,49 +750,89 @@ def _preview_config_patch(params, context, patch):
 
 
 def _apply_config_patch_to_section(cfg, section, patch):
-    if section != "rules":
-        raise ValueError(f"当前仅支持修改 rules，收到：{section}")
-    rules = cfg.setdefault("rules", [])
-    if not isinstance(rules, list):
-        rules = []
-        cfg["rules"] = rules
+    items = cfg.setdefault(section, [])
+    if not isinstance(items, list):
+        items = []
+        cfg[section] = items
     operation = _as_text((patch or {}).get("operation") or "replace_item")
     if operation == "append_item":
-        rules.append(_ensure_mapping_rule((patch or {}).get("value"), len(rules) + 1))
+        items.append(_ensure_config_section_item(section, (patch or {}).get("payload"), len(items) + 1))
         return
     if operation == "replace_item":
-        index = _config_patch_index(patch, len(rules))
-        rules[index] = _ensure_mapping_rule((patch or {}).get("value"), index + 1)
+        index = _config_patch_index(patch, len(items), section)
+        items[index] = _ensure_config_section_item(section, (patch or {}).get("payload"), index + 1)
         return
     if operation == "delete_item":
-        index = _config_patch_index(patch, len(rules))
-        rules.pop(index)
+        index = _config_patch_index(patch, len(items), section)
+        items.pop(index)
         return
     if operation == "move_item":
-        index = _config_patch_index(patch, len(rules))
+        index = _config_patch_index(patch, len(items), section)
         to_index = _to_int((patch or {}).get("to_index"), index)
-        if to_index < 0 or to_index >= len(rules):
+        if to_index < 0 or to_index >= len(items):
             raise ValueError("目标位置超出范围")
-        item = rules.pop(index)
-        rules.insert(to_index, item)
+        item = items.pop(index)
+        items.insert(to_index, item)
         return
     if operation == "set_enabled":
-        index = _config_patch_index(patch, len(rules))
-        if not isinstance(rules[index], dict):
-            rules[index] = _ensure_mapping_rule(rules[index], index + 1)
-        enabled_value = (patch or {}).get("enabled", (patch or {}).get("value", True))
-        rules[index]["enabled"] = enabled_value if isinstance(enabled_value, bool) else _truthy(enabled_value)
+        index = _config_patch_index(patch, len(items), section)
+        if not isinstance(items[index], dict):
+            items[index] = _ensure_config_section_item(section, items[index], index + 1)
+        enabled_value = (patch or {}).get("enabled", (patch or {}).get("payload", True))
+        items[index]["enabled"] = enabled_value if isinstance(enabled_value, bool) else _truthy(enabled_value)
         return
     raise ValueError(f"不支持的配置修改操作：{operation}")
 
 
-def _config_patch_index(patch, length):
+def _config_patch_index(patch, length, section="rules"):
     if length <= 0:
-        raise ValueError("规则列表为空")
-    index = _to_int((patch or {}).get("index"), -1)
+        raise ValueError(f"{section} 列表为空")
+    index = _to_int((patch or {}).get("target_index"), -1)
+    if index < 0:
+        index = _to_int((patch or {}).get("index"), -1)
     if index < 0 or index >= length:
-        raise ValueError("规则索引超出范围")
+        raise ValueError(f"{section} 索引超出范围")
     return index
+
+
+def _ensure_config_section_item(section, item, index=1):
+    if section == "rules":
+        return _ensure_mapping_rule(item, index)
+    if section == "features":
+        return _ensure_feature(item, index)
+    if section == "global_rules":
+        return _ensure_global_rule(item, index)
+    if section == "linked_rules":
+        return _ensure_linked_rule_item(item, index)
+    return copy.deepcopy(item) if isinstance(item, dict) else {}
+
+
+def _ensure_feature(feature, index=1):
+    result = copy.deepcopy(feature) if isinstance(feature, dict) else {}
+    result.setdefault("name", f"feature_{index}")
+    result.setdefault("enabled", True)
+    if not isinstance(result.get("conditions"), list):
+        result["conditions"] = []
+    result.setdefault("logic", "AND")
+    return result
+
+
+def _ensure_global_rule(rule, index=1):
+    result = copy.deepcopy(rule) if isinstance(rule, dict) else {}
+    result.setdefault("name", f"global_rule_{index}")
+    result.setdefault("enabled", True)
+    if not isinstance(result.get("conditions"), list):
+        result["conditions"] = []
+    if not isinstance(result.get("batch_rules"), list):
+        result["batch_rules"] = []
+    return result
+
+
+def _ensure_linked_rule_item(rule, index=1):
+    result = _ensure_linked_rule(copy.deepcopy(rule) if isinstance(rule, dict) else {})
+    result.setdefault("name", f"linked_rule_{index}")
+    result.setdefault("enabled", True)
+    return result
 
 
 def _ensure_mapping_rule(rule, index=1):

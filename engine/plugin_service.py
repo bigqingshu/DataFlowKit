@@ -403,10 +403,11 @@ class PluginService:
             context=runtime_context,
             plugins_dir=plugins_dir,
         )
+        applied_patch = copy.deepcopy(result.get("patch") or validation.get("patch") or patch_payload)
         return {
             "ok": True,
             "plugin_id": key,
-            "patch": patch_payload,
+            "patch": applied_patch,
             "changed": bool(result.get("changed", updated_config != current_config)),
             "message": str(result.get("message") or "插件配置已更新"),
             "params": copy.deepcopy(updated_config.get("params", {}) or {}),
@@ -1065,52 +1066,116 @@ def _parameter_field_schema(field, *, plugin_id=""):
         "required": bool(field.get("required", False)),
         "allow_custom": bool(field.get("allow_custom", True)),
     }
+    _copy_parameter_ui_metadata(schema, field)
     if field_type == "field_select":
-        schema["options_source"] = {"type": "preview_headers"}
-        schema["action"] = {
+        schema.setdefault("options_source", {"type": "preview_headers"})
+        schema.setdefault("action", {
             "key": "pick_preview_header",
             "label": "选择字段",
             "style": "picker",
             "source": "preview_headers",
-        }
+        })
     elif field_type == "field_multi_select":
-        schema["options_source"] = {"type": "preview_headers"}
-        schema["action"] = {
+        schema.setdefault("options_source", {"type": "preview_headers"})
+        schema.setdefault("action", {
             "key": "pick_preview_headers",
             "label": "选择字段",
             "style": "picker",
             "source": "preview_headers",
             "multiple": True,
-        }
+        })
     elif raw_type == "table_select":
-        schema["options_source"] = {"type": "table_names"}
-        schema["action"] = {
+        schema.setdefault("options_source", {"type": "table_names"})
+        schema.setdefault("action", {
             "key": "pick_table_name",
             "label": "选择表",
             "style": "picker",
             "source": "table_names",
-        }
+        })
     elif raw_type == "input_table_select":
-        schema["options_source"] = {"type": "plugin_input_tables"}
-        schema["action"] = {
+        schema.setdefault("options_source", {"type": "plugin_input_tables"})
+        schema.setdefault("action", {
             "key": "pick_plugin_input_table",
             "label": "选择输入表",
             "style": "picker",
             "source": "plugin_input_tables",
-        }
+        })
     elif raw_type == "dynamic_select":
-        schema["options_source"] = {
+        schema.setdefault("options_source", {
             "type": "plugin_dynamic_choices",
             "plugin_id": str(plugin_id or ""),
             "param_key": key,
-        }
+        })
     elif field_type == "directory":
-        schema["action"] = {
+        schema.setdefault("action", {
             "key": "browse_directory",
             "label": "选择目录",
             "style": "picker",
-        }
+        })
+    if raw_type == "dynamic_select" and str((schema.get("options_source") or {}).get("type") or "") == "plugin_dynamic_choices":
+        source = dict(schema.get("options_source") or {})
+        source.setdefault("plugin_id", str(plugin_id or ""))
+        source.setdefault("param_key", key)
+        schema["options_source"] = source
     return schema
+
+
+def _copy_parameter_ui_metadata(schema, field):
+    passthrough_keys = [
+        "group",
+        "group_order",
+        "order",
+        "placeholder",
+        "warning",
+        "empty_text",
+        "invalid_value_text",
+        "options_source",
+        "advanced",
+        "width_hint",
+        "min",
+        "max",
+        "step",
+        "unit",
+    ]
+    for key in passthrough_keys:
+        if key in field:
+            schema[key] = copy.deepcopy(field.get(key))
+    if "action" in field:
+        schema["action"] = copy.deepcopy(field.get("action") or {})
+    if "visible_when" in field:
+        schema["visible_when"] = _normalize_parameter_condition_refs(field.get("visible_when"))
+    if "enabled_when" in field:
+        schema["enabled_when"] = _normalize_parameter_condition_refs(field.get("enabled_when"))
+    for key in ("depends_on", "refresh_on_change"):
+        if key not in field:
+            continue
+        values = field.get(key)
+        if isinstance(values, str):
+            values = [values]
+        schema[key] = [_normalize_parameter_field_ref(value) for value in (values or []) if str(value or "").strip()]
+
+
+def _normalize_parameter_condition_refs(condition):
+    if not isinstance(condition, dict):
+        return copy.deepcopy(condition)
+    result = {}
+    for key, value in condition.items():
+        if key in ("all", "any") and isinstance(value, list):
+            result[key] = [_normalize_parameter_condition_refs(item) for item in value]
+        elif key == "not":
+            result[key] = _normalize_parameter_condition_refs(value)
+        elif key == "field":
+            result[key] = _normalize_parameter_field_ref(value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
+
+
+def _normalize_parameter_field_ref(value):
+    text = str(value or "").strip()
+    if not text or "." in text:
+        return text
+    return f"params.{text}"
 
 
 def _normalize_parameter_type(value):

@@ -207,10 +207,16 @@ class VisualMappingWritePlanTests(unittest.TestCase):
                     "content_table_alias": "新内容",
                     "replace_aux_table_alias": "辅助",
                 },
-                context,
+                dict(context, settings_warnings=["测试警告"]),
             )
 
         self.assertEqual(described["schema_version"], "DataFlowKit.visual_mapping.config.v1")
+        self.assertEqual(described["protocol_family"], "plugin_complex_config")
+        self.assertEqual(described["plugin_id"], visual.PLUGIN_INFO["id"])
+        self.assertEqual(described["config_key"], "default")
+        self.assertTrue(described["capabilities"]["config_patch"])
+        self.assertIn("rules", described["capabilities"]["supported_sections"])
+        self.assertEqual(described["warnings"][0]["message"], "测试警告")
         self.assertEqual(described["summary"]["rules"], 1)
         self.assertEqual(described["summary"]["features"], 1)
         self.assertEqual(described["summary"]["global_rules"], 1)
@@ -277,6 +283,23 @@ class VisualMappingWritePlanTests(unittest.TestCase):
                 "index": 1,
                 "enabled": False,
             }
+            standard_update_patch = {
+                "schema_version": visual.CONFIG_SCHEMA_VERSION,
+                "operation": "update_item",
+                "path": ["plugin_settings", "configs", "default", "rules", 0],
+                "payload": {
+                    "id": "standard_rule",
+                    "name": "标准规则",
+                    "enabled": True,
+                    "source_locator": {"sheet_name": "Sheet1", "row_index": 4, "col_index": 5},
+                    "mapping": {"content_field": "standard_value"},
+                },
+            }
+            feature_patch = {
+                "operation": "append_item",
+                "section": "features",
+                "payload": {"name": "协议特征", "conditions": []},
+            }
 
             replaced = service.apply_plugin_config_patch(
                 "plugin.visual_mapping_write_plan_v1",
@@ -293,26 +316,46 @@ class VisualMappingWritePlanTests(unittest.TestCase):
                 config=config,
                 patch=disable_patch,
             )
+            standard_updated = service.apply_plugin_config_patch(
+                "plugin.visual_mapping_write_plan_v1",
+                config=config,
+                patch=standard_update_patch,
+            )
+            feature_added = service.apply_plugin_config_patch(
+                "plugin.visual_mapping_write_plan_v1",
+                config=config,
+                patch=feature_patch,
+            )
             invalid = service.validate_plugin_config_patch(
                 "plugin.visual_mapping_write_plan_v1",
                 config=config,
-                patch={"operation": "append_item", "target": ["plugin_settings", "configs", "default", "features"], "value": {}},
+                patch={"operation": "append_item", "section": "unknown", "payload": {}},
             )
 
         self.assertTrue(replaced["ok"])
         self.assertTrue(appended["ok"])
         self.assertTrue(disabled["ok"])
+        self.assertTrue(standard_updated["ok"])
+        self.assertEqual(standard_updated["patch"]["operation"], "replace_item")
+        self.assertEqual(standard_updated["patch"]["target_index"], 0)
+        self.assertEqual(standard_updated["description"]["plugin_extension"]["protocol_family"], "plugin_complex_config")
+        self.assertTrue(feature_added["ok"])
         rules_view = next(
-            view for view in disabled["description"]["views"]
+            view for view in standard_updated["description"]["views"]
             if view.get("view_id") == "visual_mapping.rules"
         )
-        self.assertEqual(disabled["description"]["plugin_extension"]["summary"]["rules"], 2)
-        self.assertEqual(rules_view["items"][0]["name"], "新规则")
-        self.assertEqual(rules_view["items"][0]["content_field"], "write_value")
+        features_view = next(
+            view for view in feature_added["description"]["views"]
+            if view.get("view_id") == "visual_mapping.features"
+        )
+        self.assertEqual(standard_updated["description"]["plugin_extension"]["summary"]["rules"], 2)
+        self.assertEqual(rules_view["items"][0]["name"], "标准规则")
+        self.assertEqual(rules_view["items"][0]["content_field"], "standard_value")
         self.assertEqual(rules_view["items"][1]["name"], "第二规则")
         self.assertFalse(rules_view["items"][1]["enabled"])
+        self.assertEqual(features_view["items"][-1]["name"], "协议特征")
         self.assertFalse(invalid["ok"])
-        self.assertEqual(invalid["issues"][0]["code"], "plugin_config_patch_invalid")
+        self.assertEqual(invalid["issues"][0]["code"], "visual_mapping_config_patch_invalid")
 
     def test_anchor_match_uses_content_field_value(self):
         table_context, content = self.content_context()
