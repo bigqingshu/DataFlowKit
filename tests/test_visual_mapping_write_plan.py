@@ -338,11 +338,19 @@ class VisualMappingWritePlanTests(unittest.TestCase):
             )
 
         self.assertTrue(replaced["ok"])
+        self.assertEqual(replaced["patch"]["schema_version"], visual.CONFIG_SCHEMA_VERSION)
+        self.assertEqual(replaced["patch"]["config_name"], "default")
+        self.assertEqual(replaced["patch"]["section"], "rules")
+        self.assertEqual(replaced["patch"]["path"], ["plugin_settings", "configs", "default", "rules", 0])
+        self.assertEqual(replaced["patch"]["payload"]["name"], "新规则")
         self.assertTrue(appended["ok"])
         self.assertTrue(disabled["ok"])
+        self.assertEqual(disabled["patch"]["path"], ["plugin_settings", "configs", "default", "rules", 1])
+        self.assertEqual(disabled["patch"]["payload"], {"enabled": False})
         self.assertTrue(standard_updated["ok"])
         self.assertEqual(standard_updated["patch"]["operation"], "replace_item")
         self.assertEqual(standard_updated["patch"]["target_index"], 0)
+        self.assertEqual(standard_updated["patch"]["path"], ["plugin_settings", "configs", "default", "rules", 0])
         self.assertEqual(standard_updated["description"]["config_schema_version"], visual.CONFIG_SCHEMA_VERSION)
         self.assertEqual(standard_updated["description"]["protocol_family"], "plugin_complex_config")
         self.assertEqual(standard_updated["description"]["config_key"], "default")
@@ -351,6 +359,7 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertTrue(standard_updated["description"]["capabilities"]["config_patch"])
         self.assertEqual(standard_updated["description"]["plugin_extension"]["protocol_family"], "plugin_complex_config")
         self.assertTrue(feature_added["ok"])
+        self.assertEqual(feature_added["patch"]["path"], ["plugin_settings", "configs", "default", "features"])
         plugin_warning_items = [
             item for item in described_with_warning["warning_items"]
             if item.get("source") == "plugin_config"

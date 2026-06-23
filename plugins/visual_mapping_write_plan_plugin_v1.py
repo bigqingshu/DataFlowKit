@@ -735,9 +735,21 @@ def _normalize_config_patch(params, patch):
         normalized["payload"] = copy.deepcopy(patch.get("payload"))
     elif "value" in patch:
         normalized["payload"] = copy.deepcopy(patch.get("value"))
+    elif operation == "set_enabled" and "enabled" in normalized:
+        normalized["payload"] = {"enabled": bool(normalized.get("enabled"))}
     if "to_index" in patch:
         normalized["to_index"] = patch.get("to_index")
+    normalized["path"] = _canonical_config_patch_path(normalized)
     return normalized
+
+
+def _canonical_config_patch_path(patch):
+    path = list((patch or {}).get("path") or [])
+    operation = _as_text((patch or {}).get("operation") or "")
+    if operation in {"replace_item", "delete_item", "move_item", "set_enabled"} and len(path) == 4:
+        if "target_index" in (patch or {}):
+            path.append((patch or {}).get("target_index"))
+    return path
 
 
 def _preview_config_patch(params, context, patch):
