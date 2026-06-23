@@ -232,14 +232,42 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertEqual(view_by_id["visual_mapping.rules"]["append_value"], {})
         self.assertEqual(view_by_id["visual_mapping.rules"]["item_schema"]["model_key"], "rule_default")
         self.assertEqual(view_by_id["visual_mapping.rules"]["item_schema"]["display_columns"][0]["key"], "enabled")
+        rule_schema_columns = {
+            column["key"]: column
+            for column in view_by_id["visual_mapping.rules"]["item_schema"]["columns"]
+        }
+        self.assertEqual(rule_schema_columns["mapping.content_field"]["config_path"], ["mapping", "content_field"])
+        self.assertEqual(rule_schema_columns["mapping.content_field"]["options_source"]["key"], "content_fields")
+        self.assertIn("write_value", rule_schema_columns["mapping.content_field"]["choices"])
+        self.assertEqual(rule_schema_columns["source_locator.sheet_name"]["config_path"], ["source_locator", "sheet_name"])
+        self.assertIn("Sheet1", rule_schema_columns["source_locator.sheet_name"]["choices"])
         self.assertIn("append_item", view_by_id["visual_mapping.rules"]["patch_operations"])
         self.assertIn("set_enabled", view_by_id["visual_mapping.rules"]["patch_operations"])
         self.assertEqual(view_by_id["visual_mapping.features"]["items"][0]["condition_count"], 1)
         self.assertEqual(view_by_id["visual_mapping.features"]["item_model_key"], "feature_default")
+        feature_schema_columns = {
+            column["key"]: column
+            for column in view_by_id["visual_mapping.features"]["item_schema"]["columns"]
+        }
+        self.assertEqual(feature_schema_columns["logic"]["choices"], ["AND", "OR"])
+        self.assertFalse(feature_schema_columns["logic"]["allow_custom"])
         self.assertEqual(view_by_id["visual_mapping.global_rules"]["items"][0]["batch_rule_count"], 1)
         self.assertEqual(view_by_id["visual_mapping.global_rules"]["item_model_key"], "global_rule_default")
+        global_schema_columns = {
+            column["key"]: column
+            for column in view_by_id["visual_mapping.global_rules"]["item_schema"]["columns"]
+        }
+        self.assertIn(visual.GLOBAL_SCOPE_SPECIAL_OBJECTS, global_schema_columns["scope"]["choices"])
+        self.assertIn(visual.BATCH_TARGET_FULL_TEXT, global_schema_columns["batch_target_scope"]["choices"])
         self.assertEqual(view_by_id["visual_mapping.linked_rules"]["items"][0]["target_mode"], visual.LINK_TARGET_FIXED_CELL)
         self.assertEqual(view_by_id["visual_mapping.linked_rules"]["item_model_key"], "linked_rule_default")
+        linked_schema_columns = {
+            column["key"]: column
+            for column in view_by_id["visual_mapping.linked_rules"]["item_schema"]["columns"]
+        }
+        self.assertIn(visual.LINK_TARGET_FIXED_CELL, linked_schema_columns["target_mode"]["choices"])
+        self.assertIn("普通规则", linked_schema_columns["trigger_rule"]["choices"])
+        self.assertEqual(linked_schema_columns["value_field"]["options_source"]["key"], "content_fields")
         self.assertIn("visual_mapping.edit.rules", [action["action_id"] for action in described["actions"]])
         self.assertIn("linked_rule_default", described["models"])
 

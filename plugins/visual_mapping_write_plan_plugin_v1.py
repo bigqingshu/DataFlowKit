@@ -215,6 +215,7 @@ def describe_config(params, context):
         if name
     ]
     rule_names = _unique_nonempty(normal_rule_names + global_rule_names)
+    linked_trigger_options = _linked_trigger_options(cfg)
     summary = {
         "config_name": config_name,
         "available_configs": sorted(configs.keys()) or ["default"],
@@ -327,6 +328,14 @@ def describe_config(params, context):
             "type": "object",
             "model_key": model_key,
             "display_columns": copy.deepcopy(spec.get("columns") or []),
+            "columns": _visual_mapping_item_schema_columns(
+                section,
+                content_fields=content_fields,
+                feature_names=feature_names,
+                sheet_names=sheet_names,
+                rule_names=rule_names,
+                linked_trigger_options=linked_trigger_options,
+            ),
         }
         if model_key:
             spec["item_model_key"] = model_key
@@ -366,7 +375,7 @@ def describe_config(params, context):
             "sheet_names": sheet_names,
             "feature_names": feature_names,
             "rule_names": rule_names,
-            "linked_trigger_options": _linked_trigger_options(cfg),
+            "linked_trigger_options": linked_trigger_options,
             "choices": {
                 "match_modes": ["包含", "等于", "不等于", "正则匹配", "正则不匹配", "为空", "非空"],
                 "batch_targets": list(BATCH_TARGET_CHOICES),
@@ -391,6 +400,101 @@ def describe_config(params, context):
             "view_kinds": ["summary", "structured_list"],
         },
     }
+
+
+def _visual_mapping_item_schema_columns(
+    section,
+    *,
+    content_fields=None,
+    feature_names=None,
+    sheet_names=None,
+    rule_names=None,
+    linked_trigger_options=None,
+):
+    content_fields = list(content_fields or [])
+    feature_names = list(feature_names or [])
+    sheet_names = list(sheet_names or [])
+    rule_names = list(rule_names or [])
+    linked_trigger_options = list(linked_trigger_options or [])
+
+    def field(key, label, field_type="text", **extra):
+        item = {"key": key, "label": label, "type": field_type, "config_path": [part for part in key.split(".") if part]}
+        item.update(extra)
+        return item
+
+    def select_field(key, label, choices, **extra):
+        allow_custom = bool(extra.pop("allow_custom", True))
+        return field(key, label, "select", choices=list(choices or []), allow_custom=allow_custom, **extra)
+
+    common = [
+        field("enabled", "启用", "bool"),
+        field("name", "名称"),
+    ]
+    if section == "rules":
+        return common + [
+            select_field(
+                "feature_name",
+                "表特征",
+                [""] + feature_names,
+                options_source={"type": "visual_mapping_context", "key": "feature_names"},
+            ),
+            select_field(
+                "mapping.content_field",
+                "写入字段",
+                content_fields,
+                options_source={"type": "visual_mapping_context", "key": "content_fields"},
+            ),
+            select_field(
+                "source_locator.sheet_name",
+                "工作表",
+                sheet_names,
+                options_source={"type": "visual_mapping_context", "key": "sheet_names"},
+            ),
+            field("source_locator.row_index", "行号", "number", min=0, step=1),
+            field("source_locator.col_index", "列号", "number", min=0, step=1),
+        ]
+    if section == "features":
+        return common + [
+            select_field("logic", "条件连接", ["AND", "OR"], allow_custom=False),
+        ]
+    if section == "global_rules":
+        return common + [
+            select_field(
+                "feature_name",
+                "表特征",
+                [""] + feature_names,
+                options_source={"type": "visual_mapping_context", "key": "feature_names"},
+            ),
+            select_field("scope", "范围", ["全部", "段落", "表格单元格", GLOBAL_SCOPE_SPECIAL_OBJECTS], allow_custom=False),
+            select_field("condition_logic", "条件连接", ["AND", "OR"], allow_custom=False),
+            select_field("batch_target_scope", "批量作用对象", BATCH_TARGET_CHOICES, allow_custom=False),
+        ]
+    if section == "linked_rules":
+        return common + [
+            select_field(
+                "trigger_rule",
+                "触发规则",
+                linked_trigger_options,
+                options_source={"type": "visual_mapping_context", "key": "linked_trigger_options"},
+            ),
+            select_field("target_mode", "定位方式", LINK_TARGET_MODES, allow_custom=False),
+            select_field(
+                "sheet_name",
+                "工作表",
+                sheet_names,
+                options_source={"type": "visual_mapping_context", "key": "sheet_names"},
+            ),
+            select_field("value_source", "写入来源", LINK_VALUE_SOURCES, allow_custom=False),
+            select_field(
+                "value_field",
+                "新内容字段",
+                content_fields,
+                options_source={"type": "visual_mapping_context", "key": "content_fields"},
+            ),
+            select_field("write_mode", "写入方式", LINK_WRITE_MODES, allow_custom=False),
+            select_field("overflow_policy", "溢出处理", LINK_OVERFLOW_POLICIES, allow_custom=False),
+        ]
+    return common
 
 
 def validate_config_patch(params, context, patch):
