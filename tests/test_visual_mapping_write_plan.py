@@ -227,6 +227,8 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertIn("全局:全局替换", described["context"]["rule_names"])
         view_by_id = {view["view_id"]: view for view in described["views"]}
         self.assertEqual(view_by_id["visual_mapping.rules"]["items"][0]["content_field"], "write_value")
+        self.assertEqual(view_by_id["visual_mapping.rules"]["items"][0]["mapping"]["content_field"], "write_value")
+        self.assertEqual(view_by_id["visual_mapping.rules"]["items"][0]["source_locator"]["row_index"], 1)
         self.assertEqual(view_by_id["visual_mapping.rules"]["section"], "rules")
         self.assertEqual(view_by_id["visual_mapping.rules"]["item_model_key"], "rule_default")
         self.assertEqual(view_by_id["visual_mapping.rules"]["append_value"], {})
@@ -244,6 +246,7 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertIn("append_item", view_by_id["visual_mapping.rules"]["patch_operations"])
         self.assertIn("set_enabled", view_by_id["visual_mapping.rules"]["patch_operations"])
         self.assertEqual(view_by_id["visual_mapping.features"]["items"][0]["condition_count"], 1)
+        self.assertEqual(view_by_id["visual_mapping.features"]["items"][0]["conditions"][0]["value"], "old")
         self.assertEqual(view_by_id["visual_mapping.features"]["item_model_key"], "feature_default")
         feature_schema_columns = {
             column["key"]: column

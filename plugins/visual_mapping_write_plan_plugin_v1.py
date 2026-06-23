@@ -1003,7 +1003,8 @@ def _summarize_visual_mapping_rules(rules, limit=200):
     for index, rule in enumerate([r for r in (rules or []) if isinstance(r, dict)], start=1):
         locator = rule.get("source_locator") if isinstance(rule.get("source_locator"), dict) else {}
         mapping = rule.get("mapping") if isinstance(rule.get("mapping"), dict) else {}
-        items.append({
+        item = copy.deepcopy(rule)
+        item.update({
             "index": index,
             "id": _as_text(rule.get("id")),
             "name": _as_text(rule.get("name") or rule.get("id")) or f"rule_{index}",
@@ -1015,6 +1016,7 @@ def _summarize_visual_mapping_rules(rules, limit=200):
             "anchor_enabled": bool((rule.get("anchor") or {}).get("enabled", False)),
             "batch_rule_count": len(_batch_rules_for_rule(rule)),
         })
+        items.append(item)
         if len(items) >= limit:
             break
     return items
@@ -1023,13 +1025,15 @@ def _summarize_visual_mapping_rules(rules, limit=200):
 def _summarize_visual_mapping_features(features, limit=200):
     items = []
     for index, feature in enumerate([f for f in (features or []) if isinstance(f, dict)], start=1):
-        items.append({
+        item = copy.deepcopy(feature)
+        item.update({
             "index": index,
             "name": _as_text(feature.get("name")) or f"feature_{index}",
             "enabled": bool(feature.get("enabled", True)),
             "logic": _as_text(feature.get("logic") or "AND") or "AND",
             "condition_count": len(feature.get("conditions", []) or []),
         })
+        items.append(item)
         if len(items) >= limit:
             break
     return items
@@ -1038,7 +1042,8 @@ def _summarize_visual_mapping_features(features, limit=200):
 def _summarize_visual_mapping_global_rules(rules, limit=200):
     items = []
     for index, rule in enumerate([r for r in (rules or []) if isinstance(r, dict)], start=1):
-        items.append({
+        item = copy.deepcopy(rule)
+        item.update({
             "index": index,
             "name": _as_text(rule.get("name")) or f"global_{index}",
             "enabled": bool(rule.get("enabled", True)),
@@ -1049,6 +1054,7 @@ def _summarize_visual_mapping_global_rules(rules, limit=200):
             "batch_rule_count": len(_batch_rules_for_rule(rule)),
             "event_tags": _normalize_event_tags(rule.get("event_tags")),
         })
+        items.append(item)
         if len(items) >= limit:
             break
     return items
@@ -1057,7 +1063,8 @@ def _summarize_visual_mapping_global_rules(rules, limit=200):
 def _summarize_visual_mapping_linked_rules(rules, limit=200):
     items = []
     for index, rule in enumerate([_ensure_linked_rule(copy.deepcopy(r)) for r in (rules or []) if isinstance(r, dict)], start=1):
-        items.append({
+        item = copy.deepcopy(rule)
+        item.update({
             "index": index,
             "name": _as_text(rule.get("name")) or f"linked_{index}",
             "enabled": bool(rule.get("enabled", True)),
@@ -1070,6 +1077,7 @@ def _summarize_visual_mapping_linked_rules(rules, limit=200):
             "overflow_policy": _as_text(rule.get("overflow_policy") or LINK_OVERFLOW_SKIP) or LINK_OVERFLOW_SKIP,
             "action_count": len(rule.get("actions", []) or []),
         })
+        items.append(item)
         if len(items) >= limit:
             break
     return items

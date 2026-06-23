@@ -1045,14 +1045,25 @@ class QtWorkflowMainWindow:
     def _make_plugin_structured_list_widget(self, view, described=None):
         qt = self.qt
         item_schema = view.get("item_schema") if isinstance(view.get("item_schema"), dict) else {}
-        columns = [item for item in (view.get("columns") or []) if isinstance(item, dict)]
-        if not columns:
-            columns = [item for item in (item_schema.get("display_columns") or []) if isinstance(item, dict)]
-        if not columns:
-            columns = [item for item in (item_schema.get("columns") or []) if isinstance(item, dict)]
+        supported_operations = {
+            str(item)
+            for item in (view.get("patch_operations") or view.get("supported_patch_operations") or [])
+            if str(item or "")
+        }
+        schema_columns = [item for item in (item_schema.get("columns") or []) if isinstance(item, dict)]
+        can_update_item = bool({"update_item", "replace_item"} & supported_operations)
+        if can_update_item and schema_columns:
+            columns = list(schema_columns)
+        else:
+            columns = [item for item in (view.get("columns") or []) if isinstance(item, dict)]
+            if not columns:
+                columns = [item for item in (item_schema.get("display_columns") or []) if isinstance(item, dict)]
+            if not columns:
+                columns = list(schema_columns)
         items = [item for item in (view.get("items") or []) if isinstance(item, dict)]
         if not columns and items:
             columns = [{"key": key, "label": key} for key in items[0].keys()]
+        editable = bool(can_update_item and columns)
         frame = qt.QtWidgets.QWidget()
         layout = qt.QtWidgets.QVBoxLayout(frame)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1069,8 +1080,10 @@ class QtWorkflowMainWindow:
         table = qt.QtWidgets.QTableWidget()
         frame.plugin_config_view = copy.deepcopy(view)
         frame.plugin_config_item_schema = copy.deepcopy(item_schema)
+        frame.plugin_config_columns = copy.deepcopy(columns)
         frame.plugin_config_items = copy.deepcopy(items)
         frame.plugin_config_table = table
+        frame.plugin_config_editable = editable
         frame.plugin_config_schema_version = str(
             (described or {}).get("config_schema_version")
             or (described or {}).get("schema_version")
@@ -1090,32 +1103,40 @@ class QtWorkflowMainWindow:
         table.setRowCount(len(items))
         for row, item in enumerate(items):
             for col, column in enumerate(columns):
-                table.setItem(row, col, qt.QtWidgets.QTableWidgetItem(
-                    self._format_plugin_protocol_value(self._plugin_structured_item_value(item, column))
-                ))
+                value = self._plugin_structured_item_value(item, column)
+                if editable and not bool(column.get("read_only")):
+                    table.setCellWidget(row, col, self._plugin_structured_cell_editor(column, value))
+                else:
+                    table.setItem(row, col, qt.QtWidgets.QTableWidgetItem(
+                        self._format_plugin_protocol_value(value)
+                    ))
         self._polish_plugin_protocol_table(table)
         if table.rowCount():
             table.selectRow(0)
         layout.addWidget(table, 1)
         button_row = qt.QtWidgets.QHBoxLayout()
         buttons = {}
-        supported_operations = {
-            str(item)
-            for item in (view.get("patch_operations") or view.get("supported_patch_operations") or [])
-            if str(item or "")
-        }
         for text, operation, target_offset in [
             ("新增", "append_item", None),
+            ("应用修改", "update_item", None),
             ("删除", "delete_item", None),
             ("启停", "set_enabled", None),
             ("上移", "move_item", -1),
             ("下移", "move_item", 1),
         ]:
             button = qt.QtWidgets.QPushButton(text)
-            if supported_operations and operation not in supported_operations:
+            effective_operation = operation
+            if operation == "update_item" and "update_item" not in supported_operations and "replace_item" in supported_operations:
+                effective_operation = "replace_item"
+            visible = True
+            if operation == "update_item":
+                visible = bool(can_update_item)
+            elif supported_operations and operation not in supported_operations:
+                visible = False
+            if not visible:
                 button.setVisible(False)
             button.clicked.connect(
-                lambda checked=False, op=operation, offset=target_offset, fr=frame: self._apply_plugin_structured_list_patch(fr, op, offset)
+                lambda checked=False, op=effective_operation, offset=target_offset, fr=frame: self._apply_plugin_structured_list_patch(fr, op, offset)
             )
             button_row.addWidget(button)
             buttons[operation if target_offset is None else f"{operation}_{target_offset}"] = button
@@ -1128,6 +1149,100 @@ class QtWorkflowMainWindow:
         if not isinstance(item, dict):
             return None
         column = column or {}
+        key = str(column.get("key") or "")
+        path = column.get("config_path")
+        if isinstance(path, str):
+            path = [part for part in path.split(".") if part]
+        elif not isinstance(path, (list, tuple)):
+            path = []
+        if path:
+            current = item
+            found = True
+            for part in path:
+                if not isinstance(current, dict) or part not in current:
+                    found = False
+                    break
+                current = current.get(part)
+            if found:
+                return current
+        if key in item:
+            return item.get(key)
+        if "." in key:
+            current = item
+            found = True
+            for part in [part for part in key.split(".") if part]:
+                if not isinstance(current, dict) or part not in current:
+                    found = False
+                    break
+                current = current.get(part)
+            if found:
+                return current
+        if path and path[-1] in item:
+            return item.get(path[-1])
+        return None
+
+    def _plugin_structured_column_kind(self, column):
+        column_type = str((column or {}).get("type") or "text")
+        if column_type == "bool":
+            return "bool"
+        if column_type in {"select", "field_select", "table_select"}:
+            return "choice"
+        if column_type in {"textarea", "long_text"}:
+            return "long_text"
+        if column_type in {"number", "int", "float"}:
+            return "number"
+        return "text"
+
+    def _plugin_structured_cell_editor(self, column, value):
+        qt = self.qt
+        kind = self._plugin_structured_column_kind(column)
+        if kind == "bool":
+            widget = qt.QtWidgets.QCheckBox()
+            widget.setChecked(bool(value))
+            return widget
+        if kind == "choice":
+            widget = qt.QtWidgets.QComboBox()
+            allow_custom = bool((column or {}).get("allow_custom", True))
+            widget.setEditable(allow_custom)
+            choices = [str(item) for item in ((column or {}).get("choices") or [])]
+            current = "" if value is None else str(value)
+            if current and current not in choices:
+                choices.insert(0, current)
+            widget.addItems(choices or ([current] if current else []))
+            widget.setCurrentText(current)
+            return widget
+        if kind == "long_text":
+            widget = qt.QtWidgets.QPlainTextEdit()
+            widget.setPlainText("" if value is None else str(value))
+            widget.setMinimumHeight(52)
+            return widget
+        widget = qt.QtWidgets.QLineEdit()
+        widget.setText("" if value is None else str(value))
+        return widget
+
+    def _plugin_structured_editor_value(self, widget, column):
+        kind = self._plugin_structured_column_kind(column)
+        if kind == "bool":
+            return bool(widget.isChecked())
+        if kind == "choice":
+            return str(widget.currentText())
+        if kind == "long_text":
+            return str(widget.toPlainText())
+        raw = str(widget.text()).strip() if widget is not None else ""
+        if kind == "number":
+            if not raw:
+                return None
+            try:
+                return float(raw) if "." in raw else int(raw)
+            except ValueError as exc:
+                label = str((column or {}).get("label") or (column or {}).get("key") or "数值")
+                raise ValueError(f"{label} 不是有效数字：{raw}") from exc
+        return str(widget.text()) if widget is not None else ""
+
+    def _plugin_structured_set_item_value(self, item, column, value):
+        if not isinstance(item, dict):
+            return
+        column = column or {}
         path = column.get("config_path")
         if isinstance(path, str):
             path = [part for part in path.split(".") if part]
@@ -1135,16 +1250,36 @@ class QtWorkflowMainWindow:
             path = []
         if not path:
             key = str(column.get("key") or "")
-            if key in item:
-                return item.get(key)
-            if "." in key:
-                path = [part for part in key.split(".") if part]
+            path = [part for part in key.split(".") if part] if "." in key else ([key] if key else [])
+        if not path:
+            return
         current = item
-        for part in path or []:
-            if not isinstance(current, dict):
-                return None
-            current = current.get(part)
-        return current
+        for part in path[:-1]:
+            if not isinstance(current.get(part), dict):
+                current[part] = {}
+            current = current[part]
+        current[path[-1]] = value
+
+    def _plugin_structured_row_payload(self, frame, row):
+        table = getattr(frame, "plugin_config_table", None)
+        columns = copy.deepcopy(getattr(frame, "plugin_config_columns", []) or [])
+        items = copy.deepcopy(getattr(frame, "plugin_config_items", []) or [])
+        if table is None or row < 0:
+            return {}
+        payload = copy.deepcopy(items[row]) if 0 <= row < len(items) and isinstance(items[row], dict) else {}
+        for col, column in enumerate(columns):
+            if bool((column or {}).get("read_only")):
+                continue
+            widget = table.cellWidget(row, col)
+            if widget is not None:
+                value = self._plugin_structured_editor_value(widget, column)
+            else:
+                item = table.item(row, col)
+                if item is None:
+                    continue
+                value = item.text()
+            self._plugin_structured_set_item_value(payload, column, value)
+        return payload
 
     def _apply_plugin_structured_list_patch(self, frame, operation, target_offset=None):
         view = copy.deepcopy(getattr(frame, "plugin_config_view", {}) or {})
@@ -1158,7 +1293,7 @@ class QtWorkflowMainWindow:
             "target": copy.deepcopy(target_path),
         }
         selected_row = table.currentRow() if table is not None else -1
-        if operation in ("delete_item", "set_enabled", "move_item"):
+        if operation in ("delete_item", "set_enabled", "move_item", "update_item", "replace_item"):
             if selected_row < 0:
                 self.status_bar.showMessage("请先选择一条配置项。")
                 return
@@ -1173,6 +1308,14 @@ class QtWorkflowMainWindow:
             enabled = not bool(item.get("enabled", True))
             patch["enabled"] = enabled
             patch["payload"] = {"enabled": enabled}
+        elif operation in {"update_item", "replace_item"}:
+            try:
+                value = self._plugin_structured_row_payload(frame, selected_row)
+            except ValueError as exc:
+                self.show_error("插件配置写回失败", str(exc))
+                return
+            patch["payload"] = value
+            patch["value"] = copy.deepcopy(value)
         elif operation == "move_item":
             to_index = selected_row + int(target_offset or 0)
             if to_index < 0 or to_index >= len(items):

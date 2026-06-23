@@ -438,6 +438,81 @@ class Qt6UiShellTests(unittest.TestCase):
         window.close()
         app.processEvents()
 
+    def test_plugin_structured_list_edits_item_schema_columns_as_update_patch(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+        captured = []
+        controller._apply_plugin_config_patch = lambda patch: captured.append(copy.deepcopy(patch))
+
+        widget = controller._make_plugin_structured_list_widget(
+            {
+                "view_id": "demo.rules",
+                "kind": "structured_list",
+                "config_path": ["items"],
+                "patch_operations": ["update_item"],
+                "items": [{
+                    "id": "rule_1",
+                    "name": "rule",
+                    "enabled": True,
+                    "mapping": {"content_field": "old", "empty_policy": "keep"},
+                    "source_locator": {"row_index": 1, "col_index": 2},
+                }],
+                "item_schema": {
+                    "columns": [
+                        {"key": "name", "label": "规则", "type": "text"},
+                        {
+                            "key": "mapping.content_field",
+                            "label": "写入字段",
+                            "type": "select",
+                            "choices": ["old", "new"],
+                            "config_path": ["mapping", "content_field"],
+                        },
+                        {
+                            "key": "source_locator.row_index",
+                            "label": "行",
+                            "type": "number",
+                            "config_path": ["source_locator", "row_index"],
+                        },
+                        {"key": "enabled", "label": "启用", "type": "bool"},
+                    ],
+                },
+            },
+            {"config_schema_version": "demo.config.v1"},
+        )
+
+        table = widget.findChild(qt.QtWidgets.QTableWidget)
+        self.assertIsNotNone(table)
+        self.assertEqual(table.horizontalHeaderItem(1).text(), "写入字段")
+        table.selectRow(0)
+        table.cellWidget(0, 0).setText("renamed")
+        table.cellWidget(0, 1).setCurrentText("new")
+        table.cellWidget(0, 2).setText("7")
+        table.cellWidget(0, 3).setChecked(False)
+        widget.plugin_config_buttons["update_item"].click()
+
+        self.assertEqual(len(captured), 1)
+        patch = captured[0]
+        self.assertEqual(patch["schema_version"], "demo.config.v1")
+        self.assertEqual(patch["operation"], "update_item")
+        self.assertEqual(patch["path"], ["items"])
+        self.assertEqual(patch["target_index"], 0)
+        self.assertEqual(patch["index"], 0)
+        self.assertEqual(patch["payload"]["id"], "rule_1")
+        self.assertEqual(patch["payload"]["name"], "renamed")
+        self.assertFalse(patch["payload"]["enabled"])
+        self.assertEqual(patch["payload"]["mapping"]["content_field"], "new")
+        self.assertEqual(patch["payload"]["mapping"]["empty_policy"], "keep")
+        self.assertEqual(patch["payload"]["source_locator"]["row_index"], 7)
+        self.assertEqual(patch["payload"]["source_locator"]["col_index"], 2)
+        self.assertEqual(patch["value"], patch["payload"])
+        window.close()
+        app.processEvents()
+
     def test_facade_describes_workflow_actions_and_progress(self):
         client = QtHeadlessEngineClient()
 
