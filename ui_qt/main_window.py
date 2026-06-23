@@ -841,7 +841,7 @@ class QtWorkflowMainWindow:
             self.config_header_label.setText("未选择节点")
             self._update_legacy_plugin_config_button({})
             self._clear_plugin_config_views()
-            self.refresh_action_states()
+            self.refresh_action_states(selected_indexes=[])
             return
         node_type_id = self._node_type_id_for_node(node)
         table_context = self._table_context()
@@ -875,7 +875,7 @@ class QtWorkflowMainWindow:
         self.show_node_detail(node_type_id, preview_headers=config_headers)
         self._append_plugin_config_detail(plugin_config_description)
         self._render_plugin_config_views(plugin_config_description)
-        self.refresh_action_states()
+        self.refresh_action_states(selected_indexes=[row])
 
     def _describe_plugin_config_for_node(self, node_type_id, node):
         if not str(node_type_id or "").startswith("plugin."):
@@ -2641,12 +2641,14 @@ class QtWorkflowMainWindow:
     def set_workflow_running(self, running):
         self.refresh_action_states(is_running=bool(running))
 
-    def refresh_action_states(self, is_running=None):
+    def refresh_action_states(self, is_running=None, selected_indexes=None):
         if is_running is None:
             is_running = bool(self.current_job_id)
+        if selected_indexes is None:
+            selected_indexes = self.selected_node_indexes()
         result = self.engine_client.describe_workflow_actions(
             plan=self.current_plan,
-            selected_indexes=self.selected_node_indexes(),
+            selected_indexes=selected_indexes,
             is_running=bool(is_running),
         )
         actions = result.get("actions") or {}
