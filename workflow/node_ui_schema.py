@@ -1561,13 +1561,8 @@ def list_node_ui_schemas(include_unsupported=True, *, preview_headers=None, tabl
     ]
 
 
-def build_node_ui_catalog(include_unsupported=True, *, preview_headers=None, table_names=None, table_columns=None):
-    schemas = list_node_ui_schemas(
-        include_unsupported=include_unsupported,
-        preview_headers=preview_headers,
-        table_names=table_names,
-        table_columns=table_columns,
-    )
+def build_node_ui_catalog_from_schemas(schemas):
+    schemas = [item for item in (schemas or []) if isinstance(item, dict)]
     groups = []
     grouped_entries = {}
     for item in schemas:
@@ -1600,6 +1595,16 @@ def build_node_ui_catalog(include_unsupported=True, *, preview_headers=None, tab
         "groups": groups,
         "items": schemas,
     }
+
+
+def build_node_ui_catalog(include_unsupported=True, *, preview_headers=None, table_names=None, table_columns=None):
+    schemas = list_node_ui_schemas(
+        include_unsupported=include_unsupported,
+        preview_headers=preview_headers,
+        table_names=table_names,
+        table_columns=table_columns,
+    )
+    return build_node_ui_catalog_from_schemas(schemas)
 
 
 def get_node_ui_schema(node_type_id, *, preview_headers=None, table_names=None, table_columns=None):

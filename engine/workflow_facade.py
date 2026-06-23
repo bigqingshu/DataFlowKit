@@ -13,7 +13,7 @@ from workflow.plan_commands import apply_plan_command as apply_workflow_plan_com
 from workflow.node_ui_schema import (
     build_field_help_payload,
     build_node_detail_payload,
-    build_node_ui_catalog,
+    build_node_ui_catalog_from_schemas,
     plan_reference_choices,
     runtime_reference_choices,
 )
@@ -197,9 +197,12 @@ class WorkflowFacade:
         return self.plan_templates.validate_template(copy.deepcopy(plan))
 
     def apply_plan_command(self, plan, command, **kwargs):
+        engine_apply = getattr(self.engine, "apply_plan_command", None)
+        if callable(engine_apply):
+            return engine_apply(copy.deepcopy(plan), copy.deepcopy(command), **kwargs)
         return apply_workflow_plan_command(
             copy.deepcopy(plan),
-            command,
+            copy.deepcopy(command),
             node_id_factory=self.node_id_factory,
             **kwargs,
         )
@@ -924,12 +927,7 @@ class WorkflowFacade:
             table_names=table_names,
             table_columns=table_columns,
         )
-        detail = build_node_detail_payload(
-            node_type_id,
-            display_name=schema.get("display_name", ""),
-            category=schema.get("category", ""),
-            supported_headless=((schema.get("capabilities") or {}).get("headless_preview")),
-        )
+        detail = self._build_schema_node_detail(node_type_id, schema)
         return {
             "ok": True,
             "schema": schema,
@@ -976,16 +974,92 @@ class WorkflowFacade:
         return f"{name} · {path}"
 
     def list_node_ui_catalog(self, *, include_unsupported=True, preview_headers=None, table_names=None, table_columns=None):
-        catalog = build_node_ui_catalog(
+        schemas = self.engine.list_node_ui_schemas(
             include_unsupported=include_unsupported,
             preview_headers=preview_headers,
             table_names=table_names,
             table_columns=table_columns,
         )
+        catalog = build_node_ui_catalog_from_schemas(schemas)
         return {
             "ok": True,
             "catalog": catalog,
         }
+
+    def _build_schema_node_detail(self, node_type_id, schema):
+        schema = copy.deepcopy(schema or {})
+        detail = build_node_detail_payload(
+            node_type_id,
+            display_name=schema.get("display_name", ""),
+            category=schema.get("category", ""),
+            supported_headless=((schema.get("capabilities") or {}).get("headless_preview")),
+        )
+        for key in ["summary", "description", "badges", "warnings", "risk"]:
+            if key in schema:
+                detail[key] = copy.deepcopy(schema.get(key))
+
+        sections = []
+        description = str(schema.get("description") or schema.get("summary") or "").strip()
+        if description:
+            sections.append({"title": "说明", "lines": [description]})
+        warnings = [str(item) for item in (schema.get("warnings") or []) if str(item).strip()]
+        if warnings:
+            sections.append({"title": "注意", "lines": warnings})
+        config_lines = self._schema_config_summary(schema)
+        if config_lines:
+            sections.append({"title": "配置项", "lines": config_lines})
+        plugin = schema.get("plugin") if isinstance(schema.get("plugin"), dict) else {}
+        plugin_lines = self._plugin_detail_lines(plugin, schema)
+        if plugin_lines:
+            sections.append({"title": "插件", "lines": plugin_lines})
+        if sections:
+            detail["sections"] = sections
+        return detail
+
+    def _schema_config_summary(self, schema):
+        lines = []
+        for group in (schema.get("form") or {}).get("groups", []):
+            fields = group.get("fields") or []
+            labels = []
+            for field in fields:
+                if not isinstance(field, dict):
+                    continue
+                label = str(field.get("label") or field.get("key") or "").strip()
+                if not label:
+                    continue
+                tags = []
+                validation = field.get("validation") or {}
+                if field.get("required") or validation.get("required"):
+                    tags.append("必填")
+                if field.get("visible_when"):
+                    tags.append("动态显示")
+                if field.get("enabled_when"):
+                    tags.append("动态启用")
+                if (field.get("action") or {}).get("key"):
+                    tags.append("可选取")
+                labels.append(label + (f"({','.join(tags)})" if tags else ""))
+            if labels:
+                lines.append(f"{group.get('title', '参数')}：" + "、".join(labels[:6]))
+        return lines
+
+    def _plugin_detail_lines(self, plugin, schema):
+        lines = []
+        plugin_id = str(plugin.get("plugin_id") or "").strip()
+        if plugin_id:
+            lines.append(f"插件 ID：{plugin_id}")
+        load_status = str(plugin.get("load_status") or "").strip()
+        if load_status:
+            lines.append(f"加载状态：{load_status}")
+        run_modes = [str(item) for item in (plugin.get("available_run_modes") or []) if str(item).strip()]
+        if run_modes:
+            lines.append("可用运行环境：" + "、".join(run_modes))
+        parameter_count = plugin.get("parameter_count")
+        if parameter_count is not None:
+            lines.append(f"声明参数：{parameter_count} 个")
+        capabilities = schema.get("capabilities") or {}
+        if capabilities.get("plugin"):
+            lines.append("插件节点可按普通工作流节点配置、预览和执行。")
+        return lines
 
     def build_output_settings(self, payload=None, **fallbacks):
         settings = OutputSettings.from_payload(payload, **fallbacks)

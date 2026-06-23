@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 import copy
+import os
 import unittest
 import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from engine.plugin_service import PluginService
 from ui_qt import app as qt_app
 from ui_qt.config_form import NodeConfigForm, coerce_form_value, format_form_value, value_kind
 from ui_qt.engine_client import QtHeadlessEngineClient, SAMPLE_HEADERS, SAMPLE_PLAN
@@ -158,6 +160,56 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertTrue(node_detail["ok"])
         self.assertEqual(node_detail["detail"]["node_type_id"], "core.new_columns")
         self.assertTrue(node_detail["detail"]["sections"])
+
+    def test_qt_shell_lists_and_configures_plugin_nodes(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+
+        with TemporaryDirectory(dir=os.getcwd()) as temp_dir:
+            plugin = Path(temp_dir) / "demo_plugin.py"
+            plugin.write_text(
+                "\n".join([
+                    "PLUGIN_INFO = {'id': 'demo', 'name': 'Demo', 'api_version': '1.0', 'version': '0.1', 'description': 'Demo plugin'}",
+                    "PARAMETER_SCHEMA = [",
+                    "    {'name': 'field', 'label': '字段', 'type': 'field_select', 'default': 'A', 'required': True},",
+                    "    {'name': 'limit', 'label': '数量', 'type': 'int', 'default': 3},",
+                    "]",
+                    "def run(input_data, params, context):",
+                    "    return {'ok': True, 'output': input_data}",
+                ]),
+                encoding="utf-8",
+            )
+
+            client = QtHeadlessEngineClient()
+            client.engine.plugins = PluginService(plugins_dir=temp_dir, app_dir=temp_dir)
+            catalog = client.list_node_ui_catalog(preview_headers=["A"])
+            detail = client.describe_node_detail("plugin.demo", preview_headers=["A"])
+
+            app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+            window = build_main_window(qt, engine_client=client)
+            controller = window.qt_workflow_controller
+            controller.add_node_by_type("plugin.demo")
+
+            plugin_node = controller.current_plan["nodes"][-1]
+            controller.show_node_config(len(controller.current_plan["nodes"]) - 1)
+
+            plugin_group = next(group for group in catalog["catalog"]["groups"] if group["group"] == "插件")
+            plugin_item = next(item for item in plugin_group["items"] if item["node_type_id"] == "plugin.demo")
+
+            self.assertEqual(plugin_item["display_name"], "插件 / Demo")
+            self.assertTrue(plugin_item["supported_headless"])
+            self.assertEqual(plugin_node["node_type_id"], "plugin.demo")
+            self.assertEqual(plugin_node["config"]["plugin_id"], "demo")
+            self.assertEqual(plugin_node["config"]["params"]["limit"], 3)
+            self.assertIn("plugin_id", controller.config_form.config_fields)
+            self.assertIn("params", controller.config_form.config_fields)
+            self.assertEqual(controller.node_detail_title_label.text(), "插件 / Demo")
+            self.assertIn("插件 ID：demo", controller.node_detail_sections.toPlainText())
+            self.assertIn("Demo plugin", detail["detail"]["description"])
+            window.close()
+            app.processEvents()
 
     def test_facade_describes_workflow_actions_and_progress(self):
         client = QtHeadlessEngineClient()
