@@ -146,6 +146,8 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
             "get_plugin_schema",
             "make_plugin_default_config",
             "list_plugins",
+            "validate_plugin_config",
+            "run_plugin",
         ]:
             self.assertIn(action, actions)
 

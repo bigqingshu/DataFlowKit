@@ -945,9 +945,9 @@ NODE_UI_DESCRIPTIONS = {
     },
     "core.plugin": {
         "summary": "调用插件节点",
-        "description": "运行 Python 插件或外部进程插件。",
-        "badges": ["插件", "仅旧执行链"],
-        "warnings": ["新界面第一版暂未加载插件注册表。"],
+        "description": "插件节点兼容占位。实际插件会由插件注册表生成为 plugin.<plugin_id> 节点。",
+        "badges": ["插件", "兼容占位"],
+        "warnings": ["请优先使用插件目录中动态加载的具体插件节点；此项主要用于兼容旧计划。"],
         "risk": "plugin_external",
     },
 }

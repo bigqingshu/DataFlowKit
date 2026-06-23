@@ -68,7 +68,9 @@
             "format_jump_issue",
             "get_plugin_schema",
             "make_plugin_default_config",
-            "list_plugins"
+            "list_plugins",
+            "validate_plugin_config",
+            "run_plugin"
           ]
         },
         "payload": {
