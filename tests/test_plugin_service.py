@@ -28,6 +28,12 @@ def write_demo_plugin(root):
             "    {'name': 'field', 'label': '字段', 'type': 'field_select', 'default': 'A', 'required': True},",
             "    {'name': 'limit', 'label': '数量', 'type': 'int', 'default': 3},",
             "]",
+            "def open_config_window(parent, current_params, context):",
+            "    params = dict(current_params)",
+            "    params['limit'] = 9",
+            "    params['table_count'] = len(context.get('input_tables') or {})",
+            "    params['has_plugin_data_dir'] = bool(context.get('plugin_data_dir'))",
+            "    return params",
             "def run(input_data, params, context):",
             "    return {'ok': True, 'output': input_data}",
         ]),
@@ -86,6 +92,11 @@ class PluginServiceTests(unittest.TestCase):
             schema = service.get_plugin_schema("plugin.demo")
             default_config = service.make_plugin_default_config("demo")
             node = service.make_default_plugin_node("plugin.demo", node_id="node_demo", include_legacy_type=False)
+            custom = service.run_plugin_custom_config_window(
+                "demo",
+                config={"plugin_id": "demo", "params": {"field": "A", "limit": 3}},
+                input_table={"headers": ["A"], "rows": [["x"]]},
+            )
             run = service.run_plugin(
                 "demo",
                 input_table={"headers": ["A"], "rows": [["x"]]},
@@ -100,6 +111,9 @@ class PluginServiceTests(unittest.TestCase):
         self.assertTrue(schema["ok"])
         self.assertEqual(schema["schema"]["node_type_id"], "plugin.demo")
         self.assertEqual(schema["schema"]["display_name"], "插件 / Demo")
+        self.assertTrue(schema["plugin"]["has_custom_config_window"])
+        self.assertTrue(schema["schema"]["capabilities"]["legacy_custom_config"])
+        self.assertEqual(schema["plugin"]["custom_config_window"]["label"], "打开旧版插件设置")
         self.assertEqual(schema["schema"]["parameters"][0]["name"], "field")
         plugin_param_group = next(group for group in schema["schema"]["form"]["groups"] if group["title"] == "插件参数")
         plugin_param_fields = {field["key"]: field for field in plugin_param_group["fields"]}
@@ -113,6 +127,11 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(node["node_type_id"], "plugin.demo")
         self.assertNotIn("type", node)
         self.assertEqual(node["config"]["plugin_id"], "demo")
+        self.assertTrue(custom["ok"])
+        self.assertTrue(custom["changed"])
+        self.assertEqual(custom["config"]["params"]["limit"], 9)
+        self.assertGreaterEqual(custom["params"]["table_count"], 1)
+        self.assertTrue(custom["params"]["has_plugin_data_dir"])
         self.assertTrue(run["ok"])
         self.assertEqual(run["result"]["headers"], ["A"])
         self.assertEqual(run["result"]["rows"], [["x"]])

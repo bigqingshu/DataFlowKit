@@ -103,6 +103,7 @@ class PluginService:
                 "plugin": True,
                 "import_ok": bool(plugin.get("import_ok")),
                 "available_run_modes": list(plugin.get("available_run_modes") or []),
+                "legacy_custom_config": bool(plugin.get("has_custom_config_window")),
             },
             "form": {
                 "schema_version": PLUGIN_FORM_SCHEMA_VERSION,
@@ -243,6 +244,65 @@ class PluginService:
             "issues": [],
         }
 
+    def run_plugin_custom_config_window(self, plugin_id, *, config=None, input_table=None, context=None, parent=None, plugins_dir=None):
+        self._ensure_loaded(plugins_dir)
+        key = self._resolve_plugin_key(plugin_id)
+        if not key:
+            return _plugin_failure("plugin_not_found", f"未找到插件：{plugin_id}", "/plugin_id")
+        item = self.registry.get(key, {})
+        module = item.get("module")
+        opener = getattr(module, "open_config_window", None)
+        if not callable(opener):
+            return _plugin_failure(
+                "plugin_custom_config_unavailable",
+                f"插件未提供旧版自定义设置窗口：{key}",
+                "/plugin_id",
+            )
+
+        current_config = copy.deepcopy(config or self.make_plugin_default_config(key))
+        params = dict(current_config.get("params", {}) or {})
+        runtime_context = context if isinstance(context, dict) else {}
+        self._ensure_runtime_context_snapshot(runtime_context)
+        input_data = _make_plugin_service_input_data(key, input_table, runtime_context)
+        plugin_context = _make_plugin_service_context(
+            key,
+            config=current_config,
+            context=runtime_context,
+            execute_actions=False,
+        )
+        adapter = _PluginServiceExternalAdapter(self)
+        plugin_context.update({
+            "input_tables": input_data.get("tables", {}) or {},
+            "plugin_input_table_specs": copy.deepcopy(current_config.get("input_tables", [])),
+            "plugin_data_dir": adapter.get_plugin_data_dir(key),
+            "log_dir": adapter.get_plugin_log_dir(),
+            "db_path": adapter.get_workflow_db_path(runtime_context),
+        })
+
+        try:
+            result = opener(parent, dict(params), plugin_context)
+        except Exception as exc:
+            return _plugin_failure("plugin_custom_config_error", str(exc), "/params")
+        if not isinstance(result, dict):
+            return {
+                "ok": True,
+                "plugin_id": key,
+                "changed": False,
+                "params": params,
+                "config": current_config,
+                "issues": [],
+            }
+        updated_config = copy.deepcopy(current_config)
+        updated_config["params"] = copy.deepcopy(result)
+        return {
+            "ok": True,
+            "plugin_id": key,
+            "changed": result != params,
+            "params": copy.deepcopy(result),
+            "config": updated_config,
+            "issues": [],
+        }
+
     def _ensure_runtime_context_snapshot(self, context):
         if not isinstance(context, dict):
             return
@@ -344,11 +404,14 @@ class PluginService:
         info = copy.deepcopy(item.get("info") or {})
         name = str(info.get("name") or plugin_id).strip() or plugin_id
         load_status = str(item.get("load_status") or ("可内置运行" if item.get("import_ok") else "仅独立环境运行"))
+        has_custom_config = callable(getattr(item.get("module"), "open_config_window", None))
         warnings = []
         if load_status == "仅独立环境运行":
             warnings.append("插件当前仅能通过独立环境运行。")
         if item.get("import_error"):
             warnings.append(str(item.get("import_error")))
+        if has_custom_config:
+            warnings.append("该插件提供旧版自定义设置窗口，可通过兼容入口打开。")
         return {
             "plugin_id": plugin_id,
             "node_type_id": plugin_node_type_id(plugin_id),
@@ -374,6 +437,12 @@ class PluginService:
             "requirements_path": str(item.get("requirements_path") or ""),
             "manifest_path": str(item.get("manifest_path") or ""),
             "parameter_count": len(item.get("schema") or []),
+            "has_custom_config_window": has_custom_config,
+            "custom_config_window": {
+                "available": has_custom_config,
+                "label": "打开旧版插件设置",
+                "compatibility": "legacy_tk",
+            },
             "info": info,
         }
 

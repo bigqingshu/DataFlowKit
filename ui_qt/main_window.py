@@ -255,8 +255,12 @@ class QtWorkflowMainWindow:
         self.config_form = NodeConfigForm(qt, headers=self.current_headers, plan=self.current_plan, action_handler=self._handle_config_field_action)
         self.apply_config_button = qt.QtWidgets.QPushButton("应用节点配置")
         self.apply_config_button.clicked.connect(lambda checked=False: self.apply_node_config())
+        self.legacy_plugin_config_button = qt.QtWidgets.QPushButton("打开旧版插件设置")
+        self.legacy_plugin_config_button.clicked.connect(lambda checked=False: self.open_legacy_plugin_config())
+        self.legacy_plugin_config_button.setVisible(False)
         config_layout.addWidget(self.config_header_label)
         config_layout.addWidget(self.config_form.widget, 1)
+        config_layout.addWidget(self.legacy_plugin_config_button)
         config_layout.addWidget(self.apply_config_button)
 
         detail_page = qt.QtWidgets.QWidget()
@@ -564,6 +568,7 @@ class QtWorkflowMainWindow:
         else:
             self.config_form.set_node(None)
             self.config_header_label.setText("未选择节点")
+            self._update_legacy_plugin_config_button({})
         self.refresh_action_states()
 
     def selected_node_index(self):
@@ -679,6 +684,7 @@ class QtWorkflowMainWindow:
         if row is None or row < 0 or node is None:
             self.config_form.set_node(None)
             self.config_header_label.setText("未选择节点")
+            self._update_legacy_plugin_config_button({})
             return
         node_type_id = self._node_type_id_for_node(node)
         schema = panel_state.get("selected_schema") or self.node_schema_by_id.get(node_type_id, {})
@@ -693,8 +699,92 @@ class QtWorkflowMainWindow:
             plan=self.current_plan,
             schema=schema,
         )
+        self._update_legacy_plugin_config_button(schema)
         self.show_node_detail(node_type_id)
         self.refresh_action_states()
+
+    def _update_legacy_plugin_config_button(self, schema):
+        plugin = schema.get("plugin") if isinstance(schema, dict) and isinstance(schema.get("plugin"), dict) else {}
+        custom_window = plugin.get("custom_config_window") if isinstance(plugin.get("custom_config_window"), dict) else {}
+        visible = bool(custom_window.get("available"))
+        self.legacy_plugin_config_button.setVisible(visible)
+        self.legacy_plugin_config_button.setEnabled(visible and not bool(self.current_job_id))
+        self.legacy_plugin_config_button.setText(str(custom_window.get("label") or "打开旧版插件设置"))
+        self.legacy_plugin_config_button.setToolTip("兼容旧 Tk 插件设置窗口；标准配置仍以当前表单为主。")
+
+    def open_legacy_plugin_config(self):
+        index = self.selected_node_index()
+        if index is None:
+            self._apply_feedback(self.engine_client.describe_selection_feedback(
+                selected_index=index,
+                purpose="打开旧版插件设置",
+            ))
+            return
+        try:
+            node = self.config_form.to_node()
+            node_type_id = self._node_type_id_for_node(node)
+            config = node.get("config", {}) or {}
+            plugin_id = config.get("plugin_id") or node_type_id
+            result = self.engine_client.run_plugin_custom_config_window(
+                plugin_id,
+                config=config,
+                input_table=self._input_table_payload(),
+                context={
+                    "db_path": self.output_db_path_edit.text().strip(),
+                    "workflow_name": self.current_plan.get("plan_name", ""),
+                },
+                parent=None,
+            )
+        except Exception as exc:
+            self.show_error("旧版插件设置错误", str(exc))
+            return
+        if not result.get("ok"):
+            self._apply_feedback(self.engine_client.build_user_feedback(
+                level="warning",
+                code="legacy_plugin_config_failed",
+                title="旧版插件设置",
+                status_message="旧版插件设置未应用",
+                issue_message=self.engine_client.facade.format_issues_text(result.get("issues") or []),
+                issues=result.get("issues") or [],
+            ))
+            return
+        if not result.get("changed"):
+            self._apply_feedback(self.engine_client.build_user_feedback(
+                level="info",
+                code="legacy_plugin_config_unchanged",
+                title="旧版插件设置",
+                status_message="旧版插件设置未更改。",
+                issue_message="旧版插件设置未更改。",
+            ))
+            return
+
+        updated_node = copy.deepcopy(node)
+        updated_node["config"] = copy.deepcopy(result.get("config") or config)
+        table_context = self._table_context()
+        applied = self.engine_client.apply_node_config_state(
+            self.current_plan,
+            index=index,
+            node=updated_node,
+            preview_headers=self.current_headers,
+            table_names=table_context.get("table_names"),
+            table_columns=table_context.get("table_columns"),
+        )
+        validation = applied.get("validation") or {}
+        self.config_form.set_validation_issues(validation.get("issues", []))
+        if not applied.get("ok"):
+            self._apply_feedback({"feedback": applied.get("feedback") or {}})
+            return
+        apply_result = applied.get("apply_result") or {}
+        if apply_result.get("ok"):
+            self.current_plan = apply_result.get("plan") or self.current_plan
+            self.refresh_all(selected_index=apply_result.get("selected_index", index))
+        self._apply_feedback(self.engine_client.build_user_feedback(
+            level="success",
+            code="legacy_plugin_config_applied",
+            title="旧版插件设置",
+            status_message="旧版插件设置已应用。",
+            issue_message="旧版插件设置已写回当前节点配置。",
+        ))
 
     def apply_node_config(self):
         index = self.selected_node_index()
@@ -1753,6 +1843,7 @@ class QtWorkflowMainWindow:
             "add_node": self.add_node_button,
             "refresh_catalog": self.refresh_schema_button,
             "refresh_plugins": self.refresh_plugin_button,
+            "legacy_plugin_config": self.legacy_plugin_config_button,
         }
         for action_key, button in button_map.items():
             if button is None:

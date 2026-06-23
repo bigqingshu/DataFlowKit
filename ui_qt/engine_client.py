@@ -339,6 +339,15 @@ class QtHeadlessEngineClient:
     def make_plugin_default_config(self, plugin_id):
         return self.engine.make_plugin_default_config(plugin_id)
 
+    def run_plugin_custom_config_window(self, plugin_id, *, config=None, input_table=None, context=None, parent=None):
+        return self.engine.run_plugin_custom_config_window(
+            plugin_id,
+            config=copy.deepcopy(config),
+            input_table=copy.deepcopy(input_table),
+            context=copy.deepcopy(context),
+            parent=parent,
+        )
+
     def analyze_jumps(self, plan):
         return self.engine.analyze_jumps(copy.deepcopy(plan))
 

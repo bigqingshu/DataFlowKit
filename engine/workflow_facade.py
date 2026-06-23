@@ -909,6 +909,7 @@ class WorkflowFacade:
             "add_node": {"enabled": not is_running},
             "refresh_catalog": {"enabled": not is_running},
             "refresh_plugins": {"enabled": not is_running},
+            "legacy_plugin_config": {"enabled": selected_index is not None and not is_running},
             "delete_nodes": {"enabled": has_selection and not is_running},
             "move_node_up": {"enabled": selected_index is not None and selected_index > 0 and not is_running},
             "move_node_down": {"enabled": selected_index is not None and selected_index < len(nodes) - 1 and not is_running},
@@ -1118,6 +1119,9 @@ class WorkflowFacade:
         parameter_count = plugin.get("parameter_count")
         if parameter_count is not None:
             lines.append(f"声明参数：{parameter_count} 个")
+        custom_window = plugin.get("custom_config_window") if isinstance(plugin.get("custom_config_window"), dict) else {}
+        if custom_window.get("available"):
+            lines.append("旧版设置窗口：可通过兼容入口打开。")
         capabilities = schema.get("capabilities") or {}
         if capabilities.get("plugin"):
             lines.append("插件节点可按普通工作流节点配置、预览和执行。")

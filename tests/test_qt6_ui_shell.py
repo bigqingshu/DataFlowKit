@@ -176,6 +176,10 @@ class Qt6UiShellTests(unittest.TestCase):
                     "    {'name': 'field', 'label': '字段', 'type': 'field_select', 'default': 'A', 'required': True},",
                     "    {'name': 'limit', 'label': '数量', 'type': 'int', 'default': 3},",
                     "]",
+                    "def open_config_window(parent, current_params, context):",
+                    "    params = dict(current_params)",
+                    "    params['limit'] = 11",
+                    "    return params",
                     "def run(input_data, params, context):",
                     "    return {'ok': True, 'output': input_data}",
                 ]),
@@ -208,6 +212,7 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertIn("params", controller.config_form.config_fields)
             self.assertIn("params.field", controller.config_form.config_fields)
             self.assertIn("params.limit", controller.config_form.config_fields)
+            self.assertFalse(controller.legacy_plugin_config_button.isHidden())
             field_editor = controller.config_form.config_fields["params.field"]["editor"]
             field_choices = [field_editor.itemText(index) for index in range(field_editor.count())]
             self.assertEqual(field_editor.currentText(), "A")
@@ -221,7 +226,11 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertNotIn("params.limit", converted_node["config"])
             self.assertEqual(controller.node_detail_title_label.text(), "插件 / Demo")
             self.assertIn("插件 ID：demo", controller.node_detail_sections.toPlainText())
+            self.assertIn("旧版设置窗口", controller.node_detail_sections.toPlainText())
             self.assertIn("Demo plugin", detail["detail"]["description"])
+            controller.open_legacy_plugin_config()
+            self.assertEqual(controller.current_plan["nodes"][-1]["config"]["params"]["limit"], 11)
+            self.assertIn("旧版插件设置已写回当前节点配置", controller.info_text.toPlainText())
             controller.refresh_plugins()
             self.assertIn("已注册插件：1 个", controller.info_text.toPlainText())
             self.assertIn("bad_plugin.py", controller.issue_text.toPlainText())
@@ -243,6 +252,7 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertFalse(idle_actions["actions"]["move_node_down"]["enabled"])
         self.assertTrue(idle_actions["actions"]["apply_node_config"]["enabled"])
         self.assertTrue(idle_actions["actions"]["refresh_plugins"]["enabled"])
+        self.assertTrue(idle_actions["actions"]["legacy_plugin_config"]["enabled"])
         self.assertFalse(idle_actions["actions"]["cancel_job"]["enabled"])
 
         running_actions = client.describe_workflow_actions(
@@ -253,6 +263,7 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertFalse(running_actions["actions"]["delete_nodes"]["enabled"])
         self.assertFalse(running_actions["actions"]["execute_plan"]["enabled"])
         self.assertFalse(running_actions["actions"]["refresh_plugins"]["enabled"])
+        self.assertFalse(running_actions["actions"]["legacy_plugin_config"]["enabled"])
         self.assertTrue(running_actions["actions"]["cancel_job"]["enabled"])
 
         start_progress = client.build_job_progress_state(

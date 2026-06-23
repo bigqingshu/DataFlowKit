@@ -352,6 +352,9 @@ class HeadlessWorkflowEngine:
     def run_plugin(self, plugin_id, **kwargs):
         return self.plugins.run_plugin(plugin_id, **kwargs)
 
+    def run_plugin_custom_config_window(self, plugin_id, **kwargs):
+        return self.plugins.run_plugin_custom_config_window(plugin_id, **kwargs)
+
     def analyze_jumps(self, plan=None, *, nodes=None):
         return self.jumps.analyze_plan(plan, nodes=nodes)
 
