@@ -479,10 +479,20 @@ class PluginService:
                 "resource_ids": [item["resource_id"] for item in resources],
             })
 
+        extension_schema_version = str(plugin_extension.get("schema_version") or "").strip()
+        protocol_family = str(plugin_extension.get("protocol_family") or "plugin_form_config").strip() or "plugin_form_config"
+        config_key = str(plugin_extension.get("config_key") or params.get("config_name") or "").strip()
+        extension_capabilities = copy.deepcopy(plugin_extension.get("capabilities") or {})
+        combined_capabilities = copy.deepcopy(schema.get("capabilities") or {})
+        combined_capabilities.update(extension_capabilities)
+
         return {
             "ok": True,
             "schema_version": "plugin_config.v1",
+            "config_schema_version": extension_schema_version or "plugin_config.v1",
+            "protocol_family": protocol_family,
             "plugin_id": key,
+            "config_key": config_key,
             "plugin": plugin,
             "config": current_config,
             "params": params,
@@ -495,6 +505,10 @@ class PluginService:
             "views": views,
             "resources": resources,
             "actions": actions,
+            "summary": copy.deepcopy(plugin_extension.get("summary") or {}),
+            "context": copy.deepcopy(plugin_extension.get("context") or {}),
+            "models": copy.deepcopy(plugin_extension.get("models") or {}),
+            "capabilities": combined_capabilities,
             "warnings": copy.deepcopy(schema.get("warnings") or []) + list(plugin_extension.get("warnings") or []),
             "issues": copy.deepcopy(plugin_extension.get("issues") or []),
             "plugin_extension": plugin_extension,

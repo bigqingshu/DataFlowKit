@@ -252,6 +252,12 @@ class PluginServiceTests(unittest.TestCase):
                     "def describe_config(params, context):",
                     "    return {",
                     "        'schema_version': 'demo.config.v1',",
+                    "        'protocol_family': 'plugin_complex_config',",
+                    "        'config_key': 'demo',",
+                    "        'summary': {'items': 1},",
+                    "        'context': {'choices': {'modes': ['A', 'B']}},",
+                    "        'models': {'item_default': {'name': ''}},",
+                    "        'capabilities': {'config_patch': True},",
                     "        'views': [{'view_id': 'demo.items', 'title': 'Demo Items', 'kind': 'structured_list'}],",
                     "        'resources': [{'resource_id': 'demo.resource', 'label': 'Demo Resource', 'kind': 'json_file'}],",
                     "        'actions': [{'action_id': 'demo.edit', 'label': 'Edit Demo', 'kind': 'config_editor'}],",
@@ -266,6 +272,13 @@ class PluginServiceTests(unittest.TestCase):
             described = service.describe_plugin_config("plugin.protocol_demo")
 
         self.assertTrue(described["ok"])
+        self.assertEqual(described["config_schema_version"], "demo.config.v1")
+        self.assertEqual(described["protocol_family"], "plugin_complex_config")
+        self.assertEqual(described["config_key"], "demo")
+        self.assertEqual(described["summary"]["items"], 1)
+        self.assertEqual(described["context"]["choices"]["modes"], ["A", "B"])
+        self.assertEqual(described["models"]["item_default"], {"name": ""})
+        self.assertTrue(described["capabilities"]["config_patch"])
         self.assertEqual(described["plugin_extension"]["schema_version"], "demo.config.v1")
         self.assertIn("demo.items", [view["view_id"] for view in described["views"]])
         self.assertIn("demo.resource", [resource["resource_id"] for resource in described["resources"]])
@@ -291,6 +304,9 @@ class PluginServiceTests(unittest.TestCase):
         self.assertTrue(applied["ok"])
         self.assertTrue(applied["changed"])
         self.assertEqual(applied["config"]["params"]["mode"], "new")
+        self.assertEqual(applied["description"]["config_schema_version"], "patch_demo.config.v1")
+        self.assertEqual(applied["description"]["protocol_family"], "plugin_form_config")
+        self.assertEqual(applied["description"]["summary"]["mode"], "new")
         self.assertEqual(applied["description"]["plugin_extension"]["summary"]["mode"], "new")
         self.assertFalse(invalid["ok"])
         self.assertEqual(invalid["issues"][0]["code"], "plugin_config_patch_invalid")

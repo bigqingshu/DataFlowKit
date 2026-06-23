@@ -338,6 +338,12 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertTrue(standard_updated["ok"])
         self.assertEqual(standard_updated["patch"]["operation"], "replace_item")
         self.assertEqual(standard_updated["patch"]["target_index"], 0)
+        self.assertEqual(standard_updated["description"]["config_schema_version"], visual.CONFIG_SCHEMA_VERSION)
+        self.assertEqual(standard_updated["description"]["protocol_family"], "plugin_complex_config")
+        self.assertEqual(standard_updated["description"]["config_key"], "default")
+        self.assertEqual(standard_updated["description"]["summary"]["rules"], 2)
+        self.assertIn("linked_rule_default", standard_updated["description"]["models"])
+        self.assertTrue(standard_updated["description"]["capabilities"]["config_patch"])
         self.assertEqual(standard_updated["description"]["plugin_extension"]["protocol_family"], "plugin_complex_config")
         self.assertTrue(feature_added["ok"])
         rules_view = next(
@@ -348,7 +354,6 @@ class VisualMappingWritePlanTests(unittest.TestCase):
             view for view in feature_added["description"]["views"]
             if view.get("view_id") == "visual_mapping.features"
         )
-        self.assertEqual(standard_updated["description"]["plugin_extension"]["summary"]["rules"], 2)
         self.assertEqual(rules_view["items"][0]["name"], "标准规则")
         self.assertEqual(rules_view["items"][0]["content_field"], "standard_value")
         self.assertEqual(rules_view["items"][1]["name"], "第二规则")

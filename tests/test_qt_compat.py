@@ -51,6 +51,7 @@ class FakeQt6Namespace:
     class ItemDataRole:
         DisplayRole = "display"
         EditRole = "edit"
+        BackgroundRole = "background"
 
     class Orientation:
         Horizontal = "horizontal"
@@ -63,9 +64,20 @@ class FakeQt6Namespace:
 class FakeQt5Namespace:
     DisplayRole = "display"
     EditRole = "edit"
+    BackgroundRole = "background"
     Horizontal = "horizontal"
     Vertical = "vertical"
     ItemIsEditable = 2
+
+
+class FakeColor:
+    def __init__(self, value):
+        self.value = value
+
+
+class FakeBrush:
+    def __init__(self, color):
+        self.color = color
 
 
 def install_fake_binding(name, qt_namespace, pyside=True):
@@ -83,6 +95,8 @@ def install_fake_binding(name, qt_namespace, pyside=True):
         core.pyqtSlot = object
         core.pyqtProperty = object
     gui = types.ModuleType(f"{name}.QtGui")
+    gui.QColor = FakeColor
+    gui.QBrush = FakeBrush
     widgets = types.ModuleType(f"{name}.QtWidgets")
     sys.modules[name] = package
     sys.modules[f"{name}.QtCore"] = core
