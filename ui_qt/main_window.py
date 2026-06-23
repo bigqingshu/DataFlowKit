@@ -1065,6 +1065,11 @@ class QtWorkflowMainWindow:
         frame.plugin_config_view = copy.deepcopy(view)
         frame.plugin_config_items = copy.deepcopy(items)
         frame.plugin_config_table = table
+        frame.plugin_config_schema_version = str(
+            (described or {}).get("config_schema_version")
+            or (described or {}).get("schema_version")
+            or ""
+        )
         if "append_value" in view:
             append_value = view.get("append_value")
         else:
@@ -1116,21 +1121,29 @@ class QtWorkflowMainWindow:
         view = copy.deepcopy(getattr(frame, "plugin_config_view", {}) or {})
         table = getattr(frame, "plugin_config_table", None)
         items = copy.deepcopy(getattr(frame, "plugin_config_items", []) or [])
+        target_path = copy.deepcopy(view.get("config_path") or [view.get("view_id") or ""])
         patch = {
+            "schema_version": str(getattr(frame, "plugin_config_schema_version", "") or ""),
             "operation": operation,
-            "target": copy.deepcopy(view.get("config_path") or [view.get("view_id") or ""]),
+            "path": copy.deepcopy(target_path),
+            "target": copy.deepcopy(target_path),
         }
         selected_row = table.currentRow() if table is not None else -1
         if operation in ("delete_item", "set_enabled", "move_item"):
             if selected_row < 0:
                 self.status_bar.showMessage("请先选择一条配置项。")
                 return
+            patch["target_index"] = int(selected_row)
             patch["index"] = int(selected_row)
         if operation == "append_item":
-            patch["value"] = copy.deepcopy(getattr(frame, "plugin_config_append_value", {}) or {})
+            value = copy.deepcopy(getattr(frame, "plugin_config_append_value", {}) or {})
+            patch["payload"] = value
+            patch["value"] = copy.deepcopy(value)
         elif operation == "set_enabled":
             item = items[selected_row] if 0 <= selected_row < len(items) else {}
-            patch["enabled"] = not bool(item.get("enabled", True))
+            enabled = not bool(item.get("enabled", True))
+            patch["enabled"] = enabled
+            patch["payload"] = {"enabled": enabled}
         elif operation == "move_item":
             to_index = selected_row + int(target_offset or 0)
             if to_index < 0 or to_index >= len(items):

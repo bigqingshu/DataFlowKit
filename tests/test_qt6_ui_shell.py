@@ -205,18 +205,21 @@ class Qt6UiShellTests(unittest.TestCase):
                     "    items = [dict(item) for item in (params.get('items') or [{'name': 'alpha', 'enabled': True}, {'name': 'beta', 'enabled': False}])]",
                     "    op = patch.get('operation')",
                     "    if op == 'append_item':",
-                    "        value = dict(patch.get('value') or {})",
+                    "        value = dict(patch.get('payload') or patch.get('value') or {})",
                     "        items.append(value or {'name': 'item_' + str(len(items) + 1), 'enabled': True})",
                     "    elif op == 'delete_item':",
-                    "        items.pop(int(patch.get('index')))",
+                    "        items.pop(int(patch.get('target_index', patch.get('index'))))",
                     "    elif op == 'set_enabled':",
-                    "        items[int(patch.get('index'))]['enabled'] = bool(patch.get('enabled'))",
+                    "        idx = int(patch.get('target_index', patch.get('index')))",
+                    "        payload = patch.get('payload') if isinstance(patch.get('payload'), dict) else {}",
+                    "        items[idx]['enabled'] = bool(payload.get('enabled', patch.get('enabled')))",
                     "    elif op == 'move_item':",
-                    "        item = items.pop(int(patch.get('index')))",
+                    "        item = items.pop(int(patch.get('target_index', patch.get('index'))))",
                     "        items.insert(int(patch.get('to_index')), item)",
                     "    else:",
                     "        return {'ok': False, 'message': 'unsupported'}",
                     "    params['items'] = items",
+                    "    params['last_patch'] = dict(patch)",
                     "    return {'ok': True, 'params': params, 'changed': True, 'message': 'patched'}",
                     "def run(input_data, params, context):",
                     "    return {'ok': True, 'output': input_data}",
@@ -321,11 +324,19 @@ class Qt6UiShellTests(unittest.TestCase):
             items_page, items_table = current_items_table()
             self.assertEqual(items_table.rowCount(), 3)
             self.assertEqual(controller.current_plan["nodes"][-1]["config"]["params"]["items"][-1]["name"], "from_view")
+            append_patch = controller.current_plan["nodes"][-1]["config"]["params"]["last_patch"]
+            self.assertEqual(append_patch["schema_version"], "demo.config.v1")
+            self.assertEqual(append_patch["path"], ["items"])
+            self.assertEqual(append_patch["payload"], {"name": "from_view", "enabled": True})
+            self.assertEqual(append_patch["value"], {"name": "from_view", "enabled": True})
             items_table.selectRow(0)
             items_page.plugin_config_buttons["set_enabled"].click()
             app.processEvents()
             items_page, items_table = current_items_table()
             self.assertEqual(items_table.item(0, 1).text(), "否")
+            enabled_patch = controller.current_plan["nodes"][-1]["config"]["params"]["last_patch"]
+            self.assertEqual(enabled_patch["target_index"], 0)
+            self.assertEqual(enabled_patch["payload"], {"enabled": False})
             items_table.selectRow(0)
             items_page.plugin_config_buttons["move_item_1"].click()
             app.processEvents()
