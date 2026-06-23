@@ -90,6 +90,11 @@ class PluginServiceTests(unittest.TestCase):
 
             listed = service.list_plugins()
             schema = service.get_plugin_schema("plugin.demo")
+            described = service.describe_plugin_config(
+                "plugin.demo",
+                config={"plugin_id": "demo", "params": {"field": "A", "limit": 3}},
+                input_table={"headers": ["A"], "rows": [["x"]]},
+            )
             default_config = service.make_plugin_default_config("demo")
             node = service.make_default_plugin_node("plugin.demo", node_id="node_demo", include_legacy_type=False)
             custom = service.run_plugin_custom_config_window(
@@ -114,6 +119,11 @@ class PluginServiceTests(unittest.TestCase):
         self.assertTrue(schema["plugin"]["has_custom_config_window"])
         self.assertTrue(schema["schema"]["capabilities"]["legacy_custom_config"])
         self.assertEqual(schema["plugin"]["custom_config_window"]["label"], "打开旧版插件设置")
+        self.assertTrue(described["ok"])
+        self.assertEqual(described["schema_version"], "plugin_config.v1")
+        self.assertEqual(described["views"][0]["view_id"], "plugin.params")
+        self.assertEqual(described["actions"][0]["action_id"], "open_legacy_config")
+        self.assertEqual(described["input_data"]["tables"], ["primary", "workflow_current", "当前表"])
         self.assertEqual(schema["schema"]["parameters"][0]["name"], "field")
         plugin_param_group = next(group for group in schema["schema"]["form"]["groups"] if group["title"] == "插件参数")
         plugin_param_fields = {field["key"]: field for field in plugin_param_group["fields"]}
@@ -218,6 +228,11 @@ class PluginServiceTests(unittest.TestCase):
                 "plugin_id": "plugin.demo",
                 "plugins_dir": temp_dir,
             }))
+            described = worker.handle_request(request("describe_plugin_config", {
+                "plugin_id": "plugin.demo",
+                "plugins_dir": temp_dir,
+                "input_table": {"headers": ["A"], "rows": [["x"]]},
+            }))
             default_config = worker.handle_request(request("make_plugin_default_config", {
                 "plugin_id": "demo",
                 "plugins_dir": temp_dir,
@@ -233,6 +248,9 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(listed["result"]["plugins"][0]["node_type_id"], "plugin.demo")
         self.assertTrue(schema["ok"])
         self.assertEqual(schema["result"]["schema"]["display_name"], "插件 / Demo")
+        self.assertTrue(described["ok"])
+        self.assertEqual(described["result"]["schema_version"], "plugin_config.v1")
+        self.assertEqual(described["result"]["views"][0]["kind"], "form")
         self.assertTrue(default_config["ok"])
         self.assertEqual(default_config["result"]["config"]["params"]["field"], "A")
         self.assertTrue(run["ok"])

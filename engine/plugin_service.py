@@ -303,6 +303,79 @@ class PluginService:
             "issues": [],
         }
 
+    def describe_plugin_config(self, plugin_id, *, config=None, input_table=None, context=None, plugins_dir=None):
+        schema_result = self.get_plugin_schema(plugin_id, plugins_dir=plugins_dir)
+        if not schema_result.get("ok"):
+            return schema_result
+        key = self._resolve_plugin_key(plugin_id)
+        item = self.registry.get(key, {})
+        plugin = copy.deepcopy(schema_result.get("plugin") or {})
+        schema = copy.deepcopy(schema_result.get("schema") or {})
+        current_config = copy.deepcopy(config or schema_result.get("default_config") or {})
+        if not isinstance(current_config, dict):
+            current_config = copy.deepcopy(schema_result.get("default_config") or {})
+        params = copy.deepcopy(current_config.get("params", {}) or {})
+        runtime_context = context if isinstance(context, dict) else {}
+        self._ensure_runtime_context_snapshot(runtime_context)
+        input_data = _make_plugin_service_input_data(key, input_table, runtime_context)
+
+        resources = []
+        module = item.get("module")
+        settings_file = str(getattr(module, "SETTINGS_FILE", "") or "").strip()
+        if settings_file:
+            resources.append({
+                "resource_id": "plugin_settings",
+                "label": "插件设置",
+                "kind": "json_file",
+                "storage": "plugin_data",
+                "file": settings_file,
+                "portable": False,
+            })
+
+        actions = []
+        custom_window = plugin.get("custom_config_window") if isinstance(plugin.get("custom_config_window"), dict) else {}
+        if custom_window.get("available"):
+            actions.append({
+                "action_id": "open_legacy_config",
+                "label": str(custom_window.get("label") or "打开旧版插件设置"),
+                "kind": "compatibility",
+                "compatibility": str(custom_window.get("compatibility") or "legacy"),
+            })
+
+        views = [{
+            "view_id": "plugin.params",
+            "title": "插件参数",
+            "kind": "form",
+            "form": copy.deepcopy((schema.get("form") or {})),
+            "config_path": [],
+        }]
+        if resources:
+            views.append({
+                "view_id": "plugin.resources",
+                "title": "插件资源",
+                "kind": "resource_list",
+                "resource_ids": [item["resource_id"] for item in resources],
+            })
+
+        return {
+            "ok": True,
+            "schema_version": "plugin_config.v1",
+            "plugin_id": key,
+            "plugin": plugin,
+            "config": current_config,
+            "params": params,
+            "input_data": {
+                "headers": list(input_data.get("headers", []) or []),
+                "row_count": len(input_data.get("rows", []) or []),
+                "tables": sorted((input_data.get("tables") or {}).keys()),
+            },
+            "views": views,
+            "resources": resources,
+            "actions": actions,
+            "warnings": copy.deepcopy(schema.get("warnings") or []),
+            "issues": [],
+        }
+
     def _ensure_runtime_context_snapshot(self, context):
         if not isinstance(context, dict):
             return

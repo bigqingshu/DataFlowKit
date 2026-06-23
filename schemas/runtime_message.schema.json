@@ -67,6 +67,7 @@
             "validate_jumps",
             "format_jump_issue",
             "get_plugin_schema",
+            "describe_plugin_config",
             "make_plugin_default_config",
             "list_plugins",
             "validate_plugin_config",

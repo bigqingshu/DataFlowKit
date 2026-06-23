@@ -336,6 +336,14 @@ class QtHeadlessEngineClient:
             table_columns=table_columns,
         )
 
+    def describe_plugin_config(self, plugin_id, *, config=None, input_table=None, context=None):
+        return self.engine.describe_plugin_config(
+            plugin_id,
+            config=copy.deepcopy(config),
+            input_table=copy.deepcopy(input_table),
+            context=copy.deepcopy(context),
+        )
+
     def make_plugin_default_config(self, plugin_id):
         return self.engine.make_plugin_default_config(plugin_id)
 

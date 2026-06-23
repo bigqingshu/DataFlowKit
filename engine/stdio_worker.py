@@ -322,6 +322,15 @@ class StdioWorker:
                 table_names=payload.get("table_names"),
                 table_columns=payload.get("table_columns"),
             )
+        if action == "describe_plugin_config":
+            plugin_id = payload.get("plugin_id") or payload.get("node_type_id")
+            return self.engine.describe_plugin_config(
+                plugin_id,
+                config=payload.get("config"),
+                input_table=payload.get("input_table"),
+                context=payload.get("context"),
+                plugins_dir=payload.get("plugins_dir"),
+            )
         if action == "make_plugin_default_config":
             plugin_id = payload.get("plugin_id") or payload.get("node_type_id")
             return self.engine.make_plugin_default_config(
