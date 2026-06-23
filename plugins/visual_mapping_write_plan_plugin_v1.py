@@ -230,6 +230,22 @@ def describe_config(params, context):
         "aux_rows": len(aux_rows),
     }
     config_base_path = ["plugin_settings", "configs", config_name]
+    models = {
+        "rule_default": _default_rule_for_cell({}),
+        "feature_default": _ensure_feature({}, 1),
+        "global_rule_default": _ensure_global_rule({}, 1),
+        "linked_rule_default": _default_linked_rule(1),
+        "empty_config": _empty_config(),
+    }
+    patch_operations = [
+        "append_item",
+        "update_item",
+        "replace_item",
+        "remove_item",
+        "delete_item",
+        "move_item",
+        "set_enabled",
+    ]
     editor_specs = [
         {
             "view_id": "visual_mapping.rules",
@@ -295,6 +311,26 @@ def describe_config(params, context):
             "items": _summarize_visual_mapping_linked_rules(cfg.get("linked_rules", []), limit=200),
         },
     ]
+    section_model_keys = {
+        "rules": "rule_default",
+        "features": "feature_default",
+        "global_rules": "global_rule_default",
+        "linked_rules": "linked_rule_default",
+    }
+    for spec in editor_specs:
+        section = _as_text((spec.get("config_path") or [""])[-1])
+        model_key = section_model_keys.get(section, "")
+        spec["section"] = section
+        spec["patch_operations"] = list(patch_operations)
+        spec["append_value"] = {}
+        spec["item_schema"] = {
+            "type": "object",
+            "model_key": model_key,
+            "display_columns": copy.deepcopy(spec.get("columns") or []),
+        }
+        if model_key:
+            spec["item_model_key"] = model_key
+            spec["item_default"] = copy.deepcopy(models.get(model_key) or {})
     views = [{
         "view_id": "visual_mapping.overview",
         "title": "映射配置总览",
@@ -343,13 +379,7 @@ def describe_config(params, context):
                 "slot_invalid_policies": list(SLOT_INVALID_POLICIES),
             },
         },
-        "models": {
-            "rule_default": _default_rule_for_cell({}),
-            "feature_default": _ensure_feature({}, 1),
-            "global_rule_default": _ensure_global_rule({}, 1),
-            "linked_rule_default": _default_linked_rule(1),
-            "empty_config": _empty_config(),
-        },
+        "models": models,
         "warnings": _normalize_config_warnings(context.get("settings_warnings") or []),
         "capabilities": {
             "schema_config": True,
@@ -357,15 +387,7 @@ def describe_config(params, context):
             "config_patch": True,
             "legacy_custom_config": True,
             "supported_sections": sorted(CONFIG_SECTIONS),
-            "supported_patch_operations": [
-                "append_item",
-                "update_item",
-                "replace_item",
-                "remove_item",
-                "delete_item",
-                "move_item",
-                "set_enabled",
-            ],
+            "supported_patch_operations": patch_operations,
             "view_kinds": ["summary", "structured_list"],
         },
     }

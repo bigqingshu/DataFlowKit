@@ -193,7 +193,7 @@ class Qt6UiShellTests(unittest.TestCase):
                     "            {'view_id': 'demo.overview', 'title': 'Demo Overview', 'kind': 'summary', 'summary': {'items': len(items), 'mode': params.get('mode', 'fast')}},",
                     "            {'view_id': 'demo.details', 'title': 'Demo Details', 'kind': 'form', 'values': {'mode': params.get('mode', 'fast'), 'limit': params.get('limit', 3)}, 'form': {'groups': [{'title': '基本', 'fields': [{'key': 'mode', 'label': '模式', 'help': '运行模式'}, {'key': 'limit', 'label': '数量', 'help': '处理数量'}]}]}},",
                     "            {'view_id': 'demo.preview', 'title': 'Demo Preview', 'kind': 'text_preview', 'text': 'mode=' + str(params.get('mode', 'fast'))},",
-                    "            {'view_id': 'demo.items', 'title': 'Demo Items', 'kind': 'structured_list', 'editor_kind': 'demo.items', 'config_path': ['items'], 'item_count': len(items), 'columns': [{'key': 'name', 'label': '名称'}, {'key': 'enabled', 'label': '启用'}], 'items': items},",
+                    "            {'view_id': 'demo.items', 'title': 'Demo Items', 'kind': 'structured_list', 'editor_kind': 'demo.items', 'config_path': ['items'], 'item_count': len(items), 'columns': [{'key': 'name', 'label': '名称'}, {'key': 'enabled', 'label': '启用'}], 'items': items, 'append_value': {'name': 'from_view', 'enabled': True}, 'patch_operations': ['append_item', 'delete_item', 'set_enabled', 'move_item']},",
                     "        ],",
                     "        'actions': [{'action_id': 'demo.edit_items', 'label': '编辑 Demo Items', 'kind': 'config_editor', 'editor_kind': 'demo.items'}],",
                     "    }",
@@ -204,7 +204,8 @@ class Qt6UiShellTests(unittest.TestCase):
                     "    items = [dict(item) for item in (params.get('items') or [{'name': 'alpha', 'enabled': True}, {'name': 'beta', 'enabled': False}])]",
                     "    op = patch.get('operation')",
                     "    if op == 'append_item':",
-                    "        items.append({'name': 'item_' + str(len(items) + 1), 'enabled': True})",
+                    "        value = dict(patch.get('value') or {})",
+                    "        items.append(value or {'name': 'item_' + str(len(items) + 1), 'enabled': True})",
                     "    elif op == 'delete_item':",
                     "        items.pop(int(patch.get('index')))",
                     "    elif op == 'set_enabled':",
@@ -316,7 +317,7 @@ class Qt6UiShellTests(unittest.TestCase):
 
             items_page, items_table = current_items_table()
             self.assertEqual(items_table.rowCount(), 3)
-            self.assertEqual(controller.current_plan["nodes"][-1]["config"]["params"]["items"][-1]["name"], "item_3")
+            self.assertEqual(controller.current_plan["nodes"][-1]["config"]["params"]["items"][-1]["name"], "from_view")
             items_table.selectRow(0)
             items_page.plugin_config_buttons["set_enabled"].click()
             app.processEvents()

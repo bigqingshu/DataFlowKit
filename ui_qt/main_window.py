@@ -961,7 +961,7 @@ class QtWorkflowMainWindow:
         if kind == "form":
             return self._make_plugin_form_view_widget(view)
         if kind == "structured_list":
-            return self._make_plugin_structured_list_widget(view)
+            return self._make_plugin_structured_list_widget(view, described)
         if kind == "text_preview":
             return self._make_plugin_text_preview_widget(view)
         if kind == "resource_list":
@@ -1026,7 +1026,7 @@ class QtWorkflowMainWindow:
         self._polish_plugin_protocol_table(table)
         return table
 
-    def _make_plugin_structured_list_widget(self, view):
+    def _make_plugin_structured_list_widget(self, view, described=None):
         qt = self.qt
         columns = [item for item in (view.get("columns") or []) if isinstance(item, dict)]
         items = [item for item in (view.get("items") or []) if isinstance(item, dict)]
@@ -1049,6 +1049,15 @@ class QtWorkflowMainWindow:
         frame.plugin_config_view = copy.deepcopy(view)
         frame.plugin_config_items = copy.deepcopy(items)
         frame.plugin_config_table = table
+        if "append_value" in view:
+            append_value = view.get("append_value")
+        else:
+            append_value = view.get("item_default")
+            model_key = str(view.get("item_model_key") or (view.get("item_schema") or {}).get("model_key") or "")
+            models = (described or {}).get("models") if isinstance((described or {}).get("models"), dict) else {}
+            if append_value is None and model_key:
+                append_value = models.get(model_key)
+        frame.plugin_config_append_value = copy.deepcopy(append_value if append_value is not None else {})
         table.setColumnCount(len(columns))
         table.setHorizontalHeaderLabels([str(column.get("label") or column.get("key") or "") for column in columns])
         table.setRowCount(len(items))
@@ -1062,6 +1071,11 @@ class QtWorkflowMainWindow:
         layout.addWidget(table, 1)
         button_row = qt.QtWidgets.QHBoxLayout()
         buttons = {}
+        supported_operations = {
+            str(item)
+            for item in (view.get("patch_operations") or view.get("supported_patch_operations") or [])
+            if str(item or "")
+        }
         for text, operation, target_offset in [
             ("新增", "append_item", None),
             ("删除", "delete_item", None),
@@ -1070,6 +1084,8 @@ class QtWorkflowMainWindow:
             ("下移", "move_item", 1),
         ]:
             button = qt.QtWidgets.QPushButton(text)
+            if supported_operations and operation not in supported_operations:
+                button.setVisible(False)
             button.clicked.connect(
                 lambda checked=False, op=operation, offset=target_offset, fr=frame: self._apply_plugin_structured_list_patch(fr, op, offset)
             )
@@ -1095,7 +1111,7 @@ class QtWorkflowMainWindow:
                 return
             patch["index"] = int(selected_row)
         if operation == "append_item":
-            patch["value"] = {}
+            patch["value"] = copy.deepcopy(getattr(frame, "plugin_config_append_value", {}) or {})
         elif operation == "set_enabled":
             item = items[selected_row] if 0 <= selected_row < len(items) else {}
             patch["enabled"] = not bool(item.get("enabled", True))
