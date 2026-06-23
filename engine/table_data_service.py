@@ -15,6 +15,53 @@ from engine.models import TableData
 from engine.table_io import load_table_file
 
 
+TABLE_SAVE_MODES = [
+    {
+        "id": "replace",
+        "label": "覆盖同名表",
+        "description": "同名表存在时删除后重建；不存在时新建。",
+    },
+    {
+        "id": "timestamp",
+        "label": "自动加时间戳",
+        "description": "同名表存在时另存为带时间戳的新表。",
+    },
+    {
+        "id": "fail",
+        "label": "存在则报错",
+        "description": "同名表存在时停止保存并返回错误。",
+    },
+    {
+        "id": "append",
+        "label": "追加",
+        "description": "追加到已有表；不存在时新建。",
+    },
+]
+
+_SAVE_MODE_ALIASES = {}
+for _mode in TABLE_SAVE_MODES:
+    _SAVE_MODE_ALIASES[_mode["id"]] = _mode["id"]
+    _SAVE_MODE_ALIASES[_mode["label"]] = _mode["id"]
+_SAVE_MODE_ALIASES.update({
+    "": "replace",
+    "overwrite": "replace",
+    "replace_table": "replace",
+    "覆盖": "replace",
+    "覆盖表": "replace",
+    "覆盖整表": "replace",
+    "auto_timestamp": "timestamp",
+    "timestamp_new": "timestamp",
+    "自动加时间戳新表": "timestamp",
+    "new": "fail",
+    "create_new": "fail",
+    "fail_if_exists": "fail",
+    "报错停止": "fail",
+    "不覆盖，存在则报错": "fail",
+    "追加写入": "append",
+    "追加到已有表": "append",
+})
+
+
 @dataclass
 class TableDataService:
     db_path: str = ""
@@ -106,13 +153,33 @@ class TableDataService:
             "issues": [],
         }
 
-    def search_table(self, table, keyword):
+    def search_table(self, table, keyword, *, current_index=-1, offset=0, reset=True):
         matches = search_table(table, keyword)
+        navigation = build_search_navigation(
+            matches,
+            current_index=current_index,
+            offset=offset,
+            reset=reset,
+        )
         return {
             "ok": True,
             "keyword": str(keyword or ""),
             "matches": matches,
             "count": len(matches),
+            "cell_count": navigation["count"],
+            "navigation": navigation,
+            "issues": [],
+        }
+
+    def build_table_search_navigation(self, matches, *, current_index=-1, offset=0, reset=False):
+        return {
+            "ok": True,
+            "navigation": build_search_navigation(
+                matches,
+                current_index=current_index,
+                offset=offset,
+                reset=reset,
+            ),
             "issues": [],
         }
 
@@ -128,10 +195,33 @@ class TableDataService:
             "issues": [],
         }
 
+    def describe_table_save_modes(self):
+        return {
+            "ok": True,
+            "default_mode": "replace",
+            "modes": describe_save_modes(),
+            "issues": [],
+        }
+
+    def normalize_table_save_mode(self, mode):
+        try:
+            normalized = normalize_save_mode(mode)
+        except ValueError as exc:
+            return self._failure("invalid_save_mode", str(exc), "/mode")
+        return {
+            "ok": True,
+            "mode": normalized,
+            "issues": [],
+        }
+
     def save_table(self, table=None, *, db_path=None, table_name=None, mode="replace"):
         target_db = self._resolve_db_path(db_path)
         table_data = TableData.from_payload(table or {}).to_dict()
         issues = []
+        try:
+            save_mode = normalize_save_mode(mode)
+        except ValueError as exc:
+            issues.append(make_issue("error", "invalid_save_mode", str(exc), path="/mode", source="TableDataService"))
         if not target_db:
             issues.append(make_issue("error", "missing_db_path", "保存 SQLite 表需要数据库路径。", path="/db_path", source="TableDataService"))
         if not str(table_name or "").strip():
@@ -150,7 +240,7 @@ class TableDataService:
                 table_name,
                 table_data.get("headers") or [],
                 table_data.get("rows") or [],
-                mode=mode,
+                mode=save_mode,
             )
         except Exception as exc:
             return self._failure("save_table_failed", str(exc), "/table")
@@ -160,6 +250,7 @@ class TableDataService:
             "ok": True,
             "db_path": target_db,
             "table_name": actual_name,
+            "mode": save_mode,
             "service_result": result,
             "source": saved_source,
             "state": build_data_source_state(
@@ -496,6 +587,109 @@ def search_table(table, keyword):
                 "cells": row_matches,
             })
     return matches
+
+
+def flatten_search_matches(matches):
+    flattened = []
+    for item in matches or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            row = int(item.get("row", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        cells = [cell for cell in (item.get("cells") or []) if isinstance(cell, dict)]
+        if not cells:
+            try:
+                column = int(item.get("column", 0) or 0)
+            except (TypeError, ValueError):
+                column = 0
+            flattened.append({
+                "row": row,
+                "column": column,
+                "header": str(item.get("header", "") or ""),
+                "value": "" if item.get("value") is None else str(item.get("value")),
+            })
+            continue
+        for cell in cells:
+            try:
+                column = int(cell.get("column", 0) or 0)
+            except (TypeError, ValueError):
+                column = 0
+            flattened.append({
+                "row": row,
+                "column": column,
+                "header": str(cell.get("header", "") or ""),
+                "value": "" if cell.get("value") is None else str(cell.get("value")),
+            })
+    return flattened
+
+
+def build_search_navigation(matches, *, current_index=-1, offset=0, reset=False):
+    flattened = flatten_search_matches(matches)
+    count = len(flattened)
+    if not count:
+        return {
+            "matches": [],
+            "count": 0,
+            "row_count": 0,
+            "current_index": -1,
+            "current_match": None,
+            "current_cell": None,
+            "highlighted_rows": [],
+            "found": False,
+            "status_text": "未找到",
+        }
+
+    try:
+        base_index = int(current_index)
+    except (TypeError, ValueError):
+        base_index = -1
+    try:
+        step = int(offset)
+    except (TypeError, ValueError):
+        step = 0
+
+    if bool(reset) or base_index < 0:
+        index = 0
+    else:
+        index = base_index + step
+    index = index % count
+    current = flattened[index]
+    row = int(current.get("row", 0) or 0)
+    column = int(current.get("column", 0) or 0)
+    highlighted_rows = sorted({int(item.get("row", 0) or 0) for item in flattened})
+    return {
+        "matches": flattened,
+        "count": count,
+        "row_count": len(highlighted_rows),
+        "current_index": index,
+        "current_match": dict(current),
+        "current_cell": {"row": row, "column": column},
+        "highlighted_rows": highlighted_rows,
+        "found": True,
+        "status_text": f"{index + 1}/{count}",
+    }
+
+
+def describe_save_modes():
+    return [dict(mode) for mode in TABLE_SAVE_MODES]
+
+
+def normalize_save_mode(mode):
+    text = str(mode or "").strip()
+    if text in _SAVE_MODE_ALIASES:
+        return _SAVE_MODE_ALIASES[text]
+    lower = text.lower()
+    if lower in _SAVE_MODE_ALIASES:
+        return _SAVE_MODE_ALIASES[lower]
+    try:
+        backend = TableAccessManager.sqlite_backend_write_mode(text)
+    except ValueError:
+        backend = ""
+    if backend in {"replace", "timestamp", "fail", "append"}:
+        return backend
+    raise ValueError(f"不支持的 SQLite 保存模式：{mode}")
 
 
 def build_data_source_state(table=None, *, source=None, dirty=False, display_name=""):

@@ -163,6 +163,15 @@ class StdioWorkerApiTests(unittest.TestCase):
             "table": patched["result"]["table"],
             "keyword": "updated",
         }))
+        navigation = worker.handle_request(request("build_table_search_navigation", {
+            "matches": searched["result"]["matches"],
+            "current_index": 0,
+            "offset": 0,
+        }))
+        save_modes = worker.handle_request(request("describe_table_save_modes"))
+        normalized_mode = worker.handle_request(request("normalize_table_save_mode", {
+            "mode": "自动加时间戳",
+        }))
         state = worker.handle_request(request("build_data_source_state", {
             "table": patched["result"]["table"],
             "source": {"type": "clipboard"},
@@ -176,6 +185,10 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertEqual(patched["result"]["table"]["rows"][1][1], "updated")
         self.assertEqual(searched["result"]["count"], 1)
         self.assertEqual(searched["result"]["matches"][0]["row"], 1)
+        self.assertEqual(searched["result"]["navigation"]["current_cell"], {"row": 1, "column": 1})
+        self.assertEqual(navigation["result"]["navigation"]["status_text"], "1/1")
+        self.assertEqual([item["id"] for item in save_modes["result"]["modes"]], ["replace", "timestamp", "fail", "append"])
+        self.assertEqual(normalized_mode["result"]["mode"], "timestamp")
         self.assertEqual(state["result"]["state"]["display_name"], "临时输入")
         self.assertTrue(state["result"]["state"]["dirty"])
 

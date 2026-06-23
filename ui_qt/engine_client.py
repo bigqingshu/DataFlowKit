@@ -316,8 +316,22 @@ class QtHeadlessEngineClient:
     def patch_table_cell(self, table, *, row=None, column=None, value=""):
         return self.engine.patch_table_cell(copy.deepcopy(table), row=row, column=column, value=value)
 
-    def search_table(self, table, keyword):
-        return self.engine.search_table(copy.deepcopy(table), keyword)
+    def search_table(self, table, keyword, *, current_index=-1, offset=0, reset=True):
+        return self.engine.search_table(
+            copy.deepcopy(table),
+            keyword,
+            current_index=current_index,
+            offset=offset,
+            reset=reset,
+        )
+
+    def build_table_search_navigation(self, matches, *, current_index=-1, offset=0, reset=False):
+        return self.engine.build_table_search_navigation(
+            copy.deepcopy(matches or []),
+            current_index=current_index,
+            offset=offset,
+            reset=reset,
+        )
 
     def build_data_source_state(self, table=None, *, source=None, dirty=False, display_name=""):
         return self.engine.build_data_source_state(
@@ -326,6 +340,12 @@ class QtHeadlessEngineClient:
             dirty=dirty,
             display_name=display_name,
         )
+
+    def describe_table_save_modes(self):
+        return self.engine.describe_table_save_modes()
+
+    def normalize_table_save_mode(self, mode):
+        return self.engine.normalize_table_save_mode(mode)
 
     def save_table(self, table=None, *, db_path=None, table_name=None, mode="replace"):
         return self.engine.save_table(

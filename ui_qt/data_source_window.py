@@ -33,6 +33,8 @@ class DataSourceManagerWindow:
         self.dirty = False
         self.search_matches = []
         self.search_index = -1
+        self.search_navigation = {}
+        self.save_mode_entries = []
 
         self.window = qt.QtWidgets.QDialog(parent)
         self.window.setWindowTitle("输入数据源管理")
@@ -87,7 +89,7 @@ class DataSourceManagerWindow:
         save_row = qt.QtWidgets.QHBoxLayout()
         self.save_table_name_edit = qt.QtWidgets.QLineEdit()
         self.save_mode_combo = qt.QtWidgets.QComboBox()
-        self.save_mode_combo.addItems(["覆盖同名表", "自动加时间戳", "存在则报错", "追加"])
+        self._populate_save_modes()
         self.save_button = qt.QtWidgets.QPushButton("保存到 SQLite")
         self.delete_table_button = qt.QtWidgets.QPushButton("删除当前表")
         save_row.addWidget(qt.QtWidgets.QLabel("保存表名："))
@@ -152,6 +154,7 @@ class DataSourceManagerWindow:
         self.dirty = bool(dirty)
         self.search_matches = []
         self.search_index = -1
+        self.search_navigation = {}
         self.table_model.set_table(headers or [], rows or [])
         self.table_model.clear_search_highlight()
         table_name = self.current_source.get("table_name") or ""
@@ -171,6 +174,24 @@ class DataSourceManagerWindow:
         dirty_note = "，未保存" if self.dirty else ""
         prefix = str(title or "当前表格")
         self.status_label.setText(f"{prefix}：{len(rows)} 行 x {len(headers)} 列{dirty_note}")
+
+    def _populate_save_modes(self):
+        try:
+            described = self.engine_client.describe_table_save_modes()
+        except Exception:
+            described = {"ok": False, "modes": []}
+        self.save_mode_entries = list(described.get("modes") or [])
+        if not self.save_mode_entries:
+            self.save_mode_entries = [
+                {"id": "replace", "label": "覆盖同名表"},
+                {"id": "timestamp", "label": "自动加时间戳"},
+                {"id": "fail", "label": "存在则报错"},
+                {"id": "append", "label": "追加"},
+            ]
+        for item in self.save_mode_entries:
+            mode_id = str(item.get("id") or "replace")
+            label = str(item.get("label") or mode_id)
+            self.save_mode_combo.addItem(label, mode_id)
 
     def _edit_trigger(self, name):
         group = getattr(self.qt.QtWidgets.QAbstractItemView, "EditTrigger", None)
@@ -324,13 +345,14 @@ class DataSourceManagerWindow:
         self._refresh_table_shape_status(title=f"已保存：{actual_name}")
 
     def _save_mode(self):
-        text = self.save_mode_combo.currentText()
-        if text == "自动加时间戳":
-            return "timestamp"
-        if text == "存在则报错":
-            return "fail"
-        if text == "追加":
-            return "append"
+        mode = ""
+        if hasattr(self.save_mode_combo, "currentData"):
+            mode = self.save_mode_combo.currentData()
+        if not mode:
+            mode = self.save_mode_combo.currentText()
+        normalized = self.engine_client.normalize_table_save_mode(mode)
+        if normalized.get("ok"):
+            return normalized.get("mode") or "replace"
         return "replace"
 
     def delete_selected_table(self):
@@ -366,64 +388,54 @@ class DataSourceManagerWindow:
         self.status_label.setText(f"已删除表：{table_name}" + (f"，备份表：{backup}" if backup else ""))
 
     def search_current_table(self, *, reset=False):
-        result = self.engine_client.search_table(self.current_table(), self.search_edit.text())
-        self.search_matches = self._flatten_search_matches(result.get("matches") or [])
-        if not self.search_matches:
-            self.search_index = -1
-            self.table_model.clear_search_highlight()
-            self.search_status_label.setText("未找到")
-            return
-        self.search_index = 0 if reset or self.search_index < 0 else self.search_index % len(self.search_matches)
-        self._select_search_match()
+        result = self.engine_client.search_table(
+            self.current_table(),
+            self.search_edit.text(),
+            current_index=self.search_index,
+            reset=reset,
+        )
+        self._apply_search_navigation(result.get("navigation") or {})
 
     def goto_search_match(self, offset):
         if not self.search_matches:
             self.search_current_table(reset=True)
             return
-        self.search_index = (self.search_index + int(offset or 0)) % len(self.search_matches)
-        self._select_search_match()
+        result = self.engine_client.build_table_search_navigation(
+            self.search_matches,
+            current_index=self.search_index,
+            offset=offset,
+        )
+        self._apply_search_navigation(result.get("navigation") or {})
 
-    def _select_search_match(self):
+    def _apply_search_navigation(self, navigation):
+        self.search_navigation = dict(navigation or {})
+        self.search_matches = list(self.search_navigation.get("matches") or [])
+        try:
+            self.search_index = int(self.search_navigation.get("current_index", -1))
+        except (TypeError, ValueError):
+            self.search_index = -1
+        if not self.search_matches or not self.search_navigation.get("found"):
+            self.search_index = -1
+            self.table_model.clear_search_highlight()
+            self.search_status_label.setText(self.search_navigation.get("status_text") or "未找到")
+            return
+        self._select_search_match(self.search_navigation)
+
+    def _select_search_match(self, navigation=None):
         if not self.search_matches:
             return
-        match = self.search_matches[self.search_index]
+        navigation = navigation or self.search_navigation or {}
+        match = navigation.get("current_match") or self.search_matches[self.search_index]
         row = int(match.get("row", 0) or 0)
         column = int(match.get("column", 0) or 0)
         index = self.table_model.index(row, column)
-        highlighted_rows = {item.get("row") for item in self.search_matches}
+        highlighted_rows = set(navigation.get("highlighted_rows") or [item.get("row") for item in self.search_matches])
         self.table_model.set_search_highlight(highlighted_rows, current_cell=(row, column))
         self.table_view.clearSelection()
         self.table_view.selectRow(row)
         self.table_view.setCurrentIndex(index)
         self.table_view.scrollTo(index, item_view_enum(self.qt, "ScrollHint", "PositionAtCenter"))
-        self.search_status_label.setText(f"{self.search_index + 1}/{len(self.search_matches)}")
-
-    @staticmethod
-    def _flatten_search_matches(matches):
-        flattened = []
-        for item in matches:
-            if not isinstance(item, dict):
-                continue
-            try:
-                row = int(item.get("row", 0) or 0)
-            except (TypeError, ValueError):
-                continue
-            cells = [cell for cell in (item.get("cells") or []) if isinstance(cell, dict)]
-            if not cells:
-                flattened.append({"row": row, "column": int(item.get("column", 0) or 0)})
-                continue
-            for cell in cells:
-                try:
-                    column = int(cell.get("column", 0) or 0)
-                except (TypeError, ValueError):
-                    column = 0
-                flattened.append({
-                    "row": row,
-                    "column": column,
-                    "header": cell.get("header", ""),
-                    "value": cell.get("value", ""),
-                })
-        return flattened
+        self.search_status_label.setText(navigation.get("status_text") or f"{self.search_index + 1}/{len(self.search_matches)}")
 
     def apply_to_workflow(self):
         if not callable(self.on_apply):

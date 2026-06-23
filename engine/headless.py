@@ -324,8 +324,22 @@ class HeadlessWorkflowEngine:
     def patch_table_cell(self, table, *, row=None, column=None, value=""):
         return self.tables.patch_table_cell(table, row=row, column=column, value=value)
 
-    def search_table(self, table, keyword):
-        return self.tables.search_table(table, keyword)
+    def search_table(self, table, keyword, *, current_index=-1, offset=0, reset=True):
+        return self.tables.search_table(
+            table,
+            keyword,
+            current_index=current_index,
+            offset=offset,
+            reset=reset,
+        )
+
+    def build_table_search_navigation(self, matches, *, current_index=-1, offset=0, reset=False):
+        return self.tables.build_table_search_navigation(
+            matches,
+            current_index=current_index,
+            offset=offset,
+            reset=reset,
+        )
 
     def build_data_source_state(self, table=None, *, source=None, dirty=False, display_name=""):
         return self.tables.build_data_source_state(
@@ -334,6 +348,12 @@ class HeadlessWorkflowEngine:
             dirty=dirty,
             display_name=display_name,
         )
+
+    def describe_table_save_modes(self):
+        return self.tables.describe_table_save_modes()
+
+    def normalize_table_save_mode(self, mode):
+        return self.tables.normalize_table_save_mode(mode)
 
     def save_table(self, table=None, *, db_path=None, table_name=None, mode="replace"):
         return self.tables.save_table(table, db_path=db_path, table_name=table_name, mode=mode)

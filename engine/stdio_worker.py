@@ -177,6 +177,16 @@ class StdioWorker:
             return self.engine.search_table(
                 payload.get("table", {}),
                 payload.get("keyword", ""),
+                current_index=payload.get("current_index", -1),
+                offset=payload.get("offset", 0),
+                reset=bool(payload.get("reset", True)),
+            )
+        if action == "build_table_search_navigation":
+            return self.engine.build_table_search_navigation(
+                payload.get("matches", []),
+                current_index=payload.get("current_index", -1),
+                offset=payload.get("offset", 0),
+                reset=bool(payload.get("reset", False)),
             )
         if action == "build_data_source_state":
             return self.engine.build_data_source_state(
@@ -185,6 +195,10 @@ class StdioWorker:
                 dirty=bool(payload.get("dirty", False)),
                 display_name=payload.get("display_name", ""),
             )
+        if action == "describe_table_save_modes":
+            return self.engine.describe_table_save_modes()
+        if action == "normalize_table_save_mode":
+            return self.engine.normalize_table_save_mode(payload.get("mode", "replace"))
         if action == "save_table":
             return self.engine.save_table(
                 payload.get("table", {}),

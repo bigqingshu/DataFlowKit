@@ -9,8 +9,12 @@ from engine.headless import HeadlessWorkflowEngine
 from engine.stdio_worker import StdioWorker
 from engine.table_data_service import (
     TableDataService,
+    build_search_navigation,
     build_data_source_state,
+    describe_save_modes,
+    flatten_search_matches,
     normalize_table_headers,
+    normalize_save_mode,
     parse_clipboard_table,
     patch_table_cell,
     promote_first_row_to_headers,
@@ -169,13 +173,53 @@ class TableDataServiceTests(unittest.TestCase):
         self.assertEqual(state["row_count"], 1)
         self.assertEqual(normalize_table_headers(["", "A", "A"]), ["列1", "A", "A_2"])
 
+    def test_table_search_navigation_is_ui_free(self):
+        table = {
+            "headers": ["A", "B"],
+            "rows": [["alpha", "beta alpha"], ["none", "alpha"]],
+        }
+
+        matches = search_table(table, "alpha")
+        flattened = flatten_search_matches(matches)
+        first = build_search_navigation(matches, reset=True)
+        second = build_search_navigation(matches, current_index=0, offset=1)
+        wrapped = build_search_navigation(matches, current_index=0, offset=-1)
+        service_result = TableDataService().search_table(table, "alpha", current_index=0, offset=1, reset=False)
+
+        self.assertEqual(len(matches), 2)
+        self.assertEqual([(item["row"], item["column"]) for item in flattened], [(0, 0), (0, 1), (1, 1)])
+        self.assertEqual(first["status_text"], "1/3")
+        self.assertEqual(first["highlighted_rows"], [0, 1])
+        self.assertEqual(second["current_match"]["column"], 1)
+        self.assertEqual(wrapped["current_match"]["row"], 1)
+        self.assertEqual(service_result["count"], 2)
+        self.assertEqual(service_result["cell_count"], 3)
+        self.assertEqual(service_result["navigation"]["current_cell"], {"row": 0, "column": 1})
+
+    def test_table_save_modes_are_described_and_normalized(self):
+        service = TableDataService()
+
+        described = service.describe_table_save_modes()
+        normalized = service.normalize_table_save_mode("存在则报错")
+        invalid = service.normalize_table_save_mode("局部覆盖")
+
+        self.assertEqual(describe_save_modes()[0]["id"], "replace")
+        self.assertEqual(normalize_save_mode("覆盖同名表"), "replace")
+        self.assertEqual(normalize_save_mode("timestamp_new"), "timestamp")
+        self.assertEqual(normalize_save_mode("追加"), "append")
+        self.assertTrue(described["ok"])
+        self.assertEqual([item["id"] for item in described["modes"]], ["replace", "timestamp", "fail", "append"])
+        self.assertEqual(normalized["mode"], "fail")
+        self.assertFalse(invalid["ok"])
+        self.assertEqual(invalid["issues"][0]["code"], "invalid_save_mode")
+
     def test_service_saves_and_deletes_sqlite_table_with_confirmation(self):
         with TemporaryDirectory() as temp_dir:
             db_path = str(Path(temp_dir) / "data.db")
             service = TableDataService()
             table = {"headers": ["A"], "rows": [["x"]]}
 
-            saved = service.save_table(table, db_path=db_path, table_name="input_data", mode="replace")
+            saved = service.save_table(table, db_path=db_path, table_name="input_data", mode="覆盖同名表")
             manager = TableAccessManager(db_path)
             saved_rows = manager.read_table("input_data")["rows"]
             blocked = service.delete_table(db_path=db_path, table_name="input_data", confirmed=False)
@@ -183,6 +227,7 @@ class TableDataServiceTests(unittest.TestCase):
 
             self.assertTrue(saved["ok"])
             self.assertEqual(saved["source"]["table_name"], "input_data")
+            self.assertEqual(saved["mode"], "replace")
             self.assertEqual(saved_rows, [["x"]])
             self.assertFalse(blocked["ok"])
             self.assertEqual(blocked["issues"][0]["code"], "delete_not_confirmed")

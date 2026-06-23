@@ -1745,7 +1745,7 @@ class Qt6UiShellTests(unittest.TestCase):
             TableAccessManager(db_path).write_table(
                 "orders",
                 ["id", "name"],
-                [["1", "Alice"], ["2", "Bob"]],
+                [["1", "Alice"], ["2", "Bob"], ["3", "Bob Jr"]],
                 mode="replace",
             )
             window = build_main_window(qt)
@@ -1759,18 +1759,22 @@ class Qt6UiShellTests(unittest.TestCase):
             manager.load_selected_table()
             manager.search_edit.setText("Bob")
             manager.search_current_table(reset=True)
+            first_index = manager.table_view.currentIndex()
+            manager.goto_search_match(1)
             manager.apply_to_workflow()
             app.processEvents()
 
             background_role = qt_enum(qt, "ItemDataRole", "BackgroundRole")
             current_index = manager.table_view.currentIndex()
             self.assertEqual(manager.current_table()["headers"], ["id", "name"])
-            self.assertEqual((current_index.row(), current_index.column()), (1, 1))
-            self.assertIsNotNone(manager.table_model.data(manager.table_model.index(1, 1), background_role))
+            self.assertEqual((first_index.row(), first_index.column()), (1, 1))
+            self.assertEqual((current_index.row(), current_index.column()), (2, 1))
+            self.assertEqual(manager.search_status_label.text(), "2/2")
+            self.assertIsNotNone(manager.table_model.data(manager.table_model.index(2, 1), background_role))
             self.assertEqual(controller.current_headers, ["id", "name"])
-            self.assertEqual(controller.current_rows, [["1", "Alice"], ["2", "Bob"]])
+            self.assertEqual(controller.current_rows, [["1", "Alice"], ["2", "Bob"], ["3", "Bob Jr"]])
             self.assertEqual(controller.current_input_source["table_name"], "orders")
-            self.assertEqual(controller.input_summary_label.text(), "当前输入：2 行 x 2 列")
+            self.assertEqual(controller.input_summary_label.text(), "当前输入：3 行 x 2 列")
             self.assertIn("数据源管理窗口", controller.status_bar.currentMessage())
             manager.window.close()
             window.close()
