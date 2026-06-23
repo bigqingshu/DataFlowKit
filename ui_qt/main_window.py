@@ -909,6 +909,22 @@ class QtWorkflowMainWindow:
             lines.append("配置视图：" + "、".join(str(item.get("title") or item.get("view_id") or "") for item in views[:6]))
         if resources:
             lines.append("配置资源：" + "、".join(str(item.get("label") or item.get("resource_id") or "") for item in resources[:6]))
+        warning_items = [item for item in (described.get("warning_items") or []) if isinstance(item, dict)]
+        if warning_items:
+            warning_lines = []
+            for item in warning_items[:4]:
+                message = str(item.get("message") or "").strip()
+                if not message:
+                    continue
+                scopes = [
+                    str(item.get("view_id") or "").strip(),
+                    str(item.get("field") or "").strip(),
+                    str(item.get("code") or "").strip(),
+                ]
+                suffix = "/".join(scope for scope in scopes if scope)
+                warning_lines.append(f"{message}（{suffix}）" if suffix else message)
+            if warning_lines:
+                lines.append("配置警告：" + "；".join(warning_lines))
         compatibility_actions = [item for item in actions if str(item.get("kind") or "") == "compatibility"]
         config_actions = [item for item in actions if str(item.get("kind") or "") != "compatibility"]
         if compatibility_actions:
