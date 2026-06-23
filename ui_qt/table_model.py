@@ -37,8 +37,11 @@ def create_table_model_class(qt: Optional[QtApi] = None):
 
     display_role = qt_enum(qt, "ItemDataRole", "DisplayRole")
     edit_role = qt_enum(qt, "ItemDataRole", "EditRole")
+    background_role = qt_enum(qt, "ItemDataRole", "BackgroundRole")
     horizontal = qt_enum(qt, "Orientation", "Horizontal")
     item_is_editable = qt_enum(qt, "ItemFlag", "ItemIsEditable")
+    search_match_brush = qt.QtGui.QBrush(qt.QtGui.QColor("#fff5c2"))
+    search_current_brush = qt.QtGui.QBrush(qt.QtGui.QColor("#ffd36e"))
 
     class TableDataModel(qt.QtCore.QAbstractTableModel):
         """Editable table model backed by ``headers`` and ``rows`` lists."""
@@ -46,6 +49,8 @@ def create_table_model_class(qt: Optional[QtApi] = None):
         def __init__(self, headers=None, rows=None, parent=None):
             super().__init__(parent)
             self.headers, self.rows = normalize_table(headers, rows)
+            self.search_highlight_rows = set()
+            self.search_current_cell = None
 
         def rowCount(self, parent=None):  # noqa: N802 - Qt API name
             return len(self.rows)
@@ -56,13 +61,20 @@ def create_table_model_class(qt: Optional[QtApi] = None):
         def data(self, index, role=display_role):
             if not index or not index.isValid():
                 return None
-            if role not in (display_role, edit_role):
+            if role not in (display_role, edit_role, background_role):
                 return None
             row = index.row()
             column = index.column()
             if row < 0 or row >= len(self.rows):
                 return None
             if column < 0 or column >= len(self.headers):
+                return None
+            if role == background_role:
+                current = self.search_current_cell
+                if current and row == current[0]:
+                    return search_current_brush
+                if row in self.search_highlight_rows:
+                    return search_match_brush
                 return None
             value = self.rows[row][column] if column < len(self.rows[row]) else ""
             return "" if value is None else str(value)
@@ -100,10 +112,58 @@ def create_table_model_class(qt: Optional[QtApi] = None):
         def set_table(self, headers: Sequence[object], rows: Sequence[Sequence[object]]):
             self.beginResetModel()
             self.headers, self.rows = normalize_table(headers, rows)
+            self.search_highlight_rows = set()
+            self.search_current_cell = None
             self.endResetModel()
 
         def table_data(self):
             return list(self.headers), [list(row) for row in self.rows]
+
+        def set_search_highlight(self, rows=None, current_cell=None):
+            previous_rows = set(self.search_highlight_rows)
+            previous_current = self.search_current_cell
+            next_rows = {int(row) for row in (rows or []) if self._valid_row(row)}
+            next_current = self._normalized_cell(current_cell)
+            changed_rows = previous_rows | next_rows
+            if previous_current is not None:
+                changed_rows.add(previous_current[0])
+            if next_current is not None:
+                changed_rows.add(next_current[0])
+            self.search_highlight_rows = next_rows
+            self.search_current_cell = next_current
+            self._emit_background_changed(changed_rows)
+
+        def clear_search_highlight(self):
+            self.set_search_highlight([])
+
+        def _normalized_cell(self, cell):
+            if not cell:
+                return None
+            try:
+                row, column = int(cell[0]), int(cell[1])
+            except (TypeError, ValueError, IndexError):
+                return None
+            if row < 0 or row >= len(self.rows):
+                return None
+            if column < 0 or column >= len(self.headers):
+                return None
+            return row, column
+
+        def _valid_row(self, row):
+            try:
+                value = int(row)
+            except (TypeError, ValueError):
+                return False
+            return 0 <= value < len(self.rows)
+
+        def _emit_background_changed(self, rows):
+            if not rows or not self.headers:
+                return
+            roles = [background_role]
+            last_column = len(self.headers) - 1
+            for row in sorted(rows):
+                if 0 <= row < len(self.rows):
+                    self.dataChanged.emit(self.index(row, 0), self.index(row, last_column), roles)
 
     TableDataModel.__name__ = f"TableDataModel_{qt.binding}"
     _model_class_cache[cache_key] = TableDataModel

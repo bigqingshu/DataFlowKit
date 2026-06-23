@@ -14,6 +14,7 @@ from ui_qt.engine_client import QtHeadlessEngineClient, SAMPLE_HEADERS, SAMPLE_P
 from ui_qt.node_ui_metadata import CATEGORY_ORDER, category_label, format_node_detail
 from ui_qt.qt_compat import qt_enum
 from ui_qt.table_model import make_table_model
+from ui_qt.table_view_utils import configure_fast_table_view
 
 
 class QtWorkflowMainWindow:
@@ -437,13 +438,7 @@ class QtWorkflowMainWindow:
         self.table_view = qt.QtWidgets.QTableView()
         self.table_model = make_table_model(self.preview_headers, self.preview_rows, qt=self.qt, parent=self.table_view)
         self.table_view.setModel(self.table_model)
-        self.table_view.setAlternatingRowColors(True)
-        self.table_view.setWordWrap(False)
-        try:
-            self.table_view.horizontalHeader().setStretchLastSection(True)
-            self.table_view.setSortingEnabled(False)
-        except Exception:
-            pass
+        configure_fast_table_view(self.qt, self.table_view)
 
         self.message_tabs = qt.QtWidgets.QTabWidget()
         self.message_tabs.setSizePolicy(

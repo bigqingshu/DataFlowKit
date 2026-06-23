@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 
 from ui_qt.table_model import make_table_model
+from ui_qt.table_view_utils import configure_fast_table_view, item_view_enum
 
 
 class DataSourceManagerWindow:
@@ -113,12 +114,7 @@ class DataSourceManagerWindow:
         self.table_view = qt.QtWidgets.QTableView()
         self.table_model = make_table_model([], [], qt=qt, parent=self.table_view)
         self.table_view.setModel(self.table_model)
-        self.table_view.setAlternatingRowColors(True)
-        self.table_view.setWordWrap(False)
-        try:
-            self.table_view.horizontalHeader().setStretchLastSection(True)
-        except Exception:
-            pass
+        configure_fast_table_view(qt, self.table_view)
         layout.addWidget(self.table_view, 1)
 
         self.status_label = qt.QtWidgets.QLabel("等待载入数据。")
@@ -155,6 +151,7 @@ class DataSourceManagerWindow:
         self.search_matches = []
         self.search_index = -1
         self.table_model.set_table(headers or [], rows or [])
+        self.table_model.clear_search_highlight()
         table_name = self.current_source.get("table_name") or ""
         if table_name:
             self.table_combo.setCurrentText(str(table_name))
@@ -366,9 +363,10 @@ class DataSourceManagerWindow:
 
     def search_current_table(self, *, reset=False):
         result = self.engine_client.search_table(self.current_table(), self.search_edit.text())
-        self.search_matches = [item for item in (result.get("matches") or []) if isinstance(item, dict)]
+        self.search_matches = self._flatten_search_matches(result.get("matches") or [])
         if not self.search_matches:
             self.search_index = -1
+            self.table_model.clear_search_highlight()
             self.search_status_label.setText("未找到")
             return
         self.search_index = 0 if reset or self.search_index < 0 else self.search_index % len(self.search_matches)
@@ -386,9 +384,42 @@ class DataSourceManagerWindow:
             return
         match = self.search_matches[self.search_index]
         row = int(match.get("row", 0) or 0)
+        column = int(match.get("column", 0) or 0)
+        index = self.table_model.index(row, column)
+        highlighted_rows = {item.get("row") for item in self.search_matches}
+        self.table_model.set_search_highlight(highlighted_rows, current_cell=(row, column))
+        self.table_view.clearSelection()
         self.table_view.selectRow(row)
-        self.table_view.scrollTo(self.table_model.index(row, 0))
+        self.table_view.setCurrentIndex(index)
+        self.table_view.scrollTo(index, item_view_enum(self.qt, "ScrollHint", "PositionAtCenter"))
         self.search_status_label.setText(f"{self.search_index + 1}/{len(self.search_matches)}")
+
+    @staticmethod
+    def _flatten_search_matches(matches):
+        flattened = []
+        for item in matches:
+            if not isinstance(item, dict):
+                continue
+            try:
+                row = int(item.get("row", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            cells = [cell for cell in (item.get("cells") or []) if isinstance(cell, dict)]
+            if not cells:
+                flattened.append({"row": row, "column": int(item.get("column", 0) or 0)})
+                continue
+            for cell in cells:
+                try:
+                    column = int(cell.get("column", 0) or 0)
+                except (TypeError, ValueError):
+                    column = 0
+                flattened.append({
+                    "row": row,
+                    "column": column,
+                    "header": cell.get("header", ""),
+                    "value": cell.get("value", ""),
+                })
+        return flattened
 
     def apply_to_workflow(self):
         if not callable(self.on_apply):

@@ -26,7 +26,7 @@ from ui_qt.node_ui_metadata import (
     node_summary,
     node_warnings,
 )
-from ui_qt.qt_compat import QtBindingUnavailable
+from ui_qt.qt_compat import QtBindingUnavailable, qt_enum
 from workflow.node_ui_schema import build_node_detail_payload, get_node_ui_schema
 
 
@@ -1684,10 +1684,16 @@ class Qt6UiShellTests(unittest.TestCase):
             manager.refresh_table_combo()
             manager.table_combo.setCurrentText("orders")
             manager.load_selected_table()
+            manager.search_edit.setText("Bob")
+            manager.search_current_table(reset=True)
             manager.apply_to_workflow()
             app.processEvents()
 
+            background_role = qt_enum(qt, "ItemDataRole", "BackgroundRole")
+            current_index = manager.table_view.currentIndex()
             self.assertEqual(manager.current_table()["headers"], ["id", "name"])
+            self.assertEqual((current_index.row(), current_index.column()), (1, 1))
+            self.assertIsNotNone(manager.table_model.data(manager.table_model.index(1, 1), background_role))
             self.assertEqual(controller.current_headers, ["id", "name"])
             self.assertEqual(controller.current_rows, [["1", "Alice"], ["2", "Bob"]])
             self.assertEqual(controller.current_input_source["table_name"], "orders")
