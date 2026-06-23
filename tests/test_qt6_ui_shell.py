@@ -520,6 +520,119 @@ class Qt6UiShellTests(unittest.TestCase):
         window.close()
         app.processEvents()
 
+    def test_plugin_structured_list_renders_detail_sections_as_update_patch(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+        captured = []
+        controller._apply_plugin_config_patch = lambda patch: captured.append(copy.deepcopy(patch))
+
+        widget = controller._make_plugin_structured_list_widget(
+            {
+                "view_id": "demo.rules",
+                "kind": "structured_list",
+                "config_path": ["rules"],
+                "patch_operations": ["update_item"],
+                "items": [{
+                    "id": "rule_1",
+                    "name": "rule",
+                    "anchor": {"enabled": True, "row_offset": 0},
+                    "conditions": [
+                        {"mode": "包含", "value": "old", "meta": "keep_1"},
+                        {"mode": "包含", "value": "second", "meta": "keep_2"},
+                    ],
+                }],
+                "item_schema": {
+                    "columns": [
+                        {"key": "name", "label": "规则", "type": "text"},
+                    ],
+                    "detail_sections": [
+                        {
+                            "key": "anchor",
+                            "title": "锚点定位",
+                            "kind": "form",
+                            "config_path": ["anchor"],
+                            "fields": [
+                                {"key": "enabled", "label": "启用", "type": "bool"},
+                                {"key": "row_offset", "label": "行偏移", "type": "number"},
+                            ],
+                        },
+                        {
+                            "key": "conditions",
+                            "title": "内容条件",
+                            "kind": "structured_list",
+                            "config_path": ["conditions"],
+                            "item_default": {"mode": "包含", "value": ""},
+                            "item_schema": {
+                                "columns": [
+                                    {
+                                        "key": "mode",
+                                        "label": "方式",
+                                        "type": "select",
+                                        "choices": ["包含", "等于"],
+                                        "allow_custom": False,
+                                    },
+                                    {"key": "value", "label": "值", "type": "text"},
+                                ],
+                            },
+                        },
+                    ],
+                },
+            },
+            {"config_schema_version": "demo.config.v1"},
+        )
+
+        table = widget.findChild(qt.QtWidgets.QTableWidget)
+        self.assertIsNotNone(table)
+        table.selectRow(0)
+        detail_tabs = widget.findChild(qt.QtWidgets.QTabWidget, "pluginConfigDetailTabs")
+        self.assertIsNotNone(detail_tabs)
+        self.assertEqual(
+            [detail_tabs.tabText(index) for index in range(detail_tabs.count())],
+            ["锚点定位", "内容条件"],
+        )
+
+        anchor_page = detail_tabs.widget(0)
+        anchor_fields = {
+            ".".join(column["config_path"]): editor
+            for column, editor in anchor_page.plugin_detail_form_fields
+        }
+        anchor_fields["anchor.enabled"].setChecked(False)
+        anchor_fields["anchor.row_offset"].setText("2")
+
+        conditions_page = detail_tabs.widget(1)
+        conditions_table = conditions_page.plugin_detail_table
+        self.assertEqual(conditions_table.rowCount(), 2)
+        conditions_table.selectRow(0)
+        conditions_page.plugin_detail_buttons["delete_item"].click()
+        self.assertEqual(conditions_table.rowCount(), 1)
+        conditions_table.cellWidget(0, 1).setText("remaining")
+        conditions_page.plugin_detail_buttons["append_item"].click()
+        new_row = conditions_table.rowCount() - 1
+        conditions_table.cellWidget(new_row, 0).setCurrentText("等于")
+        conditions_table.cellWidget(new_row, 1).setText("new")
+
+        widget.plugin_config_buttons["update_item"].click()
+
+        self.assertEqual(len(captured), 1)
+        patch = captured[0]
+        self.assertEqual(patch["schema_version"], "demo.config.v1")
+        self.assertEqual(patch["operation"], "update_item")
+        self.assertEqual(patch["path"], ["rules"])
+        self.assertEqual(patch["target_index"], 0)
+        self.assertFalse(patch["payload"]["anchor"]["enabled"])
+        self.assertEqual(patch["payload"]["anchor"]["row_offset"], 2)
+        self.assertEqual(patch["payload"]["conditions"][0]["value"], "remaining")
+        self.assertEqual(patch["payload"]["conditions"][0]["meta"], "keep_2")
+        self.assertEqual(patch["payload"]["conditions"][1], {"mode": "等于", "value": "new"})
+        self.assertEqual(patch["value"], patch["payload"])
+        window.close()
+        app.processEvents()
+
     def test_facade_describes_workflow_actions_and_progress(self):
         client = QtHeadlessEngineClient()
 
@@ -2919,14 +3032,15 @@ class Qt6UiShellTests(unittest.TestCase):
             )
         self.assertEqual(result["value"], "中转A")
 
-        no_result = controller._pick_runtime_reference_for_field(
-            "transit_table",
-            {
-                "action": {"key": "pick_runtime_ref", "ref_kind": "transit_table"},
-                "runtime_refs": [],
-                "value": "",
-            },
-        )
+        with patch.object(controller.qt.QtWidgets.QInputDialog, "getItem", return_value=("中转A", True)):
+            no_result = controller._pick_runtime_reference_for_field(
+                "transit_table",
+                {
+                    "action": {"key": "pick_runtime_ref", "ref_kind": "transit_table"},
+                    "runtime_refs": [],
+                    "value": "",
+                },
+            )
         self.assertEqual(no_result["value"], "中转A")
 
         controller.plan = {"nodes": []}
