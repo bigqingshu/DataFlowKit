@@ -1801,6 +1801,60 @@ class Qt6UiShellTests(unittest.TestCase):
             window.close()
             app.processEvents()
 
+    def test_data_source_manager_pages_sqlite_preview_and_applies_full_table(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        with TemporaryDirectory() as temp_dir:
+            db_path = str(Path(temp_dir) / "input.db")
+            rows = [[str(index), f"Item {index}"] for index in range(1, 6)]
+            TableAccessManager(db_path).write_table(
+                "orders",
+                ["id", "name"],
+                rows,
+                mode="replace",
+            )
+            window = build_main_window(qt)
+            controller = window.qt_workflow_controller
+
+            controller.input_db_path_edit.setText(db_path)
+            controller.apply_input_db_path_from_edit(show_status=False)
+            controller.open_data_source_manager()
+            manager = controller.data_source_manager_controller
+            manager.refresh_table_combo()
+            manager.table_combo.setCurrentText("orders")
+            manager.page_size_spin.setValue(2)
+            manager.load_selected_table()
+            app.processEvents()
+
+            self.assertTrue(manager.current_table_is_partial)
+            self.assertEqual(manager.current_table()["rows"], rows[:2])
+            self.assertIn("第 1-2 行", manager.page_status_label.text())
+            self.assertFalse(manager.save_button.isEnabled())
+            self.assertFalse(manager.edit_mode_checkbox.isEnabled())
+            self.assertTrue(manager.next_page_button.isEnabled())
+
+            manager.goto_next_page()
+            app.processEvents()
+
+            self.assertEqual(manager.page_offset, 2)
+            self.assertEqual(manager.current_table()["rows"], rows[2:4])
+            self.assertIn("第 3-4 行", manager.page_status_label.text())
+
+            manager.apply_to_workflow()
+            app.processEvents()
+
+            self.assertFalse(manager.current_table_is_partial)
+            self.assertEqual(manager.current_table()["rows"], rows)
+            self.assertEqual(controller.current_rows, rows)
+            self.assertEqual(controller.input_summary_label.text(), "当前输入：5 行 x 2 列")
+            self.assertIn("完整表", manager.status_label.text())
+            manager.window.close()
+            window.close()
+            app.processEvents()
+
     def test_data_source_manager_remembers_database_and_syncs_input_combo(self):
         try:
             qt = qt_app.load_qt6()

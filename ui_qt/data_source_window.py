@@ -35,6 +35,11 @@ class DataSourceManagerWindow:
         self.search_index = -1
         self.search_navigation = {}
         self.save_mode_entries = []
+        self.page_source = None
+        self.page_offset = 0
+        self.page_limit = 500
+        self.page_has_more = False
+        self.current_table_is_partial = False
 
         self.window = qt.QtWidgets.QDialog(parent)
         self.window.setWindowTitle("输入数据源管理")
@@ -86,6 +91,23 @@ class DataSourceManagerWindow:
         load_table_row.addWidget(self.load_table_button)
         layout.addLayout(load_table_row)
 
+        page_row = qt.QtWidgets.QHBoxLayout()
+        self.page_size_spin = qt.QtWidgets.QSpinBox()
+        self.page_size_spin.setRange(1, 100000)
+        self.page_size_spin.setValue(self.page_limit)
+        self.page_size_spin.setSingleStep(100)
+        self.prev_page_button = qt.QtWidgets.QPushButton("上一页")
+        self.next_page_button = qt.QtWidgets.QPushButton("下一页")
+        self.load_full_table_button = qt.QtWidgets.QPushButton("载入完整表")
+        self.page_status_label = qt.QtWidgets.QLabel("分页预览：未载入")
+        page_row.addWidget(qt.QtWidgets.QLabel("每页："))
+        page_row.addWidget(self.page_size_spin)
+        page_row.addWidget(self.prev_page_button)
+        page_row.addWidget(self.next_page_button)
+        page_row.addWidget(self.load_full_table_button)
+        page_row.addWidget(self.page_status_label, 1)
+        layout.addLayout(page_row)
+
         save_row = qt.QtWidgets.QHBoxLayout()
         self.save_table_name_edit = qt.QtWidgets.QLineEdit()
         self.save_mode_combo = qt.QtWidgets.QComboBox()
@@ -134,6 +156,10 @@ class DataSourceManagerWindow:
         self.choose_db_button.clicked.connect(lambda checked=False: self.choose_db_path())
         self.refresh_tables_button.clicked.connect(lambda checked=False: self.refresh_table_combo())
         self.load_table_button.clicked.connect(lambda checked=False: self.load_selected_table())
+        self.prev_page_button.clicked.connect(lambda checked=False: self.goto_prev_page())
+        self.next_page_button.clicked.connect(lambda checked=False: self.goto_next_page())
+        self.load_full_table_button.clicked.connect(lambda checked=False: self.load_full_selected_table())
+        self.page_size_spin.valueChanged.connect(lambda *_args: self.reload_current_page_size())
         self.db_path_edit.editingFinished.connect(lambda: self.refresh_table_combo(show_status=False))
         self.save_button.clicked.connect(lambda checked=False: self.save_current_table())
         self.delete_table_button.clicked.connect(lambda checked=False: self.delete_selected_table())
@@ -149,9 +175,10 @@ class DataSourceManagerWindow:
         headers, rows = self.table_model.table_data()
         return {"type": "table", "headers": headers, "rows": rows}
 
-    def set_table(self, headers, rows, *, source=None, title="", dirty=False):
+    def set_table(self, headers, rows, *, source=None, title="", dirty=False, page_info=None, partial=False):
         self.current_source = copy.deepcopy(source or {"type": "memory"})
         self.dirty = bool(dirty)
+        self._set_page_state(page_info=page_info, source=source, partial=partial)
         self.search_matches = []
         self.search_index = -1
         self.search_navigation = {}
@@ -161,9 +188,12 @@ class DataSourceManagerWindow:
         if table_name:
             self.table_combo.setCurrentText(str(table_name))
             self.save_table_name_edit.setText(str(table_name))
+        self._refresh_page_controls()
         self._refresh_table_shape_status(title=title)
 
     def mark_dirty(self):
+        if self.current_table_is_partial:
+            return
         self.dirty = True
         self._refresh_table_shape_status()
 
@@ -172,8 +202,81 @@ class DataSourceManagerWindow:
         headers = table.get("headers") or []
         rows = table.get("rows") or []
         dirty_note = "，未保存" if self.dirty else ""
+        page_note = "，分页预览" if self.current_table_is_partial else ""
         prefix = str(title or "当前表格")
-        self.status_label.setText(f"{prefix}：{len(rows)} 行 x {len(headers)} 列{dirty_note}")
+        self.status_label.setText(f"{prefix}：{len(rows)} 行 x {len(headers)} 列{page_note}{dirty_note}")
+
+    def _set_page_state(self, *, page_info=None, source=None, partial=False):
+        self.current_table_is_partial = bool(partial)
+        if self.current_table_is_partial:
+            info = dict(page_info or {})
+            self.page_source = copy.deepcopy(source or self.current_source or {})
+            self.page_offset = self._int_value(info.get("offset"), default=0)
+            self.page_limit = self._int_value(info.get("limit"), default=self._page_size_value())
+            self.page_has_more = bool(info.get("has_more"))
+        else:
+            self.page_source = None
+            self.page_offset = 0
+            self.page_limit = self._page_size_value()
+            self.page_has_more = False
+
+    def _int_value(self, value, *, default=0):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _page_size_value(self):
+        if hasattr(self, "page_size_spin"):
+            return max(1, self._int_value(self.page_size_spin.value(), default=self.page_limit))
+        return max(1, self._int_value(self.page_limit, default=500))
+
+    def _selected_sqlite_source(self):
+        if self.current_table_is_partial and self.page_source:
+            source = copy.deepcopy(self.page_source)
+            if source.get("type") == "sqlite" and source.get("db_path") and source.get("table_name"):
+                return source
+        db_path = self.db_path_edit.text().strip()
+        table_name = self.table_combo.currentText().strip()
+        if db_path and table_name:
+            return {"type": "sqlite", "db_path": db_path, "table_name": table_name}
+        source = copy.deepcopy(self.current_source or {})
+        if source.get("type") == "sqlite" and source.get("db_path") and source.get("table_name"):
+            return source
+        return None
+
+    def _refresh_page_controls(self):
+        if not hasattr(self, "page_status_label"):
+            return
+        source = self._selected_sqlite_source()
+        can_page = bool(source)
+        self.page_size_spin.setEnabled(can_page)
+        self.prev_page_button.setEnabled(self.current_table_is_partial and self.page_offset > 0)
+        self.next_page_button.setEnabled(self.current_table_is_partial and self.page_has_more)
+        self.load_full_table_button.setEnabled(can_page)
+        self.promote_header_button.setEnabled(not self.current_table_is_partial)
+        self.save_button.setEnabled(not self.current_table_is_partial)
+        self.edit_mode_checkbox.setEnabled(not self.current_table_is_partial)
+        if self.current_table_is_partial and self.edit_mode_checkbox.isChecked():
+            self.edit_mode_checkbox.blockSignals(True)
+            self.edit_mode_checkbox.setChecked(False)
+            self.edit_mode_checkbox.blockSignals(False)
+        self.apply_edit_mode()
+
+        if self.current_table_is_partial:
+            row_count = len(self.current_table().get("rows") or [])
+            if row_count:
+                start = self.page_offset + 1
+                end = self.page_offset + row_count
+                text = f"分页预览：第 {start}-{end} 行，每页 {self.page_limit}"
+            else:
+                text = f"分页预览：偏移 {self.page_offset} 无数据，每页 {self.page_limit}"
+            text += "，还有下一页" if self.page_has_more else "，已到末页"
+            self.page_status_label.setText(text)
+        elif (self.current_source or {}).get("type") == "sqlite":
+            self.page_status_label.setText("分页预览：当前为完整表")
+        else:
+            self.page_status_label.setText("分页预览：未载入")
 
     def _populate_save_modes(self):
         try:
@@ -200,7 +303,10 @@ class DataSourceManagerWindow:
         return getattr(self.qt.QtWidgets.QAbstractItemView, name)
 
     def apply_edit_mode(self):
-        trigger = "AllEditTriggers" if self.edit_mode_checkbox.isChecked() else "NoEditTriggers"
+        if self.current_table_is_partial:
+            trigger = "NoEditTriggers"
+        else:
+            trigger = "AllEditTriggers" if self.edit_mode_checkbox.isChecked() else "NoEditTriggers"
         self.table_view.setEditTriggers(self._edit_trigger(trigger))
 
     def load_clipboard(self):
@@ -295,33 +401,90 @@ class DataSourceManagerWindow:
         enabled = bool(db_path and table_names)
         self.load_table_button.setEnabled(enabled)
         self.delete_table_button.setEnabled(enabled)
+        self._refresh_page_controls()
         if show_status:
             self.status_label.setText(f"已刷新数据表：{len(table_names)} 个" if db_path else "请先选择 SQLite 数据库。")
 
     def load_selected_table(self):
+        self.load_table_page(0)
+
+    def load_table_page(self, offset):
         db_path = self.db_path_edit.text().strip()
         table_name = self.table_combo.currentText().strip()
         if not db_path or not table_name:
             self.status_label.setText("请先选择数据库和表。")
             return
-        loaded = self.engine_client.load_table({
+        limit = self._page_size_value()
+        offset = max(0, self._int_value(offset, default=0))
+        source = {
             "type": "sqlite",
             "db_path": db_path,
             "table_name": table_name,
-        })
+        }
+        loaded = self.engine_client.load_table(source, limit=limit + 1, offset=offset)
         if not loaded.get("ok"):
             self._show_result_issues("载入表失败", loaded)
             return
         table = loaded.get("table") or {}
+        rows = [list(row) for row in (table.get("rows") or [])]
+        visible_rows = rows[:limit]
+        page_info = {
+            "offset": offset,
+            "limit": limit,
+            "row_count": len(visible_rows),
+            "has_more": len(rows) > limit,
+        }
+        is_partial = bool(offset > 0 or page_info["has_more"])
+        self.set_table(
+            table.get("headers") or [],
+            visible_rows,
+            source=loaded.get("source") or source,
+            title=f"SQLite：{table_name}",
+            dirty=False,
+            page_info=page_info,
+            partial=is_partial,
+        )
+
+    def reload_current_page_size(self):
+        if self.current_table_is_partial and self._selected_sqlite_source():
+            self.load_table_page(0)
+        else:
+            self.page_limit = self._page_size_value()
+            self._refresh_page_controls()
+
+    def goto_prev_page(self):
+        if not self.current_table_is_partial:
+            return
+        self.load_table_page(max(0, self.page_offset - self.page_limit))
+
+    def goto_next_page(self):
+        if not self.current_table_is_partial or not self.page_has_more:
+            return
+        self.load_table_page(self.page_offset + self.page_limit)
+
+    def load_full_selected_table(self):
+        source = self._selected_sqlite_source()
+        if not source:
+            self.status_label.setText("请先选择数据库和表。")
+            return None
+        loaded = self.engine_client.load_table(source)
+        if not loaded.get("ok"):
+            self._show_result_issues("载入完整表失败", loaded)
+            return None
+        table = loaded.get("table") or {}
         self.set_table(
             table.get("headers") or [],
             table.get("rows") or [],
-            source=loaded.get("source") or {"type": "sqlite", "db_path": db_path, "table_name": table_name},
-            title=f"SQLite：{table_name}",
+            source=loaded.get("source") or source,
+            title=f"SQLite完整表：{source.get('table_name') or ''}",
             dirty=False,
         )
+        return loaded
 
     def save_current_table(self):
+        if self.current_table_is_partial:
+            self.status_label.setText("分页预览不支持直接保存，请先载入完整表。")
+            return
         db_path = self.db_path_edit.text().strip()
         table_name = self.save_table_name_edit.text().strip() or self.table_combo.currentText().strip()
         if not db_path or not table_name:
@@ -441,6 +604,12 @@ class DataSourceManagerWindow:
         if not callable(self.on_apply):
             self.status_label.setText("当前窗口未绑定工作流输入回调。")
             return
+        loaded_full = False
+        if self.current_table_is_partial:
+            loaded = self.load_full_selected_table()
+            if not loaded:
+                return
+            loaded_full = True
         table = self.current_table()
         source = copy.deepcopy(self.current_source or {"type": "memory"})
         title = source.get("table_name") or source.get("path") or "输入表格"
@@ -456,7 +625,10 @@ class DataSourceManagerWindow:
                 body="已将当前表格设置为工作流输入。",
             ).get("panel") or {},
         })
-        self.status_label.setText("已设置为工作流输入。")
+        if loaded_full:
+            self.status_label.setText("已载入完整表并设置为工作流输入。")
+        else:
+            self.status_label.setText("已设置为工作流输入。")
 
     def _show_result_issues(self, title, result):
         issues = result.get("issues") or []
