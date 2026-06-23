@@ -358,6 +358,50 @@ class Qt6UiShellTests(unittest.TestCase):
             window.close()
             app.processEvents()
 
+    def test_plugin_structured_list_uses_item_schema_display_columns(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+
+        widget = controller._make_plugin_structured_list_widget(
+            {
+                "view_id": "demo.items",
+                "kind": "structured_list",
+                "config_path": ["items"],
+                "items": [{"name": "alpha", "enabled": True}],
+                "item_model_key": "demo_default",
+                "item_schema": {
+                    "display_columns": [
+                        {"key": "name", "label": "名称"},
+                        {"key": "enabled", "label": "启用"},
+                    ],
+                    "columns": [
+                        {"key": "name", "label": "名称", "type": "text"},
+                        {"key": "enabled", "label": "启用", "type": "bool"},
+                    ],
+                },
+            },
+            {
+                "config_schema_version": "demo.config.v1",
+                "models": {"demo_default": {"name": "new_item", "enabled": True}},
+            },
+        )
+
+        table = widget.findChild(qt.QtWidgets.QTableWidget)
+        self.assertIsNotNone(table)
+        self.assertEqual(table.horizontalHeaderItem(0).text(), "名称")
+        self.assertEqual(table.horizontalHeaderItem(1).text(), "启用")
+        self.assertEqual(table.item(0, 0).text(), "alpha")
+        self.assertEqual(table.item(0, 1).text(), "是")
+        self.assertEqual(widget.plugin_config_schema_version, "demo.config.v1")
+        self.assertEqual(widget.plugin_config_append_value, {"name": "new_item", "enabled": True})
+        window.close()
+        app.processEvents()
+
     def test_facade_describes_workflow_actions_and_progress(self):
         client = QtHeadlessEngineClient()
 

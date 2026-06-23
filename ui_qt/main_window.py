@@ -1044,7 +1044,12 @@ class QtWorkflowMainWindow:
 
     def _make_plugin_structured_list_widget(self, view, described=None):
         qt = self.qt
+        item_schema = view.get("item_schema") if isinstance(view.get("item_schema"), dict) else {}
         columns = [item for item in (view.get("columns") or []) if isinstance(item, dict)]
+        if not columns:
+            columns = [item for item in (item_schema.get("display_columns") or []) if isinstance(item, dict)]
+        if not columns:
+            columns = [item for item in (item_schema.get("columns") or []) if isinstance(item, dict)]
         items = [item for item in (view.get("items") or []) if isinstance(item, dict)]
         if not columns and items:
             columns = [{"key": key, "label": key} for key in items[0].keys()]
@@ -1063,6 +1068,7 @@ class QtWorkflowMainWindow:
             layout.addWidget(label)
         table = qt.QtWidgets.QTableWidget()
         frame.plugin_config_view = copy.deepcopy(view)
+        frame.plugin_config_item_schema = copy.deepcopy(item_schema)
         frame.plugin_config_items = copy.deepcopy(items)
         frame.plugin_config_table = table
         frame.plugin_config_schema_version = str(
