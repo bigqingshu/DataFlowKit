@@ -212,6 +212,7 @@ class PluginServiceTests(unittest.TestCase):
             )
 
         self.assertTrue(schema["ok"])
+        self.assertEqual(schema["schema"]["parameters"][0]["name"], "table_name")
         group_titles = [group["title"] for group in schema["schema"]["form"]["groups"]]
         self.assertIn("插件参数", group_titles)
         self.assertIn("插件参数 / 输入", group_titles)
@@ -247,12 +248,40 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(fields["params.directory_path"]["invalid_value_text"], "请选择有效目录")
         self.assertEqual(fields["params.directory_path"]["visible_when"], {"field": "params.input_alias", "equals": "当前表"})
         self.assertEqual(fields["params.directory_path"]["enabled_when"], {"field": "params.config_name", "truthy": True})
+        metadata = schema["schema"]["parameter_metadata"]
+        self.assertEqual(metadata["schema_version"], "plugin_parameters.v1")
+        self.assertEqual(metadata["plugin_id"], "extended")
+        self.assertEqual(metadata["field_count"], 4)
+        self.assertEqual(metadata["default_params"]["table_name"], "orders")
+        self.assertEqual(set(metadata["context_requirements"]["options_sources"]), {"table_names", "plugin_input_tables", "plugin_dynamic_choices"})
+        self.assertTrue(metadata["context_requirements"]["needs_table_names"])
+        self.assertTrue(metadata["context_requirements"]["needs_plugin_input_tables"])
+        self.assertTrue(metadata["context_requirements"]["needs_dynamic_options"])
+        self.assertTrue(metadata["capabilities"]["dynamic_options"])
+        self.assertTrue(metadata["capabilities"]["conditional_fields"])
+        self.assertTrue(metadata["capabilities"]["field_actions"])
+        self.assertTrue(metadata["capabilities"]["advanced_fields"])
+        metadata_groups = {group["title"]: group for group in metadata["groups"]}
+        self.assertEqual(metadata_groups["插件参数 / 输入"]["field_keys"], ["params.table_name"])
+        self.assertEqual(metadata_groups["高级参数"]["param_keys"], ["directory_path"])
+        metadata_fields = {field["key"]: field for field in metadata["fields"]}
+        self.assertEqual(metadata_fields["params.input_alias"]["options_source"], {"type": "plugin_input_tables"})
+        self.assertEqual(metadata_fields["params.directory_path"]["visible_when"], {"field": "params.input_alias", "equals": "当前表"})
         described_fields = {
             field["key"]: field
             for group in described["node_ui_schema"]["form"]["groups"]
             for field in group["fields"]
         }
         self.assertEqual(described_fields["params.config_name"]["choices"], ["default", "advanced"])
+        described_metadata_fields = {
+            field["key"]: field
+            for field in described["parameter_metadata"]["fields"]
+        }
+        self.assertEqual(described_metadata_fields["params.config_name"]["choices"], ["default", "advanced"])
+        self.assertEqual(
+            described["node_ui_schema"]["parameter_metadata"]["fields"],
+            described["parameter_metadata"]["fields"],
+        )
         self.assertEqual(described["resources"][0]["file"], "extended_settings.json")
         self.assertEqual(described["views"][1]["kind"], "resource_list")
 

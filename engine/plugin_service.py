@@ -81,6 +81,7 @@ class PluginService:
         plugin = self._public_plugin(key, item)
         default_config = self.make_plugin_default_config(key, plugins_dir=plugins_dir)
         capabilities = _plugin_capabilities(item, plugin)
+        parameter_metadata = _plugin_parameter_metadata(default_config, item.get("schema", []))
         schema = {
             "schema_version": "2.0",
             "node_type_id": plugin["node_type_id"],
@@ -103,6 +104,7 @@ class PluginService:
                 "dynamic_rules": True,
                 "groups": _plugin_config_form_groups(default_config, item.get("schema", [])),
             },
+            "parameter_metadata": parameter_metadata,
             "default_config": default_config,
             "parameters": copy.deepcopy(item.get("schema", [])),
             "plugin": plugin,
@@ -552,6 +554,7 @@ class PluginService:
             "config": current_config,
             "params": params,
             "node_ui_schema": schema,
+            "parameter_metadata": copy.deepcopy(schema.get("parameter_metadata") or {}),
             "input_data": {
                 "headers": list(input_data.get("headers", []) or []),
                 "row_count": len(input_data.get("rows", []) or []),
@@ -988,26 +991,41 @@ def _enrich_plugin_dynamic_choices(schema, module, params, context):
     provider = getattr(module, "get_dynamic_parameter_options", None)
     if not callable(provider):
         return
-    for group in ((schema.get("form") or {}).get("groups") or []):
-        for field in group.get("fields") or []:
-            if not isinstance(field, dict):
-                continue
-            options_source = field.get("options_source") or {}
-            if str(options_source.get("type") or "") != "plugin_dynamic_choices":
-                continue
-            param_key = str(field.get("param_key") or options_source.get("param_key") or "").strip()
-            if not param_key:
-                continue
+    resolved = {}
+
+    def enrich_field(field):
+        if not isinstance(field, dict):
+            return
+        options_source = field.get("options_source") or {}
+        if str(options_source.get("type") or "") != "plugin_dynamic_choices":
+            return
+        param_key = str(field.get("param_key") or options_source.get("param_key") or "").strip()
+        if not param_key:
+            return
+        if param_key not in resolved:
             try:
                 choices = provider(param_key, copy.deepcopy(params or {}), copy.deepcopy(context or {}))
+                resolved[param_key] = {
+                    "choices": [str(item) for item in (choices or []) if str(item).strip()],
+                    "error": "",
+                }
             except Exception as exc:
-                field["dynamic_choice_error"] = str(exc)
-                choices = []
-            values = [str(item) for item in (choices or []) if str(item).strip()]
-            field["choices"] = values
-            source = dict(options_source)
-            source["choices"] = values
-            field["options_source"] = source
+                resolved[param_key] = {"choices": [], "error": str(exc)}
+        result = resolved[param_key]
+        if result.get("error"):
+            field["dynamic_choice_error"] = result["error"]
+        values = list(result.get("choices") or [])
+        field["choices"] = values
+        source = dict(options_source)
+        source["choices"] = values
+        field["options_source"] = source
+
+    for group in ((schema.get("form") or {}).get("groups") or []):
+        for field in group.get("fields") or []:
+            enrich_field(field)
+    parameter_metadata = schema.get("parameter_metadata") if isinstance(schema.get("parameter_metadata"), dict) else {}
+    for field in parameter_metadata.get("fields") or []:
+        enrich_field(field)
 
 
 def _describe_plugin_config_extension(module, params, context):
@@ -1166,15 +1184,8 @@ def _merge_plugin_config_items(base, extra, key):
 
 
 def _plugin_config_form_groups(default_config, parameter_schema):
-    parameter_fields = []
     plugin_id = str((default_config or {}).get("plugin_id") or "")
-    for field in parameter_schema or []:
-        if not isinstance(field, dict):
-            continue
-        field_schema = _parameter_field_schema(field, plugin_id=plugin_id)
-        if field_schema:
-            parameter_fields.append(field_schema)
-    parameter_fields.sort(key=_plugin_parameter_field_sort_key)
+    parameter_fields = _plugin_parameter_fields(parameter_schema, plugin_id=plugin_id)
     parameter_help = "插件参数 JSON。具体参数 schema 已在 parameters 字段中返回。"
     if parameter_fields:
         names = "、".join(field.get("label") or field.get("key", "") for field in parameter_fields[:8])
@@ -1259,6 +1270,61 @@ def _plugin_config_form_groups(default_config, parameter_schema):
         },
     ])
     return groups
+
+
+def _plugin_parameter_fields(parameter_schema, *, plugin_id=""):
+    parameter_fields = []
+    for field in parameter_schema or []:
+        if not isinstance(field, dict):
+            continue
+        field_schema = _parameter_field_schema(field, plugin_id=plugin_id)
+        if field_schema:
+            parameter_fields.append(field_schema)
+    parameter_fields.sort(key=_plugin_parameter_field_sort_key)
+    return parameter_fields
+
+
+def _plugin_parameter_metadata(default_config, parameter_schema):
+    plugin_id = str((default_config or {}).get("plugin_id") or "")
+    parameter_fields = _plugin_parameter_fields(parameter_schema, plugin_id=plugin_id)
+    group_map = _plugin_parameter_group_map(parameter_fields)
+    groups = []
+    for title, fields in sorted(group_map.items(), key=lambda item: _plugin_parameter_group_sort_key(item[0], item[1])):
+        group_key = "plugin.parameters" if title == "插件参数" else "plugin.parameters." + _sanitize_path_segment(title, "group")
+        groups.append({
+            "title": title,
+            "group_key": group_key,
+            "advanced": str(title or "").startswith("高级参数"),
+            "field_keys": [str(field.get("key") or "") for field in fields if str(field.get("key") or "")],
+            "param_keys": [str(field.get("param_key") or "") for field in fields if str(field.get("param_key") or "")],
+        })
+    options_sources = sorted({
+        str((field.get("options_source") or {}).get("type") or "")
+        for field in parameter_fields
+        if isinstance(field.get("options_source"), dict) and str((field.get("options_source") or {}).get("type") or "")
+    })
+    return {
+        "schema_version": "plugin_parameters.v1",
+        "plugin_id": plugin_id,
+        "field_count": len(parameter_fields),
+        "fields": copy.deepcopy(parameter_fields),
+        "groups": groups,
+        "default_params": copy.deepcopy((default_config or {}).get("params") or {}),
+        "context_requirements": {
+            "options_sources": options_sources,
+            "needs_preview_headers": "preview_headers" in options_sources,
+            "needs_table_names": "table_names" in options_sources,
+            "needs_plugin_input_tables": "plugin_input_tables" in options_sources,
+            "needs_dynamic_options": "plugin_dynamic_choices" in options_sources,
+        },
+        "capabilities": {
+            "dynamic_options": "plugin_dynamic_choices" in options_sources,
+            "conditional_fields": any(field.get("visible_when") or field.get("enabled_when") for field in parameter_fields),
+            "field_dependencies": any(field.get("depends_on") or field.get("refresh_on_change") for field in parameter_fields),
+            "field_actions": any(field.get("action") for field in parameter_fields),
+            "advanced_fields": any(bool(field.get("advanced")) for field in parameter_fields),
+        },
+    }
 
 
 def _plugin_parameter_group_map(parameter_fields):
