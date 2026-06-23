@@ -30,6 +30,7 @@ class QtWorkflowMainWindow:
         self.current_plan = copy.deepcopy(SAMPLE_PLAN)
         self.current_headers = list(SAMPLE_HEADERS)
         self.current_rows = [list(row) for row in SAMPLE_ROWS]
+        self.current_input_source = {"type": "sample"}
         self.preview_headers = list(SAMPLE_HEADERS)
         self.preview_rows = [list(row) for row in SAMPLE_ROWS]
         self.last_preview_headers = []
@@ -61,17 +62,27 @@ class QtWorkflowMainWindow:
         except Exception:
             listed = {}
         for item in listed.get("tables") or []:
-            name = str((item or {}).get("name") or "").strip()
+            name = self._table_record_name(item)
             if not name:
                 continue
             table_names.append(name)
-            headers = (item or {}).get("headers") or []
+            headers = self._table_record_headers(item)
             if headers:
                 table_columns[name] = [str(header) for header in headers]
         return {
             "table_names": table_names,
             "table_columns": table_columns,
         }
+
+    def _table_record_name(self, item):
+        if isinstance(item, dict):
+            return str(item.get("name") or item.get("table_name") or item.get("table") or "").strip()
+        return str(item or "").strip()
+
+    def _table_record_headers(self, item):
+        if isinstance(item, dict):
+            return [str(header) for header in (item.get("headers") or item.get("columns") or [])]
+        return []
 
     def _build_ui(self):
         qt = self.qt
@@ -154,10 +165,25 @@ class QtWorkflowMainWindow:
         source_layout = qt.QtWidgets.QVBoxLayout(source_group)
         self.input_summary_label = qt.QtWidgets.QLabel("")
         self.input_summary_label.setWordWrap(True)
+        source_table_row = qt.QtWidgets.QHBoxLayout()
+        self.input_table_combo = qt.QtWidgets.QComboBox()
+        self.input_table_combo.setMinimumWidth(180)
+        self.input_table_combo.setToolTip("从当前 SQLite 数据库选择表作为工作流输入")
+        self.load_input_table_button = qt.QtWidgets.QPushButton("载入")
+        self.load_input_table_button.clicked.connect(lambda checked=False: self.load_selected_input_table())
+        source_table_row.addWidget(qt.QtWidgets.QLabel("选择表："))
+        source_table_row.addWidget(self.input_table_combo, 1)
+        source_table_row.addWidget(self.load_input_table_button)
+        source_button_row = qt.QtWidgets.QHBoxLayout()
+        self.data_source_manager_button = qt.QtWidgets.QPushButton("输入数据源管理")
+        self.data_source_manager_button.clicked.connect(lambda checked=False: self.open_data_source_manager())
         reload_button = qt.QtWidgets.QPushButton("重新载入示例输入")
         reload_button.clicked.connect(lambda checked=False: self.reload_sample_input())
+        source_button_row.addWidget(self.data_source_manager_button)
+        source_button_row.addWidget(reload_button)
         source_layout.addWidget(self.input_summary_label)
-        source_layout.addWidget(reload_button)
+        source_layout.addLayout(source_table_row)
+        source_layout.addLayout(source_button_row)
 
         node_group = qt.QtWidgets.QGroupBox("2. 工作流节点")
         node_layout = qt.QtWidgets.QVBoxLayout(node_group)
@@ -383,6 +409,7 @@ class QtWorkflowMainWindow:
 
         self.output_mode_combo.currentTextChanged.connect(lambda *_args: self._apply_output_form_state())
         self.output_db_path_edit.editingFinished.connect(lambda: self.refresh_preview_table_combo())
+        self.output_db_path_edit.editingFinished.connect(lambda: self.refresh_input_table_combo(show_status=False))
         self._apply_output_panel_state(output_panel)
 
         preview_page = qt.QtWidgets.QWidget()
@@ -459,6 +486,7 @@ class QtWorkflowMainWindow:
     def refresh_all(self, *, selected_index=None):
         self.refresh_catalog()
         self.refresh_template_list(show_status=False)
+        self.refresh_input_table_combo(show_status=False)
         self.refresh_node_list()
         if selected_index is not None and 0 <= int(selected_index) < self.node_list.count():
             self.node_list.setCurrentRow(int(selected_index))
@@ -1196,6 +1224,7 @@ class QtWorkflowMainWindow:
         state = state or {}
         self.current_headers = list(state.get("headers") or [])
         self.current_rows = [list(row) for row in (state.get("rows") or [])]
+        self.current_input_source = copy.deepcopy(state.get("source") or {"type": "file"})
         self.current_plan["headers"] = list(self.current_headers)
         self.current_plan["rows"] = [list(row) for row in self.current_rows]
         table_context = self._table_context()
@@ -1214,6 +1243,30 @@ class QtWorkflowMainWindow:
         ).get("panel") or {}
         self._apply_message_panel(panel)
         self.status_bar.showMessage(str(state.get("status_message") or "已导入输入表格。"))
+
+    def _apply_input_table_state(self, state):
+        state = state or {}
+        self.current_headers = list(state.get("headers") or [])
+        self.current_rows = [list(row) for row in (state.get("rows") or [])]
+        self.current_input_source = copy.deepcopy(state.get("source") or self.current_input_source or {})
+        self.current_plan["headers"] = list(self.current_headers)
+        self.current_plan["rows"] = [list(row) for row in self.current_rows]
+        self.last_preview_headers = []
+        self.last_preview_rows = []
+        table_context = self._table_context()
+        self.config_form.set_headers(self.current_headers)
+        self.config_form.set_table_names(table_context.get("table_names"))
+        self.config_form.set_table_columns(table_context.get("table_columns"))
+        self.config_form.set_plan(self.current_plan)
+        self.refresh_catalog()
+        self.update_input_summary()
+        self.refresh_preview_table_combo()
+        self.update_table(self.current_headers, self.current_rows, title=state.get("table_title") or "输入表格")
+        self.show_node_config(self.node_list.currentRow())
+        panel = state.get("message_panel")
+        if panel:
+            self._apply_message_panel(panel)
+        self.status_bar.showMessage(str(state.get("status_message") or "已载入输入表格。"))
 
     def _apply_loaded_plan_state(self, state):
         state = state or {}
@@ -1826,6 +1879,7 @@ class QtWorkflowMainWindow:
         self.current_plan = copy.deepcopy(SAMPLE_PLAN)
         self.current_headers = list(SAMPLE_HEADERS)
         self.current_rows = [list(row) for row in SAMPLE_ROWS]
+        self.current_input_source = {"type": "sample"}
         self.last_preview_headers = []
         self.last_preview_rows = []
         self.refresh_all()
@@ -1838,11 +1892,113 @@ class QtWorkflowMainWindow:
     def reload_sample_input(self):
         self.current_headers = list(SAMPLE_HEADERS)
         self.current_rows = [list(row) for row in SAMPLE_ROWS]
+        self.current_input_source = {"type": "sample"}
+        self.last_preview_headers = []
+        self.last_preview_rows = []
         self.current_plan["headers"] = list(self.current_headers)
         self.current_plan["rows"] = [list(row) for row in self.current_rows]
         self.update_input_summary()
+        self.refresh_preview_table_combo()
         self.update_table(self.current_headers, self.current_rows, title="输入表格")
         self.status_bar.showMessage("已重新载入示例输入。")
+
+    def current_data_source_db_path(self):
+        return self.output_db_path_edit.text().strip() if hasattr(self, "output_db_path_edit") else ""
+
+    def refresh_input_table_combo(self, *, show_status=True):
+        if not hasattr(self, "input_table_combo"):
+            return
+        db_path = self.current_data_source_db_path()
+        current_table = self.input_table_combo.currentData()
+        try:
+            listed = self.engine_client.list_tables(db_path=db_path or None)
+        except Exception as exc:
+            listed = {
+                "ok": False,
+                "tables": [],
+                "issues": [{
+                    "severity": "warning",
+                    "code": "input_table_list_failed",
+                    "message": str(exc),
+                }],
+            }
+        tables = []
+        for item in listed.get("tables") or []:
+            name = self._table_record_name(item)
+            if name:
+                tables.append(name)
+        self.input_table_combo.blockSignals(True)
+        self.input_table_combo.clear()
+        restore_index = 0
+        for index, table_name in enumerate(tables):
+            self.input_table_combo.addItem(table_name, table_name)
+            if table_name == current_table:
+                restore_index = index
+        self.input_table_combo.setCurrentIndex(restore_index if tables else -1)
+        self.input_table_combo.blockSignals(False)
+        self.load_input_table_button.setEnabled(bool(db_path and tables))
+        if show_status:
+            if db_path:
+                self.status_bar.showMessage(f"输入表列表已刷新：{len(tables)} 个")
+            else:
+                self.status_bar.showMessage("请选择 SQLite 数据库后再刷新输入表。")
+
+    def load_selected_input_table(self):
+        db_path = self.current_data_source_db_path()
+        table_name = str(self.input_table_combo.currentData() or self.input_table_combo.currentText() or "").strip()
+        if not db_path:
+            self._apply_message_panel(self.engine_client.build_message_panel_state(
+                mode="warning",
+                title="输入数据源",
+                body="请先在输出/数据库路径中选择 SQLite 数据库。",
+                preferred_tab="issues",
+            ).get("panel") or {})
+            self.status_bar.showMessage("载入输入表需要数据库路径。")
+            return
+        if not table_name:
+            self._apply_message_panel(self.engine_client.build_message_panel_state(
+                mode="warning",
+                title="输入数据源",
+                body="请先选择要载入的 SQLite 表。",
+                preferred_tab="issues",
+            ).get("panel") or {})
+            self.status_bar.showMessage("请先选择输入表。")
+            return
+        loaded = self.engine_client.load_table({
+            "type": "sqlite",
+            "db_path": db_path,
+            "table_name": table_name,
+        })
+        if not loaded.get("ok"):
+            self._apply_message_panel(self.engine_client.build_message_panel_state(
+                mode="error",
+                title="载入输入表失败",
+                issues=loaded.get("issues") or [],
+                preferred_tab="issues",
+            ).get("panel") or {})
+            self.status_bar.showMessage("载入输入表失败")
+            return
+        table = loaded.get("table") or {}
+        self._apply_input_table_state({
+            "headers": list(table.get("headers") or []),
+            "rows": [list(row) for row in (table.get("rows") or [])],
+            "source": loaded.get("source") or {"type": "sqlite", "db_path": db_path, "table_name": table_name},
+            "table_title": f"输入表格：{table_name}",
+            "status_message": f"已载入输入表：{table_name}",
+            "message_panel": self.engine_client.build_message_panel_state(
+                mode="success",
+                title="输入数据源",
+                body=f"已载入 SQLite 表：{table_name}",
+            ).get("panel") or {},
+        })
+
+    def open_data_source_manager(self):
+        self._apply_message_panel(self.engine_client.build_message_panel_state(
+            mode="info",
+            title="输入数据源管理",
+            body="输入数据源管理窗口将在下一阶段接入；当前可先通过选择表下拉载入 SQLite 表。",
+        ).get("panel") or {})
+        self.status_bar.showMessage("输入数据源管理窗口将在下一阶段接入。")
 
     def import_table(self):
         path = self._choose_file_path("import_table")

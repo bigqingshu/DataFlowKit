@@ -7,6 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from db.table_manager import TableAccessManager
 from engine.plugin_service import PluginService
 from ui_qt import app as qt_app
 from ui_qt.config_form import NodeConfigForm, coerce_form_value, format_form_value, value_kind
@@ -1629,6 +1630,37 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertEqual(imported["table"]["headers"], ["A", "B"])
             self.assertEqual(imported["table"]["rows"], [["a", "1"], ["b", "2"]])
 
+    def test_controller_loads_sqlite_input_table_from_source_panel(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        with TemporaryDirectory() as temp_dir:
+            db_path = str(Path(temp_dir) / "input.db")
+            TableAccessManager(db_path).write_table(
+                "orders",
+                ["id", "name"],
+                [["1", "Alice"], ["2", "Bob"]],
+                mode="replace",
+            )
+            window = build_main_window(qt)
+            controller = window.qt_workflow_controller
+
+            controller.output_db_path_edit.setText(db_path)
+            controller.refresh_input_table_combo()
+            controller.load_selected_input_table()
+            app.processEvents()
+
+            self.assertEqual(controller.input_table_combo.currentText(), "orders")
+            self.assertEqual(controller.current_headers, ["id", "name"])
+            self.assertEqual(controller.current_rows, [["1", "Alice"], ["2", "Bob"]])
+            self.assertEqual(controller.current_input_source["table_name"], "orders")
+            self.assertEqual(controller.input_summary_label.text(), "当前输入：2 行 x 2 列")
+            self.assertIn("已载入输入表", controller.status_bar.currentMessage())
+            window.close()
+            app.processEvents()
+
     def test_original_style_workflow_panel_controller_operations(self):
         try:
             qt = qt_app.load_qt6()
@@ -1650,6 +1682,9 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(controller.output_mode_combo.currentText(), "输出到主界面预览区")
         self.assertEqual(controller.output_db_path_edit.text(), "")
         self.assertEqual(controller.output_path_edit.text(), "")
+        self.assertEqual(controller.input_table_combo.count(), 0)
+        self.assertFalse(controller.load_input_table_button.isEnabled())
+        self.assertTrue(controller.data_source_manager_button.isEnabled())
         self.assertEqual(controller.node_tabs.count(), 2)
         self.assertEqual(controller.node_tabs.tabText(0), "节点配置")
         self.assertEqual(controller.node_tabs.tabText(1), "节点说明")
