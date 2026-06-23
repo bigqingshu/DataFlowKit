@@ -4,8 +4,18 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from db.table_manager import TableAccessManager
 from engine.headless import HeadlessWorkflowEngine
 from engine.stdio_worker import StdioWorker
+from engine.table_data_service import (
+    TableDataService,
+    build_data_source_state,
+    normalize_table_headers,
+    parse_clipboard_table,
+    patch_table_cell,
+    promote_first_row_to_headers,
+    search_table,
+)
 from engine.workflow_services import WorkflowServices
 
 
@@ -128,6 +138,63 @@ class TableDataServiceTests(unittest.TestCase):
         self.assertEqual(page["result"]["table"]["rows"], [["2"]])
         self.assertEqual(listed["result"]["count"], 1)
         self.assertTrue(released["result"]["released"])
+
+    def test_parse_clipboard_table_normalizes_headers_and_rows(self):
+        table = parse_clipboard_table(" A\tA\t\n x\t y\t z\n", first_row_header=True)
+
+        self.assertEqual(table["headers"], ["A", "A_2", "列3"])
+        self.assertEqual(table["rows"], [["x", "y", "z"]])
+        self.assertEqual(table["meta"]["delimiter"], "tab")
+
+    def test_table_editing_helpers_are_ui_free(self):
+        table = {
+            "headers": ["old1", "old2"],
+            "rows": [["H1", "H1"], ["a", "b"]],
+        }
+
+        promoted = promote_first_row_to_headers(table)
+        patched = patch_table_cell(promoted, row=0, column=1, value="changed")
+        matches = search_table(patched, "chan")
+        state = build_data_source_state(
+            patched,
+            source={"type": "memory"},
+            dirty=True,
+            display_name="demo",
+        )
+
+        self.assertEqual(promoted["headers"], ["H1", "H1_2"])
+        self.assertEqual(patched["rows"], [["a", "changed"]])
+        self.assertEqual(matches[0]["cells"][0]["header"], "H1_2")
+        self.assertTrue(state["dirty"])
+        self.assertEqual(state["row_count"], 1)
+        self.assertEqual(normalize_table_headers(["", "A", "A"]), ["列1", "A", "A_2"])
+
+    def test_service_saves_and_deletes_sqlite_table_with_confirmation(self):
+        with TemporaryDirectory() as temp_dir:
+            db_path = str(Path(temp_dir) / "data.db")
+            service = TableDataService()
+            table = {"headers": ["A"], "rows": [["x"]]}
+
+            saved = service.save_table(table, db_path=db_path, table_name="input_data", mode="replace")
+            manager = TableAccessManager(db_path)
+            saved_rows = manager.read_table("input_data")["rows"]
+            blocked = service.delete_table(db_path=db_path, table_name="input_data", confirmed=False)
+            deleted = service.delete_table(db_path=db_path, table_name="input_data", backup=True, confirmed=True)
+
+            self.assertTrue(saved["ok"])
+            self.assertEqual(saved["source"]["table_name"], "input_data")
+            self.assertEqual(saved_rows, [["x"]])
+            self.assertFalse(blocked["ok"])
+            self.assertEqual(blocked["issues"][0]["code"], "delete_not_confirmed")
+            self.assertTrue(deleted["ok"])
+            self.assertNotIn("input_data", manager.list_tables())
+            self.assertIn(deleted["backup_table"], manager.list_tables())
+
+    def test_service_returns_issues_for_invalid_clipboard(self):
+        result = TableDataService().parse_clipboard_table("   ")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["issues"][0]["code"], "parse_clipboard_table_failed")
 
 
 if __name__ == "__main__":

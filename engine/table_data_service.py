@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Backend table listing, loading, and paging service."""
+"""Backend table listing, loading, editing, and paging service."""
 
 from __future__ import annotations
 
+import csv
+import io
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -59,6 +61,147 @@ class TableDataService:
             table = TableData.from_payload({"headers": headers, "rows": rows}).to_dict()
             return self.get_table_page(table, limit=limit, offset=offset, source={"type": "file", "path": str(path)})
         return self.load_sqlite_table(table_name, db_path=db_path, limit=limit, offset=offset)
+
+    def parse_clipboard_table(self, text, *, first_row_header=True):
+        try:
+            table = parse_clipboard_table(text, first_row_header=first_row_header)
+        except ValueError as exc:
+            return self._failure("parse_clipboard_table_failed", str(exc), "/text")
+        return {
+            "ok": True,
+            "source": {"type": "clipboard"},
+            "table": table,
+            "state": build_data_source_state(table, source={"type": "clipboard"}, dirty=True, display_name="剪贴板数据"),
+            "issues": [],
+        }
+
+    def normalize_table_headers(self, headers):
+        return {
+            "ok": True,
+            "headers": normalize_table_headers(headers),
+            "issues": [],
+        }
+
+    def promote_first_row_to_headers(self, table):
+        try:
+            updated = promote_first_row_to_headers(table)
+        except ValueError as exc:
+            return self._failure("promote_header_failed", str(exc), "/table/rows")
+        return {
+            "ok": True,
+            "table": updated,
+            "state": build_data_source_state(updated, source=(table or {}).get("source"), dirty=True),
+            "issues": [],
+        }
+
+    def patch_table_cell(self, table, *, row=None, column=None, value=""):
+        try:
+            updated = patch_table_cell(table, row=row, column=column, value=value)
+        except ValueError as exc:
+            return self._failure("patch_table_cell_failed", str(exc), "/table")
+        return {
+            "ok": True,
+            "table": updated,
+            "state": build_data_source_state(updated, source=(table or {}).get("source"), dirty=True),
+            "issues": [],
+        }
+
+    def search_table(self, table, keyword):
+        matches = search_table(table, keyword)
+        return {
+            "ok": True,
+            "keyword": str(keyword or ""),
+            "matches": matches,
+            "count": len(matches),
+            "issues": [],
+        }
+
+    def build_data_source_state(self, table=None, *, source=None, dirty=False, display_name=""):
+        return {
+            "ok": True,
+            "state": build_data_source_state(
+                table or {},
+                source=source,
+                dirty=dirty,
+                display_name=display_name,
+            ),
+            "issues": [],
+        }
+
+    def save_table(self, table=None, *, db_path=None, table_name=None, mode="replace"):
+        target_db = self._resolve_db_path(db_path)
+        table_data = TableData.from_payload(table or {}).to_dict()
+        issues = []
+        if not target_db:
+            issues.append(make_issue("error", "missing_db_path", "保存 SQLite 表需要数据库路径。", path="/db_path", source="TableDataService"))
+        if not str(table_name or "").strip():
+            issues.append(make_issue("error", "missing_table_name", "保存 SQLite 表需要表名。", path="/table_name", source="TableDataService"))
+        if not table_data.get("headers"):
+            issues.append(make_issue("error", "missing_table_headers", "保存 SQLite 表需要字段名。", path="/table/headers", source="TableDataService"))
+        if has_error_issues(issues):
+            return {
+                "ok": False,
+                "db_path": target_db,
+                "table": table_data,
+                "issues": issues,
+            }
+        try:
+            result = TableAccessManager(target_db, node_type="TableDataService").write_table(
+                table_name,
+                table_data.get("headers") or [],
+                table_data.get("rows") or [],
+                mode=mode,
+            )
+        except Exception as exc:
+            return self._failure("save_table_failed", str(exc), "/table")
+        actual_name = result.get("table_name") or str(table_name or "").strip()
+        saved_source = {"type": "sqlite", "db_path": target_db, "table_name": actual_name}
+        return {
+            "ok": True,
+            "db_path": target_db,
+            "table_name": actual_name,
+            "service_result": result,
+            "source": saved_source,
+            "state": build_data_source_state(
+                table_data,
+                source=saved_source,
+                dirty=False,
+                display_name=actual_name,
+            ),
+            "issues": [],
+        }
+
+    def delete_table(self, *, db_path=None, table_name=None, backup=True, confirmed=False):
+        target_db = self._resolve_db_path(db_path)
+        issues = []
+        if not bool(confirmed):
+            issues.append(make_issue("error", "delete_not_confirmed", "删除 SQLite 表需要 confirmed=True。", path="/confirmed", source="TableDataService"))
+        if not target_db:
+            issues.append(make_issue("error", "missing_db_path", "删除 SQLite 表需要数据库路径。", path="/db_path", source="TableDataService"))
+        if not str(table_name or "").strip():
+            issues.append(make_issue("error", "missing_table_name", "删除 SQLite 表需要表名。", path="/table_name", source="TableDataService"))
+        if has_error_issues(issues):
+            return {
+                "ok": False,
+                "db_path": target_db,
+                "table_name": str(table_name or ""),
+                "issues": issues,
+            }
+        try:
+            backup_name = TableAccessManager(target_db, node_type="TableDataService").drop_table(
+                table_name,
+                backup=bool(backup),
+            )
+        except Exception as exc:
+            return self._failure("delete_table_failed", str(exc), "/table_name")
+        return {
+            "ok": True,
+            "db_path": target_db,
+            "table_name": str(table_name or "").strip(),
+            "backup_table": backup_name,
+            "deleted": True,
+            "issues": [],
+        }
 
     def load_sqlite_table(self, table_name, *, db_path=None, limit=None, offset=0):
         issues = []
@@ -248,3 +391,134 @@ def _table_handle_id(table, source):
     if isinstance(source, dict) and str(source.get("type") or "").strip() == "handle":
         return str(source.get("handle") or source.get("id") or "").strip()
     return ""
+
+
+def parse_clipboard_table(text, *, first_row_header=True):
+    data = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not data.strip():
+        raise ValueError("剪贴板内容为空。")
+    delimiter = "\t" if "\t" in data or "," not in data else ","
+    reader = csv.reader(io.StringIO(data), delimiter=delimiter)
+    parsed_rows = []
+    for row in reader:
+        cleaned = [str(cell).strip() for cell in row]
+        if not cleaned or all(cell == "" for cell in cleaned):
+            continue
+        parsed_rows.append(cleaned)
+    if not parsed_rows:
+        raise ValueError("没有解析到有效表格数据。")
+
+    width = max(len(row) for row in parsed_rows)
+    normalized = [_normalize_row(row, width) for row in parsed_rows]
+    if bool(first_row_header) and len(normalized) >= 2:
+        headers = normalize_table_headers(normalized[0])
+        rows = normalized[1:]
+    else:
+        headers = normalize_table_headers([f"列{index + 1}" for index in range(width)])
+        rows = normalized
+    return {
+        "type": "table",
+        "headers": headers,
+        "rows": rows,
+        "meta": {
+            "delimiter": "tab" if delimiter == "\t" else "comma",
+            "source": "clipboard",
+        },
+    }
+
+
+def normalize_table_headers(headers):
+    result = []
+    used = {}
+    for index, header in enumerate(headers or [], start=1):
+        name = str(header or "").strip() or f"列{index}"
+        if name in used:
+            used[name] += 1
+            name = f"{name}_{used[name]}"
+        else:
+            used[name] = 1
+        result.append(name)
+    return result
+
+
+def promote_first_row_to_headers(table):
+    table_data = TableData.from_payload(table or {})
+    if not table_data.headers:
+        raise ValueError("当前没有字段名，无法提升下一行为字段名。")
+    if not table_data.rows:
+        raise ValueError("当前没有下一行数据，无法提升为字段名。")
+    return {
+        "type": "table",
+        "headers": normalize_table_headers(table_data.rows[0]),
+        "rows": [list(row) for row in table_data.rows[1:]],
+    }
+
+
+def patch_table_cell(table, *, row=None, column=None, value=""):
+    table_data = TableData.from_payload(table or {})
+    row_index = int(row)
+    col_index = int(column)
+    if row_index < 0 or row_index >= len(table_data.rows):
+        raise ValueError("行索引超出范围。")
+    if col_index < 0 or col_index >= len(table_data.headers):
+        raise ValueError("列索引超出范围。")
+    rows = [list(item) for item in table_data.rows]
+    while len(rows[row_index]) < len(table_data.headers):
+        rows[row_index].append("")
+    rows[row_index][col_index] = "" if value is None else str(value)
+    return {
+        "type": "table",
+        "headers": list(table_data.headers),
+        "rows": rows,
+    }
+
+
+def search_table(table, keyword):
+    text = str(keyword or "").strip().lower()
+    if not text:
+        return []
+    table_data = TableData.from_payload(table or {})
+    matches = []
+    for row_index, row in enumerate(table_data.rows):
+        fixed = _normalize_row(row, len(table_data.headers))
+        row_matches = []
+        for column_index, value in enumerate(fixed):
+            if text in str(value or "").lower():
+                row_matches.append({
+                    "row": row_index,
+                    "column": column_index,
+                    "header": table_data.headers[column_index] if column_index < len(table_data.headers) else "",
+                    "value": "" if value is None else str(value),
+                })
+        if row_matches:
+            matches.append({
+                "row": row_index,
+                "cells": row_matches,
+            })
+    return matches
+
+
+def build_data_source_state(table=None, *, source=None, dirty=False, display_name=""):
+    table_data = TableData.from_payload(table or {}).to_dict()
+    headers = list(table_data.get("headers") or [])
+    rows = [list(row) for row in (table_data.get("rows") or [])]
+    source_payload = dict(source or {})
+    title = str(display_name or source_payload.get("table_name") or source_payload.get("path") or "输入数据源")
+    return {
+        "source": source_payload,
+        "headers": headers,
+        "rows": rows,
+        "dirty": bool(dirty),
+        "display_name": title,
+        "row_count": len(rows),
+        "column_count": len(headers),
+    }
+
+
+def _normalize_row(row, width):
+    values = ["" if value is None else str(value) for value in (row or [])]
+    if len(values) < width:
+        values += [""] * (width - len(values))
+    if len(values) > width:
+        values = values[:width]
+    return values
