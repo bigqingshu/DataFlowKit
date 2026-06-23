@@ -64,6 +64,7 @@ class QtWorkflowMainWindow:
         self.preview_source_records = []
         self.current_message_panel = {}
         self.data_source_manager_controller = None
+        self.node_enabled_icon_cache = {}
 
         self._build_ui()
         self.refresh_all()
@@ -181,6 +182,54 @@ class QtWorkflowMainWindow:
         button.clicked.connect(lambda checked=False: callback())
         return button
 
+    def _node_enabled_icon(self, enabled):
+        enabled = bool(enabled)
+        cache_key = "enabled" if enabled else "disabled"
+        if cache_key in self.node_enabled_icon_cache:
+            return self.node_enabled_icon_cache[cache_key]
+        size = 20
+        pixmap = self.qt.QtGui.QPixmap(size, size)
+        pixmap.fill(qt_enum(self.qt, "GlobalColor", "transparent"))
+        painter = self.qt.QtGui.QPainter(pixmap)
+        render_hint_group = getattr(self.qt.QtGui.QPainter, "RenderHint", None)
+        antialiasing = getattr(render_hint_group, "Antialiasing", None) if render_hint_group is not None else None
+        if antialiasing is None:
+            antialiasing = getattr(self.qt.QtGui.QPainter, "Antialiasing")
+        painter.setRenderHint(antialiasing, True)
+        fill_color = "#f6ffed" if enabled else "#fff1f0"
+        border_color = "#52c41a" if enabled else "#d92d20"
+        text_color = "#237804" if enabled else "#b42318"
+        painter.setBrush(self.qt.QtGui.QBrush(self.qt.QtGui.QColor(fill_color)))
+        painter.setPen(self.qt.QtGui.QPen(self.qt.QtGui.QColor(border_color), 1.6))
+        painter.drawEllipse(2, 2, size - 4, size - 4)
+        font = painter.font()
+        font.setBold(True)
+        font.setPointSize(12 if enabled else 13)
+        painter.setFont(font)
+        painter.setPen(self.qt.QtGui.QColor(text_color))
+        painter.drawText(pixmap.rect(), qt_enum(self.qt, "AlignmentFlag", "AlignCenter"), "√" if enabled else "×")
+        painter.end()
+        icon = self.qt.QtGui.QIcon(pixmap)
+        self.node_enabled_icon_cache[cache_key] = icon
+        return icon
+
+    def _refresh_node_enabled_tool_button(self):
+        button = self.node_action_buttons.get("启用/禁用")
+        if button is None:
+            return
+        index = self.selected_node_index()
+        nodes = self.current_plan.get("nodes", []) or []
+        has_node = index is not None and 0 <= index < len(nodes)
+        enabled = True
+        if has_node:
+            enabled = bool(nodes[index].get("enabled", True))
+        button.setIcon(self._node_enabled_icon(enabled))
+        label = "√ 已启用，点击后禁用当前节点" if enabled else "× 已禁用，点击后启用当前节点"
+        if not has_node:
+            label = "启用/禁用"
+        button.setToolTip(label)
+        button.setAccessibleName(label)
+
     def _polish_node_views(self):
         self.catalog_tree.setAlternatingRowColors(True)
         self.node_list.setAlternatingRowColors(True)
@@ -281,7 +330,7 @@ class QtWorkflowMainWindow:
             ("删除", self.delete_selected_node, "SP_TrashIcon"),
             ("上移", self.move_selected_node_up, "SP_ArrowUp"),
             ("下移", self.move_selected_node_down, "SP_ArrowDown"),
-            ("启用/禁用", self.toggle_selected_node_enabled, "SP_DialogApplyButton"),
+            ("启用/禁用", self.toggle_selected_node_enabled, ""),
         ]:
             button = self._make_node_tool_button(text, callback, icon_name)
             node_list_tools.addWidget(button)
@@ -792,6 +841,7 @@ class QtWorkflowMainWindow:
             self.config_header_label.setText("未选择节点")
             self._update_legacy_plugin_config_button({})
             self._clear_plugin_config_views()
+            self.refresh_action_states()
             return
         node_type_id = self._node_type_id_for_node(node)
         table_context = self._table_context()
@@ -2622,6 +2672,7 @@ class QtWorkflowMainWindow:
             if button is None:
                 continue
             button.setEnabled(bool((actions.get(action_key) or {}).get("enabled", False)))
+        self._refresh_node_enabled_tool_button()
 
     def _apply_job_progress_state(self, progress):
         progress = progress or {}
