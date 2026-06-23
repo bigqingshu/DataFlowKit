@@ -1081,6 +1081,33 @@ def field_help_sections(key, schema=None):
     if validation_lines:
         lines.append("；".join(validation_lines))
 
+    metadata_lines = []
+    warning = str(schema.get("warning") or "").strip()
+    if warning:
+        metadata_lines.append(f"警告：{warning}")
+    placeholder = str(schema.get("placeholder") or "").strip()
+    if placeholder:
+        metadata_lines.append(f"占位提示：{placeholder}")
+    empty_text = str(schema.get("empty_text") or "").strip()
+    if empty_text:
+        metadata_lines.append(f"无候选时提示：{empty_text}")
+    invalid_value_text = str(schema.get("invalid_value_text") or "").strip()
+    if invalid_value_text:
+        metadata_lines.append(f"无效值提示：{invalid_value_text}")
+    numeric_parts = []
+    for source_key, label in (("min", "最小值"), ("max", "最大值"), ("step", "步长")):
+        if source_key in schema:
+            numeric_parts.append(f"{label}：{schema[source_key]}")
+    unit = str(schema.get("unit") or "").strip()
+    if unit:
+        numeric_parts.append(f"单位：{unit}")
+    if numeric_parts:
+        metadata_lines.append("；".join(numeric_parts))
+    if schema.get("advanced"):
+        metadata_lines.append("高级参数：通常只在需要覆盖默认行为时调整。")
+    if metadata_lines:
+        lines.extend(metadata_lines)
+
     dynamic_lines = []
     if schema.get("visible_when"):
         dynamic_lines.append("该字段会根据其他配置动态显示")
@@ -1808,4 +1835,17 @@ def build_field_help_payload(key, schema=None):
         "context_requirements": field_context_requirements(key, resolved_schema),
         "required": bool(resolved_schema.get("required")),
         "action": dict(resolved_schema.get("action") or {}),
+        "ui": {
+            "group": str(resolved_schema.get("group") or ""),
+            "advanced": bool(resolved_schema.get("advanced")),
+            "placeholder": str(resolved_schema.get("placeholder") or ""),
+            "empty_text": str(resolved_schema.get("empty_text") or ""),
+            "invalid_value_text": str(resolved_schema.get("invalid_value_text") or ""),
+            "warning": str(resolved_schema.get("warning") or ""),
+            "width_hint": str(resolved_schema.get("width_hint") or ""),
+            "unit": str(resolved_schema.get("unit") or ""),
+            "min": resolved_schema.get("min"),
+            "max": resolved_schema.get("max"),
+            "step": resolved_schema.get("step"),
+        },
     }

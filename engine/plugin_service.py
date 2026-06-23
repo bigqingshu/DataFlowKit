@@ -984,11 +984,18 @@ def _plugin_config_form_groups(default_config, parameter_schema):
         field_schema = _parameter_field_schema(field, plugin_id=plugin_id)
         if field_schema:
             parameter_fields.append(field_schema)
+    parameter_fields.sort(key=_plugin_parameter_field_sort_key)
     parameter_help = "插件参数 JSON。具体参数 schema 已在 parameters 字段中返回。"
     if parameter_fields:
         names = "、".join(field.get("label") or field.get("key", "") for field in parameter_fields[:8])
         parameter_help = f"插件参数 JSON。已声明参数：{names}" + ("..." if len(parameter_fields) > 8 else "")
-    return [
+
+    parameter_group_map = _plugin_parameter_group_map(parameter_fields)
+    base_parameter_fields = [
+        {"key": "params", "label": "参数 JSON", "type": "json", "help": parameter_help},
+        *parameter_group_map.pop("插件参数", []),
+    ]
+    groups = [
         {
             "title": "插件",
             "fields": [
@@ -1004,12 +1011,28 @@ def _plugin_config_form_groups(default_config, parameter_schema):
         },
         {
             "title": "插件参数",
+            "group_key": "plugin.parameters",
+            "fields": base_parameter_fields,
+            "parameters": parameter_fields,
+        },
+    ]
+
+    for title, fields in sorted(parameter_group_map.items(), key=lambda item: _plugin_parameter_group_sort_key(item[0], item[1])):
+        groups.append({
+            "title": title,
+            "group_key": "plugin.parameters." + _sanitize_path_segment(title, "group"),
+            "advanced": title.startswith("高级参数"),
+            "fields": fields,
+            "parameters": fields,
+        })
+
+    groups.extend([
+        {
+            "title": "插件输入",
+            "group_key": "plugin.inputs",
             "fields": [
-                {"key": "params", "label": "参数 JSON", "type": "json", "help": parameter_help},
-                *parameter_fields,
                 {"key": "input_tables", "label": "输入表", "type": "json", "help": "插件多输入表配置。"},
             ],
-            "parameters": parameter_fields,
         },
         {
             "title": "输出与日志",
@@ -1036,6 +1059,7 @@ def _plugin_config_form_groups(default_config, parameter_schema):
         },
         {
             "title": "独立环境",
+            "advanced": True,
             "fields": [
                 {"key": "external_python", "label": "Python 路径", "type": "path"},
                 {"key": "external_env_dir", "label": "环境目录", "type": "directory"},
@@ -1043,7 +1067,53 @@ def _plugin_config_form_groups(default_config, parameter_schema):
                 {"key": "external_timeout", "label": "超时秒数", "type": "number"},
             ],
         },
-    ]
+    ])
+    return groups
+
+
+def _plugin_parameter_group_map(parameter_fields):
+    groups = {}
+    for field in parameter_fields or []:
+        if not isinstance(field, dict):
+            continue
+        title = _plugin_parameter_group_title(field)
+        groups.setdefault(title, []).append(field)
+    for fields in groups.values():
+        fields.sort(key=_plugin_parameter_field_sort_key)
+    return groups
+
+
+def _plugin_parameter_group_title(field):
+    group = str((field or {}).get("group") or "").strip()
+    advanced = bool((field or {}).get("advanced"))
+    if advanced:
+        return f"高级参数 / {group}" if group else "高级参数"
+    if group:
+        return f"插件参数 / {group}"
+    return "插件参数"
+
+
+def _plugin_parameter_group_sort_key(title, fields):
+    first = (fields or [{}])[0] if fields else {}
+    advanced = str(title or "").startswith("高级参数")
+    group_order = _optional_number(first.get("group_order"), default=1000)
+    return (1 if advanced else 0, group_order, str(title or ""))
+
+
+def _plugin_parameter_field_sort_key(field):
+    return (
+        1 if bool((field or {}).get("advanced")) else 0,
+        _optional_number((field or {}).get("group_order"), default=1000),
+        _optional_number((field or {}).get("order"), default=1000),
+        str((field or {}).get("label") or (field or {}).get("key") or ""),
+    )
+
+
+def _optional_number(value, default=0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
 
 
 def _parameter_field_schema(field, *, plugin_id=""):

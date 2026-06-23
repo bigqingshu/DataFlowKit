@@ -150,6 +150,8 @@ class NodeConfigForm:
                     "visible": bool(field.get("editor").isVisible()) if field.get("editor") is not None else False,
                     "enabled": bool(field.get("editor").isEnabled()) if field.get("editor") is not None else False,
                     "issues": list(field.get("issues") or []),
+                    "tooltip": str(field.get("editor").toolTip()) if field.get("editor") is not None else "",
+                    "placeholder": self._editor_placeholder(field.get("editor")),
                     "action": copy.deepcopy((field.get("schema") or {}).get("action") or {}),
                     "action_visible": bool(field.get("action_button").isVisible()) if field.get("action_button") is not None else False,
                     "action_enabled": bool(field.get("action_button").isEnabled()) if field.get("action_button") is not None else False,
@@ -415,7 +417,7 @@ class NodeConfigForm:
             "issues": [],
             "action_button": None,
         }
-        editor = self._editor_for_field(key, kind, value, choices)
+        editor = self._editor_for_field(key, kind, value, choices, field_schema=field_schema)
         container = self._wrap_editor_with_action(key, editor)
         self.config_fields[key]["editor"] = editor
         self.config_fields[key]["editor_container"] = container
@@ -540,16 +542,14 @@ class NodeConfigForm:
         form.setSpacing(6)
         return form
 
-    def _editor_for_field(self, key, kind, value, choices=None):
+    def _editor_for_field(self, key, kind, value, choices=None, field_schema=None):
         if kind == "bool":
             widget = self.qt.QtWidgets.QCheckBox()
             widget.setChecked(bool(value))
-            return widget
-        if kind == "field_multi_select":
+        elif kind == "field_multi_select":
             widget = self._line(format_multi_select_summary(value), read_only=True)
             widget.multi_select_value = coerce_multi_select_value(value)
-            return widget
-        if kind == "choice":
+        elif kind == "choice":
             widget = self.qt.QtWidgets.QComboBox()
             widget.setEditable(True)
             current = format_form_value(value)
@@ -560,20 +560,59 @@ class NodeConfigForm:
                 values = [current]
             widget.addItems(values)
             widget.setCurrentText(current)
-            return widget
-        if kind == "json":
+        elif kind == "json":
             widget = self.qt.QtWidgets.QPlainTextEdit()
             widget.setPlainText(format_form_value(value))
             widget.setMinimumHeight(88)
-            return widget
-        if kind == "structured_list":
-            return self._structured_list_editor(key, value)
-        if kind == "long_text":
+        elif kind == "structured_list":
+            widget = self._structured_list_editor(key, value)
+        elif kind == "long_text":
             widget = self.qt.QtWidgets.QPlainTextEdit()
             widget.setPlainText(format_form_value(value))
             widget.setMinimumHeight(76)
-            return widget
-        return self._line(format_form_value(value))
+        else:
+            widget = self._line(format_form_value(value))
+        self._apply_editor_metadata(widget, kind, field_schema or {})
+        return widget
+
+    def _apply_editor_metadata(self, widget, kind, field_schema):
+        if widget is None:
+            return
+        placeholder = str(field_schema.get("placeholder") or field_schema.get("empty_text") or "").strip()
+        if placeholder:
+            self._set_editor_placeholder(widget, placeholder)
+        width_hint = field_schema.get("width_hint")
+        if width_hint in ("compact", "short"):
+            widget.setMaximumWidth(160)
+        elif width_hint in ("wide", "long"):
+            widget.setMinimumWidth(260)
+        else:
+            try:
+                width = int(width_hint)
+            except (TypeError, ValueError):
+                width = 0
+            if width > 0:
+                widget.setMinimumWidth(width)
+
+    def _set_editor_placeholder(self, widget, text):
+        if hasattr(widget, "setPlaceholderText"):
+            widget.setPlaceholderText(text)
+            return
+        if hasattr(widget, "lineEdit"):
+            line_edit = widget.lineEdit()
+            if line_edit is not None and hasattr(line_edit, "setPlaceholderText"):
+                line_edit.setPlaceholderText(text)
+
+    def _editor_placeholder(self, widget):
+        if widget is None:
+            return ""
+        if hasattr(widget, "placeholderText"):
+            return str(widget.placeholderText())
+        if hasattr(widget, "lineEdit"):
+            line_edit = widget.lineEdit()
+            if line_edit is not None and hasattr(line_edit, "placeholderText"):
+                return str(line_edit.placeholderText())
+        return ""
 
     def _structured_list_editor(self, key, value):
         field_schema = self.config_fields.get(key, {}).get("schema", {})
@@ -665,7 +704,7 @@ class NodeConfigForm:
             choices = self._choices_for_options_source(options_source)
         kind = self._structured_column_kind(column)
         key = str(column.get("key") or "")
-        editor = self._editor_for_field(key, kind, value, choices)
+        editor = self._editor_for_field(key, kind, value, choices, field_schema=column)
         editor.setToolTip(self._field_tooltip(key, column))
         self._connect_structured_refresh(editor, kind, frame)
         action = column.get("action") or {}

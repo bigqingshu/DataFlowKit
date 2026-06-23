@@ -180,10 +180,10 @@ class PluginServiceTests(unittest.TestCase):
                     "PLUGIN_INFO = {'id': 'extended', 'name': 'Extended', 'api_version': '1.0'}",
                     "SETTINGS_FILE = 'extended_settings.json'",
                     "PARAMETER_SCHEMA = [",
-                    "    {'name': 'table_name', 'label': '数据表', 'type': 'table_select', 'default': 'orders', 'group': '输入', 'empty_text': '没有表'},",
+                    "    {'name': 'table_name', 'label': '数据表', 'type': 'table_select', 'default': 'orders', 'group': '输入', 'group_order': 10, 'order': 1, 'empty_text': '没有表'},",
                     "    {'name': 'input_alias', 'label': '输入表', 'type': 'input_table_select', 'default': '当前表'},",
                     "    {'name': 'config_name', 'label': '配置', 'type': 'dynamic_select', 'default': 'default', 'allow_custom': True},",
-                    "    {'name': 'directory_path', 'label': '目录', 'type': 'folder_path', 'default': '', 'visible_when': {'field': 'input_alias', 'equals': '当前表'}, 'enabled_when': {'field': 'config_name', 'truthy': True}},",
+                    "    {'name': 'directory_path', 'label': '目录', 'type': 'folder_path', 'default': '', 'advanced': True, 'placeholder': '选择插件目录', 'warning': '目录不存在时运行会失败', 'invalid_value_text': '请选择有效目录', 'visible_when': {'field': 'input_alias', 'equals': '当前表'}, 'enabled_when': {'field': 'config_name', 'truthy': True}},",
                     "]",
                     "def get_dynamic_parameter_options(param_name, params, context):",
                     "    return ['default', 'advanced'] if param_name == 'config_name' else []",
@@ -200,8 +200,20 @@ class PluginServiceTests(unittest.TestCase):
             )
 
         self.assertTrue(schema["ok"])
-        param_group = next(group for group in schema["schema"]["form"]["groups"] if group["title"] == "插件参数")
-        fields = {field["key"]: field for field in param_group["fields"]}
+        group_titles = [group["title"] for group in schema["schema"]["form"]["groups"]]
+        self.assertIn("插件参数", group_titles)
+        self.assertIn("插件参数 / 输入", group_titles)
+        self.assertIn("高级参数", group_titles)
+        fields = {
+            field["key"]: field
+            for group in schema["schema"]["form"]["groups"]
+            for field in group["fields"]
+        }
+        input_group = next(group for group in schema["schema"]["form"]["groups"] if group["title"] == "插件参数 / 输入")
+        self.assertEqual([field["key"] for field in input_group["fields"]], ["params.table_name"])
+        advanced_group = next(group for group in schema["schema"]["form"]["groups"] if group["title"] == "高级参数")
+        self.assertTrue(advanced_group["advanced"])
+        self.assertEqual([field["key"] for field in advanced_group["fields"]], ["params.directory_path"])
         self.assertEqual(fields["params.table_name"]["type"], "table_select")
         self.assertEqual(fields["params.table_name"]["options_source"], {"type": "table_names"})
         self.assertEqual(fields["params.table_name"]["action"]["key"], "pick_table_name")
@@ -215,6 +227,10 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(fields["params.config_name"]["options_source"]["param_key"], "config_name")
         self.assertEqual(fields["params.directory_path"]["type"], "directory")
         self.assertEqual(fields["params.directory_path"]["action"]["key"], "browse_directory")
+        self.assertTrue(fields["params.directory_path"]["advanced"])
+        self.assertEqual(fields["params.directory_path"]["placeholder"], "选择插件目录")
+        self.assertEqual(fields["params.directory_path"]["warning"], "目录不存在时运行会失败")
+        self.assertEqual(fields["params.directory_path"]["invalid_value_text"], "请选择有效目录")
         self.assertEqual(fields["params.directory_path"]["visible_when"], {"field": "params.input_alias", "equals": "当前表"})
         self.assertEqual(fields["params.directory_path"]["enabled_when"], {"field": "params.config_name", "truthy": True})
         described_fields = {

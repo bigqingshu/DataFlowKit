@@ -741,6 +741,64 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(state["fields"]["target_field"]["issues"][0]["message"], "目标字段不存在")
         app.processEvents()
 
+    def test_config_form_consumes_plugin_ui_metadata(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        schema = {
+            "form": {
+                "groups": [
+                    {
+                        "title": "插件参数",
+                        "fields": [
+                            {
+                                "key": "params.mode",
+                                "config_path": ["params", "mode"],
+                                "label": "模式",
+                                "type": "select",
+                                "choices": [],
+                                "placeholder": "选择模式",
+                                "empty_text": "暂无模式",
+                                "warning": "模式会影响运行耗时",
+                                "invalid_value_text": "请选择有效模式",
+                                "advanced": True,
+                            },
+                            {
+                                "key": "params.path",
+                                "config_path": ["params", "path"],
+                                "label": "目录",
+                                "type": "text",
+                                "placeholder": "选择插件目录",
+                                "width_hint": "wide",
+                            },
+                        ],
+                    }
+                ]
+            }
+        }
+        node = {
+            "node_type_id": "plugin.demo",
+            "node_id": "n1",
+            "name": "Demo",
+            "enabled": True,
+            "node_version": "1.0.0",
+            "config": {"params": {"mode": "", "path": ""}},
+        }
+        form = NodeConfigForm(qt)
+        form.set_node(node, schema=schema)
+
+        state = form.describe_state()
+        mode_state = state["fields"]["params.mode"]
+        self.assertEqual(mode_state["placeholder"], "选择模式")
+        self.assertIn("警告：模式会影响运行耗时", mode_state["tooltip"])
+        self.assertIn("无效值提示：请选择有效模式", mode_state["tooltip"])
+        self.assertIn("高级参数", mode_state["tooltip"])
+        self.assertEqual(state["fields"]["params.path"]["placeholder"], "选择插件目录")
+        self.assertGreaterEqual(form.config_fields["params.path"]["editor"].minimumWidth(), 260)
+        app.processEvents()
+
     def test_config_form_exposes_schema_action_buttons(self):
         try:
             qt = qt_app.load_qt6()

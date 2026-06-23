@@ -554,6 +554,35 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
         match_joined = "\n".join(match_payload["sections"][0]["lines"])
         self.assertIn("动态显示", match_joined)
 
+    def test_field_help_payload_exposes_plugin_ui_metadata(self):
+        from workflow.node_ui_schema import build_field_help_payload
+
+        payload = build_field_help_payload("params.limit", {
+            "label": "数量",
+            "help": "限制处理条数。",
+            "warning": "数量过大时可能耗时较久",
+            "placeholder": "默认不限制",
+            "empty_text": "暂无候选",
+            "invalid_value_text": "请输入有效数字",
+            "advanced": True,
+            "min": 1,
+            "max": 99,
+            "step": 2,
+            "unit": "行",
+        })
+
+        joined = "\n".join(payload["sections"][0]["lines"])
+        self.assertIn("警告：数量过大时可能耗时较久", joined)
+        self.assertIn("占位提示：默认不限制", joined)
+        self.assertIn("无候选时提示：暂无候选", joined)
+        self.assertIn("无效值提示：请输入有效数字", joined)
+        self.assertIn("最小值：1", joined)
+        self.assertIn("单位：行", joined)
+        self.assertTrue(payload["ui"]["advanced"])
+        self.assertEqual(payload["ui"]["placeholder"], "默认不限制")
+        self.assertEqual(payload["ui"]["empty_text"], "暂无候选")
+        self.assertEqual(payload["ui"]["unit"], "行")
+
     def test_plan_reference_fields_expose_shared_help_guidance(self):
         from workflow.node_ui_schema import build_field_help_payload, get_node_ui_schema
 
