@@ -183,6 +183,67 @@ class WorkflowFacade:
             },
         }
 
+    def build_plugin_list_state(self, listed, *, show_status=True):
+        listed = copy.deepcopy(listed or {})
+        plugins = [item for item in (listed.get("plugins") or []) if isinstance(item, dict)]
+        errors = [item for item in (listed.get("errors") or []) if isinstance(item, dict)]
+        count = int(listed.get("count", len(plugins)) or 0)
+        external_only_count = int(listed.get("external_only_count", 0) or 0)
+        plugins_dir = str(listed.get("plugins_dir") or "")
+        status_parts = [f"插件刷新完成：已注册 {count} 个插件"]
+        if external_only_count:
+            status_parts.append(f"仅独立环境 {external_only_count} 个")
+        if errors:
+            status_parts.append(f"扫描错误 {len(errors)} 个")
+        status_message = "，".join(status_parts) + "。" if show_status else ""
+
+        lines = [f"已注册插件：{count} 个。"]
+        if plugins_dir:
+            lines.append(f"插件目录：{plugins_dir}")
+        if external_only_count:
+            lines.append(f"仅独立环境插件：{external_only_count} 个。")
+        if plugins:
+            lines.append("")
+            for item in plugins[:12]:
+                name = str(item.get("name") or item.get("display_name") or item.get("plugin_id") or "")
+                plugin_id = str(item.get("plugin_id") or "")
+                load_status = str(item.get("load_status") or "")
+                suffix = f" / {load_status}" if load_status else ""
+                lines.append(f"- {name} ({plugin_id}){suffix}")
+            if len(plugins) > 12:
+                lines.append(f"- ... 其余 {len(plugins) - 12} 个插件")
+
+        issues = []
+        for error in errors:
+            file_name = str(error.get("file") or error.get("path") or "插件")
+            message = str(error.get("error") or "插件扫描失败")
+            issues.append({
+                "severity": "warning",
+                "code": "plugin_scan_failed",
+                "path": str(error.get("path") or ""),
+                "message": f"{file_name}：{message}",
+            })
+
+        return {
+            "ok": not issues,
+            "state": {
+                "plugins": plugins,
+                "errors": errors,
+                "issues": issues,
+                "plugin_count": count,
+                "external_only_count": external_only_count,
+                "plugins_dir": plugins_dir,
+                "status_message": status_message,
+                "message_panel": self.build_message_panel_state(
+                    mode="warning" if issues else "info",
+                    title="插件",
+                    info_body="\n".join(lines),
+                    issues=issues,
+                    preferred_tab="issues" if issues else "info",
+                ).get("panel") or {},
+            },
+        }
+
     def load_plan_template(self, path, *, migrate=True, target_version=None):
         return self.plan_templates.load_template(
             path,
@@ -847,6 +908,7 @@ class WorkflowFacade:
         actions = {
             "add_node": {"enabled": not is_running},
             "refresh_catalog": {"enabled": not is_running},
+            "refresh_plugins": {"enabled": not is_running},
             "delete_nodes": {"enabled": has_selection and not is_running},
             "move_node_up": {"enabled": selected_index is not None and selected_index > 0 and not is_running},
             "move_node_down": {"enabled": selected_index is not None and selected_index < len(nodes) - 1 and not is_running},

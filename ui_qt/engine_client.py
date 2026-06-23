@@ -212,6 +212,9 @@ class QtHeadlessEngineClient:
     def build_template_list_state(self, listed, *, show_status=True):
         return self.facade.build_template_list_state(copy.deepcopy(listed), show_status=show_status)
 
+    def build_plugin_list_state(self, listed, *, show_status=True):
+        return self.facade.build_plugin_list_state(copy.deepcopy(listed), show_status=show_status)
+
     def start_job(self, job_action, plan, input_table=None, **options):
         return self.facade.start_workflow_job(
             job_action,

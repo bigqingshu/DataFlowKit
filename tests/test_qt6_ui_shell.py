@@ -181,6 +181,7 @@ class Qt6UiShellTests(unittest.TestCase):
                 ]),
                 encoding="utf-8",
             )
+            (Path(temp_dir) / "bad_plugin.py").write_text("raise RuntimeError('broken scan')", encoding="utf-8")
 
             client = QtHeadlessEngineClient()
             client.engine.plugins = PluginService(plugins_dir=temp_dir, app_dir=temp_dir)
@@ -221,6 +222,10 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertEqual(controller.node_detail_title_label.text(), "插件 / Demo")
             self.assertIn("插件 ID：demo", controller.node_detail_sections.toPlainText())
             self.assertIn("Demo plugin", detail["detail"]["description"])
+            controller.refresh_plugins()
+            self.assertIn("已注册插件：1 个", controller.info_text.toPlainText())
+            self.assertIn("bad_plugin.py", controller.issue_text.toPlainText())
+            self.assertEqual(controller.message_tabs.tabText(controller.message_tabs.currentIndex()), "问题")
             window.close()
             app.processEvents()
 
@@ -237,6 +242,7 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertFalse(idle_actions["actions"]["move_node_up"]["enabled"])
         self.assertFalse(idle_actions["actions"]["move_node_down"]["enabled"])
         self.assertTrue(idle_actions["actions"]["apply_node_config"]["enabled"])
+        self.assertTrue(idle_actions["actions"]["refresh_plugins"]["enabled"])
         self.assertFalse(idle_actions["actions"]["cancel_job"]["enabled"])
 
         running_actions = client.describe_workflow_actions(
@@ -246,6 +252,7 @@ class Qt6UiShellTests(unittest.TestCase):
         )
         self.assertFalse(running_actions["actions"]["delete_nodes"]["enabled"])
         self.assertFalse(running_actions["actions"]["execute_plan"]["enabled"])
+        self.assertFalse(running_actions["actions"]["refresh_plugins"]["enabled"])
         self.assertTrue(running_actions["actions"]["cancel_job"]["enabled"])
 
         start_progress = client.build_job_progress_state(

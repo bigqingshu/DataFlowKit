@@ -167,9 +167,12 @@ class QtWorkflowMainWindow:
         self.add_node_button.clicked.connect(lambda checked=False: self.add_selected_node_type())
         self.refresh_schema_button = qt.QtWidgets.QPushButton("刷新节点")
         self.refresh_schema_button.clicked.connect(lambda checked=False: self.refresh_catalog())
+        self.refresh_plugin_button = qt.QtWidgets.QPushButton("刷新插件")
+        self.refresh_plugin_button.clicked.connect(lambda checked=False: self.refresh_plugins())
         add_row.addWidget(self.node_type_combo, 1)
         add_row.addWidget(self.add_node_button)
         add_row.addWidget(self.refresh_schema_button)
+        add_row.addWidget(self.refresh_plugin_button)
 
         self.catalog_tree = qt.QtWidgets.QTreeWidget()
         self.catalog_tree.setHeaderHidden(True)
@@ -505,6 +508,28 @@ class QtWorkflowMainWindow:
                 category_item.addChild(child)
             category_item.setExpanded(True)
         self.show_selected_node_type_detail()
+
+    def refresh_plugins(self):
+        try:
+            listed = self.engine_client.list_plugins(refresh=True)
+            state = self.engine_client.build_plugin_list_state(listed).get("state") or {}
+        except Exception as exc:
+            state = {
+                "status_message": "插件刷新失败",
+                "message_panel": self.engine_client.build_message_panel_state(
+                    mode="error",
+                    title="插件刷新失败",
+                    body=str(exc),
+                    preferred_tab="issues",
+                ).get("panel") or {},
+            }
+        self.refresh_catalog()
+        panel = state.get("message_panel") or {}
+        if panel:
+            self._apply_message_panel(panel)
+        status_message = str(state.get("status_message") or "")
+        if status_message:
+            self.status_bar.showMessage(status_message)
 
     def refresh_template_list(self, show_status=True):
         self.plan_template_combo.clear()
@@ -1727,6 +1752,7 @@ class QtWorkflowMainWindow:
             "apply_node_config": self.apply_config_button,
             "add_node": self.add_node_button,
             "refresh_catalog": self.refresh_schema_button,
+            "refresh_plugins": self.refresh_plugin_button,
         }
         for action_key, button in button_map.items():
             if button is None:
