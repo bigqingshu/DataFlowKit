@@ -152,12 +152,15 @@ class PluginServiceTests(unittest.TestCase):
             plugin.write_text(
                 "\n".join([
                     "PLUGIN_INFO = {'id': 'extended', 'name': 'Extended', 'api_version': '1.0'}",
+                    "SETTINGS_FILE = 'extended_settings.json'",
                     "PARAMETER_SCHEMA = [",
                     "    {'name': 'table_name', 'label': '数据表', 'type': 'table_select', 'default': 'orders'},",
                     "    {'name': 'input_alias', 'label': '输入表', 'type': 'input_table_select', 'default': '当前表'},",
                     "    {'name': 'config_name', 'label': '配置', 'type': 'dynamic_select', 'default': 'default', 'allow_custom': True},",
                     "    {'name': 'directory_path', 'label': '目录', 'type': 'folder_path', 'default': ''},",
                     "]",
+                    "def get_dynamic_parameter_options(param_name, params, context):",
+                    "    return ['default', 'advanced'] if param_name == 'config_name' else []",
                     "def run(input_data, params, context):",
                     "    return {'ok': True, 'output': input_data}",
                 ]),
@@ -165,6 +168,10 @@ class PluginServiceTests(unittest.TestCase):
             )
             service = PluginService(plugins_dir=temp_dir, app_dir=temp_dir)
             schema = service.get_plugin_schema("plugin.extended")
+            described = service.describe_plugin_config(
+                "plugin.extended",
+                config={"plugin_id": "extended", "params": {"config_name": "default"}},
+            )
 
         self.assertTrue(schema["ok"])
         param_group = next(group for group in schema["schema"]["form"]["groups"] if group["title"] == "插件参数")
@@ -180,6 +187,14 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(fields["params.config_name"]["options_source"]["param_key"], "config_name")
         self.assertEqual(fields["params.directory_path"]["type"], "directory")
         self.assertEqual(fields["params.directory_path"]["action"]["key"], "browse_directory")
+        described_fields = {
+            field["key"]: field
+            for group in described["node_ui_schema"]["form"]["groups"]
+            for field in group["fields"]
+        }
+        self.assertEqual(described_fields["params.config_name"]["choices"], ["default", "advanced"])
+        self.assertEqual(described["resources"][0]["file"], "extended_settings.json")
+        self.assertEqual(described["views"][1]["kind"], "resource_list")
 
     def test_headless_catalog_and_plan_command_include_plugins(self):
         with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:

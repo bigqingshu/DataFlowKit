@@ -318,9 +318,24 @@ class PluginService:
         runtime_context = context if isinstance(context, dict) else {}
         self._ensure_runtime_context_snapshot(runtime_context)
         input_data = _make_plugin_service_input_data(key, input_table, runtime_context)
+        adapter = _PluginServiceExternalAdapter(self)
+        plugin_context = _make_plugin_service_context(
+            key,
+            config=current_config,
+            context=runtime_context,
+            execute_actions=False,
+        )
+        plugin_context.update({
+            "input_tables": input_data.get("tables", {}) or {},
+            "plugin_input_table_specs": copy.deepcopy(current_config.get("input_tables", [])),
+            "plugin_data_dir": adapter.get_plugin_data_dir(key),
+            "log_dir": adapter.get_plugin_log_dir(),
+            "db_path": adapter.get_workflow_db_path(runtime_context),
+        })
 
         resources = []
         module = item.get("module")
+        _enrich_plugin_dynamic_choices(schema, module, params, plugin_context)
         settings_file = str(getattr(module, "SETTINGS_FILE", "") or "").strip()
         if settings_file:
             resources.append({
@@ -364,6 +379,7 @@ class PluginService:
             "plugin": plugin,
             "config": current_config,
             "params": params,
+            "node_ui_schema": schema,
             "input_data": {
                 "headers": list(input_data.get("headers", []) or []),
                 "row_count": len(input_data.get("rows", []) or []),
@@ -733,6 +749,32 @@ def _plugin_failure(code, message, path):
         "ok": False,
         "issues": [make_issue("error", code, message, path=path, source="PluginService")],
     }
+
+
+def _enrich_plugin_dynamic_choices(schema, module, params, context):
+    provider = getattr(module, "get_dynamic_parameter_options", None)
+    if not callable(provider):
+        return
+    for group in ((schema.get("form") or {}).get("groups") or []):
+        for field in group.get("fields") or []:
+            if not isinstance(field, dict):
+                continue
+            options_source = field.get("options_source") or {}
+            if str(options_source.get("type") or "") != "plugin_dynamic_choices":
+                continue
+            param_key = str(field.get("param_key") or options_source.get("param_key") or "").strip()
+            if not param_key:
+                continue
+            try:
+                choices = provider(param_key, copy.deepcopy(params or {}), copy.deepcopy(context or {}))
+            except Exception as exc:
+                field["dynamic_choice_error"] = str(exc)
+                choices = []
+            values = [str(item) for item in (choices or []) if str(item).strip()]
+            field["choices"] = values
+            source = dict(options_source)
+            source["choices"] = values
+            field["options_source"] = source
 
 
 def _plugin_config_form_groups(default_config, parameter_schema):

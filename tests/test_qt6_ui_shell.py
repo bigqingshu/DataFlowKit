@@ -175,7 +175,10 @@ class Qt6UiShellTests(unittest.TestCase):
                     "PARAMETER_SCHEMA = [",
                     "    {'name': 'field', 'label': '字段', 'type': 'field_select', 'default': 'A', 'required': True},",
                     "    {'name': 'limit', 'label': '数量', 'type': 'int', 'default': 3},",
+                    "    {'name': 'mode', 'label': '模式', 'type': 'dynamic_select', 'default': 'fast'},",
                     "]",
+                    "def get_dynamic_parameter_options(param_name, params, context):",
+                    "    return ['fast', 'safe'] if param_name == 'mode' else []",
                     "def open_config_window(parent, current_params, context):",
                     "    params = dict(current_params)",
                     "    params['limit'] = 11",
@@ -212,11 +215,15 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertIn("params", controller.config_form.config_fields)
             self.assertIn("params.field", controller.config_form.config_fields)
             self.assertIn("params.limit", controller.config_form.config_fields)
+            self.assertIn("params.mode", controller.config_form.config_fields)
             self.assertFalse(controller.legacy_plugin_config_button.isHidden())
             field_editor = controller.config_form.config_fields["params.field"]["editor"]
             field_choices = [field_editor.itemText(index) for index in range(field_editor.count())]
             self.assertEqual(field_editor.currentText(), "A")
             self.assertIn("source_file", field_choices)
+            mode_editor = controller.config_form.config_fields["params.mode"]["editor"]
+            mode_choices = [mode_editor.itemText(index) for index in range(mode_editor.count())]
+            self.assertEqual(mode_choices, ["fast", "safe"])
             limit_editor = controller.config_form.config_fields["params.limit"]["editor"]
             self.assertEqual(limit_editor.text(), "3")
             limit_editor.setText("5")
@@ -227,6 +234,8 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertEqual(controller.node_detail_title_label.text(), "插件 / Demo")
             self.assertIn("插件 ID：demo", controller.node_detail_sections.toPlainText())
             self.assertIn("旧版设置窗口", controller.node_detail_sections.toPlainText())
+            self.assertIn("配置协议", controller.node_detail_sections.toPlainText())
+            self.assertIn("兼容动作：打开旧版插件设置", controller.node_detail_sections.toPlainText())
             self.assertIn("Demo plugin", detail["detail"]["description"])
             controller.open_legacy_plugin_config()
             self.assertEqual(controller.current_plan["nodes"][-1]["config"]["params"]["limit"], 11)

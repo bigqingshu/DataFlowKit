@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import html
 from pathlib import Path
 
 from ui_qt.config_form import NodeConfigForm
@@ -688,6 +689,10 @@ class QtWorkflowMainWindow:
             return
         node_type_id = self._node_type_id_for_node(node)
         schema = panel_state.get("selected_schema") or self.node_schema_by_id.get(node_type_id, {})
+        plugin_config_description = self._describe_plugin_config_for_node(node_type_id, node)
+        if plugin_config_description.get("ok") and isinstance(plugin_config_description.get("node_ui_schema"), dict):
+            schema = plugin_config_description["node_ui_schema"]
+            self.node_schema_by_id[node_type_id] = schema
         display = schema.get("display_name") or node.get("type") or node_type_id
         self.config_header_label.setText(f"节点类型：{display}    节点名称：{node.get('name', '')}")
         table_context = self._table_context()
@@ -701,7 +706,43 @@ class QtWorkflowMainWindow:
         )
         self._update_legacy_plugin_config_button(schema)
         self.show_node_detail(node_type_id)
+        self._append_plugin_config_detail(plugin_config_description)
         self.refresh_action_states()
+
+    def _describe_plugin_config_for_node(self, node_type_id, node):
+        if not str(node_type_id or "").startswith("plugin."):
+            return {}
+        try:
+            return self.engine_client.describe_plugin_config(
+                node_type_id,
+                config=copy.deepcopy((node or {}).get("config") or {}),
+                input_table=self._input_table_payload(),
+                context={
+                    "db_path": self.output_db_path_edit.text().strip(),
+                    "workflow_name": self.current_plan.get("plan_name", ""),
+                },
+            )
+        except Exception:
+            return {}
+
+    def _append_plugin_config_detail(self, described):
+        if not described.get("ok"):
+            return
+        lines = []
+        views = [item for item in (described.get("views") or []) if isinstance(item, dict)]
+        resources = [item for item in (described.get("resources") or []) if isinstance(item, dict)]
+        actions = [item for item in (described.get("actions") or []) if isinstance(item, dict)]
+        if views:
+            lines.append("配置视图：" + "、".join(str(item.get("title") or item.get("view_id") or "") for item in views[:6]))
+        if resources:
+            lines.append("配置资源：" + "、".join(str(item.get("label") or item.get("resource_id") or "") for item in resources[:6]))
+        if actions:
+            lines.append("兼容动作：" + "、".join(str(item.get("label") or item.get("action_id") or "") for item in actions[:6]))
+        if not lines:
+            return
+        body = "<br>".join(html.escape(line) for line in lines if line)
+        if body:
+            self.node_detail_sections.append(f"<p><b>配置协议</b><br>{body}</p>")
 
     def _update_legacy_plugin_config_button(self, schema):
         plugin = schema.get("plugin") if isinstance(schema, dict) and isinstance(schema.get("plugin"), dict) else {}
