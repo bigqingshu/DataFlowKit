@@ -331,6 +331,26 @@ class StdioWorker:
                 context=payload.get("context"),
                 plugins_dir=payload.get("plugins_dir"),
             )
+        if action == "validate_plugin_config_patch":
+            plugin_id = payload.get("plugin_id") or payload.get("node_type_id")
+            return self.engine.validate_plugin_config_patch(
+                plugin_id,
+                patch=payload.get("patch"),
+                config=payload.get("config"),
+                input_table=payload.get("input_table"),
+                context=payload.get("context"),
+                plugins_dir=payload.get("plugins_dir"),
+            )
+        if action == "apply_plugin_config_patch":
+            plugin_id = payload.get("plugin_id") or payload.get("node_type_id")
+            return self.engine.apply_plugin_config_patch(
+                plugin_id,
+                patch=payload.get("patch"),
+                config=payload.get("config"),
+                input_table=payload.get("input_table"),
+                context=payload.get("context"),
+                plugins_dir=payload.get("plugins_dir"),
+            )
         if action == "make_plugin_default_config":
             plugin_id = payload.get("plugin_id") or payload.get("node_type_id")
             return self.engine.make_plugin_default_config(

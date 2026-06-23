@@ -82,6 +82,32 @@ def write_external_plugin(root, *, with_db_request=False):
     return plugin
 
 
+def write_patch_plugin(root):
+    plugin = Path(root) / "patch_plugin.py"
+    plugin.write_text(
+        "\n".join([
+            "PLUGIN_INFO = {'id': 'patch_demo', 'name': 'Patch Demo', 'api_version': '1.0'}",
+            "PARAMETER_SCHEMA = [{'name': 'mode', 'label': '模式', 'type': 'text', 'default': 'old'}]",
+            "def describe_config(params, context):",
+            "    return {'schema_version': 'patch_demo.config.v1', 'summary': {'mode': params.get('mode', '')}}",
+            "def validate_config_patch(params, context, patch):",
+            "    if patch.get('operation') != 'set_param':",
+            "        return {'ok': False, 'message': 'unsupported operation'}",
+            "    if not patch.get('key'):",
+            "        return False, 'missing key'",
+            "    return {'ok': True, 'message': 'patch ok'}",
+            "def apply_config_patch(params, context, patch):",
+            "    params = dict(params)",
+            "    params[patch.get('key')] = patch.get('value')",
+            "    return {'ok': True, 'params': params, 'changed': True, 'message': 'patched'}",
+            "def run(input_data, params, context):",
+            "    return {'ok': True, 'output': input_data}",
+        ]),
+        encoding="utf-8",
+    )
+    return plugin
+
+
 class PluginServiceTests(unittest.TestCase):
     def test_lists_plugins_and_builds_json_safe_schema(self):
         with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:
@@ -226,6 +252,29 @@ class PluginServiceTests(unittest.TestCase):
         self.assertIn("demo.edit", [action["action_id"] for action in described["actions"]])
         self.assertIn("demo warning", described["warnings"])
 
+    def test_plugin_config_patch_validates_applies_and_refreshes_description(self):
+        with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:
+            write_patch_plugin(temp_dir)
+            service = PluginService(plugins_dir=temp_dir, app_dir=temp_dir)
+            config = {"plugin_id": "patch_demo", "params": {"mode": "old"}}
+            patch = {"operation": "set_param", "key": "mode", "value": "new"}
+            validation = service.validate_plugin_config_patch("plugin.patch_demo", config=config, patch=patch)
+            applied = service.apply_plugin_config_patch("plugin.patch_demo", config=config, patch=patch)
+            invalid = service.validate_plugin_config_patch(
+                "plugin.patch_demo",
+                config=config,
+                patch={"operation": "delete_everything"},
+            )
+
+        self.assertTrue(validation["ok"])
+        self.assertEqual(validation["patch"], patch)
+        self.assertTrue(applied["ok"])
+        self.assertTrue(applied["changed"])
+        self.assertEqual(applied["config"]["params"]["mode"], "new")
+        self.assertEqual(applied["description"]["plugin_extension"]["summary"]["mode"], "new")
+        self.assertFalse(invalid["ok"])
+        self.assertEqual(invalid["issues"][0]["code"], "plugin_config_patch_invalid")
+
     def test_headless_catalog_and_plan_command_include_plugins(self):
         with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:
             write_demo_plugin(temp_dir)
@@ -300,6 +349,32 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(default_config["result"]["config"]["params"]["field"], "A")
         self.assertTrue(run["ok"])
         self.assertEqual(run["result"]["result"]["headers"], ["A"])
+
+    def test_stdio_worker_exposes_plugin_config_patch_actions(self):
+        with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:
+            write_patch_plugin(temp_dir)
+            worker = StdioWorker()
+            config = {"plugin_id": "patch_demo", "params": {"mode": "old"}}
+            patch = {"operation": "set_param", "key": "mode", "value": "stdio"}
+
+            validation = worker.handle_request(request("validate_plugin_config_patch", {
+                "plugin_id": "plugin.patch_demo",
+                "plugins_dir": temp_dir,
+                "config": config,
+                "patch": patch,
+            }))
+            applied = worker.handle_request(request("apply_plugin_config_patch", {
+                "plugin_id": "plugin.patch_demo",
+                "plugins_dir": temp_dir,
+                "config": config,
+                "patch": patch,
+            }))
+
+        self.assertTrue(validation["ok"])
+        self.assertTrue(validation["result"]["ok"])
+        self.assertTrue(applied["ok"])
+        self.assertEqual(applied["result"]["config"]["params"]["mode"], "stdio")
+        self.assertEqual(applied["result"]["description"]["plugin_extension"]["summary"]["mode"], "stdio")
 
     def test_external_process_plugin_runs_through_service(self):
         with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:

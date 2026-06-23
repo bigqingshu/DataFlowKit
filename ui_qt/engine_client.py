@@ -344,6 +344,24 @@ class QtHeadlessEngineClient:
             context=copy.deepcopy(context),
         )
 
+    def validate_plugin_config_patch(self, plugin_id, *, patch=None, config=None, input_table=None, context=None):
+        return self.engine.validate_plugin_config_patch(
+            plugin_id,
+            patch=copy.deepcopy(patch),
+            config=copy.deepcopy(config),
+            input_table=copy.deepcopy(input_table),
+            context=copy.deepcopy(context),
+        )
+
+    def apply_plugin_config_patch(self, plugin_id, *, patch=None, config=None, input_table=None, context=None):
+        return self.engine.apply_plugin_config_patch(
+            plugin_id,
+            patch=copy.deepcopy(patch),
+            config=copy.deepcopy(config),
+            input_table=copy.deepcopy(input_table),
+            context=copy.deepcopy(context),
+        )
+
     def make_plugin_default_config(self, plugin_id):
         return self.engine.make_plugin_default_config(plugin_id)
 

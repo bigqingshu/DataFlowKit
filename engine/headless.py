@@ -341,6 +341,12 @@ class HeadlessWorkflowEngine:
     def describe_plugin_config(self, plugin_id, **kwargs):
         return self.plugins.describe_plugin_config(plugin_id, **kwargs)
 
+    def validate_plugin_config_patch(self, plugin_id, **kwargs):
+        return self.plugins.validate_plugin_config_patch(plugin_id, **kwargs)
+
+    def apply_plugin_config_patch(self, plugin_id, **kwargs):
+        return self.plugins.apply_plugin_config_patch(plugin_id, **kwargs)
+
     def make_plugin_default_config(self, plugin_id, **kwargs):
         return {
             "ok": True,

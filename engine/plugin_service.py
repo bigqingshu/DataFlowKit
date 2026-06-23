@@ -79,7 +79,7 @@ class PluginService:
             return {"ok": False, "plugin": {}, "schema": {}, "issues": [issue]}
         item = self.registry[key]
         plugin = self._public_plugin(key, item)
-        default_config = self.make_plugin_default_config(key)
+        default_config = self.make_plugin_default_config(key, plugins_dir=plugins_dir)
         schema = {
             "schema_version": "2.0",
             "node_type_id": plugin["node_type_id"],
@@ -303,6 +303,118 @@ class PluginService:
             "issues": [],
         }
 
+    def validate_plugin_config_patch(self, plugin_id, *, patch=None, config=None, input_table=None, context=None, plugins_dir=None):
+        schema_result = self.get_plugin_schema(plugin_id, plugins_dir=plugins_dir)
+        if not schema_result.get("ok"):
+            return schema_result
+        key = self._resolve_plugin_key(plugin_id)
+        item = self.registry.get(key, {})
+        module = item.get("module")
+        validator = getattr(module, "validate_config_patch", None)
+        if not callable(validator):
+            return _plugin_failure(
+                "plugin_config_patch_unsupported",
+                f"插件未提供配置修改校验接口：{key}",
+                "/patch",
+            )
+        current_config = copy.deepcopy(config or schema_result.get("default_config") or {})
+        if not isinstance(current_config, dict):
+            current_config = copy.deepcopy(schema_result.get("default_config") or {})
+        params = copy.deepcopy(current_config.get("params", {}) or {})
+        runtime_context = context if isinstance(context, dict) else {}
+        _input_data, plugin_context = self._make_plugin_config_probe_context(
+            key,
+            current_config,
+            input_table,
+            runtime_context,
+        )
+        patch_payload = copy.deepcopy(patch or {})
+        try:
+            result = validator(copy.deepcopy(params), copy.deepcopy(plugin_context), patch_payload)
+        except Exception as exc:
+            return _plugin_failure("plugin_config_patch_validation_error", str(exc), "/patch")
+        return _normalize_plugin_config_patch_validation_result(key, result, patch_payload)
+
+    def apply_plugin_config_patch(self, plugin_id, *, patch=None, config=None, input_table=None, context=None, plugins_dir=None):
+        schema_result = self.get_plugin_schema(plugin_id, plugins_dir=plugins_dir)
+        if not schema_result.get("ok"):
+            return schema_result
+        key = self._resolve_plugin_key(plugin_id)
+        item = self.registry.get(key, {})
+        module = item.get("module")
+        applier = getattr(module, "apply_config_patch", None)
+        if not callable(applier):
+            return _plugin_failure(
+                "plugin_config_patch_unsupported",
+                f"插件未提供配置修改写回接口：{key}",
+                "/patch",
+            )
+        validation = self.validate_plugin_config_patch(
+            key,
+            patch=patch,
+            config=config,
+            input_table=input_table,
+            context=context,
+            plugins_dir=plugins_dir,
+        )
+        if not validation.get("ok"):
+            return validation
+        current_config = copy.deepcopy(config or schema_result.get("default_config") or {})
+        if not isinstance(current_config, dict):
+            current_config = copy.deepcopy(schema_result.get("default_config") or {})
+        params = copy.deepcopy(current_config.get("params", {}) or {})
+        runtime_context = context if isinstance(context, dict) else {}
+        _input_data, plugin_context = self._make_plugin_config_probe_context(
+            key,
+            current_config,
+            input_table,
+            runtime_context,
+        )
+        patch_payload = copy.deepcopy(patch or {})
+        try:
+            result = applier(copy.deepcopy(params), copy.deepcopy(plugin_context), patch_payload)
+        except Exception as exc:
+            return _plugin_failure("plugin_config_patch_apply_error", str(exc), "/patch")
+        if not isinstance(result, dict):
+            return _plugin_failure(
+                "plugin_config_patch_apply_invalid",
+                "插件配置写回接口必须返回 dict。",
+                "/patch",
+            )
+        if result.get("ok") is False:
+            if result.get("issues"):
+                payload = copy.deepcopy(result)
+                payload.setdefault("plugin_id", key)
+                return payload
+            return _plugin_failure(
+                "plugin_config_patch_apply_failed",
+                str(result.get("message") or "插件配置写回失败"),
+                "/patch",
+            )
+        updated_config = copy.deepcopy(result.get("config") or current_config)
+        updated_params = copy.deepcopy(result.get("params") if "params" in result else updated_config.get("params", params))
+        if not isinstance(updated_config, dict):
+            updated_config = copy.deepcopy(current_config)
+        updated_config["params"] = copy.deepcopy(updated_params or {})
+        described = self.describe_plugin_config(
+            key,
+            config=updated_config,
+            input_table=input_table,
+            context=runtime_context,
+            plugins_dir=plugins_dir,
+        )
+        return {
+            "ok": True,
+            "plugin_id": key,
+            "patch": patch_payload,
+            "changed": bool(result.get("changed", updated_config != current_config)),
+            "message": str(result.get("message") or "插件配置已更新"),
+            "params": copy.deepcopy(updated_config.get("params", {}) or {}),
+            "config": updated_config,
+            "description": described,
+            "issues": copy.deepcopy(result.get("issues") or []),
+        }
+
     def describe_plugin_config(self, plugin_id, *, config=None, input_table=None, context=None, plugins_dir=None):
         schema_result = self.get_plugin_schema(plugin_id, plugins_dir=plugins_dir)
         if not schema_result.get("ok"):
@@ -316,22 +428,12 @@ class PluginService:
             current_config = copy.deepcopy(schema_result.get("default_config") or {})
         params = copy.deepcopy(current_config.get("params", {}) or {})
         runtime_context = context if isinstance(context, dict) else {}
-        self._ensure_runtime_context_snapshot(runtime_context)
-        input_data = _make_plugin_service_input_data(key, input_table, runtime_context)
-        adapter = _PluginServiceExternalAdapter(self)
-        plugin_context = _make_plugin_service_context(
+        input_data, plugin_context = self._make_plugin_config_probe_context(
             key,
-            config=current_config,
-            context=runtime_context,
-            execute_actions=False,
+            current_config,
+            input_table,
+            runtime_context,
         )
-        plugin_context.update({
-            "input_tables": input_data.get("tables", {}) or {},
-            "plugin_input_table_specs": copy.deepcopy(current_config.get("input_tables", [])),
-            "plugin_data_dir": adapter.get_plugin_data_dir(key),
-            "log_dir": adapter.get_plugin_log_dir(),
-            "db_path": adapter.get_workflow_db_path(runtime_context),
-        })
 
         resources = []
         module = item.get("module")
@@ -396,6 +498,25 @@ class PluginService:
             "issues": copy.deepcopy(plugin_extension.get("issues") or []),
             "plugin_extension": plugin_extension,
         }
+
+    def _make_plugin_config_probe_context(self, key, current_config, input_table, runtime_context):
+        self._ensure_runtime_context_snapshot(runtime_context)
+        input_data = _make_plugin_service_input_data(key, input_table, runtime_context)
+        adapter = _PluginServiceExternalAdapter(self)
+        plugin_context = _make_plugin_service_context(
+            key,
+            config=current_config,
+            context=runtime_context,
+            execute_actions=False,
+        )
+        plugin_context.update({
+            "input_tables": input_data.get("tables", {}) or {},
+            "plugin_input_table_specs": copy.deepcopy(current_config.get("input_tables", [])),
+            "plugin_data_dir": adapter.get_plugin_data_dir(key),
+            "log_dir": adapter.get_plugin_log_dir(),
+            "db_path": adapter.get_workflow_db_path(runtime_context),
+        })
+        return input_data, plugin_context
 
     def _ensure_runtime_context_snapshot(self, context):
         if not isinstance(context, dict):
@@ -804,6 +925,38 @@ def _describe_plugin_config_extension(module, params, context):
     if not isinstance(result, dict):
         return {}
     return copy.deepcopy(result)
+
+
+def _normalize_plugin_config_patch_validation_result(plugin_id, result, patch):
+    if isinstance(result, dict):
+        payload = copy.deepcopy(result)
+        if payload.get("ok") is False:
+            if payload.get("issues"):
+                payload.setdefault("plugin_id", plugin_id)
+                return payload
+            return _plugin_failure(
+                "plugin_config_patch_invalid",
+                str(payload.get("message") or "插件配置修改校验失败"),
+                "/patch",
+            )
+        payload["ok"] = True
+        payload.setdefault("plugin_id", plugin_id)
+        payload.setdefault("patch", copy.deepcopy(patch or {}))
+        payload.setdefault("issues", [])
+        return payload
+    if isinstance(result, tuple):
+        ok = bool(result[0]) if result else True
+        message = str(result[1]) if len(result) > 1 else ""
+        if not ok:
+            return _plugin_failure("plugin_config_patch_invalid", message or "插件配置修改校验失败", "/patch")
+    elif result is False:
+        return _plugin_failure("plugin_config_patch_invalid", "插件配置修改校验失败", "/patch")
+    return {
+        "ok": True,
+        "plugin_id": plugin_id,
+        "patch": copy.deepcopy(patch or {}),
+        "issues": [],
+    }
 
 
 def _merge_plugin_config_items(base, extra, key):
