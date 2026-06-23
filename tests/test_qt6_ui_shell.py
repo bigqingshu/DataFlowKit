@@ -205,6 +205,19 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertEqual(plugin_node["config"]["params"]["limit"], 3)
             self.assertIn("plugin_id", controller.config_form.config_fields)
             self.assertIn("params", controller.config_form.config_fields)
+            self.assertIn("params.field", controller.config_form.config_fields)
+            self.assertIn("params.limit", controller.config_form.config_fields)
+            field_editor = controller.config_form.config_fields["params.field"]["editor"]
+            field_choices = [field_editor.itemText(index) for index in range(field_editor.count())]
+            self.assertEqual(field_editor.currentText(), "A")
+            self.assertIn("source_file", field_choices)
+            limit_editor = controller.config_form.config_fields["params.limit"]["editor"]
+            self.assertEqual(limit_editor.text(), "3")
+            limit_editor.setText("5")
+            converted_node = controller.config_form.to_node()
+            self.assertEqual(converted_node["config"]["params"]["field"], "A")
+            self.assertEqual(converted_node["config"]["params"]["limit"], 5)
+            self.assertNotIn("params.limit", converted_node["config"])
             self.assertEqual(controller.node_detail_title_label.text(), "插件 / Demo")
             self.assertIn("插件 ID：demo", controller.node_detail_sections.toPlainText())
             self.assertIn("Demo plugin", detail["detail"]["description"])

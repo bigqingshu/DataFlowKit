@@ -101,6 +101,13 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(schema["schema"]["node_type_id"], "plugin.demo")
         self.assertEqual(schema["schema"]["display_name"], "插件 / Demo")
         self.assertEqual(schema["schema"]["parameters"][0]["name"], "field")
+        plugin_param_group = next(group for group in schema["schema"]["form"]["groups"] if group["title"] == "插件参数")
+        plugin_param_fields = {field["key"]: field for field in plugin_param_group["fields"]}
+        self.assertEqual(plugin_param_fields["params.field"]["config_path"], ["params", "field"])
+        self.assertEqual(plugin_param_fields["params.field"]["options_source"], {"type": "preview_headers"})
+        self.assertEqual(plugin_param_fields["params.field"]["action"]["key"], "pick_preview_header")
+        self.assertEqual(plugin_param_fields["params.limit"]["config_path"], ["params", "limit"])
+        self.assertEqual(plugin_param_fields["params.limit"]["type"], "number")
         self.assertEqual(default_config["params"], {"field": "A", "limit": 3})
         self.assertTrue(default_config["external_env_dir"].endswith(os.path.join("plugin_envs", "demo")))
         self.assertEqual(node["node_type_id"], "plugin.demo")

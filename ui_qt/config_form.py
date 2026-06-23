@@ -58,6 +58,9 @@ def coerce_form_value(kind, text, field_name=""):
     return "" if text is None else str(text)
 
 
+CONFIG_VALUE_MISSING = object()
+
+
 def coerce_multi_select_value(value):
     if isinstance(value, list):
         return [str(item) for item in value if str(item).strip()]
@@ -200,35 +203,12 @@ class NodeConfigForm:
         node["enabled"] = bool(self.node_fields["enabled"].isChecked())
         node["node_version"] = self.node_fields["node_version"].text().strip() or "1.0.0"
 
-        config = {}
+        source_config = self.node.get("config", {}) or {}
+        config = copy.deepcopy(source_config) if isinstance(source_config, dict) else {}
         for key, field in self.config_fields.items():
-            kind = field["kind"]
-            editor = field["editor"]
-            if kind == "bool":
-                config[key] = bool(editor.isChecked())
-            elif kind == "field_multi_select":
-                config[key] = list(getattr(editor, "multi_select_value", []))
-            elif kind == "choice":
-                config[key] = str(editor.currentText())
-            elif kind == "structured_list":
-                config[key] = self._structured_list_value(field)
-                if key == "join_rules":
-                    config[key] = [
-                        filter_join_rule_from_row((
-                            item.get("left", ""),
-                            item.get("op", ""),
-                            item.get("right_table", ""),
-                            item.get("right", ""),
-                        ))
-                        for item in (config[key] or [])
-                        if isinstance(item, dict)
-                    ]
-            elif kind == "long_text":
-                config[key] = str(editor.toPlainText())
-            elif kind == "json":
-                config[key] = coerce_form_value(kind, editor.toPlainText(), key)
-            else:
-                config[key] = coerce_form_value(kind, editor.text(), key)
+            value = self._field_runtime_value(key, field)
+            path = self._field_config_path(field.get("schema") or {}, key)
+            self._set_config_path(config, path, value)
         node["config"] = config
         return node
 
@@ -304,9 +284,9 @@ class NodeConfigForm:
                 if not isinstance(field_spec, dict):
                     continue
                 key = field_spec.get("key")
-                if key in config:
+                if self._field_value_exists(config, field_spec, key):
                     field_specs.append(field_spec)
-                    used.add(key)
+                    self._mark_used_config_path(used, field_spec, key)
             if field_specs:
                 groups.append(self._build_config_group(group_spec.get("title", "参数"), config, field_specs))
 
@@ -321,14 +301,86 @@ class NodeConfigForm:
         for item in fields:
             field_schema = item if isinstance(item, dict) else {}
             key = field_schema.get("key") if field_schema else item
-            if key not in config:
+            value = self._config_value_for_field(config, field_schema, key)
+            if value is CONFIG_VALUE_MISSING:
                 continue
-            value = config[key]
             editor = self._build_config_editor(key, value, field_schema=field_schema)
             label = self.qt.QtWidgets.QLabel(field_schema.get("label") or config_field_label(key))
             form.addRow(label, editor)
             self.config_fields[key]["label"] = label
         return group
+
+    def _field_config_path(self, field_schema, key):
+        path = (field_schema or {}).get("config_path")
+        if isinstance(path, str):
+            parts = [part.strip() for part in path.split(".") if part.strip()]
+            if parts:
+                return parts
+        if isinstance(path, (list, tuple)):
+            parts = [str(part).strip() for part in path if str(part).strip()]
+            if parts:
+                return parts
+        return [str(key or "")]
+
+    def _config_value_for_field(self, config, field_schema, key):
+        path = self._field_config_path(field_schema, key)
+        current = config if isinstance(config, dict) else {}
+        for part in path:
+            if not isinstance(current, dict) or part not in current:
+                if isinstance(field_schema, dict) and "default" in field_schema:
+                    return copy.deepcopy(field_schema.get("default"))
+                return CONFIG_VALUE_MISSING
+            current = current.get(part)
+        return copy.deepcopy(current)
+
+    def _field_value_exists(self, config, field_schema, key):
+        return self._config_value_for_field(config, field_schema, key) is not CONFIG_VALUE_MISSING
+
+    def _mark_used_config_path(self, used, field_schema, key):
+        path = self._field_config_path(field_schema, key)
+        if path:
+            used.add(path[0])
+        if key:
+            used.add(str(key))
+
+    def _set_config_path(self, config, path, value):
+        if not path:
+            return
+        cursor = config
+        for part in path[:-1]:
+            if not isinstance(cursor.get(part), dict):
+                cursor[part] = {}
+            cursor = cursor[part]
+        cursor[path[-1]] = value
+
+    def _field_runtime_value(self, key, field):
+        kind = field["kind"]
+        editor = field["editor"]
+        if kind == "bool":
+            return bool(editor.isChecked())
+        if kind == "field_multi_select":
+            return list(getattr(editor, "multi_select_value", []))
+        if kind == "choice":
+            return str(editor.currentText())
+        if kind == "structured_list":
+            value = self._structured_list_value(field)
+            if key == "join_rules":
+                return [
+                    filter_join_rule_from_row((
+                        item.get("left", ""),
+                        item.get("op", ""),
+                        item.get("right_table", ""),
+                        item.get("right", ""),
+                    ))
+                    for item in (value or [])
+                    if isinstance(item, dict)
+                ]
+            return value
+        if kind == "long_text":
+            return str(editor.toPlainText())
+        if kind == "json":
+            return coerce_form_value(kind, editor.toPlainText(), key)
+        return coerce_form_value(kind, editor.text(), key)
 
     def _build_config_editor(self, key, value, field_schema=None):
         field_schema = dict(field_schema or {})
@@ -351,10 +403,12 @@ class NodeConfigForm:
         else:
             kind = value_kind(value)
         self.config_fields[key] = {
+            "key": key,
             "kind": kind,
             "editor": None,
             "editor_container": None,
             "schema": field_schema,
+            "config_path": self._field_config_path(field_schema, key),
             "visible_when": field_schema.get("visible_when"),
             "enabled_when": field_schema.get("enabled_when"),
             "depends_on": list(field_schema.get("depends_on") or []),
@@ -1038,8 +1092,7 @@ class NodeConfigForm:
         issue_map = {}
         for issue in self.validation_issues or []:
             path = str((issue or {}).get("path") or "")
-            field_key = path.split(".")[-1] if path else ""
-            if field_key:
+            for field_key in self._validation_field_keys(path):
                 issue_map.setdefault(field_key, []).append(copy.deepcopy(issue))
         for key, field in self.config_fields.items():
             editor = field.get("editor")
@@ -1054,6 +1107,20 @@ class NodeConfigForm:
                 editor.setToolTip(tooltip)
             if label is not None:
                 label.setToolTip(tooltip)
+
+    def _validation_field_keys(self, path):
+        text = str(path or "").strip()
+        if not text:
+            return []
+        parts = [part for part in text.split(".") if part]
+        keys = [text]
+        if text.startswith("config."):
+            keys.append(text[len("config."):])
+        if parts:
+            keys.append(parts[-1])
+        if len(parts) >= 2:
+            keys.append(".".join(parts[-2:]))
+        return list(dict.fromkeys(key for key in keys if key))
 
     def _current_field_values(self):
         values = {}

@@ -594,7 +594,13 @@ def _plugin_failure(code, message, path):
 
 
 def _plugin_config_form_groups(default_config, parameter_schema):
-    parameter_fields = [_parameter_field_schema(field) for field in parameter_schema or [] if isinstance(field, dict)]
+    parameter_fields = []
+    for field in parameter_schema or []:
+        if not isinstance(field, dict):
+            continue
+        field_schema = _parameter_field_schema(field)
+        if field_schema:
+            parameter_fields.append(field_schema)
     parameter_help = "插件参数 JSON。具体参数 schema 已在 parameters 字段中返回。"
     if parameter_fields:
         names = "、".join(field.get("label") or field.get("key", "") for field in parameter_fields[:8])
@@ -617,6 +623,7 @@ def _plugin_config_form_groups(default_config, parameter_schema):
             "title": "插件参数",
             "fields": [
                 {"key": "params", "label": "参数 JSON", "type": "json", "help": parameter_help},
+                *parameter_fields,
                 {"key": "input_tables", "label": "输入表", "type": "json", "help": "插件多输入表配置。"},
             ],
             "parameters": parameter_fields,
@@ -658,9 +665,13 @@ def _plugin_config_form_groups(default_config, parameter_schema):
 
 def _parameter_field_schema(field):
     key = str(field.get("name") or "").strip()
+    if not key:
+        return {}
     field_type = _normalize_parameter_type(field.get("type"))
-    return {
-        "key": key,
+    schema = {
+        "key": f"params.{key}",
+        "param_key": key,
+        "config_path": ["params", key],
         "label": str(field.get("label") or field.get("title") or key),
         "type": field_type,
         "choices": list(field.get("choices") or field.get("options") or []),
@@ -668,6 +679,24 @@ def _parameter_field_schema(field):
         "help": str(field.get("help") or field.get("description") or ""),
         "required": bool(field.get("required", False)),
     }
+    if field_type == "field_select":
+        schema["options_source"] = {"type": "preview_headers"}
+        schema["action"] = {
+            "key": "pick_preview_header",
+            "label": "选择字段",
+            "style": "picker",
+            "source": "preview_headers",
+        }
+    elif field_type == "field_multi_select":
+        schema["options_source"] = {"type": "preview_headers"}
+        schema["action"] = {
+            "key": "pick_preview_headers",
+            "label": "选择字段",
+            "style": "picker",
+            "source": "preview_headers",
+            "multiple": True,
+        }
+    return schema
 
 
 def _normalize_parameter_type(value):
