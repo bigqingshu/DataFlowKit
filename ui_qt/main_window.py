@@ -937,7 +937,7 @@ class QtWorkflowMainWindow:
                 continue
             kind = str(view.get("kind") or "")
             view_id = str(view.get("view_id") or "")
-            if view_id == "plugin.params" or kind == "form":
+            if view_id == "plugin.params":
                 continue
             widget = self._make_plugin_config_view_widget(view, described)
             if widget is None:
@@ -950,9 +950,13 @@ class QtWorkflowMainWindow:
     def _make_plugin_config_view_widget(self, view, described):
         kind = str(view.get("kind") or "")
         if kind == "summary":
-            return self._make_plugin_summary_widget(view.get("summary") or (described.get("plugin_extension") or {}).get("summary") or {})
+            return self._make_plugin_summary_widget(view.get("summary") or described.get("summary") or (described.get("plugin_extension") or {}).get("summary") or {})
+        if kind == "form":
+            return self._make_plugin_form_view_widget(view)
         if kind == "structured_list":
             return self._make_plugin_structured_list_widget(view)
+        if kind == "text_preview":
+            return self._make_plugin_text_preview_widget(view)
         if kind == "resource_list":
             return self._make_plugin_resource_list_widget(view, described)
         return self._make_plugin_protocol_text_widget(view)
@@ -967,6 +971,51 @@ class QtWorkflowMainWindow:
         for row, (key, value) in enumerate(rows):
             table.setItem(row, 0, qt.QtWidgets.QTableWidgetItem(key))
             table.setItem(row, 1, qt.QtWidgets.QTableWidgetItem(value))
+        self._polish_plugin_protocol_table(table)
+        return table
+
+    def _make_plugin_form_view_widget(self, view):
+        qt = self.qt
+        form_payload = view.get("form") if isinstance(view.get("form"), dict) else {}
+        values = view.get("values") if isinstance(view.get("values"), dict) else {}
+        rows = []
+        for group in form_payload.get("groups") or []:
+            if not isinstance(group, dict):
+                continue
+            group_label = str(group.get("title") or group.get("label") or group.get("group") or "").strip()
+            for field in group.get("fields") or []:
+                if isinstance(field, dict):
+                    rows.append((group_label, field))
+        if not rows:
+            for field in view.get("fields") or []:
+                if isinstance(field, dict):
+                    rows.append(("", field))
+        if not rows and values:
+            rows = [("", {"key": key, "label": key, "value": value}) for key, value in values.items()]
+        if not rows:
+            return self._make_plugin_protocol_text_widget(view)
+
+        table = qt.QtWidgets.QTableWidget()
+        table.setColumnCount(4)
+        table.setHorizontalHeaderLabels(["分组", "字段", "值", "说明"])
+        table.setRowCount(len(rows))
+        for row, (group_label, field) in enumerate(rows):
+            key = str(field.get("key") or field.get("name") or field.get("param_key") or "").strip()
+            label = str(field.get("label") or key).strip()
+            if "value" in field:
+                value = field.get("value")
+            elif key and key in values:
+                value = values.get(key)
+            else:
+                value = field.get("default", "")
+            help_text = field.get("help") or field.get("description") or field.get("warning") or field.get("placeholder") or ""
+            for col, value_text in enumerate([
+                group_label,
+                label,
+                self._format_plugin_protocol_value(value),
+                self._format_plugin_protocol_value(help_text),
+            ]):
+                table.setItem(row, col, qt.QtWidgets.QTableWidgetItem(value_text))
         self._polish_plugin_protocol_table(table)
         return table
 
@@ -1113,6 +1162,22 @@ class QtWorkflowMainWindow:
                 table.setItem(row, col, qt.QtWidgets.QTableWidgetItem(self._format_plugin_protocol_value(value)))
         self._polish_plugin_protocol_table(table)
         return table
+
+    def _make_plugin_text_preview_widget(self, view):
+        text = view.get("text")
+        if text is None:
+            text = view.get("content")
+        if text is None:
+            text = view.get("preview")
+        if text is None:
+            text = view.get("value")
+        editor = self.qt.QtWidgets.QPlainTextEdit()
+        editor.setReadOnly(True)
+        if isinstance(text, (dict, list)):
+            editor.setPlainText(json.dumps(text, ensure_ascii=False, indent=2))
+        else:
+            editor.setPlainText("" if text is None else str(text))
+        return editor
 
     def _make_plugin_protocol_text_widget(self, payload):
         editor = self.qt.QtWidgets.QPlainTextEdit()

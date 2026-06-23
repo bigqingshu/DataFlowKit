@@ -191,6 +191,8 @@ class Qt6UiShellTests(unittest.TestCase):
                     "        'schema_version': 'demo.config.v1',",
                     "        'views': [",
                     "            {'view_id': 'demo.overview', 'title': 'Demo Overview', 'kind': 'summary', 'summary': {'items': len(items), 'mode': params.get('mode', 'fast')}},",
+                    "            {'view_id': 'demo.details', 'title': 'Demo Details', 'kind': 'form', 'values': {'mode': params.get('mode', 'fast'), 'limit': params.get('limit', 3)}, 'form': {'groups': [{'title': '基本', 'fields': [{'key': 'mode', 'label': '模式', 'help': '运行模式'}, {'key': 'limit', 'label': '数量', 'help': '处理数量'}]}]}},",
+                    "            {'view_id': 'demo.preview', 'title': 'Demo Preview', 'kind': 'text_preview', 'text': 'mode=' + str(params.get('mode', 'fast'))},",
                     "            {'view_id': 'demo.items', 'title': 'Demo Items', 'kind': 'structured_list', 'editor_kind': 'demo.items', 'config_path': ['items'], 'item_count': len(items), 'columns': [{'key': 'name', 'label': '名称'}, {'key': 'enabled', 'label': '启用'}], 'items': items},",
                     "        ],",
                     "        'actions': [{'action_id': 'demo.edit_items', 'label': '编辑 Demo Items', 'kind': 'config_editor', 'editor_kind': 'demo.items'}],",
@@ -279,7 +281,19 @@ class Qt6UiShellTests(unittest.TestCase):
                 for index in range(controller.plugin_config_view_tabs.count())
             ]
             self.assertIn("Demo Overview", protocol_tab_titles)
+            self.assertIn("Demo Details", protocol_tab_titles)
+            self.assertIn("Demo Preview", protocol_tab_titles)
             self.assertIn("Demo Items", protocol_tab_titles)
+            details_page = controller.plugin_config_view_tabs.widget(protocol_tab_titles.index("Demo Details"))
+            details_table = details_page if isinstance(details_page, qt.QtWidgets.QTableWidget) else details_page.findChild(qt.QtWidgets.QTableWidget)
+            self.assertIsNotNone(details_table)
+            self.assertEqual(details_table.item(0, 0).text(), "基本")
+            self.assertEqual(details_table.item(0, 1).text(), "模式")
+            self.assertEqual(details_table.item(0, 2).text(), "fast")
+            preview_page = controller.plugin_config_view_tabs.widget(protocol_tab_titles.index("Demo Preview"))
+            preview_editor = preview_page if isinstance(preview_page, qt.QtWidgets.QPlainTextEdit) else preview_page.findChild(qt.QtWidgets.QPlainTextEdit)
+            self.assertIsNotNone(preview_editor)
+            self.assertEqual(preview_editor.toPlainText(), "mode=fast")
             items_page = controller.plugin_config_view_tabs.widget(protocol_tab_titles.index("Demo Items"))
             items_table = items_page.findChild(qt.QtWidgets.QTableWidget)
             self.assertIsNotNone(items_table)
