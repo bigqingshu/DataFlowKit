@@ -199,6 +199,7 @@ class Qt6UiShellTests(unittest.TestCase):
                     "        'warnings': [{'code': 'demo_items_warning', 'level': 'warning', 'message': 'Demo Items 需要确认', 'view_id': 'demo.items', 'field': 'items.enabled', 'path': '/views/demo.items/fields/items.enabled', 'config_path': ['items', 'enabled']}],",
                     "        'patch_schema': {'kind': 'config_patch', 'operations': [{'operation': 'append_item'}, {'operation': 'delete_item'}, {'operation': 'set_enabled'}, {'operation': 'move_item'}], 'fields': [{'key': 'operation'}, {'key': 'path'}, {'key': 'target_index'}, {'key': 'payload'}], 'sections': {'items': {'path': ['items'], 'model_key': 'demo_item'}}},",
                     "        'warning_schema': {'kind': 'config_warning', 'fields': [{'key': 'code'}, {'key': 'message'}, {'key': 'view_id'}, {'key': 'field'}, {'key': 'path'}]},",
+                    "        'protocol_manifest': {'schema_version': 'demo.protocol_manifest.v1', 'interfaces': {'describe_config': True, 'apply_config_patch': True, 'preview_config_effect': True}, 'views': [{'view_id': 'demo.items', 'kind': 'structured_list'}], 'models': ['demo_item'], 'patch': {'sections': ['items']}, 'config_effect': {'provider': 'preview_config_effect'}},",
                     "    }",
                     "def preview_config_effect(params, context):",
                     "    return {'schema_version': 'demo.effect.v1', 'summary': {'items': len(params.get('items') or [])}, 'expected_output_fields': ['A', 'Demo'], 'side_effects': [{'kind': 'read_input_tables', 'label': '读取输入表'}]}",
@@ -278,6 +279,10 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertIn("旧版设置窗口", controller.node_detail_sections.toPlainText())
             self.assertIn("配置能力：schema配置、动态候选、配置描述、结构化patch、配置效果预览、旧版窗口fallback", controller.node_detail_sections.toPlainText())
             self.assertIn("配置协议", controller.node_detail_sections.toPlainText())
+            self.assertIn("协议清单：demo.protocol_manifest.v1", controller.node_detail_sections.toPlainText())
+            self.assertIn("接口 describe_config、apply_config_patch、preview_config_effect", controller.node_detail_sections.toPlainText())
+            self.assertIn("模型 demo_item", controller.node_detail_sections.toPlainText())
+            self.assertIn("效果预览 preview_config_effect", controller.node_detail_sections.toPlainText())
             self.assertIn("Patch协议：config_patch", controller.node_detail_sections.toPlainText())
             self.assertIn("操作 append_item、delete_item、set_enabled、move_item", controller.node_detail_sections.toPlainText())
             self.assertIn("字段 operation、path、target_index、payload", controller.node_detail_sections.toPlainText())

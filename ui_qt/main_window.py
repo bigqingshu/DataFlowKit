@@ -910,6 +910,11 @@ class QtWorkflowMainWindow:
             lines.append("配置视图：" + "、".join(str(item.get("title") or item.get("view_id") or "") for item in views[:6]))
         if resources:
             lines.append("配置资源：" + "、".join(str(item.get("label") or item.get("resource_id") or "") for item in resources[:6]))
+        manifest_line = self._plugin_protocol_manifest_summary(
+            described.get("protocol_manifest") or plugin_extension.get("protocol_manifest")
+        )
+        if manifest_line:
+            lines.append(manifest_line)
         patch_schema_line = self._plugin_protocol_schema_summary(plugin_extension.get("patch_schema"), "Patch协议")
         if patch_schema_line:
             lines.append(patch_schema_line)
@@ -973,6 +978,37 @@ class QtWorkflowMainWindow:
         if isinstance(sections, dict) and sections:
             parts.append("区域 " + "、".join(str(key) for key in list(sections.keys())[:6]))
         return "；".join(part for part in parts if part)
+
+    def _plugin_protocol_manifest_summary(self, manifest):
+        if not isinstance(manifest, dict):
+            return ""
+        parts = []
+        schema_version = str(manifest.get("schema_version") or "").strip()
+        if schema_version:
+            parts.append(f"协议清单：{schema_version}")
+        interfaces = manifest.get("interfaces") if isinstance(manifest.get("interfaces"), dict) else {}
+        enabled_interfaces = [
+            key
+            for key, enabled in interfaces.items()
+            if enabled and str(key or "").strip()
+        ]
+        if enabled_interfaces:
+            parts.append("接口 " + "、".join(enabled_interfaces[:6]))
+        views = [item for item in (manifest.get("views") or []) if isinstance(item, dict)]
+        if views:
+            parts.append(f"视图 {len(views)} 个")
+        models = [str(item) for item in (manifest.get("models") or []) if str(item).strip()]
+        if models:
+            parts.append("模型 " + "、".join(models[:6]))
+        patch = manifest.get("patch") if isinstance(manifest.get("patch"), dict) else {}
+        patch_sections = [str(item) for item in (patch.get("sections") or []) if str(item).strip()]
+        if patch_sections:
+            parts.append("Patch区域 " + "、".join(patch_sections[:6]))
+        config_effect = manifest.get("config_effect") if isinstance(manifest.get("config_effect"), dict) else {}
+        provider = str(config_effect.get("provider") or "").strip()
+        if provider:
+            parts.append("效果预览 " + provider)
+        return "；".join(parts)
 
     def _format_plugin_warning_item(self, item):
         if not isinstance(item, dict):
