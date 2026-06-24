@@ -213,6 +213,7 @@ class DataSourceManagerWindow:
                 "capabilities": copy.deepcopy(service.get("capabilities") or {}),
                 "action_ids": sorted(str(key) for key in (service.get("actions") or {}).keys()),
                 "data_action_ids": sorted(str(key) for key in (service.get("data_actions") or {}).keys()),
+                "table_action_ids": sorted(str(key) for key in (service.get("table_actions") or {}).keys()),
                 "result_schemas": copy.deepcopy(service.get("result_schemas") or {}),
             },
             "action_schema": {

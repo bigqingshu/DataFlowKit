@@ -2697,6 +2697,32 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertEqual(controller.input_summary_label.text(), "当前输入：2 行 x 2 列")
             self.assertIn("旧预览结果已清空", controller.current_message_panel.get("body", ""))
             self.assertIn("已载入输入表", controller.status_bar.currentMessage())
+            self.assertIn("服务动作：load_table", controller.load_input_table_button.toolTip())
+            window.close()
+            app.processEvents()
+
+    def test_controller_input_table_actions_follow_data_source_service(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        with TemporaryDirectory() as temp_dir:
+            db_path = str(Path(temp_dir) / "input.db")
+            TableAccessManager(db_path).write_table("orders", ["id"], [["1"]], mode="replace")
+            window = build_main_window(qt)
+            controller = window.qt_workflow_controller
+            controller.input_db_path_edit.setText(db_path)
+            controller.apply_input_db_path_from_edit(show_status=False)
+
+            self.assertTrue(controller.load_input_table_button.isEnabled())
+            self.assertIn("服务动作：load_table", controller.load_input_table_button.toolTip())
+            controller.data_source_service_description = {"table_actions": {}}
+            controller.refresh_input_table_combo()
+            self.assertFalse(controller.load_input_table_button.isEnabled())
+            self.assertIn("未声明 list_tables", controller.input_table_combo.toolTip())
+            controller.load_selected_input_table()
+            self.assertIn("不支持载入输入表", controller.status_bar.currentMessage())
             window.close()
             app.processEvents()
 
@@ -2747,6 +2773,8 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertIn("build_data_source_panel_state", manager_state["service"]["action_ids"])
             self.assertIn("describe_data_source_actions", manager_state["service"]["action_ids"])
             self.assertIn("save_sqlite", manager_state["service"]["data_action_ids"])
+            self.assertIn("load_table", manager_state["service"]["table_action_ids"])
+            self.assertIn("get_table_handle_page", manager_state["service"]["table_action_ids"])
             self.assertEqual(
                 manager_state["service"]["result_schemas"]["table_page"]["schema_version"],
                 "table_page.v1",

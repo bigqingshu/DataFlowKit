@@ -64,12 +64,31 @@ class QtWorkflowMainWindow:
         self.preview_source_records = []
         self.current_message_panel = {}
         self.data_source_manager_controller = None
+        self.data_source_service_description = {}
         self.node_enabled_icon_cache = {}
         self.plugin_config_view_widgets_by_id = {}
         self.plugin_warning_targets_by_link = {}
 
         self._build_ui()
+        self.refresh_data_source_service_description()
         self.refresh_all()
+
+    def refresh_data_source_service_description(self):
+        try:
+            described = self.engine_client.describe_data_source_service()
+        except Exception:
+            described = {}
+        self.data_source_service_description = copy.deepcopy(described if isinstance(described, dict) else {})
+        return self.data_source_service_description
+
+    def _data_source_table_action(self, action_id):
+        service = self.data_source_service_description if isinstance(self.data_source_service_description, dict) else {}
+        actions = service.get("table_actions") if isinstance(service.get("table_actions"), dict) else {}
+        action = actions.get(action_id) if isinstance(actions.get(action_id), dict) else {}
+        return action
+
+    def _has_data_source_table_action(self, action_id):
+        return bool(self._data_source_table_action(action_id).get("engine_action"))
 
     def _table_context(self):
         table_names = []
@@ -3284,6 +3303,18 @@ class QtWorkflowMainWindow:
             return
         db_path = self.current_data_source_db_path()
         current_table = self.input_table_combo.currentData()
+        list_action = self._data_source_table_action("list_tables")
+        load_action = self._data_source_table_action("load_table")
+        list_available = bool(list_action.get("engine_action"))
+        load_available = bool(load_action.get("engine_action"))
+        if not list_available:
+            self.input_table_combo.clear()
+            self.load_input_table_button.setEnabled(False)
+            self.input_table_combo.setToolTip("当前数据源服务未声明 list_tables 表动作。")
+            self.load_input_table_button.setToolTip("当前数据源服务未声明 load_table 表动作。")
+            if show_status:
+                self.status_bar.showMessage("当前数据源服务不支持列出输入表。")
+            return
         try:
             listed = self.engine_client.list_tables(db_path=db_path or None)
         except Exception as exc:
@@ -3310,7 +3341,13 @@ class QtWorkflowMainWindow:
                 restore_index = index
         self.input_table_combo.setCurrentIndex(restore_index if tables else -1)
         self.input_table_combo.blockSignals(False)
-        self.load_input_table_button.setEnabled(bool(db_path and tables))
+        self.input_table_combo.setToolTip(str(list_action.get("label") or "从输入 SQLite 数据库选择表作为工作流输入"))
+        load_tooltip = str(load_action.get("label") or "载入选中的 SQLite 表作为工作流输入")
+        engine_action = str(load_action.get("engine_action") or "").strip()
+        if engine_action:
+            load_tooltip += f"\n服务动作：{engine_action}"
+        self.load_input_table_button.setToolTip(load_tooltip)
+        self.load_input_table_button.setEnabled(bool(db_path and tables and load_available))
         if show_status:
             if db_path:
                 self.status_bar.showMessage(f"输入表列表已刷新：{len(tables)} 个")
@@ -3318,6 +3355,15 @@ class QtWorkflowMainWindow:
                 self.status_bar.showMessage("请选择输入 SQLite 数据库后再刷新输入表。")
 
     def load_selected_input_table(self):
+        if not self._has_data_source_table_action("load_table"):
+            self._apply_message_panel(self.engine_client.build_message_panel_state(
+                mode="warning",
+                title="输入数据源",
+                body="当前数据源服务未声明 load_table 表动作。",
+                preferred_tab="issues",
+            ).get("panel") or {})
+            self.status_bar.showMessage("当前数据源服务不支持载入输入表。")
+            return
         db_path = self.current_data_source_db_path()
         table_name = str(self.input_table_combo.currentData() or self.input_table_combo.currentText() or "").strip()
         if not db_path:
