@@ -17,6 +17,8 @@ class AdvancedFilterCommandServiceTests(unittest.TestCase):
         self.assertEqual(service["protocol_family"], "advanced_filter_service")
         self.assertIn("add_condition", service["commands"])
         self.assertIn("add_output_fields", service["commands"])
+        self.assertIn("build_preview", service["commands"])
+        self.assertIn("apply_template", service["commands"])
 
     def test_describe_state_builds_fields_and_combo_defaults(self):
         state = describe_advanced_filter_state(
@@ -177,6 +179,102 @@ class AdvancedFilterCommandServiceTests(unittest.TestCase):
 
         cleared_join = apply_advanced_filter_command(cleared_conditions["state"], {"type": "clear_join_rules"})
         self.assertEqual(cleared_join["state"]["join_rules"], [])
+
+    def test_build_preview_and_dedupe_preview(self):
+        state = {
+            "selected_tables": ["orders"],
+            "columns_by_table": {"orders": ["id", "name"]},
+            "conditions": [{"field": "orders.name", "op": "包含", "value": "A"}],
+            "output_fields": ["orders.id", "orders.name"],
+        }
+
+        preview = apply_advanced_filter_command(state, {
+            "type": "build_preview",
+            "table_records_map": {
+                "orders": [
+                    {"orders.id": "1", "orders.name": "Alpha"},
+                    {"orders.id": "1", "orders.name": "Alpha"},
+                    {"orders.id": "2", "orders.name": "Beta"},
+                ],
+            },
+        })
+
+        self.assertTrue(preview["ok"])
+        self.assertEqual(preview["preview"]["headers"], ["orders.id", "orders.name"])
+        self.assertEqual(preview["preview"]["rows"], [["1", "Alpha"], ["1", "Alpha"]])
+        self.assertEqual(preview["preview"]["row_count"], 2)
+
+        deduped = apply_advanced_filter_command(preview["state"], {"type": "dedupe_preview"})
+        self.assertTrue(deduped["ok"])
+        self.assertEqual(deduped["state"]["preview_rows"], [["1", "Alpha"]])
+        self.assertEqual(deduped["preview"]["row_count"], 1)
+
+    def test_build_preview_reports_structured_issue_without_output_fields(self):
+        result = apply_advanced_filter_command({}, {
+            "type": "build_preview",
+            "table_records_map": {},
+        })
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["issues"][0]["code"], "missing_output_fields")
+
+    def test_main_preview_snapshot_and_template_commands(self):
+        state = {
+            "main_table": "orders",
+            "tables_cache": ["orders", "people"],
+            "selected_tables": ["orders"],
+            "columns_by_table": {
+                "orders": ["id", "name"],
+                "people": ["id", "name"],
+            },
+            "conditions": [{"field": "orders.id", "op": "等于", "value": "1"}],
+            "output_fields": ["orders.name"],
+            "result_limit": "12",
+            "max_intermediate": "34",
+            "save_table": "out",
+            "preview_headers": ["orders.name"],
+            "preview_rows": [["Alpha"]],
+        }
+
+        snapshot = apply_advanced_filter_command(state, {"type": "build_main_preview_snapshot"})
+        self.assertTrue(snapshot["ok"])
+        self.assertEqual(snapshot["main_preview_snapshot"], {
+            "headers": ["orders.name"],
+            "rows": [["Alpha"]],
+            "raw_data": "",
+        })
+
+        exported = apply_advanced_filter_command(state, {"type": "export_template"})
+        self.assertTrue(exported["ok"])
+        self.assertEqual(exported["template"]["main_table"], "orders")
+        self.assertEqual(exported["template"]["selected_tables"], ["orders"])
+        self.assertEqual(exported["template"]["save_table"], "out")
+
+        applied = apply_advanced_filter_command(state, {
+            "type": "apply_template",
+            "template": {
+                "main_table": "people",
+                "selected_tables": ["people", "missing"],
+                "conditions": [{"field": "people.name", "op": "包含", "value": "A"}],
+                "join_rules": [{"left": "orders.id", "op": "等于", "right": "people.id"}],
+                "output_fields": ["people.name", "missing"],
+                "logic": "OR",
+                "join_logic": "AND",
+                "result_limit": "56",
+                "max_intermediate": "78",
+                "save_table": "templated",
+            },
+        })
+
+        self.assertTrue(applied["ok"])
+        self.assertEqual(applied["state"]["main_table"], "people")
+        self.assertEqual(applied["state"]["selected_tables"], ["people"])
+        self.assertEqual(applied["state"]["conditions"], [{"field": "people.name", "op": "包含", "value": "A"}])
+        self.assertEqual(applied["state"]["join_rules"], [])
+        self.assertEqual(applied["state"]["output_fields"], ["people.name"])
+        self.assertEqual(applied["state"]["logic"], "OR")
+        self.assertEqual(applied["state"]["result_limit"], "56")
+        self.assertEqual(applied["state"]["save_table"], "templated")
 
 
 if __name__ == "__main__":

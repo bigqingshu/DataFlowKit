@@ -11,11 +11,7 @@ from workflow.advanced_filter_command_service import (
     describe_advanced_filter_state,
 )
 from workflow.advanced_filter_window_logic import (
-    build_advanced_filter_main_preview_snapshot,
-    build_advanced_filter_preview_rows,
     build_advanced_filter_result_records,
-    build_advanced_filter_template_data,
-    dedupe_advanced_filter_preview_rows,
     eval_advanced_filter_condition,
     eval_advanced_filter_conditions,
     eval_advanced_filter_join_rule,
@@ -24,10 +20,8 @@ from workflow.advanced_filter_window_logic import (
     get_advanced_filter_output_fields,
     load_advanced_filter_table_records,
     normalize_advanced_filter_save_table_name,
-    normalize_advanced_filter_template_data,
     parse_advanced_filter_number,
     parse_positive_int_setting,
-    select_advanced_filter_template_tables,
 )
 
 
@@ -48,6 +42,8 @@ def _var_set(var, value):
 def _command_state_from_window(window):
     return describe_advanced_filter_state({
         "selected_tables": window.get_selected_tables(),
+        "main_table": _var_get(window.main_table_var),
+        "tables_cache": getattr(window, "tables_cache", []),
         "columns_by_table": getattr(window, "columns_cache", {}),
         "field_display_cache": getattr(window, "field_display_cache", []),
         "filter_field": _var_get(window.filter_field_var),
@@ -61,6 +57,8 @@ def _command_state_from_window(window):
         "result_limit": _var_get(window.result_limit_var, "5000"),
         "max_intermediate": _var_get(window.max_intermediate_var, "200000"),
         "save_table": _var_get(window.save_table_var),
+        "preview_headers": getattr(window, "preview_headers", []),
+        "preview_rows": getattr(window, "preview_rows", []),
     })
 
 
@@ -69,6 +67,9 @@ def _apply_command_state_to_window(window, state):
     window.conditions = list(state.get("conditions") or [])
     window.join_rules = list(state.get("join_rules") or [])
     window.output_fields = list(state.get("output_fields") or [])
+    window.preview_headers = list(state.get("preview_headers") or [])
+    window.preview_rows = [list(row) for row in state.get("preview_rows") or []]
+    _var_set(window.main_table_var, state.get("main_table", ""))
     _var_set(window.filter_field_var, state.get("filter_field", ""))
     _var_set(window.join_left_var, state.get("join_left", ""))
     _var_set(window.join_right_var, state.get("join_right", ""))
@@ -104,6 +105,12 @@ def _refresh_field_choice_widgets(window):
     window.available_fields_listbox.delete(0, tk.END)
     for field in window.field_display_cache:
         window.available_fields_listbox.insert(tk.END, field)
+
+
+def _sync_selected_tables_listbox(window, selected_tables):
+    window.selected_tables_listbox.delete(0, tk.END)
+    for table in selected_tables or []:
+        window.selected_tables_listbox.insert(tk.END, table)
 
 
 def refresh_tables(window):
@@ -488,23 +495,28 @@ def build_result_records(window):
 
 
 def get_output_fields(window):
+    state = _command_state_from_window(window)
+    result = apply_advanced_filter_command(state, {"type": "export_template"})
     return get_advanced_filter_output_fields(
-        window.output_fields,
-        window.field_display_cache,
+        result["state"]["output_fields"],
+        result["state"]["field_display_cache"],
     )
 
 
 def preview_result(window):
     try:
-        fields = window.get_output_fields()
-        if not fields:
-            messagebox.showwarning("提示", "没有可输出字段，请先选择数据源。")
+        selected_tables = window.get_selected_tables()
+        table_records_map = {}
+        for table in selected_tables:
+            table_records_map[table] = window.load_table_records(table)
+
+        result = _apply_editor_command(window, {
+            "type": "build_preview",
+            "table_records_map": table_records_map,
+        })
+        if not result["ok"]:
+            messagebox.showwarning("提示", _first_issue_message(result))
             return
-
-        records = window.build_result_records()
-
-        window.preview_headers = fields
-        window.preview_rows = build_advanced_filter_preview_rows(records, fields)
 
         window.refresh_preview_tree()
 
@@ -535,11 +547,15 @@ def remove_duplicate_preview_rows(window):
     if not window.preview_headers:
         return
 
-    result = dedupe_advanced_filter_preview_rows(window.preview_rows)
-    window.preview_rows = result["rows"]
+    before_count = len(window.preview_rows)
+    result = _apply_editor_command(window, {"type": "dedupe_preview"})
+    removed = before_count - len(window.preview_rows)
+    if not result["ok"]:
+        messagebox.showwarning("提示", _first_issue_message(result))
+        return
     window.refresh_preview_tree()
     window.status_var.set(
-        f"已去除重复内容：删除 {result['removed']} 行，剩余 {len(window.preview_rows)} 行。"
+        f"已去除重复内容：删除 {removed} 行，剩余 {len(window.preview_rows)} 行。"
         " 判断规则：按当前预览输出整行内容去重，保留第一条。"
     )
 
@@ -549,10 +565,11 @@ def load_preview_to_main(window):
         messagebox.showwarning("提示", "请先预览结果。")
         return
 
-    snapshot = build_advanced_filter_main_preview_snapshot(
-        window.preview_headers,
-        window.preview_rows,
-    )
+    result = _apply_editor_command(window, {"type": "build_main_preview_snapshot"})
+    if not result["ok"]:
+        messagebox.showwarning("提示", _first_issue_message(result))
+        return
+    snapshot = result["main_preview_snapshot"]
     window.app.headers = snapshot["headers"]
     window.app.rows = snapshot["rows"]
     window.app.raw_data = snapshot["raw_data"]
@@ -595,46 +612,35 @@ def save_result_to_table(window):
 
 
 def export_template_data(window):
-    return build_advanced_filter_template_data(
-        window.main_table_var.get(),
-        window.get_selected_tables(),
-        window.conditions,
-        window.logic_var.get(),
-        window.join_logic_var.get(),
-        window.join_rules,
-        window.output_fields,
-        window.result_limit_var.get(),
-        window.max_intermediate_var.get(),
-        window.save_table_var.get(),
-    )
+    result = _apply_editor_command(window, {"type": "export_template"})
+    return result["template"]
 
 
 def apply_template_data(window, data):
-    main_table = data.get("main_table", "")
+    selected_tables = [
+        table for table in data.get("selected_tables", [])
+        if table in getattr(window, "tables_cache", [])
+    ]
+    if not selected_tables:
+        main_table = data.get("main_table", "")
+        if main_table in getattr(window, "tables_cache", []):
+            selected_tables = [main_table]
+    for table in selected_tables:
+        if table not in window.columns_cache:
+            try:
+                window.columns_cache[table] = window.app.get_table_columns(table)
+            except Exception:
+                window.columns_cache[table] = []
 
-    if main_table:
-        window.main_table_var.set(main_table)
-
-    window.selected_tables_listbox.delete(0, tk.END)
-    for table in select_advanced_filter_template_tables(data, window.tables_cache):
-        window.selected_tables_listbox.insert(tk.END, table)
-
-    window.refresh_fields()
-
-    state = normalize_advanced_filter_template_data(
-        data,
-        window.tables_cache,
-        window.field_display_cache,
-        current_save_table=window.save_table_var.get(),
-    )
-    window.conditions = state["conditions"]
-    window.join_rules = state["join_rules"]
-    window.output_fields = state["output_fields"]
-    window.logic_var.set(state["logic"])
-    window.join_logic_var.set(state["join_logic"])
-    window.result_limit_var.set(state["result_limit"])
-    window.max_intermediate_var.set(state["max_intermediate"])
-    window.save_table_var.set(state["save_table"])
+    result = _apply_editor_command(window, {
+        "type": "apply_template",
+        "template": data,
+    })
+    if not result["ok"]:
+        messagebox.showwarning("提示", _first_issue_message(result))
+        return
+    _sync_selected_tables_listbox(window, result["state"].get("selected_tables") or [])
+    _refresh_field_choice_widgets(window)
 
     window.refresh_conditions_tree()
     window.refresh_join_tree()
