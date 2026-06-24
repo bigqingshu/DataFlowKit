@@ -148,6 +148,14 @@ class PluginParameterMetadataTests(unittest.TestCase):
         view_ids = [view["view_id"] for view in described["views"]]
         self.assertIn("visual_mapping.rules", view_ids)
         self.assertIn("visual_mapping.linked_rules", view_ids)
+        view_by_id = {view["view_id"]: view for view in described["views"]}
+        rules_action_state = view_by_id["visual_mapping.rules"]["action_state"]
+        self.assertEqual(rules_action_state["schema_version"], "plugin_config_action_state.v1")
+        self.assertEqual(rules_action_state["action_id"], "visual_mapping.edit.rules")
+        self.assertIn("replace_item", rules_action_state["supported_operations"])
+        self.assertTrue(rules_action_state["buttons"]["append_item"]["enabled"])
+        self.assertFalse(rules_action_state["buttons"]["update_item"]["enabled"])
+        self.assertFalse(rules_action_state["buttons"]["delete_item"]["enabled"])
         action_ids = [action["action_id"] for action in described["actions"]]
         self.assertIn("visual_mapping.edit.rules", action_ids)
         self.assertIn("visual_mapping.edit.linked_rules", action_ids)

@@ -470,6 +470,56 @@ class Qt6UiShellTests(unittest.TestCase):
         window.close()
         app.processEvents()
 
+    def test_plugin_structured_list_buttons_follow_action_state(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+
+        widget = controller._make_plugin_structured_list_widget(
+            {
+                "view_id": "demo.items",
+                "kind": "structured_list",
+                "config_path": ["items"],
+                "patch_operations": ["append_item", "update_item", "delete_item", "move_item"],
+                "items": [
+                    {"name": "alpha", "enabled": True},
+                    {"name": "beta", "enabled": True},
+                ],
+                "columns": [
+                    {"key": "name", "label": "名称"},
+                    {"key": "enabled", "label": "启用"},
+                ],
+                "action_state": {
+                    "schema_version": "plugin_config_action_state.v1",
+                    "buttons": {
+                        "append_item": {"label": "新增", "operation": "append_item", "visible": True, "enabled": True},
+                        "update_item": {"label": "应用修改", "operation": "update_item", "visible": True, "enabled": True, "requires_selection": True},
+                        "delete_item": {"label": "删除", "operation": "delete_item", "visible": True, "enabled": True, "requires_selection": True},
+                        "set_enabled": {"label": "启停", "operation": "set_enabled", "visible": False, "enabled": False},
+                        "move_item_-1": {"label": "上移", "operation": "move_item", "target_offset": -1, "visible": True, "enabled": False, "requires_selection": True},
+                        "move_item_1": {"label": "下移", "operation": "move_item", "target_offset": 1, "visible": True, "enabled": True, "requires_selection": True},
+                    },
+                },
+            },
+            {"config_schema_version": "demo.config.v1"},
+        )
+
+        table = widget.findChild(qt.QtWidgets.QTableWidget)
+        self.assertIsNotNone(table)
+        self.assertFalse(widget.plugin_config_buttons["move_item_-1"].isEnabled())
+        self.assertTrue(widget.plugin_config_buttons["move_item_1"].isEnabled())
+        self.assertFalse(widget.plugin_config_buttons["set_enabled"].isVisible())
+        table.selectRow(1)
+        app.processEvents()
+        self.assertTrue(widget.plugin_config_buttons["move_item_-1"].isEnabled())
+        self.assertFalse(widget.plugin_config_buttons["move_item_1"].isEnabled())
+        window.close()
+        app.processEvents()
+
     def test_plugin_structured_list_edits_item_schema_columns_as_update_patch(self):
         try:
             qt = qt_app.load_qt6()

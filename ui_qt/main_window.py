@@ -1246,6 +1246,8 @@ class QtWorkflowMainWindow:
             for item in (view.get("patch_operations") or view.get("supported_patch_operations") or [])
             if str(item or "")
         }
+        action_state = view.get("action_state") if isinstance(view.get("action_state"), dict) else {}
+        action_buttons = action_state.get("buttons") if isinstance(action_state.get("buttons"), dict) else {}
         schema_columns = [item for item in (item_schema.get("columns") or []) if isinstance(item, dict)]
         can_update_item = bool({"update_item", "replace_item"} & supported_operations)
         if can_update_item and schema_columns:
@@ -1292,6 +1294,7 @@ class QtWorkflowMainWindow:
         frame.plugin_config_editor_kind = str(view.get("editor_kind") or "")
         frame.plugin_config_action_id = self._plugin_config_action_id_for_view(view, described)
         frame.plugin_config_section = str(view.get("section") or "")
+        frame.plugin_config_action_state = copy.deepcopy(action_state)
         if "append_value" in view:
             append_value = view.get("append_value")
         else:
@@ -1339,6 +1342,7 @@ class QtWorkflowMainWindow:
             self._refresh_plugin_structured_detail_sections(frame)
         button_row = qt.QtWidgets.QHBoxLayout()
         buttons = {}
+        button_specs = {}
         for text, operation, target_offset in [
             ("新增", "append_item", None),
             ("应用修改", "update_item", None),
@@ -1347,26 +1351,83 @@ class QtWorkflowMainWindow:
             ("上移", "move_item", -1),
             ("下移", "move_item", 1),
         ]:
-            button = qt.QtWidgets.QPushButton(text)
+            button_key = operation if target_offset is None else f"{operation}_{target_offset}"
+            button_state = action_buttons.get(button_key) if isinstance(action_buttons.get(button_key), dict) else {}
+            button = qt.QtWidgets.QPushButton(str(button_state.get("label") or text))
             effective_operation = operation
             if operation == "update_item" and "update_item" not in supported_operations and "replace_item" in supported_operations:
                 effective_operation = "replace_item"
+            if button_state.get("effective_operation"):
+                effective_operation = str(button_state.get("effective_operation"))
             visible = True
             if operation == "update_item":
                 visible = bool(can_update_item)
             elif supported_operations and operation not in supported_operations:
                 visible = False
+            if "visible" in button_state:
+                visible = bool(button_state.get("visible"))
             if not visible:
                 button.setVisible(False)
             button.clicked.connect(
                 lambda checked=False, op=effective_operation, offset=target_offset, fr=frame: self._apply_plugin_structured_list_patch(fr, op, offset)
             )
             button_row.addWidget(button)
-            buttons[operation if target_offset is None else f"{operation}_{target_offset}"] = button
+            buttons[button_key] = button
+            spec = copy.deepcopy(button_state)
+            spec.setdefault("operation", operation)
+            spec.setdefault("effective_operation", effective_operation)
+            spec.setdefault("target_offset", target_offset)
+            spec.setdefault("visible", visible)
+            button_specs[button_key] = spec
         button_row.addStretch(1)
         frame.plugin_config_buttons = buttons
+        frame.plugin_config_button_specs = button_specs
+        table.itemSelectionChanged.connect(
+            lambda fr=frame: self._update_plugin_structured_list_buttons(fr)
+        )
         layout.addLayout(button_row)
+        self._update_plugin_structured_list_buttons(frame)
         return frame
+
+    def _update_plugin_structured_list_buttons(self, frame):
+        table = getattr(frame, "plugin_config_table", None)
+        buttons = getattr(frame, "plugin_config_buttons", {}) or {}
+        specs = getattr(frame, "plugin_config_button_specs", {}) or {}
+        items = getattr(frame, "plugin_config_items", []) or []
+        row = table.currentRow() if table is not None else -1
+        item_count = len(items)
+        for key, button in buttons.items():
+            if button is None:
+                continue
+            spec = specs.get(key) if isinstance(specs.get(key), dict) else {}
+            visible = bool(spec.get("visible", button.isVisible()))
+            enabled = bool(spec.get("enabled", visible))
+            operation = str(spec.get("operation") or "")
+            requires_selection = bool(spec.get("requires_selection"))
+            disabled_reason = str(spec.get("disabled_reason") or "").strip()
+            if requires_selection and row < 0:
+                enabled = False
+                disabled_reason = "需要先选择配置项。"
+            if operation == "move_item" and row >= 0:
+                try:
+                    to_index = row + int(spec.get("target_offset") or 0)
+                except Exception:
+                    to_index = row
+                if to_index < 0 or to_index >= item_count:
+                    enabled = False
+                    disabled_reason = "配置项已经在边界位置。"
+                elif visible:
+                    enabled = True
+                    disabled_reason = ""
+            if operation in {"update_item", "replace_item", "delete_item", "remove_item", "set_enabled"} and row >= 0 and visible:
+                enabled = True
+                disabled_reason = ""
+            button.setVisible(visible)
+            button.setEnabled(enabled)
+            if disabled_reason:
+                button.setToolTip(disabled_reason)
+            elif button.toolTip():
+                button.setToolTip("")
 
     def _refresh_plugin_structured_detail_sections(self, frame):
         tabs = getattr(frame, "plugin_config_detail_tabs", None)

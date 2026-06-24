@@ -519,6 +519,7 @@ class PluginService:
                 "kind": "resource_list",
                 "resource_ids": [item["resource_id"] for item in resources],
             })
+        views = _plugin_config_views_with_action_state(views, actions)
 
         schema_warning_items = _normalize_plugin_config_warning_items(
             schema.get("warnings") or [],
@@ -1269,6 +1270,120 @@ def _plugin_config_sections(
             "lines": compatibility_lines,
         })
     return sections
+
+
+def _plugin_config_views_with_action_state(views, actions=None):
+    result = []
+    for view in views or []:
+        if not isinstance(view, dict):
+            continue
+        item = copy.deepcopy(view)
+        if str(item.get("kind") or "") == "structured_list":
+            action_state = _plugin_structured_list_action_state(item, actions=actions)
+            if action_state:
+                item["action_state"] = action_state
+        result.append(item)
+    return result
+
+
+def _plugin_structured_list_action_state(view, *, actions=None):
+    supported_operations = {
+        str(item)
+        for item in (view.get("patch_operations") or view.get("supported_patch_operations") or [])
+        if str(item or "").strip()
+    }
+    if not supported_operations:
+        return {}
+    items = [item for item in (view.get("items") or []) if isinstance(item, dict)]
+    try:
+        item_count = int(view.get("item_count"))
+    except Exception:
+        item_count = len(items)
+    if item_count < 0:
+        item_count = len(items)
+    selection = view.get("selection") if isinstance(view.get("selection"), dict) else {}
+    try:
+        selected_index = int(selection.get("default_index", 0 if item_count else -1))
+    except Exception:
+        selected_index = 0 if item_count else -1
+    if item_count <= 0:
+        selected_index = -1
+    elif selected_index < 0 or selected_index >= item_count:
+        selected_index = 0
+    action_id = _plugin_config_action_id_for_view(view, actions=actions)
+    can_update_item = bool({"update_item", "replace_item"} & supported_operations)
+
+    def button_state(key, label, operation, *, target_offset=None, effective_operation=None):
+        effective = effective_operation or operation
+        visible = operation in supported_operations
+        if operation == "update_item":
+            visible = can_update_item
+            if "update_item" not in supported_operations and "replace_item" in supported_operations:
+                effective = "replace_item"
+        requires_selection = operation in {"update_item", "replace_item", "delete_item", "remove_item", "set_enabled", "move_item"}
+        enabled = bool(visible)
+        disabled_reason = ""
+        if requires_selection and selected_index < 0:
+            enabled = False
+            disabled_reason = "需要先选择配置项。"
+        if operation == "move_item" and enabled:
+            to_index = selected_index + int(target_offset or 0)
+            if to_index < 0 or to_index >= item_count:
+                enabled = False
+                disabled_reason = "配置项已经在边界位置。"
+        return {
+            "key": key,
+            "label": label,
+            "operation": operation,
+            "effective_operation": effective,
+            "target_offset": target_offset,
+            "visible": bool(visible),
+            "enabled": bool(enabled),
+            "requires_selection": bool(requires_selection),
+            "disabled_reason": disabled_reason,
+            "action_id": action_id,
+        }
+
+    buttons = {
+        "append_item": button_state("append_item", "新增", "append_item"),
+        "update_item": button_state("update_item", "应用修改", "update_item"),
+        "delete_item": button_state("delete_item", "删除", "delete_item"),
+        "set_enabled": button_state("set_enabled", "启停", "set_enabled"),
+        "move_item_-1": button_state("move_item_-1", "上移", "move_item", target_offset=-1),
+        "move_item_1": button_state("move_item_1", "下移", "move_item", target_offset=1),
+    }
+    return {
+        "schema_version": "plugin_config_action_state.v1",
+        "view_id": str(view.get("view_id") or ""),
+        "editor_kind": str(view.get("editor_kind") or ""),
+        "section": str(view.get("section") or ""),
+        "action_id": action_id,
+        "item_count": item_count,
+        "selected_index": selected_index,
+        "supported_operations": sorted(supported_operations),
+        "buttons": buttons,
+    }
+
+
+def _plugin_config_action_id_for_view(view, *, actions=None):
+    if not isinstance(view, dict):
+        return ""
+    explicit_action_id = str(view.get("action_id") or "").strip()
+    if explicit_action_id:
+        return explicit_action_id
+    view_id = str(view.get("view_id") or "").strip()
+    editor_kind = str(view.get("editor_kind") or "").strip()
+    for action in actions or []:
+        if not isinstance(action, dict):
+            continue
+        action_id = str(action.get("action_id") or "").strip()
+        if not action_id:
+            continue
+        if view_id and str(action.get("view_id") or "").strip() == view_id:
+            return action_id
+        if editor_kind and str(action.get("editor_kind") or "").strip() == editor_kind:
+            return action_id
+    return ""
 
 
 def _plugin_parameter_metadata_lines(metadata, *, capabilities=None):
