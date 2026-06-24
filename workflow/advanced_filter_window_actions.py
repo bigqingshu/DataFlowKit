@@ -6,23 +6,20 @@ from tkinter import messagebox, filedialog
 
 from db import TableAccessManager
 from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
+from workflow.advanced_filter_command_service import (
+    apply_advanced_filter_command,
+    describe_advanced_filter_state,
+)
 from workflow.advanced_filter_window_logic import (
-    add_advanced_filter_condition,
-    add_advanced_filter_join_rule,
-    add_advanced_filter_output_fields,
-    add_all_advanced_filter_output_fields,
-    build_advanced_filter_field_display_cache,
     build_advanced_filter_main_preview_snapshot,
     build_advanced_filter_preview_rows,
     build_advanced_filter_result_records,
     build_advanced_filter_template_data,
-    clear_advanced_filter_items,
     dedupe_advanced_filter_preview_rows,
     eval_advanced_filter_condition,
     eval_advanced_filter_conditions,
     eval_advanced_filter_join_rule,
     eval_advanced_filter_join_rules,
-    filter_advanced_filter_valid_state,
     format_advanced_filter_db_value,
     get_advanced_filter_output_fields,
     load_advanced_filter_table_records,
@@ -30,11 +27,83 @@ from workflow.advanced_filter_window_logic import (
     normalize_advanced_filter_template_data,
     parse_advanced_filter_number,
     parse_positive_int_setting,
-    remove_advanced_filter_items_by_indexes,
-    remove_advanced_filter_output_fields,
-    select_advanced_filter_combo_defaults,
     select_advanced_filter_template_tables,
 )
+
+
+def _var_get(var, default=""):
+    try:
+        return var.get()
+    except Exception:
+        return default
+
+
+def _var_set(var, value):
+    try:
+        var.set(value)
+    except Exception:
+        pass
+
+
+def _command_state_from_window(window):
+    return describe_advanced_filter_state({
+        "selected_tables": window.get_selected_tables(),
+        "columns_by_table": getattr(window, "columns_cache", {}),
+        "field_display_cache": getattr(window, "field_display_cache", []),
+        "filter_field": _var_get(window.filter_field_var),
+        "join_left": _var_get(window.join_left_var),
+        "join_right": _var_get(window.join_right_var),
+        "conditions": getattr(window, "conditions", []),
+        "join_rules": getattr(window, "join_rules", []),
+        "output_fields": getattr(window, "output_fields", []),
+        "logic": _var_get(window.logic_var, "AND"),
+        "join_logic": _var_get(window.join_logic_var, "AND"),
+        "result_limit": _var_get(window.result_limit_var, "5000"),
+        "max_intermediate": _var_get(window.max_intermediate_var, "200000"),
+        "save_table": _var_get(window.save_table_var),
+    })
+
+
+def _apply_command_state_to_window(window, state):
+    window.field_display_cache = list(state.get("field_display_cache") or [])
+    window.conditions = list(state.get("conditions") or [])
+    window.join_rules = list(state.get("join_rules") or [])
+    window.output_fields = list(state.get("output_fields") or [])
+    _var_set(window.filter_field_var, state.get("filter_field", ""))
+    _var_set(window.join_left_var, state.get("join_left", ""))
+    _var_set(window.join_right_var, state.get("join_right", ""))
+    _var_set(window.logic_var, state.get("logic", "AND"))
+    _var_set(window.join_logic_var, state.get("join_logic", "AND"))
+    _var_set(window.result_limit_var, state.get("result_limit", "5000"))
+    _var_set(window.max_intermediate_var, state.get("max_intermediate", "200000"))
+    _var_set(window.save_table_var, state.get("save_table", ""))
+
+
+def _apply_editor_command(window, command):
+    result = apply_advanced_filter_command(_command_state_from_window(window), command)
+    _apply_command_state_to_window(window, result["state"])
+    return result
+
+
+def _first_issue_message(result, default="操作失败。"):
+    for issue in result.get("issues") or []:
+        message = issue.get("message")
+        if message:
+            return message
+    return default
+
+
+def _refresh_field_choice_widgets(window):
+    for combo in [
+        window.filter_field_combo,
+        window.join_left_combo,
+        window.join_right_combo
+    ]:
+        combo["values"] = window.field_display_cache
+
+    window.available_fields_listbox.delete(0, tk.END)
+    for field in window.field_display_cache:
+        window.available_fields_listbox.insert(tk.END, field)
 
 
 def refresh_tables(window):
@@ -177,45 +246,19 @@ def refresh_fields(window):
             except Exception:
                 columns = []
 
-    window.field_display_cache = build_advanced_filter_field_display_cache(
-        selected_tables,
-        window.columns_cache,
-    )
-
-    for combo in [
-        window.filter_field_combo,
-        window.join_left_combo,
-        window.join_right_combo
-    ]:
-        combo["values"] = window.field_display_cache
-
-    window.available_fields_listbox.delete(0, tk.END)
-    for field in window.field_display_cache:
-        window.available_fields_listbox.insert(tk.END, field)
-
-    defaults = select_advanced_filter_combo_defaults(
-        window.field_display_cache,
-        window.filter_field_var.get(),
-        window.join_left_var.get(),
-        window.join_right_var.get(),
-    )
-    window.filter_field_var.set(defaults["filter_field"])
-    window.join_left_var.set(defaults["join_left"])
-    window.join_right_var.set(defaults["join_right"])
-
-    window.remove_invalid_rules_and_outputs()
+    _apply_editor_command(window, {
+        "type": "refresh_fields",
+        "selected_tables": selected_tables,
+        "columns_by_table": window.columns_cache,
+    })
+    _refresh_field_choice_widgets(window)
+    window.refresh_conditions_tree()
+    window.refresh_join_tree()
+    window.refresh_output_fields_listbox()
 
 
 def remove_invalid_rules_and_outputs(window):
-    state = filter_advanced_filter_valid_state(
-        window.conditions,
-        window.join_rules,
-        window.output_fields,
-        window.field_display_cache,
-    )
-    window.conditions = state["conditions"]
-    window.join_rules = state["join_rules"]
-    window.output_fields = state["output_fields"]
+    _apply_editor_command(window, {"type": "filter_valid_state"})
 
     window.refresh_conditions_tree()
     window.refresh_join_tree()
@@ -235,12 +278,16 @@ def add_condition(window):
         if not messagebox.askyesno("确认", "当前条件值为空，是否继续添加？"):
             return
 
-    window.conditions = add_advanced_filter_condition(
-        window.conditions,
-        field,
-        op,
-        value,
-    )
+    result = _apply_editor_command(window, {
+        "type": "add_condition",
+        "field": field,
+        "op": op,
+        "value": value,
+        "allow_empty_value": True,
+    })
+    if not result["ok"]:
+        messagebox.showwarning("提示", _first_issue_message(result))
+        return
 
     window.refresh_conditions_tree()
     window.filter_value_var.set("")
@@ -252,16 +299,16 @@ def delete_selected_condition(window):
         return
 
     indexes = [window.conditions_tree.index(item) for item in selections]
-    window.conditions = remove_advanced_filter_items_by_indexes(
-        window.conditions,
-        indexes,
-    )
+    _apply_editor_command(window, {
+        "type": "delete_conditions",
+        "indexes": indexes,
+    })
 
     window.refresh_conditions_tree()
 
 
 def clear_conditions(window):
-    window.conditions = clear_advanced_filter_items()
+    _apply_editor_command(window, {"type": "clear_conditions"})
     window.refresh_conditions_tree()
 
 
@@ -288,12 +335,16 @@ def add_join_rule(window):
         if not messagebox.askyesno("确认", "左右字段相同，是否仍然添加？"):
             return
 
-    window.join_rules = add_advanced_filter_join_rule(
-        window.join_rules,
-        left,
-        op,
-        right,
-    )
+    result = _apply_editor_command(window, {
+        "type": "add_join_rule",
+        "left": left,
+        "op": op,
+        "right": right,
+        "allow_same_field": True,
+    })
+    if not result["ok"]:
+        messagebox.showwarning("提示", _first_issue_message(result))
+        return
 
     window.refresh_join_tree()
 
@@ -304,16 +355,16 @@ def delete_selected_join_rule(window):
         return
 
     indexes = [window.join_tree.index(item) for item in selections]
-    window.join_rules = remove_advanced_filter_items_by_indexes(
-        window.join_rules,
-        indexes,
-    )
+    _apply_editor_command(window, {
+        "type": "delete_join_rules",
+        "indexes": indexes,
+    })
 
     window.refresh_join_tree()
 
 
 def clear_join_rules(window):
-    window.join_rules = clear_advanced_filter_items()
+    _apply_editor_command(window, {"type": "clear_join_rules"})
     window.refresh_join_tree()
 
 
@@ -332,20 +383,16 @@ def add_output_fields(window):
     if not selections:
         return
 
-    window.output_fields = add_advanced_filter_output_fields(
-        window.output_fields,
-        window.field_display_cache,
-        selections,
-    )
+    _apply_editor_command(window, {
+        "type": "add_output_fields",
+        "indexes": selections,
+    })
 
     window.refresh_output_fields_listbox()
 
 
 def add_all_output_fields(window):
-    window.output_fields = add_all_advanced_filter_output_fields(
-        window.output_fields,
-        window.field_display_cache,
-    )
+    _apply_editor_command(window, {"type": "add_all_output_fields"})
 
     window.refresh_output_fields_listbox()
 
@@ -355,16 +402,16 @@ def remove_output_fields(window):
     if not selections:
         return
 
-    window.output_fields = remove_advanced_filter_output_fields(
-        window.output_fields,
-        selections,
-    )
+    _apply_editor_command(window, {
+        "type": "remove_output_fields",
+        "indexes": selections,
+    })
 
     window.refresh_output_fields_listbox()
 
 
 def clear_output_fields(window):
-    window.output_fields = []
+    _apply_editor_command(window, {"type": "clear_output_fields"})
     window.refresh_output_fields_listbox()
 
 
