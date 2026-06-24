@@ -610,6 +610,57 @@ class Qt6UiShellTests(unittest.TestCase):
         window.close()
         app.processEvents()
 
+    def test_plugin_config_patch_target_focuses_protocol_view_item(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+
+        controller._render_plugin_config_views({
+            "ok": True,
+            "views": [
+                {
+                    "view_id": "demo.summary",
+                    "kind": "summary",
+                    "title": "概览",
+                    "summary": {"状态": "ok"},
+                },
+                {
+                    "view_id": "demo.rules",
+                    "kind": "structured_list",
+                    "title": "规则",
+                    "section": "rules",
+                    "patch_target": {"target_id_fields": ["id"]},
+                    "items": [
+                        {"id": "rule_1", "name": "第一条"},
+                        {"id": "rule_2", "name": "第二条"},
+                    ],
+                    "columns": [
+                        {"key": "name", "label": "名称"},
+                    ],
+                },
+            ],
+        })
+
+        focused = controller._focus_plugin_config_target({
+            "schema_version": "plugin_config_patch_target.v1",
+            "view_id": "demo.rules",
+            "target_id": "rule_2",
+            "can_focus_view": True,
+            "can_focus_item": True,
+        })
+
+        self.assertTrue(focused)
+        self.assertEqual(controller.node_tabs.currentIndex(), 1)
+        self.assertEqual(controller.plugin_config_view_tabs.currentIndex(), 1)
+        table = controller.plugin_config_view_tabs.currentWidget().plugin_config_table
+        self.assertEqual(table.currentRow(), 1)
+        window.close()
+        app.processEvents()
+
     def test_plugin_warning_formatter_uses_target_payload(self):
         try:
             qt = qt_app.load_qt6()

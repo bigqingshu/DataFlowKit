@@ -65,6 +65,7 @@ class QtWorkflowMainWindow:
         self.current_message_panel = {}
         self.data_source_manager_controller = None
         self.node_enabled_icon_cache = {}
+        self.plugin_config_view_widgets_by_id = {}
 
         self._build_ui()
         self.refresh_all()
@@ -1094,6 +1095,7 @@ class QtWorkflowMainWindow:
     def _clear_plugin_config_views(self):
         if not hasattr(self, "plugin_config_view_tabs"):
             return
+        self.plugin_config_view_widgets_by_id = {}
         self.plugin_config_view_tabs.clear()
         self.plugin_config_view_tabs.setVisible(False)
 
@@ -1113,11 +1115,80 @@ class QtWorkflowMainWindow:
             widget = self._make_plugin_config_view_widget(view, described)
             if widget is None:
                 continue
+            widget.plugin_config_view_id = view_id
+            widget.plugin_config_view_kind = kind
+            widget.plugin_config_editor_kind = str(view.get("editor_kind") or "")
             title = str(view.get("title") or view_id or kind or "配置")
             tab_index = self.plugin_config_view_tabs.addTab(widget, title[:24])
+            if view_id:
+                self.plugin_config_view_widgets_by_id[view_id] = widget
             self._apply_plugin_config_tab_warning(tab_index, warnings_by_view.get(view_id) or [])
             added += 1
         self.plugin_config_view_tabs.setVisible(added > 0)
+
+    def _focus_plugin_config_target(self, target):
+        if not isinstance(target, dict) or not target.get("can_focus_view"):
+            return False
+        view_id = str(target.get("view_id") or "").strip()
+        if not view_id or not hasattr(self, "plugin_config_view_tabs"):
+            return False
+        widget = self.plugin_config_view_widgets_by_id.get(view_id)
+        tab_index = -1
+        for index in range(self.plugin_config_view_tabs.count()):
+            tab_widget = self.plugin_config_view_tabs.widget(index)
+            if tab_widget is widget or str(getattr(tab_widget, "plugin_config_view_id", "") or "") == view_id:
+                tab_index = index
+                widget = tab_widget
+                break
+        if tab_index < 0 or widget is None:
+            return False
+        if hasattr(self, "node_tabs") and self.node_tabs.count() > 1:
+            self.node_tabs.setCurrentIndex(1)
+        self.plugin_config_view_tabs.setCurrentIndex(tab_index)
+        self._focus_plugin_config_view_item(widget, target)
+        return True
+
+    def _focus_plugin_config_view_item(self, widget, target):
+        table = getattr(widget, "plugin_config_table", None)
+        if table is None:
+            return False
+        row = self._plugin_config_target_row(widget, target)
+        if row < 0 or row >= table.rowCount():
+            return False
+        table.selectRow(row)
+        table.setFocus()
+        item = table.item(row, 0)
+        if item is not None:
+            table.scrollToItem(item)
+        detail_tabs = getattr(widget, "plugin_config_detail_tabs", None)
+        if detail_tabs is not None:
+            self._refresh_plugin_structured_detail_sections(widget)
+        return True
+
+    def _plugin_config_target_row(self, widget, target):
+        if not isinstance(target, dict):
+            return -1
+        for key in ("to_index", "target_index"):
+            value = target.get(key)
+            if value in (None, ""):
+                continue
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                pass
+        target_id = str(target.get("target_id") or "").strip()
+        if not target_id:
+            return -1
+        items = getattr(widget, "plugin_config_items", []) or []
+        for row, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            if self._plugin_structured_target_id(widget, row) == target_id:
+                return row
+            for field in ("id", "name", "key"):
+                if str(item.get(field) or "").strip() == target_id:
+                    return row
+        return -1
 
     def _plugin_warning_items_by_view(self, described):
         result = {}
@@ -2042,6 +2113,7 @@ class QtWorkflowMainWindow:
         self.node_list.setCurrentRow(index)
         self.show_node_config(index)
         patch_result = result.get("patch_result") if isinstance(result.get("patch_result"), dict) else {}
+        self._focus_plugin_config_target(patch_result.get("target"))
         self.status_bar.showMessage(str(
             patch_result.get("status_message")
             or patch_result.get("message")
