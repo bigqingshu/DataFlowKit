@@ -44,12 +44,19 @@ class DataSourceManagerWindow:
         self.current_table_is_partial = False
         self.current_table_handle = ""
         self.current_display_name = ""
+        self.manager_layout = {}
+        self.manager_ui_hints = {}
+        self.manager_sections_by_id = {}
+        self.manager_action_sections = {}
+        self.action_widgets = {}
+        self.section_widgets = {}
 
         self.window = qt.QtWidgets.QDialog(parent)
         self.window.setWindowTitle("输入数据源管理")
         self.window.resize(1120, 720)
         self._build_ui(db_path=db_path)
         self.set_table(initial_headers or [], initial_rows or [], source=self.current_source, dirty=False)
+        self._refresh_manager_protocol_metadata()
 
     def show(self):
         self.window.show()
@@ -80,7 +87,8 @@ class DataSourceManagerWindow:
         self.db_path_edit = qt.QtWidgets.QLineEdit(str(db_path or ""))
         self.db_path_edit.setPlaceholderText("SQLite 数据库路径")
         self.choose_db_button = qt.QtWidgets.QPushButton("选择")
-        db_row.addWidget(qt.QtWidgets.QLabel("数据库："))
+        self.database_label = qt.QtWidgets.QLabel("数据库：")
+        db_row.addWidget(self.database_label)
         db_row.addWidget(self.db_path_edit, 1)
         db_row.addWidget(self.choose_db_button)
         layout.addLayout(db_row)
@@ -89,7 +97,8 @@ class DataSourceManagerWindow:
         self.refresh_tables_button = qt.QtWidgets.QPushButton("刷新表")
         self.table_combo = qt.QtWidgets.QComboBox()
         self.load_table_button = qt.QtWidgets.QPushButton("载入表")
-        load_table_row.addWidget(qt.QtWidgets.QLabel("选择表："))
+        self.table_loader_label = qt.QtWidgets.QLabel("选择表：")
+        load_table_row.addWidget(self.table_loader_label)
         load_table_row.addWidget(self.table_combo, 1)
         load_table_row.addWidget(self.refresh_tables_button)
         load_table_row.addWidget(self.load_table_button)
@@ -104,7 +113,8 @@ class DataSourceManagerWindow:
         self.next_page_button = qt.QtWidgets.QPushButton("下一页")
         self.load_full_table_button = qt.QtWidgets.QPushButton("载入完整表")
         self.page_status_label = qt.QtWidgets.QLabel("分页预览：未载入")
-        page_row.addWidget(qt.QtWidgets.QLabel("每页："))
+        self.page_size_label = qt.QtWidgets.QLabel("每页：")
+        page_row.addWidget(self.page_size_label)
         page_row.addWidget(self.page_size_spin)
         page_row.addWidget(self.prev_page_button)
         page_row.addWidget(self.next_page_button)
@@ -118,9 +128,11 @@ class DataSourceManagerWindow:
         self._populate_save_modes()
         self.save_button = qt.QtWidgets.QPushButton("保存到 SQLite")
         self.delete_table_button = qt.QtWidgets.QPushButton("删除当前表")
-        save_row.addWidget(qt.QtWidgets.QLabel("保存表名："))
+        self.save_table_name_label = qt.QtWidgets.QLabel("保存表名：")
+        self.save_mode_label = qt.QtWidgets.QLabel("模式：")
+        save_row.addWidget(self.save_table_name_label)
         save_row.addWidget(self.save_table_name_edit, 1)
-        save_row.addWidget(qt.QtWidgets.QLabel("模式："))
+        save_row.addWidget(self.save_mode_label)
         save_row.addWidget(self.save_mode_combo)
         save_row.addWidget(self.save_button)
         save_row.addWidget(self.delete_table_button)
@@ -133,7 +145,8 @@ class DataSourceManagerWindow:
         self.prev_button = qt.QtWidgets.QPushButton("上一个")
         self.next_button = qt.QtWidgets.QPushButton("下一个")
         self.search_status_label = qt.QtWidgets.QLabel("")
-        search_row.addWidget(qt.QtWidgets.QLabel("搜索："))
+        self.search_label = qt.QtWidgets.QLabel("搜索：")
+        search_row.addWidget(self.search_label)
         search_row.addWidget(self.search_edit, 1)
         search_row.addWidget(self.search_button)
         search_row.addWidget(self.prev_button)
@@ -173,8 +186,178 @@ class DataSourceManagerWindow:
         self.next_button.clicked.connect(lambda checked=False: self.goto_search_match(1))
         self.table_model.dataChanged.connect(lambda *_args: self.mark_dirty())
         self.window.finished.connect(lambda *_args: self._release_current_table_handle())
+        self._register_protocol_widgets()
         self.apply_edit_mode()
         self.refresh_table_combo(show_status=False)
+
+    def _register_protocol_widgets(self):
+        self.action_widgets = {
+            "load_clipboard": [self.clipboard_button],
+            "import_file": [self.import_button],
+            "clear_table": [self.clear_button],
+            "promote_first_row": [self.promote_header_button],
+            "apply_to_workflow": [self.apply_input_button],
+            "list_tables": [self.refresh_tables_button],
+            "load_table": [self.load_table_button],
+            "create_table_handle": [self.load_table_button],
+            "get_table_handle_page": [self.prev_page_button, self.next_page_button],
+            "get_table_page": [self.load_full_table_button],
+            "save_sqlite": [self.save_button],
+            "delete_sqlite": [self.delete_table_button],
+            "search_table": [self.search_edit, self.search_button],
+            "build_table_search_navigation": [self.prev_button, self.next_button],
+            "patch_cell": [self.edit_mode_checkbox, self.table_view],
+        }
+        self.section_widgets = {
+            "toolbar": [
+                self.clipboard_button,
+                self.import_button,
+                self.clear_button,
+                self.promote_header_button,
+                self.edit_mode_checkbox,
+                self.apply_input_button,
+            ],
+            "database": [self.database_label, self.db_path_edit, self.choose_db_button, self.refresh_tables_button],
+            "table_loader": [self.table_loader_label, self.table_combo, self.load_table_button],
+            "paging": [
+                self.page_size_label,
+                self.page_size_spin,
+                self.prev_page_button,
+                self.next_page_button,
+                self.load_full_table_button,
+                self.page_status_label,
+            ],
+            "save": [
+                self.save_table_name_label,
+                self.save_table_name_edit,
+                self.save_mode_label,
+                self.save_mode_combo,
+                self.save_button,
+                self.delete_table_button,
+            ],
+            "search": [self.search_label, self.search_edit, self.search_button, self.prev_button, self.next_button, self.search_status_label],
+            "table": [self.table_view],
+            "status": [self.status_label],
+        }
+
+    def _refresh_manager_protocol_metadata(self, manager_state=None):
+        state = manager_state if isinstance(manager_state, dict) else self._describe_data_source_manager_state()
+        layout = state.get("layout") if isinstance(state.get("layout"), dict) else {}
+        ui_hints = state.get("ui_hints") if isinstance(state.get("ui_hints"), dict) else {}
+        if not layout and not ui_hints:
+            return
+        self.manager_layout = copy.deepcopy(layout)
+        self.manager_ui_hints = copy.deepcopy(ui_hints)
+        self.manager_sections_by_id = {
+            str(section.get("section_id") or ""): copy.deepcopy(section)
+            for section in layout.get("sections") or []
+            if isinstance(section, dict) and str(section.get("section_id") or "")
+        }
+        self.manager_action_sections = {}
+        for section_id, section in self.manager_sections_by_id.items():
+            for action_id in section.get("action_ids") or []:
+                action_key = str(action_id or "")
+                if action_key and action_key not in self.manager_action_sections:
+                    self.manager_action_sections[action_key] = section_id
+        self.window.setProperty("data_source_manager_layout_schema", str(layout.get("schema_version") or ""))
+        self.window.setProperty("data_source_manager_ui_hints_schema", str(ui_hints.get("schema_version") or ""))
+        self.window.setProperty("data_source_manager_default_section", str(layout.get("default_section_id") or ui_hints.get("default_focus") or ""))
+        self.window.setProperty("data_source_manager_display_mode", str(ui_hints.get("display_mode") or ""))
+        self._apply_manager_section_hints()
+        self._apply_manager_action_hints()
+
+    def _apply_manager_section_hints(self):
+        section_hints = self.manager_ui_hints.get("section_hints") if isinstance(self.manager_ui_hints, dict) else {}
+        if not isinstance(section_hints, dict):
+            section_hints = {}
+        for section_id, widgets in (self.section_widgets or {}).items():
+            section = self.manager_sections_by_id.get(section_id) or {}
+            hint = section_hints.get(section_id) if isinstance(section_hints.get(section_id), dict) else {}
+            tooltip = self._section_tooltip(section_id, section, hint)
+            for widget in widgets:
+                if widget is None:
+                    continue
+                if hasattr(widget, "setProperty"):
+                    widget.setProperty("data_source_section_id", section_id)
+                    widget.setProperty("data_source_section_role", str(section.get("role") or ""))
+                if tooltip and hasattr(widget, "setToolTip") and not self._widget_action_id(widget):
+                    widget.setToolTip(tooltip)
+
+    def _apply_manager_action_hints(self):
+        for action_id, widgets in (self.action_widgets or {}).items():
+            section_id = self.manager_action_sections.get(action_id, "")
+            tooltip = self._action_tooltip(action_id, section_id)
+            prominence = self._action_prominence(action_id)
+            for widget in widgets:
+                if widget is None:
+                    continue
+                if hasattr(widget, "setProperty"):
+                    widget.setProperty("data_source_action_id", action_id)
+                    widget.setProperty("data_source_section_id", section_id)
+                    widget.setProperty("data_source_prominence", prominence)
+                if tooltip and hasattr(widget, "setToolTip"):
+                    widget.setToolTip(tooltip)
+
+    def _widget_action_id(self, widget):
+        if widget is None or not hasattr(widget, "property"):
+            return ""
+        return str(widget.property("data_source_action_id") or "")
+
+    def _section_tooltip(self, section_id, section, hint):
+        title = str(section.get("title") or section_id or "").strip()
+        role = str(section.get("role") or "").strip()
+        description = str(hint.get("description") or "").strip()
+        warning = str(hint.get("warning") or "").strip()
+        lines = []
+        if title:
+            lines.append(f"区域：{title}")
+        if role:
+            lines.append(f"角色：{role}")
+        if description:
+            lines.append(description)
+        if warning:
+            lines.append(f"警告：{warning}")
+        return "\n".join(lines)
+
+    def _action_tooltip(self, action_id, section_id):
+        service = self.service_description if isinstance(self.service_description, dict) else {}
+        action_schema = service.get("action_schema") if isinstance(service.get("action_schema"), dict) else {}
+        actions = action_schema.get("actions") if isinstance(action_schema.get("actions"), dict) else {}
+        action = actions.get(action_id) if isinstance(actions, dict) else {}
+        if not isinstance(action, dict):
+            table_actions = service.get("table_actions") if isinstance(service.get("table_actions"), dict) else {}
+            data_actions = service.get("data_actions") if isinstance(service.get("data_actions"), dict) else {}
+            action = table_actions.get(action_id) or data_actions.get(action_id) or {}
+        section = self.manager_sections_by_id.get(section_id) or {}
+        section_hints = self.manager_ui_hints.get("section_hints") if isinstance(self.manager_ui_hints, dict) else {}
+        hint = section_hints.get(section_id) if isinstance(section_hints, dict) and isinstance(section_hints.get(section_id), dict) else {}
+        lines = [f"协议动作：{action_id}"]
+        section_title = str(section.get("title") or section_id or "").strip()
+        if section_title:
+            lines.append(f"区域：{section_title}")
+        engine_action = str(action.get("engine_action") or "").strip()
+        if engine_action:
+            lines.append(f"服务动作：{engine_action}")
+        prominence = self._action_prominence(action_id)
+        if prominence:
+            lines.append(f"显示优先级：{prominence}")
+        result = str(action.get("result") or "").strip()
+        if result:
+            lines.append(f"结果：{result}")
+        if action.get("requires_confirmation"):
+            lines.append("需要确认")
+        description = str(hint.get("description") or "").strip()
+        warning = str(hint.get("warning") or "").strip()
+        if description:
+            lines.append(description)
+        if warning:
+            lines.append(f"警告：{warning}")
+        return "\n".join(lines)
+
+    def _action_prominence(self, action_id):
+        hints = self.manager_ui_hints if isinstance(self.manager_ui_hints, dict) else {}
+        prominence = hints.get("action_prominence") if isinstance(hints.get("action_prominence"), dict) else {}
+        return str(prominence.get(action_id) or "normal")
 
     def current_table(self):
         headers, rows = self.table_model.table_data()
