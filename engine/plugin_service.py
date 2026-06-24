@@ -520,6 +520,7 @@ class PluginService:
                 "title": "配置效果",
                 "kind": "summary",
                 "summary": _plugin_config_effect_summary(config_effect),
+                "state": copy.deepcopy(config_effect.get("effect_state") or {}),
             }], "view_id")
         if resources:
             views.append({
@@ -1171,6 +1172,7 @@ def _preview_plugin_config_effect_extension(module, params, context, *, plugin_i
     payload.setdefault("required_input_tables", [])
     payload.setdefault("expected_output_fields", [])
     payload.setdefault("side_effects", [])
+    payload["effect_state"] = _plugin_config_effect_state(payload)
     return payload
 
 
@@ -1673,6 +1675,84 @@ def _plugin_config_effect_summary(effect):
         if value not in (None, "", [], {}):
             result[label] = copy.deepcopy(value)
     return result
+
+
+def _plugin_config_effect_state(effect):
+    effect = effect if isinstance(effect, dict) else {}
+    summary = _plugin_config_effect_summary(effect)
+    required_tables = [
+        copy.deepcopy(item)
+        for item in (effect.get("required_input_tables") or [])
+        if isinstance(item, dict)
+    ]
+    output_fields = [
+        str(item)
+        for item in (effect.get("expected_output_fields") or [])
+        if str(item).strip()
+    ]
+    side_effects = [
+        copy.deepcopy(item)
+        for item in (effect.get("side_effects") or [])
+        if isinstance(item, dict)
+    ]
+    warnings = list(effect.get("warnings") or [])
+    issues = list(effect.get("issues") or [])
+    if issues:
+        status = "error"
+    elif warnings:
+        status = "warning"
+    else:
+        status = "ok"
+    summary_rows = [
+        {"key": str(key), "label": str(key), "value": copy.deepcopy(value)}
+        for key, value in summary.items()
+    ]
+    table_rows = []
+    for item in required_tables:
+        alias = str(item.get("alias") or "").strip()
+        role = str(item.get("role") or "").strip()
+        try:
+            row_count = int(item.get("row_count") or 0)
+        except Exception:
+            row_count = 0
+        available = bool(item.get("available", bool(row_count or item.get("headers"))))
+        table_rows.append({
+            "alias": alias,
+            "role": role,
+            "required": bool(item.get("required", True)),
+            "available": available,
+            "row_count": row_count,
+            "headers": [str(header) for header in (item.get("headers") or [])],
+        })
+    return {
+        "schema_version": "plugin_config_effect_state.v1",
+        "plugin_id": str(effect.get("plugin_id") or "").strip(),
+        "effect_schema_version": str(effect.get("schema_version") or "").strip(),
+        "protocol_family": str(effect.get("protocol_family") or "").strip(),
+        "config_key": str(effect.get("config_key") or "").strip(),
+        "status": status,
+        "status_message": _plugin_config_effect_status_message(status, table_rows, output_fields, side_effects, warnings, issues),
+        "summary": summary,
+        "summary_rows": summary_rows,
+        "required_input_tables": table_rows,
+        "expected_output_fields": output_fields,
+        "side_effects": side_effects,
+        "warning_count": len(warnings),
+        "issue_count": len(issues),
+    }
+
+
+def _plugin_config_effect_status_message(status, table_rows, output_fields, side_effects, warnings, issues):
+    if status == "error":
+        return f"配置效果预览存在问题：{len(issues)} 项。"
+    parts = [
+        f"输入表 {len(table_rows)} 个",
+        f"输出字段 {len(output_fields)} 个",
+        f"运行影响 {len(side_effects)} 项",
+    ]
+    if status == "warning":
+        parts.append(f"提示 {len(warnings)} 项")
+    return "配置效果预览：" + "，".join(parts) + "。"
 
 
 def _normalize_plugin_config_warning_items(warnings, *, plugin_id="", source="plugin_config"):

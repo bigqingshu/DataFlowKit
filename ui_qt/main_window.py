@@ -1149,7 +1149,16 @@ class QtWorkflowMainWindow:
     def _make_plugin_config_view_widget(self, view, described):
         kind = str(view.get("kind") or "")
         if kind == "summary":
-            return self._make_plugin_summary_widget(view.get("summary") or described.get("summary") or (described.get("plugin_extension") or {}).get("summary") or {})
+            summary = copy.deepcopy(
+                view.get("summary")
+                or described.get("summary")
+                or (described.get("plugin_extension") or {}).get("summary")
+                or {}
+            )
+            state = view.get("state") if isinstance(view.get("state"), dict) else {}
+            if state.get("schema_version") == "plugin_config_effect_state.v1" and state.get("status_message"):
+                summary.setdefault("状态", state.get("status_message"))
+            return self._make_plugin_summary_widget(summary)
         if kind == "form":
             return self._make_plugin_form_view_widget(view)
         if kind == "structured_list":

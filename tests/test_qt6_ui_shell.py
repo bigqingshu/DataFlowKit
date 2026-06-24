@@ -332,6 +332,12 @@ class Qt6UiShellTests(unittest.TestCase):
             effect_table = effect_page if isinstance(effect_page, qt.QtWidgets.QTableWidget) else effect_page.findChild(qt.QtWidgets.QTableWidget)
             self.assertIsNotNone(effect_table)
             self.assertEqual(effect_table.item(0, 0).text(), "items")
+            effect_rows = {
+                effect_table.item(row, 0).text(): effect_table.item(row, 1).text()
+                for row in range(effect_table.rowCount())
+                if effect_table.item(row, 0) is not None and effect_table.item(row, 1) is not None
+            }
+            self.assertIn("配置效果预览：", effect_rows["状态"])
             items_page = controller.plugin_config_view_tabs.widget(items_tab_index)
             items_table = items_page.findChild(qt.QtWidgets.QTableWidget)
             self.assertIsNotNone(items_table)

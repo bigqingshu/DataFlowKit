@@ -690,7 +690,7 @@ def preview_config_effect(params, context):
             field="source_locator.sheet_name",
         ))
 
-    return {
+    result = {
         "schema_version": "DataFlowKit.visual_mapping.config_effect.v1",
         "protocol_family": CONFIG_PROTOCOL_FAMILY,
         "plugin_id": PLUGIN_INFO["id"],
@@ -729,6 +729,74 @@ def preview_config_effect(params, context):
         "warnings": _normalize_config_warnings(warnings),
         "issues": [],
     }
+    result["effect_state"] = _visual_mapping_config_effect_state(result)
+    return result
+
+
+def _visual_mapping_config_effect_state(effect):
+    effect = effect if isinstance(effect, dict) else {}
+    warnings = list(effect.get("warnings") or [])
+    issues = list(effect.get("issues") or [])
+    if issues:
+        status = "error"
+    elif warnings:
+        status = "warning"
+    else:
+        status = "ok"
+    output_fields = [str(item) for item in (effect.get("expected_output_fields") or []) if str(item).strip()]
+    side_effects = [copy.deepcopy(item) for item in (effect.get("side_effects") or []) if isinstance(item, dict)]
+    table_rows = []
+    for item in effect.get("required_input_tables") or []:
+        if not isinstance(item, dict):
+            continue
+        table_rows.append({
+            "alias": _as_text(item.get("alias")),
+            "role": _as_text(item.get("role")),
+            "required": bool(item.get("required", True)),
+            "available": bool(item.get("available")),
+            "row_count": int(item.get("row_count") or 0),
+            "headers": [str(header) for header in (item.get("headers") or [])],
+        })
+    summary = copy.deepcopy(effect.get("summary") or {})
+    return {
+        "schema_version": "plugin_config_effect_state.v1",
+        "plugin_id": _as_text(effect.get("plugin_id")),
+        "effect_schema_version": _as_text(effect.get("schema_version")),
+        "protocol_family": _as_text(effect.get("protocol_family")),
+        "config_key": _as_text(effect.get("config_key")),
+        "status": status,
+        "status_message": _visual_mapping_config_effect_status_message(
+            status,
+            table_rows,
+            output_fields,
+            side_effects,
+            warnings,
+            issues,
+        ),
+        "summary": summary,
+        "summary_rows": [
+            {"key": str(key), "label": str(key), "value": copy.deepcopy(value)}
+            for key, value in summary.items()
+        ],
+        "required_input_tables": table_rows,
+        "expected_output_fields": output_fields,
+        "side_effects": side_effects,
+        "warning_count": len(warnings),
+        "issue_count": len(issues),
+    }
+
+
+def _visual_mapping_config_effect_status_message(status, table_rows, output_fields, side_effects, warnings, issues):
+    if status == "error":
+        return f"配置效果预览存在问题：{len(issues)} 项。"
+    parts = [
+        f"输入表 {len(table_rows)} 个",
+        f"输出字段 {len(output_fields)} 个",
+        f"运行影响 {len(side_effects)} 项",
+    ]
+    if status == "warning":
+        parts.append(f"提示 {len(warnings)} 项")
+    return "配置效果预览：" + "，".join(parts) + "。"
 
 
 def _visual_mapping_item_schema_columns(

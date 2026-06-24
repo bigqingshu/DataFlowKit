@@ -363,9 +363,18 @@ class PluginServiceTests(unittest.TestCase):
         self.assertTrue(described["capabilities"]["config_patch"])
         self.assertTrue(described["capabilities"]["config_effect_preview"])
         self.assertEqual(described["config_effect"]["schema_version"], "demo.effect.v1")
-        self.assertIn("plugin.config_effect", [view["view_id"] for view in described["views"]])
+        view_by_id = {view["view_id"]: view for view in described["views"]}
+        self.assertIn("plugin.config_effect", view_by_id)
+        effect_state = described["config_effect"]["effect_state"]
+        self.assertEqual(effect_state["schema_version"], "plugin_config_effect_state.v1")
+        self.assertEqual(effect_state["status"], "ok")
+        self.assertEqual(effect_state["expected_output_fields"], ["A", "B"])
+        self.assertEqual(effect_state["required_input_tables"][0]["alias"], "当前表")
+        self.assertEqual(effect_state["side_effects"][0]["kind"], "read_input_tables")
+        self.assertEqual(view_by_id["plugin.config_effect"]["state"]["schema_version"], "plugin_config_effect_state.v1")
         self.assertTrue(effect["ok"])
         self.assertEqual(effect["expected_output_fields"], ["A", "B"])
+        self.assertEqual(effect["effect_state"]["status_message"], "配置效果预览：输入表 1 个，输出字段 2 个，运行影响 1 项。")
         self.assertEqual(described["plugin_extension"]["schema_version"], "demo.config.v1")
         self.assertIn("demo.items", [view["view_id"] for view in described["views"]])
         self.assertIn("demo.resource", [resource["resource_id"] for resource in described["resources"]])
@@ -532,6 +541,7 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(applied["result"]["description"]["plugin_extension"]["summary"]["mode"], "stdio")
         self.assertTrue(effect["ok"])
         self.assertEqual(effect["result"]["schema_version"], "patch_demo.effect.v1")
+        self.assertEqual(effect["result"]["effect_state"]["schema_version"], "plugin_config_effect_state.v1")
         self.assertEqual(effect["result"]["summary"]["mode"], "old")
 
     def test_external_process_plugin_runs_through_service(self):
