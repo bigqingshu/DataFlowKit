@@ -383,11 +383,26 @@ def describe_config(params, context):
         }
         for spec in editor_specs
     ]
+    patch_schema = _visual_mapping_patch_schema(
+        config_name,
+        operations=patch_operations,
+        sections=patch_sections,
+    )
+    warning_schema = _visual_mapping_warning_schema(config_name)
+    protocol_manifest = _visual_mapping_protocol_manifest(
+        config_name,
+        views=views,
+        actions=actions,
+        models=models,
+        patch_schema=patch_schema,
+        warning_schema=warning_schema,
+    )
     return {
         "schema_version": CONFIG_SCHEMA_VERSION,
         "protocol_family": CONFIG_PROTOCOL_FAMILY,
         "plugin_id": PLUGIN_INFO["id"],
         "config_key": config_name,
+        "protocol_manifest": protocol_manifest,
         "summary": summary,
         "views": views,
         "actions": actions,
@@ -413,12 +428,8 @@ def describe_config(params, context):
             },
         },
         "models": models,
-        "patch_schema": _visual_mapping_patch_schema(
-            config_name,
-            operations=patch_operations,
-            sections=patch_sections,
-        ),
-        "warning_schema": _visual_mapping_warning_schema(config_name),
+        "patch_schema": patch_schema,
+        "warning_schema": warning_schema,
         "warnings": _normalize_config_warnings(context.get("settings_warnings") or []),
         "capabilities": {
             "schema_config": True,
@@ -426,11 +437,87 @@ def describe_config(params, context):
             "config_patch": True,
             "config_effect_preview": True,
             "preview_config_effect": True,
+            "protocol_manifest": True,
             "structured_warnings": True,
             "legacy_custom_config": True,
             "supported_sections": sorted(CONFIG_SECTIONS),
             "supported_patch_operations": patch_operations,
             "view_kinds": ["summary", "structured_list"],
+        },
+    }
+
+
+def _visual_mapping_protocol_manifest(config_name, *, views=None, actions=None, models=None, patch_schema=None, warning_schema=None):
+    view_items = []
+    for view in views or []:
+        if not isinstance(view, dict):
+            continue
+        item_schema = view.get("item_schema") if isinstance(view.get("item_schema"), dict) else {}
+        detail_sections = [
+            str(section.get("key") or "").strip()
+            for section in item_schema.get("detail_sections") or []
+            if isinstance(section, dict) and str(section.get("key") or "").strip()
+        ]
+        view_items.append({
+            "view_id": view.get("view_id"),
+            "title": view.get("title"),
+            "kind": view.get("kind"),
+            "editor_kind": view.get("editor_kind"),
+            "section": view.get("section"),
+            "config_path": copy.deepcopy(view.get("config_path") or []),
+            "item_model_key": view.get("item_model_key"),
+            "detail_sections": detail_sections,
+            "patch_operations": copy.deepcopy(view.get("patch_operations") or []),
+        })
+    action_items = []
+    for action in actions or []:
+        if not isinstance(action, dict):
+            continue
+        action_items.append({
+            "action_id": action.get("action_id"),
+            "kind": action.get("kind"),
+            "view_id": action.get("view_id"),
+            "config_path": copy.deepcopy(action.get("config_path") or []),
+        })
+    patch_schema = patch_schema if isinstance(patch_schema, dict) else {}
+    warning_schema = warning_schema if isinstance(warning_schema, dict) else {}
+    return {
+        "schema_version": "DataFlowKit.visual_mapping.protocol_manifest.v1",
+        "protocol_family": CONFIG_PROTOCOL_FAMILY,
+        "plugin_id": PLUGIN_INFO["id"],
+        "config_key": config_name,
+        "interfaces": {
+            "describe_config": True,
+            "validate_config_patch": True,
+            "apply_config_patch": True,
+            "preview_config_effect": True,
+        },
+        "views": view_items,
+        "actions": action_items,
+        "models": sorted((models or {}).keys()),
+        "patch": {
+            "schema_version": patch_schema.get("schema_version"),
+            "kind": patch_schema.get("kind"),
+            "operations": [
+                operation.get("operation")
+                for operation in patch_schema.get("operations") or []
+                if isinstance(operation, dict) and operation.get("operation")
+            ],
+            "sections": sorted((patch_schema.get("sections") or {}).keys()),
+        },
+        "warnings": {
+            "schema_version": warning_schema.get("schema_version"),
+            "kind": warning_schema.get("kind"),
+            "fields": [
+                field.get("key")
+                for field in warning_schema.get("fields") or []
+                if isinstance(field, dict) and field.get("key")
+            ],
+        },
+        "config_effect": {
+            "schema_version": "DataFlowKit.visual_mapping.config_effect.v1",
+            "provider": "preview_config_effect",
+            "view_id": "plugin.config_effect",
         },
     }
 

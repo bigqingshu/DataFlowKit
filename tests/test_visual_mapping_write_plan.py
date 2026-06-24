@@ -240,7 +240,21 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertTrue(described["capabilities"]["config_patch"])
         self.assertTrue(described["capabilities"]["config_effect_preview"])
         self.assertTrue(described["capabilities"]["structured_warnings"])
+        self.assertTrue(described["capabilities"]["protocol_manifest"])
         self.assertIn("rules", described["capabilities"]["supported_sections"])
+        manifest = described["protocol_manifest"]
+        self.assertEqual(manifest["schema_version"], "DataFlowKit.visual_mapping.protocol_manifest.v1")
+        self.assertTrue(manifest["interfaces"]["describe_config"])
+        self.assertTrue(manifest["interfaces"]["preview_config_effect"])
+        manifest_views = {view["view_id"]: view for view in manifest["views"]}
+        self.assertEqual(manifest_views["visual_mapping.rules"]["section"], "rules")
+        self.assertIn("source_match", manifest_views["visual_mapping.rules"]["detail_sections"])
+        self.assertIn("actions", manifest_views["visual_mapping.linked_rules"]["detail_sections"])
+        self.assertIn("rule_default", manifest["models"])
+        self.assertIn("replace_item", manifest["patch"]["operations"])
+        self.assertIn("rules", manifest["patch"]["sections"])
+        self.assertIn("config_path", manifest["warnings"]["fields"])
+        self.assertEqual(manifest["config_effect"]["provider"], "preview_config_effect")
         self.assertEqual(described["warnings"][0]["message"], "测试警告")
         self.assertEqual(described["warnings"][0]["plugin_id"], visual.PLUGIN_INFO["id"])
         self.assertEqual(described["warnings"][0]["view_id"], "visual_mapping.overview")
@@ -514,6 +528,11 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertEqual(standard_updated["description"]["summary"]["rules"], 2)
         self.assertIn("linked_rule_default", standard_updated["description"]["models"])
         self.assertTrue(standard_updated["description"]["capabilities"]["config_patch"])
+        self.assertEqual(
+            standard_updated["description"]["protocol_manifest"]["patch"]["sections"],
+            ["features", "global_rules", "linked_rules", "rules"],
+        )
+        self.assertTrue(standard_updated["description"]["protocol_manifest"]["interfaces"]["apply_config_patch"])
         service_patch_schema = standard_updated["description"]["plugin_extension"]["patch_schema"]
         self.assertEqual(service_patch_schema["kind"], "config_patch")
         self.assertEqual(service_patch_schema["sections"]["rules"]["model_key"], "rule_default")

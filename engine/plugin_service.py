@@ -566,6 +566,7 @@ class PluginService:
             "summary": copy.deepcopy(plugin_extension.get("summary") or {}),
             "context": copy.deepcopy(plugin_extension.get("context") or {}),
             "models": copy.deepcopy(plugin_extension.get("models") or {}),
+            "protocol_manifest": copy.deepcopy(plugin_extension.get("protocol_manifest") or {}),
             "capabilities": combined_capabilities,
             "warnings": warning_messages,
             "warning_items": warning_items,
