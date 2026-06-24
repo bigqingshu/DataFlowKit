@@ -24,6 +24,7 @@ class AdvancedFilterCommandServiceTests(unittest.TestCase):
         self.assertIn("add_output_fields", service["commands"])
         self.assertIn("build_preview", service["commands"])
         self.assertIn("apply_template", service["commands"])
+        self.assertIn("save_preview_to_table", service["commands"])
         self.assertEqual(service["command_schema"], ADVANCED_FILTER_COMMAND_SCHEMA_VERSION)
         self.assertEqual(service["command_schema_detail"]["schema_version"], ADVANCED_FILTER_COMMAND_SCHEMA_VERSION)
         self.assertEqual(service["layout"]["schema_version"], ADVANCED_FILTER_LAYOUT_SCHEMA_VERSION)
@@ -32,11 +33,14 @@ class AdvancedFilterCommandServiceTests(unittest.TestCase):
         self.assertEqual(service["layout"]["default_section_id"], "conditions")
         self.assertEqual(service["command_schema_detail"]["commands"]["add_condition"]["section_id"], "conditions")
         self.assertEqual(service["command_schema_detail"]["commands"]["add_join_rule"]["requires_confirmation_when"], ["same_join_field"])
+        self.assertEqual(service["command_schema_detail"]["commands"]["save_preview_to_table"]["result"], "advanced_filter_save_result")
         self.assertEqual(service["ui_hints"]["command_prominence"]["build_preview"], "primary")
+        self.assertEqual(service["ui_hints"]["command_prominence"]["save_preview_to_table"], "primary")
         self.assertEqual(
             service["result_schemas"]["advanced_filter_layout"]["schema_version"],
             ADVANCED_FILTER_LAYOUT_SCHEMA_VERSION,
         )
+        self.assertEqual(service["result_schemas"]["advanced_filter_save_result"]["schema_version"], "advanced_filter_save_result.v1")
 
     def test_describe_state_builds_fields_and_combo_defaults(self):
         state = describe_advanced_filter_state(
@@ -333,6 +337,40 @@ class AdvancedFilterCommandServiceTests(unittest.TestCase):
         self.assertEqual(loaded["template_file"]["action"], "load")
         self.assertEqual(loaded["state"]["conditions"], [{"field": "orders.id", "op": "等于", "value": "1"}])
         self.assertEqual(loaded["state"]["output_fields"], ["orders.name"])
+
+    def test_save_preview_to_table_command_uses_shared_table_service(self):
+        state = {
+            "preview_headers": ["orders.id", "orders.name"],
+            "preview_rows": [["1", "Alpha"], ["2", "Beta"]],
+            "save_table": "filtered",
+        }
+
+        with TemporaryDirectory() as temp_dir:
+            db_path = str(Path(temp_dir) / "filtered.db")
+            saved = apply_advanced_filter_command(state, {
+                "type": "save_preview_to_table",
+                "db_path": db_path,
+                "mode": "fail",
+            })
+
+        self.assertTrue(saved["ok"])
+        self.assertEqual(saved["save_result"]["schema_version"], "advanced_filter_save_result.v1")
+        self.assertEqual(saved["save_result"]["table_name"], "filtered")
+        self.assertEqual(saved["save_result"]["row_count"], 2)
+        self.assertEqual(saved["save_result"]["column_count"], 2)
+
+    def test_save_preview_to_table_reports_structured_issues(self):
+        result = apply_advanced_filter_command({}, {
+            "type": "save_preview_to_table",
+            "db_path": "",
+            "table_name": "",
+        })
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            [issue["code"] for issue in result["issues"]],
+            ["missing_preview", "missing_save_table", "missing_db_path"],
+        )
 
 
 if __name__ == "__main__":

@@ -302,6 +302,11 @@ include `file_dialog` hints such as title, filter list, and open/save mode, but
 the engine owns JSON read/write, backup recovery warnings, template filtering,
 and issue reporting.
 
+The same service also exposes preview result commands. `save_preview_to_table`
+accepts `db_path`, `table_name`, and `mode`, writes through the shared table data
+service, and returns `advanced_filter_save_result.v1` with the actual table
+name, row count, column count, and SQLite source payload.
+
 Recommended actions:
 
 - `list_node_types`

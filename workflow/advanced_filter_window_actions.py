@@ -19,7 +19,6 @@ from workflow.advanced_filter_window_logic import (
     format_advanced_filter_db_value,
     get_advanced_filter_output_fields,
     load_advanced_filter_table_records,
-    normalize_advanced_filter_save_table_name,
     parse_advanced_filter_number,
     parse_positive_int_setting,
 )
@@ -586,18 +585,20 @@ def save_result_to_table(window):
     if not window.preview_headers:
         return
 
-    save_name = normalize_advanced_filter_save_table_name(window.save_table_var.get())
-    if not save_name:
-        messagebox.showwarning("提示", "请填写保存的新表名。")
-        return
-
     try:
-        table_name, row_count = window.app.save_rows_to_sqlite_table(
-            table_name_raw=save_name,
-            headers=window.preview_headers,
-            rows=window.preview_rows,
-            recreate=False
-        )
+        result = _apply_editor_command(window, {
+            "type": "save_preview_to_table",
+            "db_path": window.app.get_db_path(),
+            "table_name": _var_get(window.save_table_var),
+            "mode": "timestamp",
+        })
+        if not result["ok"]:
+            messagebox.showwarning("提示", _first_issue_message(result))
+            return
+
+        saved = result.get("save_result") or {}
+        table_name = saved.get("table_name") or _var_get(window.save_table_var)
+        row_count = saved.get("row_count", len(window.preview_rows))
 
         window.status_var.set(f"保存成功：{table_name}，{row_count} 行。")
         messagebox.showinfo(

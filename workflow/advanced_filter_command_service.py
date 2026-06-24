@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 
 from engine.issue_schema import has_error_issues, make_issue
+from engine.table_data_service import TableDataService
 from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
 from workflow.advanced_filter_window_logic import (
     add_advanced_filter_condition,
@@ -22,6 +23,7 @@ from workflow.advanced_filter_window_logic import (
     filter_advanced_filter_valid_state,
     get_advanced_filter_output_fields,
     normalize_advanced_filter_template_data,
+    normalize_advanced_filter_save_table_name,
     remove_advanced_filter_items_by_indexes,
     remove_advanced_filter_output_fields,
     select_advanced_filter_combo_defaults,
@@ -71,6 +73,7 @@ def describe_advanced_filter_service():
             "apply_template",
             "save_template_file",
             "load_template_file",
+            "save_preview_to_table",
         ],
         "command_ids": list(command_schema.get("command_ids") or []),
         "result_schemas": {
@@ -81,6 +84,7 @@ def describe_advanced_filter_service():
             "advanced_filter_preview": {"schema_version": "advanced_filter_preview.v1"},
             "advanced_filter_template": {"schema_version": "advanced_filter_template.v1"},
             "advanced_filter_template_file": {"schema_version": "advanced_filter_template_file.v1"},
+            "advanced_filter_save_result": {"schema_version": "advanced_filter_save_result.v1"},
             "main_preview_snapshot": {"schema_version": "main_preview_snapshot.v1"},
         },
     }
@@ -240,6 +244,16 @@ def describe_advanced_filter_command_schema():
             },
             "result": "advanced_filter_template_file",
         },
+        "save_preview_to_table": {
+            "section_id": "preview",
+            "label": "保存预览到 SQLite 表",
+            "inputs": [
+                {"key": "db_path", "type": "db_path", "required": True},
+                {"key": "table_name", "type": "text", "required": True},
+                {"key": "mode", "type": "select", "default": "timestamp"},
+            ],
+            "result": "advanced_filter_save_result",
+        },
     }
     return {
         "schema_version": ADVANCED_FILTER_COMMAND_SCHEMA_VERSION,
@@ -291,7 +305,7 @@ def describe_advanced_filter_layout():
             "title": "预览结果",
             "role": "preview",
             "state_keys": ["preview_headers", "preview_rows"],
-            "command_ids": ["build_preview", "dedupe_preview", "build_main_preview_snapshot"],
+            "command_ids": ["build_preview", "dedupe_preview", "build_main_preview_snapshot", "save_preview_to_table"],
         },
         {
             "section_id": "templates",
@@ -337,7 +351,7 @@ def describe_advanced_filter_ui_hints():
                 "description": "控制预览行数和中间组合上限，避免大表匹配卡顿。",
             },
             "preview": {
-                "description": "生成、去重并载入预览结果；可复用已生成的 preview_headers/preview_rows。",
+                "description": "生成、去重、载入或保存预览结果；可复用已生成的 preview_headers/preview_rows。",
                 "empty_text": "请先生成预览结果。",
             },
             "templates": {
@@ -347,6 +361,7 @@ def describe_advanced_filter_ui_hints():
         "command_prominence": {
             "build_preview": "primary",
             "build_main_preview_snapshot": "primary",
+            "save_preview_to_table": "primary",
             "add_condition": "secondary",
             "add_join_rule": "secondary",
             "add_output_fields": "secondary",
@@ -639,6 +654,42 @@ def apply_advanced_filter_command(state, command):
             except Exception as exc:
                 issues.append(_issue("error", "load_template_file_failed", str(exc), path="/command/path"))
 
+    elif command_type == "save_preview_to_table":
+        if not current["preview_headers"]:
+            issues.append(_issue("error", "missing_preview", "请先预览结果。", path="/state/preview_headers"))
+        table_name = normalize_advanced_filter_save_table_name(
+            command.get("table_name") if command.get("table_name") is not None else current.get("save_table")
+        )
+        if not table_name:
+            issues.append(_issue("error", "missing_save_table", "请填写保存的新表名。", path="/command/table_name"))
+        db_path = str(command.get("db_path") or "").strip()
+        if not db_path:
+            issues.append(_issue("error", "missing_db_path", "保存 SQLite 表需要数据库路径。", path="/command/db_path"))
+        if not has_error_issues(issues):
+            table_payload = {
+                "type": "table",
+                "headers": list(current["preview_headers"]),
+                "rows": _row_list(current["preview_rows"]),
+            }
+            saved = TableDataService(db_path=db_path).save_table(
+                table_payload,
+                db_path=db_path,
+                table_name=table_name,
+                mode=command.get("mode", "timestamp"),
+            )
+            issues.extend(copy.deepcopy(saved.get("issues") or []))
+            if saved.get("ok"):
+                command["_save_result"] = {
+                    "schema_version": "advanced_filter_save_result.v1",
+                    "db_path": saved.get("db_path") or db_path,
+                    "table_name": saved.get("table_name") or table_name,
+                    "mode": saved.get("mode") or command.get("mode", "timestamp"),
+                    "row_count": len(current["preview_rows"]),
+                    "column_count": len(current["preview_headers"]),
+                    "source": copy.deepcopy(saved.get("source") or {}),
+                    "service_result": copy.deepcopy(saved.get("service_result") or {}),
+                }
+
     else:
         issues.append(_issue("error", "unknown_command", f"未知高级筛选 command：{command_type}", path="/command/type"))
 
@@ -777,6 +828,10 @@ def _command_extra(state, command_type, command=None):
         command = command or {}
         if command.get("_template_file_result"):
             return {"template_file": copy.deepcopy(command.get("_template_file_result"))}
+    if command_type == "save_preview_to_table":
+        command = command or {}
+        if command.get("_save_result"):
+            return {"save_result": copy.deepcopy(command.get("_save_result"))}
     return {}
 
 

@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from workflow import advanced_filter_window_actions as actions
@@ -79,7 +81,7 @@ class FakeTree:
 
 
 class FakeWindow:
-    def __init__(self):
+    def __init__(self, db_path="fake.db"):
         self.app = type("FakeApp", (), {})()
         self.app.headers = []
         self.app.rows = []
@@ -87,9 +89,8 @@ class FakeWindow:
         self.app.info_var = FakeVar()
         self.app.refresh_tree_called = False
         self.app.refresh_tree = lambda: setattr(self.app, "refresh_tree_called", True)
-        self.app.save_rows_to_sqlite_table = lambda **kwargs: ("saved_table", len(kwargs["rows"]))
         self.app.format_db_value = lambda value: "" if value is None else str(value)
-        self.app.get_db_path = lambda: "fake.db"
+        self.app.get_db_path = lambda: db_path
         self.app.get_table_columns = lambda table: ["id", "name"]
         self.app.get_table_names = lambda: ["orders", "people"]
 
@@ -313,14 +314,15 @@ class AdvancedFilterWindowActionsTests(unittest.TestCase):
         self.assertTrue(window.app.refresh_tree_called)
 
     def test_save_result_and_template_actions(self):
-        window = FakeWindow()
-        window.preview_headers = ["orders.id"]
-        window.preview_rows = [["1"], ["2"]]
+        with TemporaryDirectory() as temp_dir:
+            window = FakeWindow(str(Path(temp_dir) / "advanced_filter.db"))
+            window.preview_headers = ["orders.id"]
+            window.preview_rows = [["1"], ["2"]]
 
-        with patch.object(actions.messagebox, "showinfo") as showinfo:
-            actions.save_result_to_table(window)
+            with patch.object(actions.messagebox, "showinfo") as showinfo:
+                actions.save_result_to_table(window)
         showinfo.assert_called_once()
-        self.assertEqual(window.status_var.get(), "保存成功：saved_table，2 行。")
+        self.assertEqual(window.status_var.get(), "保存成功：out，2 行。")
         self.assertTrue(window.refresh_tables_called)
 
         data = actions.export_template_data(window)

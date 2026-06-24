@@ -203,6 +203,8 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertEqual(context["ui_hints"]["schema_version"], "advanced_filter_ui_hints.v1")
         self.assertEqual(context["layout"]["default_section_id"], "conditions")
         self.assertEqual(context["command_schema"]["commands"]["build_preview"]["section_id"], "preview")
+        self.assertEqual(context["command_schema"]["commands"]["save_preview_to_table"]["section_id"], "preview")
+        self.assertEqual(context["command_schema"]["commands"]["save_preview_to_table"]["result"], "advanced_filter_save_result")
         self.assertEqual(context["selected_tables"], ["当前表", "lookup", "中转:cached"])
         self.assertEqual(
             context["available_fields"],
