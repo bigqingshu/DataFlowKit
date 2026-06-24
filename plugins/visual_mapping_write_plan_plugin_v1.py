@@ -411,6 +411,8 @@ def describe_config(params, context):
         sections=patch_sections,
     )
     warning_schema = _visual_mapping_warning_schema(config_name)
+    layout = _visual_mapping_config_layout(views)
+    ui_hints = _visual_mapping_config_ui_hints(views)
     protocol_manifest = _visual_mapping_protocol_manifest(
         config_name,
         views=views,
@@ -418,6 +420,8 @@ def describe_config(params, context):
         models=models,
         patch_schema=patch_schema,
         warning_schema=warning_schema,
+        layout=layout,
+        ui_hints=ui_hints,
     )
     return {
         "schema_version": CONFIG_SCHEMA_VERSION,
@@ -428,6 +432,8 @@ def describe_config(params, context):
         "summary": summary,
         "views": views,
         "actions": actions,
+        "layout": layout,
+        "ui_hints": ui_hints,
         "context": {
             "table_names": table_names,
             "doc_headers": list(doc_table.get("headers", []) or []),
@@ -461,6 +467,8 @@ def describe_config(params, context):
             "preview_config_effect": True,
             "protocol_manifest": True,
             "structured_warnings": True,
+            "layout_hints": True,
+            "ui_hints": True,
             "legacy_custom_config": True,
             "supported_sections": sorted(CONFIG_SECTIONS),
             "supported_patch_operations": patch_operations,
@@ -530,7 +538,17 @@ def resolve_config_options(params, context, field_key="", current_values=None, v
     }
 
 
-def _visual_mapping_protocol_manifest(config_name, *, views=None, actions=None, models=None, patch_schema=None, warning_schema=None):
+def _visual_mapping_protocol_manifest(
+    config_name,
+    *,
+    views=None,
+    actions=None,
+    models=None,
+    patch_schema=None,
+    warning_schema=None,
+    layout=None,
+    ui_hints=None,
+):
     view_items = []
     for view in views or []:
         if not isinstance(view, dict):
@@ -603,10 +621,121 @@ def _visual_mapping_protocol_manifest(config_name, *, views=None, actions=None, 
                 if isinstance(field, dict) and field.get("key")
             ],
         },
+        "layout": {
+            "schema_version": (layout or {}).get("schema_version"),
+            "default_view_id": (layout or {}).get("default_view_id"),
+            "view_order": copy.deepcopy((layout or {}).get("view_order") or []),
+            "primary_views": copy.deepcopy((layout or {}).get("primary_views") or []),
+            "advanced_views": copy.deepcopy((layout or {}).get("advanced_views") or []),
+            "preferred_navigation": (layout or {}).get("preferred_navigation"),
+        },
+        "ui_hints": {
+            "schema_version": (ui_hints or {}).get("schema_version"),
+            "display_mode": (ui_hints or {}).get("display_mode"),
+            "navigation": (ui_hints or {}).get("navigation"),
+            "density": (ui_hints or {}).get("density"),
+            "default_view_id": (ui_hints or {}).get("default_view_id"),
+            "view_hint_ids": sorted(((ui_hints or {}).get("view_hints") or {}).keys()),
+        },
         "config_effect": {
             "schema_version": "DataFlowKit.visual_mapping.config_effect.v1",
             "provider": "preview_config_effect",
             "view_id": "plugin.config_effect",
+        },
+    }
+
+
+def _visual_mapping_config_layout(views=None):
+    view_order = [
+        str(view.get("view_id") or "").strip()
+        for view in views or []
+        if isinstance(view, dict) and str(view.get("view_id") or "").strip()
+    ]
+    primary_views = [
+        view_id
+        for view_id in view_order
+        if view_id in {"visual_mapping.overview", "visual_mapping.rules", "visual_mapping.features"}
+    ]
+    advanced_views = [view_id for view_id in view_order if view_id not in primary_views]
+    view_groups = [
+        {
+            "group_id": "visual_mapping.primary",
+            "title": "主要配置",
+            "view_ids": primary_views,
+        },
+        {
+            "group_id": "visual_mapping.advanced",
+            "title": "高级规则",
+            "view_ids": advanced_views,
+        },
+    ]
+    return {
+        "schema_version": "DataFlowKit.visual_mapping.layout.v1",
+        "protocol_family": CONFIG_PROTOCOL_FAMILY,
+        "default_view_id": "visual_mapping.rules" if "visual_mapping.rules" in view_order else (view_order[0] if view_order else ""),
+        "view_order": view_order,
+        "primary_views": primary_views,
+        "advanced_views": advanced_views,
+        "view_groups": [group for group in view_groups if group["view_ids"]],
+        "preferred_navigation": "tabs",
+    }
+
+
+def _visual_mapping_config_ui_hints(views=None):
+    view_titles = {
+        str(view.get("view_id") or ""): str(view.get("title") or "")
+        for view in views or []
+        if isinstance(view, dict) and str(view.get("view_id") or "")
+    }
+    view_hints = {
+        "visual_mapping.overview": {
+            "description": "查看当前配置、输入表和规则数量。",
+            "empty_text": "当前没有可用映射配置摘要。",
+            "role": "summary",
+        },
+        "visual_mapping.rules": {
+            "description": "维护普通单元格到新内容字段的映射规则。",
+            "empty_text": "暂无单元格映射规则，可新增规则或导入旧配置。",
+            "primary_action": "visual_mapping.edit.rules",
+            "role": "primary_editor",
+        },
+        "visual_mapping.features": {
+            "description": "定义用于筛选工作表或表格区域的特征条件。",
+            "empty_text": "暂无表特征。没有特征时，规则可选择“不限制”。",
+            "primary_action": "visual_mapping.edit.features",
+            "role": "supporting_editor",
+        },
+        "visual_mapping.global_rules": {
+            "description": "维护全文和特殊对象的全局搜索替换规则。",
+            "empty_text": "暂无全局搜索替换规则。",
+            "primary_action": "visual_mapping.edit.global_rules",
+            "role": "advanced_editor",
+        },
+        "visual_mapping.linked_rules": {
+            "description": "维护某条规则命中后触发的联动写入动作。",
+            "empty_text": "暂无联动写入规则。",
+            "primary_action": "visual_mapping.edit.linked_rules",
+            "role": "advanced_editor",
+        },
+    }
+    return {
+        "schema_version": "DataFlowKit.visual_mapping.ui_hints.v1",
+        "protocol_family": CONFIG_PROTOCOL_FAMILY,
+        "display_mode": "workflow_panel",
+        "navigation": "tabs",
+        "density": "compact",
+        "default_view_id": "visual_mapping.rules",
+        "view_hints": {
+            view_id: dict({"title": view_titles.get(view_id, "")}, **hint)
+            for view_id, hint in view_hints.items()
+            if view_id in view_titles
+        },
+        "operation_hints": {
+            "append_item": "新增一条配置项。",
+            "replace_item": "替换当前选中的配置项。",
+            "delete_item": "删除当前选中的配置项。",
+            "move_item": "调整配置项顺序。",
+            "set_enabled": "切换配置项启用状态。",
         },
     }
 

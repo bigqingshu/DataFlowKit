@@ -241,11 +241,20 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertTrue(described["capabilities"]["config_effect_preview"])
         self.assertTrue(described["capabilities"]["structured_warnings"])
         self.assertTrue(described["capabilities"]["protocol_manifest"])
+        self.assertTrue(described["capabilities"]["layout_hints"])
+        self.assertTrue(described["capabilities"]["ui_hints"])
         self.assertIn("rules", described["capabilities"]["supported_sections"])
         manifest = described["protocol_manifest"]
         self.assertEqual(manifest["schema_version"], "DataFlowKit.visual_mapping.protocol_manifest.v1")
         self.assertTrue(manifest["interfaces"]["describe_config"])
         self.assertTrue(manifest["interfaces"]["preview_config_effect"])
+        self.assertEqual(manifest["layout"]["schema_version"], "DataFlowKit.visual_mapping.layout.v1")
+        self.assertEqual(manifest["layout"]["default_view_id"], "visual_mapping.rules")
+        self.assertIn("visual_mapping.rules", manifest["layout"]["primary_views"])
+        self.assertIn("visual_mapping.linked_rules", manifest["layout"]["advanced_views"])
+        self.assertEqual(manifest["ui_hints"]["schema_version"], "DataFlowKit.visual_mapping.ui_hints.v1")
+        self.assertEqual(manifest["ui_hints"]["default_view_id"], "visual_mapping.rules")
+        self.assertIn("visual_mapping.rules", manifest["ui_hints"]["view_hint_ids"])
         manifest_views = {view["view_id"]: view for view in manifest["views"]}
         self.assertEqual(manifest_views["visual_mapping.rules"]["section"], "rules")
         self.assertEqual(manifest_views["visual_mapping.rules"]["item_identity"]["target_id_fields"], ["id", "name"])
@@ -278,6 +287,19 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertIn("Sheet1", described["context"]["sheet_names"])
         self.assertIn("普通规则", described["context"]["rule_names"])
         self.assertIn("全局:全局替换", described["context"]["rule_names"])
+        self.assertEqual(described["layout"]["default_view_id"], "visual_mapping.rules")
+        self.assertLess(
+            described["layout"]["view_order"].index("visual_mapping.overview"),
+            described["layout"]["view_order"].index("visual_mapping.rules"),
+        )
+        self.assertEqual(described["layout"]["preferred_navigation"], "tabs")
+        self.assertEqual(described["ui_hints"]["navigation"], "tabs")
+        self.assertEqual(described["ui_hints"]["density"], "compact")
+        self.assertEqual(
+            described["ui_hints"]["view_hints"]["visual_mapping.rules"]["primary_action"],
+            "visual_mapping.edit.rules",
+        )
+        self.assertIn("暂无单元格映射规则", described["ui_hints"]["view_hints"]["visual_mapping.rules"]["empty_text"])
         view_by_id = {view["view_id"]: view for view in described["views"]}
         self.assertEqual(view_by_id["visual_mapping.rules"]["items"][0]["content_field"], "write_value")
         self.assertEqual(view_by_id["visual_mapping.rules"]["items"][0]["mapping"]["content_field"], "write_value")
@@ -649,6 +671,8 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertEqual(standard_updated["description"]["config_schema_version"], visual.CONFIG_SCHEMA_VERSION)
         self.assertEqual(standard_updated["description"]["protocol_family"], "plugin_complex_config")
         self.assertEqual(standard_updated["description"]["config_key"], "default")
+        self.assertEqual(standard_updated["description"]["layout"]["default_view_id"], "visual_mapping.rules")
+        self.assertEqual(standard_updated["description"]["ui_hints"]["navigation"], "tabs")
         self.assertEqual(standard_updated["description"]["summary"]["rules"], 2)
         self.assertIn("linked_rule_default", standard_updated["description"]["models"])
         self.assertTrue(standard_updated["description"]["capabilities"]["config_patch"])

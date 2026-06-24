@@ -606,6 +606,8 @@ class PluginService:
             "actions": actions,
             "config_sections": config_sections,
             "summary": copy.deepcopy(plugin_extension.get("summary") or {}),
+            "layout": copy.deepcopy(plugin_extension.get("layout") or {}),
+            "ui_hints": copy.deepcopy(plugin_extension.get("ui_hints") or {}),
             "context": copy.deepcopy(plugin_extension.get("context") or {}),
             "models": copy.deepcopy(plugin_extension.get("models") or {}),
             "protocol_manifest": copy.deepcopy(plugin_extension.get("protocol_manifest") or {}),
