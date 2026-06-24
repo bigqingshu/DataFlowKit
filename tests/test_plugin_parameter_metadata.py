@@ -49,6 +49,10 @@ class PluginParameterMetadataTests(unittest.TestCase):
         self.assertLess(group_titles.index("插件参数 / 写库设置"), group_titles.index("插件参数 / 缓存与失败处理"))
 
         self.assertEqual(fields["params.read_engine"]["refresh_on_change"], ["params.read_engine"])
+        self.assertEqual(fields["params.word_merge_mode"]["visible_when"]["field"], "params.read_engine")
+        self.assertEqual(fields["params.word_merge_mode"]["visible_when"]["equals"], "win32")
+        self.assertEqual(fields["params.doc_read_strategy"]["visible_when"]["field"], "params.read_engine")
+        self.assertEqual(fields["params.doc_read_strategy"]["depends_on"], ["params.read_engine"])
         self.assertEqual(fields["params.path_source"]["refresh_on_change"], ["params.path_source"])
         self.assertEqual(fields["params.path_field"]["options_source"], {"type": "preview_headers"})
         self.assertEqual(fields["params.path_field"]["visible_when"]["field"], "params.path_source")

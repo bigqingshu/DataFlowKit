@@ -79,8 +79,22 @@ def _ui_meta(group, group_order, order, **extra):
 
 PARAMETER_UI_METADATA = {
     "read_engine": _ui_meta("读取设置", GROUP_READ_SETTINGS, 10, refresh_on_change=["read_engine"]),
-    "word_merge_mode": _ui_meta("读取设置", GROUP_READ_SETTINGS, 20, advanced=True, depends_on=["read_engine"]),
-    "doc_read_strategy": _ui_meta("读取设置", GROUP_READ_SETTINGS, 30, advanced=True, depends_on=["read_engine"]),
+    "word_merge_mode": _ui_meta(
+        "读取设置",
+        GROUP_READ_SETTINGS,
+        20,
+        advanced=True,
+        visible_when={"field": "read_engine", "equals": "win32"},
+        depends_on=["read_engine"],
+    ),
+    "doc_read_strategy": _ui_meta(
+        "读取设置",
+        GROUP_READ_SETTINGS,
+        30,
+        advanced=True,
+        visible_when={"field": "read_engine", "equals": "win32"},
+        depends_on=["read_engine"],
+    ),
     "path_source": _ui_meta("文件来源", GROUP_FILE_SOURCE, 100, refresh_on_change=["path_source"]),
     "path_field": _ui_meta(
         "文件来源",
