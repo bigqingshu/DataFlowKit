@@ -311,11 +311,15 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertEqual(patch_schema["protocol_family"], "plugin_complex_config")
         self.assertEqual(patch_schema["kind"], "config_patch")
         self.assertEqual(patch_schema["operation_aliases"]["update_item"], "replace_item")
+        self.assertEqual(patch_schema["config_key"], "default")
         self.assertEqual(
             patch_schema["sections"]["rules"]["path"],
             ["plugin_settings", "configs", "default", "rules"],
         )
         patch_field_keys = {field["key"] for field in patch_schema["fields"]}
+        self.assertIn("protocol_family", patch_field_keys)
+        self.assertIn("plugin_id", patch_field_keys)
+        self.assertIn("config_key", patch_field_keys)
         self.assertIn("target_index", patch_field_keys)
         self.assertIn("payload", patch_field_keys)
         rule_patch_schema = view_by_id["visual_mapping.rules"]["patch_schema"]
@@ -449,10 +453,13 @@ class VisualMappingWritePlanTests(unittest.TestCase):
                 "value": {"id": "second_rule", "name": "第二规则", "mapping": {"content_field": "extra"}},
             }
             disable_patch = {
+                "schema_version": visual.CONFIG_SCHEMA_VERSION,
+                "protocol_family": visual.CONFIG_PROTOCOL_FAMILY,
+                "plugin_id": visual.PLUGIN_INFO["id"],
+                "config_key": "default",
                 "operation": "set_enabled",
-                "target": ["plugin_settings", "configs", "default", "rules"],
-                "index": 1,
-                "enabled": False,
+                "path": ["plugin_settings", "configs", "default", "rules", 1],
+                "payload": {"enabled": False},
             }
             standard_update_patch = {
                 "schema_version": visual.CONFIG_SCHEMA_VERSION,
@@ -510,13 +517,20 @@ class VisualMappingWritePlanTests(unittest.TestCase):
 
         self.assertTrue(replaced["ok"])
         self.assertEqual(replaced["patch"]["schema_version"], visual.CONFIG_SCHEMA_VERSION)
+        self.assertEqual(replaced["patch"]["protocol_family"], visual.CONFIG_PROTOCOL_FAMILY)
+        self.assertEqual(replaced["patch"]["plugin_id"], visual.PLUGIN_INFO["id"])
+        self.assertEqual(replaced["patch"]["config_key"], "default")
         self.assertEqual(replaced["patch"]["config_name"], "default")
         self.assertEqual(replaced["patch"]["section"], "rules")
         self.assertEqual(replaced["patch"]["path"], ["plugin_settings", "configs", "default", "rules", 0])
         self.assertEqual(replaced["patch"]["payload"]["name"], "新规则")
         self.assertTrue(appended["ok"])
         self.assertTrue(disabled["ok"])
+        self.assertEqual(disabled["patch"]["protocol_family"], visual.CONFIG_PROTOCOL_FAMILY)
+        self.assertEqual(disabled["patch"]["plugin_id"], visual.PLUGIN_INFO["id"])
+        self.assertEqual(disabled["patch"]["config_key"], "default")
         self.assertEqual(disabled["patch"]["path"], ["plugin_settings", "configs", "default", "rules", 1])
+        self.assertFalse(disabled["patch"]["enabled"])
         self.assertEqual(disabled["patch"]["payload"], {"enabled": False})
         self.assertTrue(standard_updated["ok"])
         self.assertEqual(standard_updated["patch"]["operation"], "replace_item")

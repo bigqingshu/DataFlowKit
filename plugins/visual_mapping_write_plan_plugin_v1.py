@@ -589,6 +589,9 @@ def _visual_mapping_patch_schema(config_name, *, operations=None, sections=None)
         },
         "fields": [
             {"key": "schema_version", "type": "string", "required": False, "default": CONFIG_SCHEMA_VERSION},
+            {"key": "protocol_family", "type": "string", "required": False, "default": CONFIG_PROTOCOL_FAMILY},
+            {"key": "plugin_id", "type": "string", "required": False, "default": PLUGIN_INFO["id"]},
+            {"key": "config_key", "type": "string", "required": False, "default": _as_text(config_name) or "default"},
             {"key": "config_name", "type": "string", "required": False, "default": _as_text(config_name) or "default"},
             {"key": "section", "type": "string", "required": True, "choices": sorted(CONFIG_SECTIONS)},
             {"key": "operation", "type": "string", "required": True},
@@ -1277,7 +1280,12 @@ def _warning_default_path(warning, *, index=0):
 def _config_patch_target(params, patch):
     patch = patch or {}
     target = patch.get("path") or patch.get("target") or []
-    config_name = _as_text(patch.get("config_name") or (params or {}).get("config_name") or "default") or "default"
+    config_name = _as_text(
+        patch.get("config_name")
+        or patch.get("config_key")
+        or (params or {}).get("config_name")
+        or "default"
+    ) or "default"
     section = _as_text(patch.get("section") or "")
     if isinstance(target, str):
         target = [part for part in target.split(".") if part]
@@ -1307,6 +1315,9 @@ def _normalize_config_patch(params, patch):
         path = [part for part in path.split(".") if part]
     normalized = {
         "schema_version": _as_text(patch.get("schema_version") or CONFIG_SCHEMA_VERSION),
+        "protocol_family": _as_text(patch.get("protocol_family") or CONFIG_PROTOCOL_FAMILY),
+        "plugin_id": _as_text(patch.get("plugin_id") or PLUGIN_INFO["id"]),
+        "config_key": config_name,
         "config_name": config_name,
         "section": section,
         "operation": operation,
@@ -1327,6 +1338,10 @@ def _normalize_config_patch(params, patch):
         normalized["payload"] = copy.deepcopy(patch.get("value"))
     elif operation == "set_enabled" and "enabled" in normalized:
         normalized["payload"] = {"enabled": bool(normalized.get("enabled"))}
+    if operation == "set_enabled" and "enabled" not in normalized:
+        payload = normalized.get("payload")
+        if isinstance(payload, dict) and "enabled" in payload:
+            normalized["enabled"] = payload.get("enabled")
     if "to_index" in patch:
         normalized["to_index"] = patch.get("to_index")
     normalized["path"] = _canonical_config_patch_path(normalized)
@@ -1380,7 +1395,13 @@ def _apply_config_patch_to_section(cfg, section, patch):
         index = _config_patch_index(patch, len(items), section)
         if not isinstance(items[index], dict):
             items[index] = _ensure_config_section_item(section, items[index], index + 1)
-        enabled_value = (patch or {}).get("enabled", (patch or {}).get("payload", True))
+        payload = (patch or {}).get("payload")
+        if "enabled" in (patch or {}):
+            enabled_value = (patch or {}).get("enabled")
+        elif isinstance(payload, dict) and "enabled" in payload:
+            enabled_value = payload.get("enabled")
+        else:
+            enabled_value = payload if payload is not None else True
         items[index]["enabled"] = enabled_value if isinstance(enabled_value, bool) else _truthy(enabled_value)
         return
     raise ValueError(f"不支持的配置修改操作：{operation}")

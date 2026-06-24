@@ -1245,6 +1245,10 @@ class QtWorkflowMainWindow:
             or (described or {}).get("schema_version")
             or ""
         )
+        frame.plugin_config_protocol_family = str((described or {}).get("protocol_family") or "")
+        frame.plugin_config_plugin_id = str((described or {}).get("plugin_id") or "")
+        frame.plugin_config_config_key = str((described or {}).get("config_key") or "")
+        frame.plugin_config_section = str(view.get("section") or "")
         if "append_value" in view:
             append_value = view.get("append_value")
         else:
@@ -1692,8 +1696,24 @@ class QtWorkflowMainWindow:
         table = getattr(frame, "plugin_config_table", None)
         items = copy.deepcopy(getattr(frame, "plugin_config_items", []) or [])
         target_path = copy.deepcopy(view.get("config_path") or [view.get("view_id") or ""])
+        section = str(getattr(frame, "plugin_config_section", "") or "")
+        if not section:
+            path_parts = self._plugin_protocol_path(target_path)
+            if len(path_parts) >= 4 and path_parts[0] == "plugin_settings" and path_parts[1] == "configs":
+                section = path_parts[3]
+            elif len(path_parts) == 1:
+                section = path_parts[0]
+        config_key = str(getattr(frame, "plugin_config_config_key", "") or "")
+        path_parts = self._plugin_protocol_path(target_path)
+        if not config_key and len(path_parts) >= 4 and path_parts[0] == "plugin_settings" and path_parts[1] == "configs":
+            config_key = path_parts[2]
         patch = {
             "schema_version": str(getattr(frame, "plugin_config_schema_version", "") or ""),
+            "protocol_family": str(getattr(frame, "plugin_config_protocol_family", "") or ""),
+            "plugin_id": str(getattr(frame, "plugin_config_plugin_id", "") or ""),
+            "config_key": config_key,
+            "config_name": config_key,
+            "section": section,
             "operation": operation,
             "path": copy.deepcopy(target_path),
             "target": copy.deepcopy(target_path),

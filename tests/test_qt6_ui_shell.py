@@ -481,6 +481,7 @@ class Qt6UiShellTests(unittest.TestCase):
                 "view_id": "demo.rules",
                 "kind": "structured_list",
                 "config_path": ["items"],
+                "section": "items",
                 "patch_operations": ["update_item"],
                 "items": [{
                     "id": "rule_1",
@@ -509,7 +510,12 @@ class Qt6UiShellTests(unittest.TestCase):
                     ],
                 },
             },
-            {"config_schema_version": "demo.config.v1"},
+            {
+                "config_schema_version": "demo.config.v1",
+                "protocol_family": "plugin_complex_config",
+                "plugin_id": "demo.plugin",
+                "config_key": "main",
+            },
         )
 
         table = widget.findChild(qt.QtWidgets.QTableWidget)
@@ -525,6 +531,11 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(len(captured), 1)
         patch = captured[0]
         self.assertEqual(patch["schema_version"], "demo.config.v1")
+        self.assertEqual(patch["protocol_family"], "plugin_complex_config")
+        self.assertEqual(patch["plugin_id"], "demo.plugin")
+        self.assertEqual(patch["config_key"], "main")
+        self.assertEqual(patch["config_name"], "main")
+        self.assertEqual(patch["section"], "items")
         self.assertEqual(patch["operation"], "update_item")
         self.assertEqual(patch["path"], ["items"])
         self.assertEqual(patch["target_index"], 0)
