@@ -144,6 +144,7 @@ class NodeConfigForm:
     def describe_state(self):
         return {
             "ok": True,
+            "parameter_metadata": self._parameter_metadata_state(),
             "fields": {
                 key: {
                     "kind": field.get("kind"),
@@ -159,6 +160,24 @@ class NodeConfigForm:
                 for key, field in self.config_fields.items()
             },
             "issues": list(self.validation_issues or []),
+        }
+
+    def _parameter_metadata_state(self):
+        metadata = self.schema.get("parameter_metadata") if isinstance(self.schema, dict) else {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        field_index = metadata.get("field_index") if isinstance(metadata.get("field_index"), dict) else {}
+        group_index = metadata.get("group_index") if isinstance(metadata.get("group_index"), dict) else {}
+        dependency_index = metadata.get("dependency_index") if isinstance(metadata.get("dependency_index"), dict) else {}
+        return {
+            "schema_version": str(metadata.get("schema_version") or ""),
+            "plugin_id": str(metadata.get("plugin_id") or ""),
+            "field_count": int(metadata.get("field_count") or len(metadata.get("fields") or [])),
+            "field_index_keys": sorted(str(key) for key in field_index.keys()),
+            "group_index_keys": sorted(str(key) for key in group_index.keys()),
+            "dependency_index": copy.deepcopy(dependency_index),
+            "capabilities": copy.deepcopy(metadata.get("capabilities") or {}),
+            "context_requirements": copy.deepcopy(metadata.get("context_requirements") or {}),
         }
 
     def set_node(self, node, headers=None, table_names=None, table_columns=None, plan=None, schema=None):

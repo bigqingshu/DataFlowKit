@@ -1107,7 +1107,22 @@ class Qt6UiShellTests(unittest.TestCase):
                         ],
                     }
                 ]
-            }
+            },
+            "parameter_metadata": {
+                "schema_version": "plugin_parameters.v1",
+                "plugin_id": "demo",
+                "field_count": 2,
+                "field_index": {
+                    "params.mode": {"param_key": "mode", "config_path": ["params", "mode"]},
+                    "params.path": {"param_key": "path", "config_path": ["params", "path"]},
+                },
+                "group_index": {
+                    "plugin.parameters": {"title": "插件参数", "field_keys": ["params.mode", "params.path"]},
+                },
+                "dependency_index": {"params.mode": ["params.path"]},
+                "capabilities": {"dynamic_options": True, "field_dependencies": True},
+                "context_requirements": {"needs_dynamic_options": True},
+            },
         }
         node = {
             "node_type_id": "plugin.demo",
@@ -1121,6 +1136,14 @@ class Qt6UiShellTests(unittest.TestCase):
         form.set_node(node, schema=schema)
 
         state = form.describe_state()
+        self.assertEqual(state["parameter_metadata"]["schema_version"], "plugin_parameters.v1")
+        self.assertEqual(state["parameter_metadata"]["plugin_id"], "demo")
+        self.assertEqual(state["parameter_metadata"]["field_count"], 2)
+        self.assertEqual(state["parameter_metadata"]["field_index_keys"], ["params.mode", "params.path"])
+        self.assertEqual(state["parameter_metadata"]["group_index_keys"], ["plugin.parameters"])
+        self.assertEqual(state["parameter_metadata"]["dependency_index"]["params.mode"], ["params.path"])
+        self.assertTrue(state["parameter_metadata"]["capabilities"]["dynamic_options"])
+        self.assertTrue(state["parameter_metadata"]["context_requirements"]["needs_dynamic_options"])
         mode_state = state["fields"]["params.mode"]
         self.assertEqual(mode_state["placeholder"], "选择模式")
         self.assertIn("警告：模式会影响运行耗时", mode_state["tooltip"])
