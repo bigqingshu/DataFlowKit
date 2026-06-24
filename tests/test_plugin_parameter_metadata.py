@@ -133,6 +133,38 @@ class PluginParameterMetadataTests(unittest.TestCase):
         self.assertEqual(fields["params.cache_key_mode"]["enabled_when"]["field"], "params.enable_cache")
         self.assertEqual(fields["params.cache_key_mode"]["depends_on"], ["params.enable_cache"])
 
+    def test_visual_mapping_plugin_is_complex_config_protocol_sample(self):
+        described = self.service.describe_plugin_config(
+            "plugin.visual_mapping_write_plan_v1",
+            input_table={
+                "headers": ["source_file", "sheet_name", "cell", "content"],
+                "rows": [],
+            },
+        )
+
+        self.assertTrue(described["ok"], described)
+        self.assertEqual(described["config_schema_version"], "DataFlowKit.visual_mapping.config.v1")
+        self.assertEqual(described["protocol_family"], "plugin_complex_config")
+        view_ids = [view["view_id"] for view in described["views"]]
+        self.assertIn("visual_mapping.rules", view_ids)
+        self.assertIn("visual_mapping.linked_rules", view_ids)
+        action_ids = [action["action_id"] for action in described["actions"]]
+        self.assertIn("visual_mapping.edit.rules", action_ids)
+        self.assertIn("visual_mapping.edit.linked_rules", action_ids)
+
+        config_sections = {section["section_id"]: section for section in described["config_sections"]}
+        self.assertIn("plugin.config_protocol", config_sections)
+        self.assertIn("plugin.parameter_metadata", config_sections)
+        protocol_text = "\n".join(config_sections["plugin.config_protocol"]["lines"])
+        self.assertIn("DataFlowKit.visual_mapping.protocol_manifest.v1", protocol_text)
+        self.assertIn("接口 describe_config、validate_config_patch、apply_config_patch、preview_config_effect", protocol_text)
+        self.assertIn("Patch协议：config_patch", protocol_text)
+        self.assertIn("警告协议：config_warning", protocol_text)
+        self.assertIn("配置动作：编辑单元格映射规则", protocol_text)
+        metadata_text = "\n".join(config_sections["plugin.parameter_metadata"]["lines"])
+        self.assertIn("参数字段：8 个", metadata_text)
+        self.assertIn("参数能力：动态候选、字段动作", metadata_text)
+
 
 if __name__ == "__main__":
     unittest.main()
