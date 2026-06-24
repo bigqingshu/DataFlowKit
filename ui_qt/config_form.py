@@ -14,8 +14,13 @@ from ui_qt.node_ui_metadata import (
     field_help_text,
     is_long_text_field,
     node_field_label,
+    normalize_node_type_id,
 )
-from workflow.filter_config_helpers import filter_join_rule_from_row, filter_join_rule_to_row
+from workflow.filter_config_helpers import (
+    describe_filter_config_context,
+    filter_join_rule_from_row,
+    filter_join_rule_to_row,
+)
 from engine.workflow_facade import WorkflowFacade
 
 
@@ -145,6 +150,7 @@ class NodeConfigForm:
         return {
             "ok": True,
             "parameter_metadata": self._parameter_metadata_state(),
+            "shared_config_context": self._shared_config_context_state(),
             "fields": {
                 key: {
                     "kind": field.get("kind"),
@@ -161,6 +167,30 @@ class NodeConfigForm:
             },
             "issues": list(self.validation_issues or []),
         }
+
+    def _shared_config_context_state(self):
+        if not isinstance(self.node, dict):
+            return {}
+        node_type_id = normalize_node_type_id(self.node.get("node_type_id") or self.node.get("type") or "")
+        if node_type_id == "core.filter":
+            return describe_filter_config_context(
+                self._current_config_snapshot(),
+                self.headers,
+                table_names=self.table_names,
+                table_columns=self.table_columns,
+            )
+        return {}
+
+    def _current_config_snapshot(self):
+        source_config = self.node.get("config", {}) if isinstance(self.node, dict) else {}
+        config = copy.deepcopy(source_config) if isinstance(source_config, dict) else {}
+        for key, field in self.config_fields.items():
+            try:
+                value = self._field_runtime_value(key, field)
+            except Exception:
+                continue
+            self._set_config_path(config, self._field_config_path(field.get("schema") or {}, key), value)
+        return config
 
     def _parameter_metadata_state(self):
         metadata = self.schema.get("parameter_metadata") if isinstance(self.schema, dict) else {}

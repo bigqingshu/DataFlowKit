@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """Pure helpers for advanced filter node configuration UI."""
 
+from __future__ import annotations
+
+import copy
+
 from workflow.nodes.filter_plan_nodes import (
     get_plan_filter_output_header_conflicts,
     get_plan_filter_output_headers,
@@ -10,6 +14,11 @@ from workflow.advanced_filter_command_service import (
     apply_advanced_filter_command,
     describe_advanced_filter_state,
 )
+
+
+FILTER_CONFIG_CONTEXT_SCHEMA_VERSION = "filter_config_context.v1"
+FILTER_OPTIONS_STATE_SCHEMA_VERSION = "filter_options_state.v1"
+FILTER_CONFIG_PROTOCOL_FAMILY = "advanced_filter_service"
 
 
 FILTER_CONFIG_DEFAULTS = {
@@ -37,6 +46,65 @@ def build_filter_selectable_tables(db_tables, transit_table_names):
     tables = list(db_tables or [])
     tables.extend(f"中转:{name}" for name in sorted(transit_table_names or []))
     return tables
+
+
+def build_filter_available_fields(headers, extra_tables=None, table_columns=None, transit_context=None):
+    fields = [f"当前表.{header}" for header in (headers or [])]
+    table_columns = table_columns or {}
+    transit_tables = (transit_context or {}).get("transit_tables", {}) or {}
+    for table in extra_tables or []:
+        table_name = str(table or "").strip()
+        if not table_name:
+            continue
+        columns = []
+        if table_name.startswith("中转:"):
+            transit_name = table_name.split(":", 1)[1]
+            item = transit_tables.get(transit_name, {}) if isinstance(transit_tables, dict) else {}
+            columns = item.get("headers", []) if isinstance(item, dict) else []
+        else:
+            columns = table_columns.get(table_name, []) if isinstance(table_columns, dict) else []
+        for column in columns or []:
+            text = str(column or "").strip()
+            if text:
+                fields.append(f"{table_name}.{text}")
+    return fields
+
+
+def describe_filter_config_context(config, headers, *, table_names=None, table_columns=None, transit_context=None):
+    config_copy = ensure_filter_config_defaults(copy.deepcopy(config or {}))
+    extra_tables = list(config_copy.get("extra_tables") or [])
+    available_fields = build_filter_available_fields(
+        headers,
+        extra_tables,
+        table_columns=table_columns,
+        transit_context=transit_context,
+    )
+    options_state = build_filter_options_state(
+        config_copy,
+        headers,
+        available_fields,
+        transit_context=transit_context,
+    )
+    return {
+        "ok": True,
+        "schema_version": FILTER_CONFIG_CONTEXT_SCHEMA_VERSION,
+        "protocol_family": FILTER_CONFIG_PROTOCOL_FAMILY,
+        "node_type_id": "core.filter",
+        "service_schema": "advanced_filter_service.v1",
+        "state_schema": "advanced_filter_state.v1",
+        "options_state_schema": FILTER_OPTIONS_STATE_SCHEMA_VERSION,
+        "config": config_copy,
+        "headers": list(headers or []),
+        "table_names": list(table_names or []),
+        "table_columns": copy.deepcopy(table_columns or {}),
+        "available_fields": available_fields,
+        "selected_tables": list(options_state.get("selected_tables") or []),
+        "field_state": copy.deepcopy(options_state.get("field_state") or {}),
+        "config_state": copy.deepcopy(options_state.get("config_state") or {}),
+        "risk_state": copy.deepcopy(options_state.get("risk_state") or {}),
+        "output_text": str(options_state.get("output_text") or ""),
+        "options_state": options_state,
+    }
 
 
 def filter_condition_to_row(cond):

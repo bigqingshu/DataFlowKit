@@ -918,6 +918,16 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(columns["target_field"]["action"]["key"], "pick_table_field")
         self.assertEqual(described["help_sections"][0]["sections"][0]["title"], "字段说明")
 
+        filter_context = client.facade.describe_node_config_context(
+            "core.filter",
+            preview_headers=["Code"],
+            table_names=["people"],
+            table_columns={"people": ["Code", "Name"]},
+        )
+        self.assertEqual(filter_context["shared_config_context"]["schema_version"], "filter_config_context.v1")
+        self.assertEqual(filter_context["shared_config_context"]["field_state"]["first_current"], "当前表.Code")
+        self.assertIn("实际输出字段", filter_context["shared_config_context"]["output_text"])
+
     def test_facade_describes_confirmation_prompts(self):
         client = QtHeadlessEngineClient()
 
@@ -1963,6 +1973,10 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(right_table_combo.currentText(), "people")
         self.assertEqual(right_combo.currentText(), "code")
         self.assertEqual([right_table_combo.itemText(i) for i in range(right_table_combo.count())], ["people"])
+        shared_context = form.describe_state()["shared_config_context"]
+        self.assertEqual(shared_context["schema_version"], "filter_config_context.v1")
+        self.assertEqual(shared_context["available_fields"], ["people.code", "people.title"])
+        self.assertEqual(shared_context["selected_tables"], ["当前表", "people"])
 
         right_table_combo.setCurrentText("people")
         app.processEvents()

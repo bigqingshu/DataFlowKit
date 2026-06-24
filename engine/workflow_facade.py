@@ -14,9 +14,11 @@ from workflow.node_ui_schema import (
     build_field_help_payload,
     build_node_detail_payload,
     build_node_ui_catalog_from_schemas,
+    normalize_node_type_id,
     plan_reference_choices,
     runtime_reference_choices,
 )
+from workflow.filter_config_helpers import describe_filter_config_context
 
 
 def _plugin_config_capability_labels(capabilities):
@@ -1065,12 +1067,21 @@ class WorkflowFacade:
                         "label": str(field.get("label") or field.get("key") or ""),
                         "sections": copy.deepcopy(help_payload.get("sections") or []),
                     })
+        shared_config_context = {}
+        if normalize_node_type_id(node_type_id) == "core.filter":
+            shared_config_context = describe_filter_config_context(
+                schema.get("default_config") or {},
+                preview_headers,
+                table_names=table_names,
+                table_columns=table_columns,
+            )
         return {
             "ok": True,
             "schema": schema,
             "fields": fields,
             "help_sections": help_sections,
             "warning_items": copy.deepcopy(schema.get("warning_items") or []),
+            "shared_config_context": shared_config_context,
         }
 
     def plan_status_text(self, plan=None, *, current_plan_path=None):

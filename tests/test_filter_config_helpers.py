@@ -2,6 +2,7 @@
 import unittest
 
 from workflow.filter_config_helpers import (
+    build_filter_available_fields,
     build_filter_actual_output_text,
     build_filter_condition_input_state,
     build_filter_field_refresh_state,
@@ -13,6 +14,7 @@ from workflow.filter_config_helpers import (
     build_filter_selectable_tables,
     build_treeview_cell_edit_state,
     choose_filter_actual_output_lookup_fields,
+    describe_filter_config_context,
     append_filter_condition_row,
     append_filter_condition_row_via_service,
     append_filter_join_rule_row,
@@ -356,6 +358,31 @@ class FilterConfigHelpersTests(unittest.TestCase):
         self.assertIn("副表数量较多时", state["risk_state"]["text"])
         self.assertEqual(state["selected_tables"], ["当前表", "t1", "t2", "t3", "t4"])
         self.assertEqual(state["extra_tables"], ["t1", "t2", "t3", "t4"])
+
+    def test_describe_filter_config_context_wraps_options_for_any_ui(self):
+        context = describe_filter_config_context(
+            {
+                "extra_tables": ["people", "中转:cached"],
+                "output_fields": ["当前表.Code", "people.Name"],
+            },
+            ["Code"],
+            table_names=["people"],
+            table_columns={"people": ["Code", "Name"]},
+            transit_context={"transit_tables": {"cached": {"headers": ["Value"]}}},
+        )
+
+        self.assertTrue(context["ok"])
+        self.assertEqual(context["schema_version"], "filter_config_context.v1")
+        self.assertEqual(context["protocol_family"], "advanced_filter_service")
+        self.assertEqual(context["service_schema"], "advanced_filter_service.v1")
+        self.assertEqual(context["available_fields"], ["当前表.Code", "people.Code", "people.Name", "中转:cached.Value"])
+        self.assertEqual(context["field_state"]["first_current"], "当前表.Code")
+        self.assertEqual(context["selected_tables"], ["当前表", "people", "中转:cached"])
+        self.assertIn("实际输出字段", context["output_text"])
+        self.assertEqual(
+            build_filter_available_fields(["A"], ["lookup"], table_columns={"lookup": ["B"]}),
+            ["当前表.A", "lookup.B"],
+        )
 
 
 if __name__ == "__main__":
