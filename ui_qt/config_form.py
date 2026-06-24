@@ -17,11 +17,9 @@ from ui_qt.node_ui_metadata import (
     normalize_node_type_id,
 )
 from workflow.filter_config_helpers import (
-    describe_filter_config_context,
     filter_join_rule_from_row,
     filter_join_rule_to_row,
 )
-from engine.workflow_facade import WorkflowFacade
 
 
 def value_kind(value):
@@ -98,7 +96,17 @@ def structured_item_default(columns):
 class NodeConfigForm:
     """Build editable Qt widgets for a workflow node dict."""
 
-    def __init__(self, qt, parent=None, headers=None, table_names=None, table_columns=None, plan=None, action_handler=None):
+    def __init__(
+        self,
+        qt,
+        parent=None,
+        headers=None,
+        table_names=None,
+        table_columns=None,
+        plan=None,
+        action_handler=None,
+        engine_client=None,
+    ):
         self.qt = qt
         self.headers = list(headers or [])
         self.table_names = list(table_names or [])
@@ -108,7 +116,7 @@ class NodeConfigForm:
         }
         self.plan = copy.deepcopy(plan) if isinstance(plan, dict) else {"nodes": []}
         self.action_handler = action_handler
-        self.facade = WorkflowFacade()
+        self.engine_client = engine_client or self._make_default_engine_client()
         self.widget = qt.QtWidgets.QWidget(parent)
         self.root_layout = qt.QtWidgets.QVBoxLayout(self.widget)
         self.root_layout.setContentsMargins(0, 0, 0, 0)
@@ -142,6 +150,11 @@ class NodeConfigForm:
         self.plan = copy.deepcopy(plan) if isinstance(plan, dict) else {"nodes": []}
         self._refresh_dynamic_options()
 
+    def _make_default_engine_client(self):
+        from ui_qt.engine_client import QtHeadlessEngineClient
+
+        return QtHeadlessEngineClient()
+
     def set_validation_issues(self, issues=None):
         self.validation_issues = list(issues or [])
         self._apply_validation_state()
@@ -173,12 +186,15 @@ class NodeConfigForm:
             return {}
         node_type_id = normalize_node_type_id(self.node.get("node_type_id") or self.node.get("type") or "")
         if node_type_id == "core.filter":
-            return describe_filter_config_context(
-                self._current_config_snapshot(),
-                self.headers,
+            described = self.engine_client.describe_node_config_context(
+                node_type_id,
+                node=copy.deepcopy(self.node),
+                config=self._current_config_snapshot(),
+                preview_headers=self.headers,
                 table_names=self.table_names,
                 table_columns=self.table_columns,
             )
+            return copy.deepcopy(described.get("shared_config_context") or {})
         return {}
 
     def _current_config_snapshot(self):
@@ -851,7 +867,7 @@ class NodeConfigForm:
                 "source": "preview_headers",
                 "candidates": [str(item) for item in self.headers],
             }
-        return self.facade.describe_picker_context(
+        return self.engine_client.describe_picker_context(
             plan=self.plan,
             options_source=options_source,
             table_names=self.table_names,

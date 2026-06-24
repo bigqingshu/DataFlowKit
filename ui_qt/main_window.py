@@ -392,7 +392,13 @@ class QtWorkflowMainWindow:
         config_layout.setSpacing(6)
         self.config_header_label = qt.QtWidgets.QLabel("未选择节点")
         self.config_header_label.setWordWrap(True)
-        self.config_form = NodeConfigForm(qt, headers=self.current_headers, plan=self.current_plan, action_handler=self._handle_config_field_action)
+        self.config_form = NodeConfigForm(
+            qt,
+            headers=self.current_headers,
+            plan=self.current_plan,
+            action_handler=self._handle_config_field_action,
+            engine_client=self.engine_client,
+        )
         self.apply_config_button = qt.QtWidgets.QPushButton("应用节点配置")
         self.apply_config_button.clicked.connect(lambda checked=False: self.apply_node_config())
         self.legacy_plugin_config_button = qt.QtWidgets.QPushButton("打开旧版插件设置")
@@ -2075,7 +2081,7 @@ class QtWorkflowMainWindow:
                 code="legacy_plugin_config_failed",
                 title="旧版插件设置",
                 status_message="旧版插件设置未应用",
-                issue_message=self.engine_client.facade.format_issues_text(result.get("issues") or []),
+                issue_message=self.engine_client.format_issues_text(result.get("issues") or []),
                 issues=result.get("issues") or [],
             ))
             return
@@ -3351,7 +3357,7 @@ class QtWorkflowMainWindow:
             title=self.current_job_title,
             running=True,
         ).get("progress") or {})
-        started_state = self.engine_client.facade.describe_job_started(status_prefix=status_prefix or "任务")
+        started_state = self.engine_client.describe_job_started(status_prefix=status_prefix or "任务")
         self._apply_message_panel(started_state.get("message_panel") or {})
         self.set_workflow_running(True)
         self.job_timer.start()
@@ -3365,7 +3371,7 @@ class QtWorkflowMainWindow:
             self.append_job_message(result.get("message", "已请求取消任务。"))
             self.status_bar.showMessage("已请求取消后台任务")
         except Exception as exc:
-            failure = self.engine_client.facade.describe_job_cancel_failure(error=exc)
+            failure = self.engine_client.describe_job_cancel_failure(error=exc)
             self._apply_message_panel(failure.get("message_panel") or {})
             self.status_bar.showMessage(failure.get("status_message") or "取消任务失败")
 
@@ -3385,7 +3391,7 @@ class QtWorkflowMainWindow:
         except Exception as exc:
             self.job_timer.stop()
             self.set_workflow_running(False)
-            failure = self.engine_client.facade.describe_job_poll_failure(error=exc)
+            failure = self.engine_client.describe_job_poll_failure(error=exc)
             self._apply_message_panel(failure.get("message_panel") or {})
             self.status_bar.showMessage(failure.get("status_message") or "后台任务状态读取失败")
             self.current_job_id = ""

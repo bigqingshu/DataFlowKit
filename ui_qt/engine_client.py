@@ -93,11 +93,23 @@ class QtHeadlessEngineClient:
     def describe_picker_context(self, **kwargs):
         return self.facade.describe_picker_context(**kwargs)
 
+    def format_issues_text(self, issues):
+        return self.facade.format_issues_text(copy.deepcopy(issues or []))
+
     def describe_job_run_conflict(self, **kwargs):
         return self.facade.describe_job_run_conflict(**kwargs)
 
     def describe_job_start_failure(self, **kwargs):
         return self.facade.describe_job_start_failure(**kwargs)
+
+    def describe_job_started(self, **kwargs):
+        return self.facade.describe_job_started(**kwargs)
+
+    def describe_job_cancel_failure(self, **kwargs):
+        return self.facade.describe_job_cancel_failure(**kwargs)
+
+    def describe_job_poll_failure(self, **kwargs):
+        return self.facade.describe_job_poll_failure(**kwargs)
 
     def describe_validation_feedback(self, combined):
         return self.facade.describe_validation_feedback(copy.deepcopy(combined))
