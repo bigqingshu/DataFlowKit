@@ -1702,6 +1702,8 @@ def _plugin_config_patch_result(*, plugin_id="", patch=None, changed=False, mess
     editor_kind = str(patch_payload.get("editor_kind") or "").strip()
     section = str(patch_payload.get("section") or "").strip()
     target_index = patch_payload.get("target_index")
+    target_id = str(patch_payload.get("target_id") or "").strip()
+    target = _plugin_config_patch_target_payload(patch_payload)
     result = {
         "schema_version": "plugin_config_patch_result.v1",
         "plugin_id": str(plugin_id or "").strip(),
@@ -1716,8 +1718,12 @@ def _plugin_config_patch_result(*, plugin_id="", patch=None, changed=False, mess
             "editor_kind": editor_kind,
             "section": section,
             "target_index": target_index,
+            "target_id": target_id,
+            "to_index": patch_payload.get("to_index"),
+            "path": copy.deepcopy(patch_payload.get("path") or []),
             "action_id": str(patch_payload.get("action_id") or "").strip(),
         },
+        "target": target,
         "description_summary": {
             "schema_version": str(description_payload.get("config_schema_version") or description_payload.get("schema_version") or ""),
             "protocol_family": str(description_payload.get("protocol_family") or ""),
@@ -1738,6 +1744,10 @@ def _plugin_config_patch_result(*, plugin_id="", patch=None, changed=False, mess
             target_parts.append(section)
         if target_index is not None:
             target_parts.append(f"第 {target_index} 项")
+        elif target_id:
+            target_parts.append(f"目标 {target_id}")
+        if patch_payload.get("to_index") is not None:
+            target_parts.append(f"移至 {patch_payload.get('to_index')}")
         if target_parts:
             result["display_summary"] = f"{operation_label}：{' / '.join(str(part) for part in target_parts)}"
         else:
@@ -1745,6 +1755,48 @@ def _plugin_config_patch_result(*, plugin_id="", patch=None, changed=False, mess
     else:
         result["display_summary"] = status_message
     return result
+
+
+def _plugin_config_patch_target_payload(patch):
+    patch_payload = patch if isinstance(patch, dict) else {}
+    view_id = str(patch_payload.get("view_id") or "").strip()
+    editor_kind = str(patch_payload.get("editor_kind") or "").strip()
+    action_id = str(patch_payload.get("action_id") or "").strip()
+    section = str(patch_payload.get("section") or "").strip()
+    operation = str(patch_payload.get("operation") or "").strip()
+    path = patch_payload.get("path")
+    if not isinstance(path, (list, tuple)):
+        path = patch_payload.get("target") if isinstance(patch_payload.get("target"), (list, tuple)) else []
+    path = list(path)
+    target_index = patch_payload.get("target_index")
+    if target_index is None:
+        target_index = patch_payload.get("index")
+    target_id = str(patch_payload.get("target_id") or "").strip()
+    target = {
+        "schema_version": "plugin_config_patch_target.v1",
+        "kind": "plugin_config_patch_target",
+        "operation": operation,
+        "view_id": view_id,
+        "editor_kind": editor_kind,
+        "action_id": action_id,
+        "section": section,
+        "path": copy.deepcopy(path),
+        "path_text": _format_plugin_config_path(path),
+        "target_index": target_index,
+        "target_id": target_id,
+        "to_index": patch_payload.get("to_index"),
+        "can_focus_view": bool(view_id),
+        "can_focus_item": bool(view_id and (target_id or target_index is not None or path)),
+    }
+    focus_path = ""
+    if view_id and section and target_index is not None:
+        focus_path = f"/views/{view_id}/sections/{section}/items/{target_index}"
+    elif view_id and target_id:
+        focus_path = f"/views/{view_id}/items/{target_id}"
+    elif view_id:
+        focus_path = f"/views/{view_id}"
+    target["focus_path"] = focus_path
+    return target
 
 
 def _plugin_patch_operation_label(operation):

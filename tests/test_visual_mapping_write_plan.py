@@ -636,6 +636,16 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertEqual(standard_updated["patch"]["action_id"], "visual_mapping.edit.rules")
         self.assertEqual(standard_updated["patch"]["target_index"], 0)
         self.assertEqual(standard_updated["patch"]["path"], ["plugin_settings", "configs", "default", "rules", 0])
+        self.assertEqual(standard_updated["patch_result"]["patch_summary"]["path"], ["plugin_settings", "configs", "default", "rules", 0])
+        self.assertEqual(standard_updated["patch_result"]["target"]["schema_version"], "plugin_config_patch_target.v1")
+        self.assertEqual(standard_updated["patch_result"]["target"]["view_id"], "visual_mapping.rules")
+        self.assertEqual(standard_updated["patch_result"]["target"]["section"], "rules")
+        self.assertEqual(standard_updated["patch_result"]["target"]["target_index"], 0)
+        self.assertEqual(
+            standard_updated["patch_result"]["target"]["focus_path"],
+            "/views/visual_mapping.rules/sections/rules/items/0",
+        )
+        self.assertTrue(standard_updated["patch_result"]["target"]["can_focus_item"])
         self.assertEqual(standard_updated["description"]["config_schema_version"], visual.CONFIG_SCHEMA_VERSION)
         self.assertEqual(standard_updated["description"]["protocol_family"], "plugin_complex_config")
         self.assertEqual(standard_updated["description"]["config_key"], "default")
