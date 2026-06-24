@@ -18,6 +18,7 @@ from workflow.advanced_filter_command_service import (
 
 FILTER_CONFIG_CONTEXT_SCHEMA_VERSION = "filter_config_context.v1"
 FILTER_OPTIONS_STATE_SCHEMA_VERSION = "filter_options_state.v1"
+FILTER_CONFIG_COMMAND_RESULT_SCHEMA_VERSION = "filter_config_command_result.v1"
 FILTER_CONFIG_PROTOCOL_FAMILY = "advanced_filter_service"
 
 
@@ -207,6 +208,127 @@ def build_filter_options_state(config, headers, all_fields, transit_context=None
 def apply_filter_config_service_command(config, headers, all_fields, command):
     state = build_filter_config_service_state(config, headers, all_fields)
     return apply_advanced_filter_command(state, command)
+
+
+def apply_filter_config_command(config, headers, all_fields, command, *, transit_context=None):
+    """Apply a UI-neutral command to an advanced-filter node config."""
+
+    config_copy = ensure_filter_config_defaults(copy.deepcopy(config or {}))
+    before = copy.deepcopy(config_copy)
+    issues = []
+    if not isinstance(command, dict):
+        issues.append(_filter_config_issue("error", "invalid_command", "command 必须是 object。", path="/command"))
+        return _filter_config_command_result(config_copy, headers, all_fields, "", False, issues, transit_context)
+
+    command_type = str(command.get("type") or command.get("command") or "").strip()
+    if not command_type:
+        issues.append(_filter_config_issue("error", "missing_command_type", "command 缺少 type。", path="/command/type"))
+        return _filter_config_command_result(config_copy, headers, all_fields, command_type, False, issues, transit_context)
+
+    service_result = None
+    if command_type == "add_condition":
+        field = str(command.get("field") or "").strip()
+        op = str(command.get("op") or command.get("operator") or "等于").strip()
+        value = command.get("value", "")
+        service_result = apply_filter_config_service_command(config_copy, headers, all_fields, {
+            "type": "add_condition",
+            "field": field,
+            "op": op,
+            "value": value,
+            "allow_empty_value": bool(command.get("allow_empty_value")),
+        })
+        if service_result.get("ok"):
+            config_copy["conditions"] = list(config_copy.get("conditions") or [])
+            config_copy["conditions"].append({
+                "field": field,
+                "op": op,
+                "value_source": normalize_filter_condition_value_source(command),
+                "value": value,
+            })
+
+    elif command_type == "delete_conditions":
+        rows = filter_conditions_to_rows(config_copy.get("conditions") or [])
+        service_result = apply_filter_config_service_command(config_copy, headers, all_fields, {
+            "type": "delete_conditions",
+            "indexes": command.get("indexes"),
+        })
+        if service_result.get("ok"):
+            config_copy["conditions"] = filter_conditions_from_rows(
+                delete_filter_rows_by_indexes(rows, _int_list(command.get("indexes")))
+            )
+
+    elif command_type == "clear_conditions":
+        service_result = apply_filter_config_service_command(config_copy, headers, all_fields, {"type": "clear_conditions"})
+        if service_result.get("ok"):
+            config_copy["conditions"] = []
+
+    elif command_type == "add_join_rule":
+        left = str(command.get("left") or "").strip()
+        op = str(command.get("op") or command.get("operator") or "等于").strip()
+        right_table = str(command.get("right_table") or "").strip()
+        right = str(command.get("right") or "").strip()
+        service_right = f"{right_table}.{right}" if right_table and right and "." not in right else right
+        service_result = apply_filter_config_service_command(config_copy, headers, all_fields, {
+            "type": "add_join_rule",
+            "left": left,
+            "op": op,
+            "right": service_right,
+            "allow_same_field": bool(command.get("allow_same_field")),
+        })
+        if service_result.get("ok"):
+            config_copy["join_rules"] = list(config_copy.get("join_rules") or [])
+            config_copy["join_rules"].append(filter_join_rule_from_row((left, op, right_table, right)))
+
+    elif command_type == "delete_join_rules":
+        rows = filter_join_rules_to_rows(config_copy.get("join_rules") or [])
+        service_result = apply_filter_config_service_command(config_copy, headers, all_fields, {
+            "type": "delete_join_rules",
+            "indexes": command.get("indexes"),
+        })
+        if service_result.get("ok"):
+            config_copy["join_rules"] = filter_join_rules_from_rows(
+                delete_filter_rows_by_indexes(rows, _int_list(command.get("indexes")))
+            )
+
+    elif command_type == "clear_join_rules":
+        service_result = apply_filter_config_service_command(config_copy, headers, all_fields, {"type": "clear_join_rules"})
+        if service_result.get("ok"):
+            config_copy["join_rules"] = []
+
+    elif command_type in {
+        "add_output_fields",
+        "add_all_output_fields",
+        "remove_output_fields",
+        "clear_output_fields",
+    }:
+        service_result = apply_filter_config_service_command(config_copy, headers, all_fields, command)
+        if service_result.get("ok"):
+            config_copy["output_fields"] = list((service_result.get("state") or {}).get("output_fields") or [])
+
+    else:
+        issues.append(_filter_config_issue(
+            "error",
+            "unknown_filter_config_command",
+            f"未知高级筛选配置 command：{command_type}",
+            path="/command/type",
+        ))
+        return _filter_config_command_result(config_copy, headers, all_fields, command_type, False, issues, transit_context)
+
+    issues.extend(copy.deepcopy((service_result or {}).get("issues") or []))
+    ok = bool((service_result or {}).get("ok", False))
+    changed = before != config_copy
+    return _filter_config_command_result(
+        config_copy,
+        headers,
+        all_fields,
+        command_type,
+        changed,
+        issues,
+        transit_context,
+        ok=ok,
+        requires_confirmation=bool((service_result or {}).get("requires_confirmation")),
+        service_result=service_result,
+    )
 
 
 def append_filter_condition_row_via_service(rows, config, headers, all_fields, field, op, value_source, value):
@@ -546,3 +668,64 @@ def _build_filter_risk_warnings(headers, extra_tables, config, transit_context):
     if not extra_tables and config.get("join_rules"):
         warnings.append("已配置匹配规则，但没有选择副表。")
     return warnings
+
+
+def _filter_config_command_result(
+    config,
+    headers,
+    all_fields,
+    command_type,
+    changed,
+    issues,
+    transit_context,
+    *,
+    ok=None,
+    requires_confirmation=False,
+    service_result=None,
+):
+    has_error = any(str(issue.get("severity") or "").lower() == "error" for issue in issues or [])
+    if ok is None:
+        ok = not has_error and not requires_confirmation
+    options_state = build_filter_options_state(
+        config,
+        headers,
+        all_fields,
+        transit_context=transit_context,
+    )
+    return {
+        "ok": bool(ok) and not has_error and not requires_confirmation,
+        "schema_version": FILTER_CONFIG_COMMAND_RESULT_SCHEMA_VERSION,
+        "protocol_family": FILTER_CONFIG_PROTOCOL_FAMILY,
+        "node_type_id": "core.filter",
+        "command": command_type,
+        "changed": bool(changed),
+        "config": ensure_filter_config_defaults(copy.deepcopy(config or {})),
+        "options_state": options_state,
+        "issues": list(issues or []),
+        "requires_confirmation": bool(requires_confirmation),
+        "service_result": copy.deepcopy(service_result or {}),
+    }
+
+
+def _filter_config_issue(severity, code, message, *, path=""):
+    return {
+        "severity": str(severity or "warning"),
+        "code": str(code or ""),
+        "message": str(message or ""),
+        "path": str(path or ""),
+        "source": FILTER_CONFIG_PROTOCOL_FAMILY,
+    }
+
+
+def _int_list(values):
+    if values is None:
+        return []
+    if isinstance(values, int):
+        return [values]
+    result = []
+    for value in values or []:
+        try:
+            result.append(int(value))
+        except Exception:
+            continue
+    return result

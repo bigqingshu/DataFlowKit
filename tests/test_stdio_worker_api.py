@@ -139,6 +139,25 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertIn("实际输出字段", context["output_text"])
         self.assertEqual(response["result"]["shared_config_sections"][0]["source"], "filter_config_context.v1")
 
+    def test_apply_node_config_command_updates_filter_config_over_stdio(self):
+        worker = StdioWorker()
+
+        response = worker.handle_request(request("apply_node_config_command", {
+            "node_type_id": "core.filter",
+            "config": {"extra_tables": ["lookup"], "output_fields": []},
+            "command": {"type": "add_all_output_fields"},
+            "preview_headers": ["Code"],
+            "table_names": ["lookup"],
+            "table_columns": {"lookup": ["Code", "Name"]},
+        }))
+
+        self.assertTrue(response["ok"])
+        result = response["result"]
+        self.assertEqual(result["schema_version"], "filter_config_command_result.v1")
+        self.assertEqual(result["config"]["output_fields"], ["当前表.Code", "lookup.Code", "lookup.Name"])
+        self.assertEqual(result["shared_config_context"]["selected_tables"], ["当前表", "lookup"])
+        self.assertIn("实际输出字段", result["shared_config_context"]["output_text"])
+
     def test_make_default_node_and_validate_plan(self):
         worker = StdioWorker()
 

@@ -2,6 +2,7 @@
 import unittest
 
 from workflow.filter_config_helpers import (
+    apply_filter_config_command,
     build_filter_available_fields,
     build_filter_actual_output_text,
     build_filter_condition_input_state,
@@ -383,6 +384,62 @@ class FilterConfigHelpersTests(unittest.TestCase):
             build_filter_available_fields(["A"], ["lookup"], table_columns={"lookup": ["B"]}),
             ["当前表.A", "lookup.B"],
         )
+
+    def test_apply_filter_config_command_updates_config_and_options(self):
+        config = {
+            "conditions": [],
+            "join_rules": [],
+            "extra_tables": ["lookup"],
+            "output_fields": [],
+        }
+        headers = ["Code"]
+        fields = ["当前表.Code", "lookup.Code", "lookup.Name"]
+
+        added_condition = apply_filter_config_command(config, headers, fields, {
+            "type": "add_condition",
+            "field": "当前表.Code",
+            "op": "等于",
+            "value_source": "字段",
+            "value": "lookup.Code",
+            "allow_empty_value": True,
+        })
+
+        self.assertTrue(added_condition["ok"])
+        self.assertEqual(added_condition["schema_version"], "filter_config_command_result.v1")
+        self.assertEqual(
+            added_condition["config"]["conditions"],
+            [{"field": "当前表.Code", "op": "等于", "value_source": "字段值", "value": "lookup.Code"}],
+        )
+        self.assertEqual(added_condition["options_state"]["field_state"]["first_external"], "lookup.Code")
+
+        added_join = apply_filter_config_command(added_condition["config"], headers, fields, {
+            "type": "add_join_rule",
+            "left": "当前表.Code",
+            "op": "等于",
+            "right_table": "lookup",
+            "right": "Code",
+            "allow_same_field": True,
+        })
+
+        self.assertTrue(added_join["ok"])
+        self.assertEqual(
+            added_join["config"]["join_rules"],
+            [{"left": "当前表.Code", "op": "等于", "right_table": "lookup", "right": "lookup.Code"}],
+        )
+
+        output_all = apply_filter_config_command(added_join["config"], headers, fields, {
+            "type": "add_all_output_fields",
+        })
+
+        self.assertTrue(output_all["ok"])
+        self.assertEqual(output_all["config"]["output_fields"], fields)
+
+        removed = apply_filter_config_command(output_all["config"], headers, fields, {
+            "type": "remove_output_fields",
+            "indexes": [1],
+        })
+
+        self.assertEqual(removed["config"]["output_fields"], ["当前表.Code", "lookup.Name"])
 
 
 if __name__ == "__main__":

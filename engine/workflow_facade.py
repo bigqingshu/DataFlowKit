@@ -1106,6 +1106,74 @@ class WorkflowFacade:
             "shared_config_sections": shared_config_sections,
         }
 
+    def apply_node_config_command(
+        self,
+        node_type_id="",
+        *,
+        node=None,
+        config=None,
+        command=None,
+        preview_headers=None,
+        table_names=None,
+        table_columns=None,
+        transit_context=None,
+    ):
+        node = copy.deepcopy(node or {}) if isinstance(node, dict) else {}
+        if not node_type_id and node:
+            node_type_id = node.get("node_type_id") or node.get("type") or ""
+        config_source = config
+        if config_source is None and node:
+            config_source = node.get("config")
+        normalized_type = normalize_node_type_id(node_type_id)
+        if normalized_type == "core.filter":
+            from workflow.filter_config_helpers import (
+                apply_filter_config_command,
+                describe_filter_config_context,
+            )
+
+            context = describe_filter_config_context(
+                config_source if isinstance(config_source, dict) else {},
+                preview_headers,
+                table_names=table_names,
+                table_columns=table_columns,
+                transit_context=transit_context,
+            )
+            result = apply_filter_config_command(
+                context.get("config") or {},
+                preview_headers,
+                context.get("available_fields") or [],
+                command or {},
+                transit_context=transit_context,
+            )
+            node_config_context = self.describe_node_config_context(
+                normalized_type,
+                config=result.get("config") or {},
+                preview_headers=preview_headers,
+                table_names=table_names,
+                table_columns=table_columns,
+                transit_context=transit_context,
+            )
+            result["node_config_context"] = node_config_context
+            result["shared_config_context"] = copy.deepcopy(node_config_context.get("shared_config_context") or {})
+            result["shared_config_sections"] = copy.deepcopy(node_config_context.get("shared_config_sections") or [])
+            return result
+
+        return {
+            "ok": False,
+            "schema_version": "node_config_command_result.v1",
+            "node_type_id": normalized_type,
+            "command": str((command or {}).get("type") or (command or {}).get("command") or ""),
+            "changed": False,
+            "config": copy.deepcopy(config_source or {}),
+            "issues": [{
+                "severity": "warning",
+                "code": "unsupported_node_config_command",
+                "message": f"节点暂不支持共享配置命令：{normalized_type or node_type_id}",
+                "path": "/node_type_id",
+            }],
+            "requires_confirmation": False,
+        }
+
     def _shared_config_context_sections(self, shared_config_context):
         context = shared_config_context if isinstance(shared_config_context, dict) else {}
         if not context:

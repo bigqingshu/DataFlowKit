@@ -1049,6 +1049,18 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(shared_section["title"], "共享配置状态")
         self.assertIn("可用字段：3 个", shared_section["lines"])
 
+        command_result = client.apply_node_config_command(
+            "core.filter",
+            config={"extra_tables": ["people"], "output_fields": []},
+            command={"type": "add_all_output_fields"},
+            preview_headers=["Code"],
+            table_names=["people"],
+            table_columns={"people": ["Code", "Name"]},
+        )
+        self.assertTrue(command_result["ok"])
+        self.assertEqual(command_result["config"]["output_fields"], ["当前表.Code", "people.Code", "people.Name"])
+        self.assertEqual(command_result["node_config_context"]["shared_config_context"]["selected_tables"], ["当前表", "people"])
+
     def test_facade_describes_confirmation_prompts(self):
         client = QtHeadlessEngineClient()
 
