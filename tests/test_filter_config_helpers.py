@@ -8,12 +8,17 @@ from workflow.filter_config_helpers import (
     build_filter_field_refresh_status,
     build_filter_join_input_state,
     build_filter_risk_display_state,
+    build_filter_config_service_state,
     build_filter_selectable_tables,
     build_treeview_cell_edit_state,
     choose_filter_actual_output_lookup_fields,
     append_filter_condition_row,
+    append_filter_condition_row_via_service,
     append_filter_join_rule_row,
+    append_filter_join_rule_row_via_service,
     delete_filter_rows_by_indexes,
+    delete_filter_condition_rows_via_service,
+    delete_filter_join_rule_rows_via_service,
     ensure_filter_config_defaults,
     apply_treeview_cell_edit,
     filter_condition_from_row,
@@ -88,6 +93,42 @@ class FilterConfigHelpersTests(unittest.TestCase):
         self.assertEqual(delete_filter_rows_by_indexes(rows, [0]), [("当前表.B", "等于", "字段值", "t.B")])
         self.assertEqual(delete_filter_rows_by_indexes(rows, [2]), rows)
 
+    def test_condition_row_actions_can_use_advanced_filter_service(self):
+        config = {"conditions": []}
+        rows = [("当前表.A", "包含", "固定值", "x")]
+
+        added = append_filter_condition_row_via_service(
+            rows,
+            config,
+            ["A", "B"],
+            ["当前表.A", "当前表.B", "t.B"],
+            "当前表.B",
+            "等于",
+            "字段",
+            "t.B",
+        )
+
+        self.assertTrue(added["ok"])
+        self.assertEqual(
+            added["rows"],
+            [
+                ("当前表.A", "包含", "固定值", "x"),
+                ("当前表.B", "等于", "字段值", "t.B"),
+            ],
+        )
+        self.assertEqual(added["conditions"][1]["value_source"], "字段值")
+
+        deleted = delete_filter_condition_rows_via_service(
+            added["rows"],
+            config,
+            ["A", "B"],
+            ["当前表.A", "当前表.B", "t.B"],
+            [0],
+        )
+
+        self.assertTrue(deleted["ok"])
+        self.assertEqual(deleted["rows"], [("当前表.B", "等于", "字段值", "t.B")])
+
     def test_join_rules_round_trip(self):
         rows = filter_join_rules_to_rows([
             {"left": "当前表.A", "op": "等于", "right": "t.A"},
@@ -111,6 +152,42 @@ class FilterConfigHelpersTests(unittest.TestCase):
 
         self.assertEqual(rows, [("当前表.A", "等于", "t", "A"), ("当前表.B", "", "t", "B")])
         self.assertEqual(delete_filter_rows_by_indexes(rows, [1, 0]), [])
+
+    def test_join_rule_row_actions_can_use_advanced_filter_service(self):
+        config = {"join_rules": []}
+        rows = [("当前表.A", "等于", "t", "A")]
+
+        added = append_filter_join_rule_row_via_service(
+            rows,
+            config,
+            ["A", "B"],
+            ["当前表.A", "当前表.B", "t.A", "t.B"],
+            "当前表.B",
+            "左包含右",
+            "t.B",
+        )
+
+        self.assertTrue(added["ok"])
+        self.assertEqual(
+            added["rows"],
+            [
+                ("当前表.A", "等于", "t", "A"),
+                ("当前表.B", "左包含右", "t", "B"),
+            ],
+        )
+        self.assertEqual(added["join_rules"][1]["right"], "t.B")
+        self.assertEqual(added["join_rules"][1]["right_table"], "t")
+
+        deleted = delete_filter_join_rule_rows_via_service(
+            added["rows"],
+            config,
+            ["A", "B"],
+            ["当前表.A", "当前表.B", "t.A", "t.B"],
+            [0],
+        )
+
+        self.assertTrue(deleted["ok"])
+        self.assertEqual(deleted["rows"], [("当前表.B", "左包含右", "t", "B")])
 
     def test_treeview_cell_edit_helpers(self):
         self.assertEqual(parse_treeview_column_index("#1", 4), 0)
@@ -208,6 +285,29 @@ class FilterConfigHelpersTests(unittest.TestCase):
         self.assertEqual(empty_state["first_current"], "")
         self.assertEqual(empty_state["first_external"], "")
         self.assertEqual(empty_state["value_choices"], [])
+
+    def test_build_filter_config_service_state_maps_node_fields(self):
+        config = {
+            "extra_tables": ["t"],
+            "conditions": [{"field": "当前表.A", "op": "包含", "value": "x"}],
+            "join_rules": [{"left": "当前表.B", "op": "等于", "right_table": "t", "right": "t.B"}],
+            "output_fields": ["当前表.A"],
+            "logic": "OR",
+            "join_logic": "AND",
+        }
+
+        state = build_filter_config_service_state(
+            config,
+            ["A", "B"],
+            ["当前表.A", "当前表.B", "t.A", "t.B"],
+        )
+
+        self.assertEqual(state["selected_tables"], ["当前表", "t"])
+        self.assertEqual(state["columns_by_table"], {"当前表": ["A", "B"], "t": ["A", "B"]})
+        self.assertEqual(state["field_display_cache"], ["当前表.A", "当前表.B", "t.A", "t.B"])
+        self.assertEqual(state["conditions"], [{"field": "当前表.A", "op": "包含", "value": "x"}])
+        self.assertEqual(state["join_rules"], [{"left": "当前表.B", "op": "等于", "right": "t.B"}])
+        self.assertEqual(state["output_fields"], ["当前表.A"])
 
     def test_dedupe_config_toggle_and_text(self):
         config = {}

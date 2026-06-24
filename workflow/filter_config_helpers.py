@@ -6,6 +6,10 @@ from workflow.nodes.filter_plan_nodes import (
     get_plan_filter_output_headers,
     normalize_filter_condition_value_source,
 )
+from workflow.advanced_filter_command_service import (
+    apply_advanced_filter_command,
+    describe_advanced_filter_state,
+)
 
 
 FILTER_CONFIG_DEFAULTS = {
@@ -76,6 +80,85 @@ def append_filter_condition_row(rows, field, op, value_source, value):
         condition["value"],
     ))
     return result
+
+
+def build_filter_config_service_state(config, headers, all_fields):
+    config = ensure_filter_config_defaults(config or {})
+    fields = list(all_fields or [])
+    return describe_advanced_filter_state({
+        "main_table": "当前表",
+        "selected_tables": ["当前表"] + list(config.get("extra_tables", []) or []),
+        "tables_cache": ["当前表"] + list(config.get("extra_tables", []) or []),
+        "columns_by_table": _filter_fields_to_columns_by_table(fields),
+        "field_display_cache": fields,
+        "conditions": config.get("conditions", []),
+        "join_rules": config.get("join_rules", []),
+        "output_fields": config.get("output_fields", []),
+        "logic": config.get("logic", "AND"),
+        "join_logic": config.get("join_logic", "AND"),
+        "result_limit": config.get("result_limit", "5000"),
+        "max_intermediate": config.get("max_intermediate", "200000"),
+        "preview_headers": list(headers or []),
+    })
+
+
+def apply_filter_config_service_command(config, headers, all_fields, command):
+    state = build_filter_config_service_state(config, headers, all_fields)
+    return apply_advanced_filter_command(state, command)
+
+
+def append_filter_condition_row_via_service(rows, config, headers, all_fields, field, op, value_source, value):
+    config_copy = dict(config or {})
+    existing_conditions = filter_conditions_from_rows(rows)
+    config_copy["conditions"] = existing_conditions
+    result = apply_filter_config_service_command(
+        config_copy,
+        headers,
+        all_fields,
+        {
+            "type": "add_condition",
+            "field": field,
+            "op": op,
+            "value": value,
+            "allow_empty_value": True,
+        },
+    )
+    conditions = list(existing_conditions)
+    if result["ok"]:
+        conditions.append({
+            "field": field,
+            "op": op,
+            "value_source": normalize_filter_condition_value_source({"value_source": value_source}),
+            "value": value,
+        })
+    return {
+        "ok": result["ok"],
+        "rows": filter_conditions_to_rows(conditions),
+        "conditions": conditions,
+        "issues": result.get("issues", []),
+    }
+
+
+def delete_filter_condition_rows_via_service(rows, config, headers, all_fields, selected_indexes):
+    config_copy = dict(config or {})
+    config_copy["conditions"] = filter_conditions_from_rows(rows)
+    result = apply_filter_config_service_command(
+        config_copy,
+        headers,
+        all_fields,
+        {
+            "type": "delete_conditions",
+            "indexes": selected_indexes,
+        },
+    )
+    remaining_rows = delete_filter_rows_by_indexes(rows, selected_indexes)
+    conditions = filter_conditions_from_rows(remaining_rows)
+    return {
+        "ok": result["ok"],
+        "rows": filter_conditions_to_rows(conditions),
+        "conditions": conditions,
+        "issues": result.get("issues", []),
+    }
 
 
 def delete_filter_rows_by_indexes(rows, selected_indexes):
@@ -160,6 +243,53 @@ def append_filter_join_rule_row(rows, left, op, right):
     rule = filter_join_rule_from_row((left, op, "", right))
     result.append(filter_join_rule_to_row(rule))
     return result
+
+
+def append_filter_join_rule_row_via_service(rows, config, headers, all_fields, left, op, right):
+    config_copy = dict(config or {})
+    config_copy["join_rules"] = filter_join_rules_from_rows(rows)
+    result = apply_filter_config_service_command(
+        config_copy,
+        headers,
+        all_fields,
+        {
+            "type": "add_join_rule",
+            "left": left,
+            "op": op,
+            "right": right,
+            "allow_same_field": True,
+        },
+    )
+    rows = filter_join_rules_to_rows(result.get("state", {}).get("join_rules") or [])
+    join_rules = filter_join_rules_from_rows(rows)
+    return {
+        "ok": result["ok"],
+        "rows": rows,
+        "join_rules": join_rules,
+        "issues": result.get("issues", []),
+    }
+
+
+def delete_filter_join_rule_rows_via_service(rows, config, headers, all_fields, selected_indexes):
+    config_copy = dict(config or {})
+    config_copy["join_rules"] = filter_join_rules_from_rows(rows)
+    result = apply_filter_config_service_command(
+        config_copy,
+        headers,
+        all_fields,
+        {
+            "type": "delete_join_rules",
+            "indexes": selected_indexes,
+        },
+    )
+    rows = filter_join_rules_to_rows(result.get("state", {}).get("join_rules") or [])
+    join_rules = filter_join_rules_from_rows(rows)
+    return {
+        "ok": result["ok"],
+        "rows": rows,
+        "join_rules": join_rules,
+        "issues": result.get("issues", []),
+    }
 
 
 def choose_filter_actual_output_lookup_fields(selected_fields, headers, all_fields, extra_tables):
@@ -257,7 +387,14 @@ def build_filter_actual_output_text(selected_fields, headers, all_fields, extra_
 
 
 def select_all_filter_output_fields(fields):
-    return list(fields or [])
+    result = apply_advanced_filter_command(
+        describe_advanced_filter_state({
+            "field_display_cache": list(fields or []),
+            "output_fields": [],
+        }),
+        {"type": "add_all_output_fields"},
+    )
+    return list(result.get("state", {}).get("output_fields") or [])
 
 
 def invert_filter_output_fields(fields, selected_fields):
@@ -266,9 +403,32 @@ def invert_filter_output_fields(fields, selected_fields):
 
 
 def invert_filter_output_fields_by_indexes(fields, selected_indexes):
-    selected = set(selected_indexes or [])
-    return [field for index, field in enumerate(fields or []) if index not in selected]
+    fields = list(fields or [])
+    result = apply_advanced_filter_command(
+        describe_advanced_filter_state({
+            "field_display_cache": fields,
+            "output_fields": fields,
+        }),
+        {
+            "type": "remove_output_fields",
+            "indexes": selected_indexes,
+        },
+    )
+    return list(result.get("state", {}).get("output_fields") or [])
 
 
 def select_current_table_filter_output_fields(fields):
     return [field for field in (fields or []) if str(field).startswith("当前表.")]
+
+
+def _filter_fields_to_columns_by_table(fields):
+    columns_by_table = {}
+    for field in fields or []:
+        table, sep, column = str(field).partition(".")
+        if not sep:
+            table = "当前表"
+            column = str(field)
+        columns_by_table.setdefault(table, [])
+        if column and column not in columns_by_table[table]:
+            columns_by_table[table].append(column)
+    return columns_by_table

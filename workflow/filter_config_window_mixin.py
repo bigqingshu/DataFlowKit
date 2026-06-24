@@ -67,11 +67,25 @@ class FilterConfigWindowMixin:
     def edit_filter_condition_cell(self, event, cond_tree, cond_edit_mode, sync_conditions_from_tree):
         return edit_filter_condition_cell_ui(event, cond_tree, cond_edit_mode, sync_conditions_from_tree)
 
-    def build_filter_condition_action_buttons(self, condition_section, config, refresh_filter_risk_text):
-        return build_filter_condition_action_buttons_ui(self, condition_section, config, refresh_filter_risk_text)
+    def build_filter_condition_action_buttons(self, condition_section, config, refresh_filter_risk_text, headers=None, field_state=None):
+        return build_filter_condition_action_buttons_ui(
+            self,
+            condition_section,
+            config,
+            headers or [],
+            field_state or {"all_values": []},
+            refresh_filter_risk_text,
+        )
 
-    def build_filter_join_action_buttons(self, join_section, config, refresh_filter_risk_text):
-        return build_filter_join_action_buttons_ui(self, join_section, config, refresh_filter_risk_text)
+    def build_filter_join_action_buttons(self, join_section, config, refresh_filter_risk_text, headers=None, field_state=None):
+        return build_filter_join_action_buttons_ui(
+            self,
+            join_section,
+            config,
+            headers or [],
+            field_state or {"all_values": []},
+            refresh_filter_risk_text,
+        )
 
     def refresh_filter_actual_output_text(self, out_list, actual_output_var, headers, field_state, config):
         return refresh_filter_actual_output_text_ui(out_list, actual_output_var, headers, field_state, config)

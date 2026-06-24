@@ -5,8 +5,6 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from workflow.filter_config_helpers import (
-    append_filter_condition_row,
-    append_filter_join_rule_row,
     apply_treeview_cell_edit,
     build_filter_actual_output_text,
     build_filter_condition_input_state,
@@ -16,7 +14,10 @@ from workflow.filter_config_helpers import (
     build_filter_risk_display_state,
     build_filter_selectable_tables,
     build_treeview_cell_edit_state,
-    delete_filter_rows_by_indexes,
+    append_filter_condition_row_via_service,
+    append_filter_join_rule_row_via_service,
+    delete_filter_condition_rows_via_service,
+    delete_filter_join_rule_rows_via_service,
     ensure_filter_config_defaults,
     filter_conditions_from_rows,
     filter_conditions_to_rows,
@@ -321,7 +322,15 @@ def edit_filter_condition_cell(event, cond_tree, cond_edit_mode, sync_conditions
     entry.bind("<FocusOut>", lambda e: close_editor(True))
 
 
-def build_filter_condition_action_buttons(window, condition_section, config, refresh_filter_risk_text_callback):
+def _first_service_issue_message(result, default="操作失败。"):
+    for issue in result.get("issues") or []:
+        message = issue.get("message")
+        if message:
+            return message
+    return default
+
+
+def build_filter_condition_action_buttons(window, condition_section, config, headers, field_state, refresh_filter_risk_text_callback):
     condition_frame = condition_section["frame"]
     cond_tree = condition_section["cond_tree"]
     cond_edit_mode = condition_section["cond_edit_mode"]
@@ -338,20 +347,35 @@ def build_filter_condition_action_buttons(window, condition_section, config, ref
         if not field_var.get().strip():
             messagebox.showwarning("提示", "请选择条件字段。")
             return
-        rows = append_filter_condition_row(
+        result = append_filter_condition_row_via_service(
             filter_tree_rows(cond_tree),
+            config,
+            headers,
+            field_state.get("all_values", []),
             field_var.get(),
             op_var.get(),
             value_source_var.get(),
             value_var.get(),
         )
-        replace_filter_tree_rows(cond_tree, rows)
+        if not result["ok"]:
+            messagebox.showwarning("提示", _first_service_issue_message(result))
+            return
+        replace_filter_tree_rows(cond_tree, result["rows"])
         sync_conditions_from_tree()
 
     def del_cond():
         selected = [cond_tree.index(iid) for iid in cond_tree.selection()]
-        rows = delete_filter_rows_by_indexes(filter_tree_rows(cond_tree), selected)
-        replace_filter_tree_rows(cond_tree, rows)
+        result = delete_filter_condition_rows_via_service(
+            filter_tree_rows(cond_tree),
+            config,
+            headers,
+            field_state.get("all_values", []),
+            selected,
+        )
+        if not result["ok"]:
+            messagebox.showwarning("提示", _first_service_issue_message(result))
+            return
+        replace_filter_tree_rows(cond_tree, result["rows"])
         sync_conditions_from_tree()
 
     cond_tree.bind(
@@ -365,7 +389,7 @@ def build_filter_condition_action_buttons(window, condition_section, config, ref
     }
 
 
-def build_filter_join_action_buttons(window, join_section, config, refresh_filter_risk_text_callback):
+def build_filter_join_action_buttons(window, join_section, config, headers, field_state, refresh_filter_risk_text_callback):
     join_frame = join_section["frame"]
     left_var = join_section["left_var"]
     join_op_var = join_section["join_op_var"]
@@ -380,19 +404,34 @@ def build_filter_join_action_buttons(window, join_section, config, refresh_filte
         if not left_var.get().strip() or not right_var.get().strip():
             messagebox.showwarning("提示", "请选择左右匹配字段。")
             return
-        rows = append_filter_join_rule_row(
+        result = append_filter_join_rule_row_via_service(
             filter_tree_rows(join_tree),
+            config,
+            headers,
+            field_state.get("all_values", []),
             left_var.get(),
             join_op_var.get(),
             right_var.get(),
         )
-        replace_filter_tree_rows(join_tree, rows)
+        if not result["ok"]:
+            messagebox.showwarning("提示", _first_service_issue_message(result))
+            return
+        replace_filter_tree_rows(join_tree, result["rows"])
         sync_join_rules_from_tree()
 
     def del_join():
         selected = [join_tree.index(iid) for iid in join_tree.selection()]
-        rows = delete_filter_rows_by_indexes(filter_tree_rows(join_tree), selected)
-        replace_filter_tree_rows(join_tree, rows)
+        result = delete_filter_join_rule_rows_via_service(
+            filter_tree_rows(join_tree),
+            config,
+            headers,
+            field_state.get("all_values", []),
+            selected,
+        )
+        if not result["ok"]:
+            messagebox.showwarning("提示", _first_service_issue_message(result))
+            return
+        replace_filter_tree_rows(join_tree, result["rows"])
         sync_join_rules_from_tree()
 
     ttk.Button(join_frame, text="添加匹配规则", command=add_join).grid(row=join_section["button_row"], column=1, padx=4, pady=4)
@@ -586,12 +625,12 @@ def build_filter_config(window, config, headers, transit_context=None):
     value_source_var.trace_add("write", refresh_condition_value_input)
     refresh_condition_value_input()
 
-    build_filter_condition_action_buttons(window, condition_section, config, refresh_risk_text_callback)
+    build_filter_condition_action_buttons(window, condition_section, config, headers, field_state, refresh_risk_text_callback)
 
     join_section = build_filter_join_section(window, frame, config, all_fields, current_fields, start_row=4)
     join_logic_var = join_section["join_logic_var"]
     join_logic_var.trace_add("write", lambda *_: refresh_risk_text_callback())
-    build_filter_join_action_buttons(window, join_section, config, refresh_risk_text_callback)
+    build_filter_join_action_buttons(window, join_section, config, headers, field_state, refresh_risk_text_callback)
 
     output_section = build_filter_output_section(window, frame, config, all_fields, start_row=5)
     output_actions = build_filter_output_action_buttons(window, output_section, config, headers, field_state)
