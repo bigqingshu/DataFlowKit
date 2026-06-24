@@ -2165,6 +2165,15 @@ class Qt6UiShellTests(unittest.TestCase):
             current_index = manager.table_view.currentIndex()
             self.assertEqual(manager.current_table()["headers"], ["id", "name"])
             self.assertEqual(manager_state["shape"], {"rows": 3, "columns": 2})
+            self.assertEqual(manager_state["service"]["schema_version"], "data_source_service.v1")
+            self.assertEqual(manager_state["service"]["protocol_family"], "data_source_service")
+            self.assertTrue(manager_state["service"]["capabilities"]["table_handles"])
+            self.assertIn("describe_data_source_actions", manager_state["service"]["action_ids"])
+            self.assertIn("save_sqlite", manager_state["service"]["data_action_ids"])
+            self.assertEqual(
+                manager_state["service"]["result_schemas"]["table_page"]["schema_version"],
+                "table_page.v1",
+            )
             self.assertEqual(manager_state["action_schema"]["schema_version"], "data_source_action_schema.v1")
             self.assertIn("patch_cell", manager_state["action_schema"]["action_ids"])
             self.assertEqual(

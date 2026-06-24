@@ -36,6 +36,7 @@ class DataSourceManagerWindow:
         self.search_navigation = {}
         self.save_mode_entries = []
         self.save_modes_description = {}
+        self.service_description = self._describe_data_source_service()
         self.page_source = None
         self.page_offset = 0
         self.page_limit = 500
@@ -188,6 +189,7 @@ class DataSourceManagerWindow:
             actions = {"ok": False, "action_state": {}, "action_schema": {}}
         action_schema = actions.get("action_schema") if isinstance(actions.get("action_schema"), dict) else {}
         save_modes = self.save_modes_description if isinstance(self.save_modes_description, dict) else {}
+        service = self.service_description if isinstance(self.service_description, dict) else {}
         return {
             "ok": True,
             "source": copy.deepcopy(self.current_source or {}),
@@ -198,6 +200,15 @@ class DataSourceManagerWindow:
                 "columns": len(table.get("headers") or []),
             },
             "action_state": copy.deepcopy(actions.get("action_state") or {}),
+            "service": {
+                "schema_version": str(service.get("schema_version") or ""),
+                "protocol_family": str(service.get("protocol_family") or ""),
+                "service_id": str(service.get("service_id") or ""),
+                "capabilities": copy.deepcopy(service.get("capabilities") or {}),
+                "action_ids": sorted(str(key) for key in (service.get("actions") or {}).keys()),
+                "data_action_ids": sorted(str(key) for key in (service.get("data_actions") or {}).keys()),
+                "result_schemas": copy.deepcopy(service.get("result_schemas") or {}),
+            },
             "action_schema": {
                 "schema_version": str(action_schema.get("schema_version") or ""),
                 "action_ids": sorted(str(key) for key in (action_schema.get("actions") or {}).keys()),
@@ -213,6 +224,13 @@ class DataSourceManagerWindow:
                 "mode_field": copy.deepcopy(save_modes.get("mode_field") or {}),
             },
         }
+
+    def _describe_data_source_service(self):
+        try:
+            described = self.engine_client.describe_data_source_service()
+        except Exception:
+            return {}
+        return copy.deepcopy(described if isinstance(described, dict) else {})
 
     def set_table(self, headers, rows, *, source=None, title="", dirty=False, page_info=None, partial=False):
         self.current_source = copy.deepcopy(source or {"type": "memory"})
