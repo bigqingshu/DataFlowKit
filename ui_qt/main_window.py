@@ -901,6 +901,8 @@ class QtWorkflowMainWindow:
     def _append_plugin_config_detail(self, described):
         if not described.get("ok"):
             return
+        if self._append_plugin_config_sections(described.get("config_sections")):
+            return
         lines = []
         plugin_extension = described.get("plugin_extension") if isinstance(described.get("plugin_extension"), dict) else {}
         views = [item for item in (described.get("views") or []) if isinstance(item, dict)]
@@ -955,6 +957,24 @@ class QtWorkflowMainWindow:
         body = "<br>".join(html.escape(line) for line in lines if line)
         if body:
             self.node_detail_sections.append(f"<p><b>配置协议</b><br>{body}</p>")
+
+    def _append_plugin_config_sections(self, sections):
+        rendered = 0
+        for section in sections or []:
+            if not isinstance(section, dict):
+                continue
+            title = str(section.get("title") or "").strip()
+            lines = [
+                str(line).strip()
+                for line in (section.get("lines") or [])
+                if str(line).strip()
+            ]
+            if not title or not lines:
+                continue
+            body = "<br>".join(html.escape(line) for line in lines)
+            self.node_detail_sections.append(f"<p><b>{html.escape(title)}</b><br>{body}</p>")
+            rendered += 1
+        return rendered > 0
 
     def _plugin_compatibility_lifecycle_summary(self, item):
         if not isinstance(item, dict):

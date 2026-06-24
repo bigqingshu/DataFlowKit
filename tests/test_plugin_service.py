@@ -370,6 +370,15 @@ class PluginServiceTests(unittest.TestCase):
         self.assertIn("demo.items", [view["view_id"] for view in described["views"]])
         self.assertIn("demo.resource", [resource["resource_id"] for resource in described["resources"]])
         self.assertIn("demo.edit", [action["action_id"] for action in described["actions"]])
+        config_sections = {section["section_id"]: section for section in described["config_sections"]}
+        self.assertIn("plugin.config_protocol", config_sections)
+        self.assertIn("plugin.parameter_metadata", config_sections)
+        protocol_lines = "\n".join(config_sections["plugin.config_protocol"]["lines"])
+        self.assertIn("配置视图：插件参数、Demo Items、配置效果、插件资源", protocol_lines)
+        self.assertIn("配置资源：Demo Resource", protocol_lines)
+        self.assertIn("配置动作：Edit Demo", protocol_lines)
+        metadata_lines = "\n".join(config_sections["plugin.parameter_metadata"]["lines"])
+        self.assertIn("参数字段：0 个", metadata_lines)
         self.assertIn("demo warning", described["warnings"])
         self.assertIn("structured warning", described["warnings"])
         warning_by_code = {item["code"]: item for item in described["warning_items"]}

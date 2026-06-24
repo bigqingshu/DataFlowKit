@@ -294,6 +294,8 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertIn("迁移目标 describe_config + parameter_metadata + config_patch", controller.node_detail_sections.toPlainText())
             self.assertIn("退场条件 插件已提供等价 schema/patch 配置能力且目标 UI 已完成承接", controller.node_detail_sections.toPlainText())
             self.assertIn("兼容提示：旧版 Tk 设置窗口仅作为兼容 fallback", controller.node_detail_sections.toPlainText())
+            self.assertIn("参数元数据", controller.node_detail_sections.toPlainText())
+            self.assertIn("参数能力：动态候选", controller.node_detail_sections.toPlainText())
             self.assertIn("schema/patch", controller.legacy_plugin_config_button.toolTip())
             self.assertIn("生命周期：legacy_fallback", controller.legacy_plugin_config_button.toolTip())
             self.assertIn("迁移目标：describe_config + parameter_metadata + config_patch", controller.legacy_plugin_config_button.toolTip())

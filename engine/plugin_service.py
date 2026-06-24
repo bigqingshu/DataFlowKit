@@ -546,6 +546,18 @@ class PluginService:
         if config_effect.get("ok"):
             combined_capabilities["config_effect_preview"] = True
             combined_capabilities["preview_config_effect"] = True
+        config_sections = _plugin_config_sections(
+            views=views,
+            resources=resources,
+            actions=actions,
+            protocol_manifest=plugin_extension.get("protocol_manifest"),
+            patch_schema=plugin_extension.get("patch_schema"),
+            warning_schema=plugin_extension.get("warning_schema"),
+            warning_items=warning_items,
+            parameter_metadata=schema.get("parameter_metadata"),
+            config_compatibility=plugin.get("config_compatibility"),
+            capabilities=combined_capabilities,
+        )
 
         return {
             "ok": True,
@@ -567,6 +579,7 @@ class PluginService:
             "views": views,
             "resources": resources,
             "actions": actions,
+            "config_sections": config_sections,
             "summary": copy.deepcopy(plugin_extension.get("summary") or {}),
             "context": copy.deepcopy(plugin_extension.get("context") or {}),
             "models": copy.deepcopy(plugin_extension.get("models") or {}),
@@ -1149,6 +1162,306 @@ def _preview_plugin_config_effect_extension(module, params, context, *, plugin_i
     payload.setdefault("expected_output_fields", [])
     payload.setdefault("side_effects", [])
     return payload
+
+
+def _plugin_config_sections(
+    *,
+    views=None,
+    resources=None,
+    actions=None,
+    protocol_manifest=None,
+    patch_schema=None,
+    warning_schema=None,
+    warning_items=None,
+    parameter_metadata=None,
+    config_compatibility=None,
+    capabilities=None,
+):
+    sections = []
+    protocol_lines = []
+    view_items = [item for item in (views or []) if isinstance(item, dict)]
+    resource_items = [item for item in (resources or []) if isinstance(item, dict)]
+    action_items = [item for item in (actions or []) if isinstance(item, dict)]
+    if view_items:
+        protocol_lines.append("配置视图：" + "、".join(
+            str(item.get("title") or item.get("view_id") or "")
+            for item in view_items[:6]
+            if str(item.get("title") or item.get("view_id") or "").strip()
+        ))
+    if resource_items:
+        protocol_lines.append("配置资源：" + "、".join(
+            str(item.get("label") or item.get("resource_id") or "")
+            for item in resource_items[:6]
+            if str(item.get("label") or item.get("resource_id") or "").strip()
+        ))
+    manifest_line = _plugin_protocol_manifest_summary(protocol_manifest)
+    if manifest_line:
+        protocol_lines.append(manifest_line)
+    patch_schema_line = _plugin_protocol_schema_summary(patch_schema, "Patch协议")
+    if patch_schema_line:
+        protocol_lines.append(patch_schema_line)
+    warning_schema_line = _plugin_protocol_schema_summary(warning_schema, "警告协议")
+    if warning_schema_line:
+        protocol_lines.append(warning_schema_line)
+
+    warning_lines = []
+    for item in [item for item in (warning_items or []) if isinstance(item, dict)][:4]:
+        line = _format_plugin_warning_item(item)
+        if line:
+            warning_lines.append(line)
+    if warning_lines:
+        protocol_lines.append("配置警告：" + "；".join(warning_lines))
+
+    compatibility_actions = [item for item in action_items if str(item.get("kind") or "") == "compatibility"]
+    config_actions = [item for item in action_items if str(item.get("kind") or "") != "compatibility"]
+    if compatibility_actions:
+        protocol_lines.append("兼容动作：" + "、".join(
+            str(item.get("label") or item.get("action_id") or "")
+            for item in compatibility_actions[:6]
+            if str(item.get("label") or item.get("action_id") or "").strip()
+        ))
+        lifecycle_lines = []
+        for item in compatibility_actions[:3]:
+            line = _plugin_compatibility_lifecycle_summary(item)
+            if line:
+                lifecycle_lines.append(line)
+        if lifecycle_lines:
+            protocol_lines.append("兼容状态：" + "；".join(lifecycle_lines))
+        compatibility_warnings = [
+            str(item.get("warning") or "").strip()
+            for item in compatibility_actions
+            if str(item.get("warning") or "").strip()
+        ]
+        if compatibility_warnings:
+            protocol_lines.append("兼容提示：" + "；".join(compatibility_warnings[:3]))
+    if config_actions:
+        protocol_lines.append("配置动作：" + "、".join(
+            str(item.get("label") or item.get("action_id") or "")
+            for item in config_actions[:6]
+            if str(item.get("label") or item.get("action_id") or "").strip()
+        ))
+    if any(protocol_lines):
+        sections.append({
+            "section_id": "plugin.config_protocol",
+            "title": "配置协议",
+            "schema_version": "plugin_config_section.v1",
+            "kind": "summary_lines",
+            "lines": [line for line in protocol_lines if line],
+        })
+
+    metadata_lines = _plugin_parameter_metadata_lines(parameter_metadata, capabilities=capabilities)
+    if metadata_lines:
+        sections.append({
+            "section_id": "plugin.parameter_metadata",
+            "title": "参数元数据",
+            "schema_version": "plugin_config_section.v1",
+            "kind": "summary_lines",
+            "lines": metadata_lines,
+        })
+
+    compatibility_lines = _plugin_config_compatibility_lines(config_compatibility)
+    if compatibility_lines:
+        sections.append({
+            "section_id": "plugin.config_compatibility",
+            "title": "配置兼容性",
+            "schema_version": "plugin_config_section.v1",
+            "kind": "summary_lines",
+            "lines": compatibility_lines,
+        })
+    return sections
+
+
+def _plugin_parameter_metadata_lines(metadata, *, capabilities=None):
+    if not isinstance(metadata, dict):
+        return []
+    lines = []
+    field_count = int(metadata.get("field_count") or len(metadata.get("fields") or []))
+    group_titles = [
+        str(group.get("title") or "").strip()
+        for group in (metadata.get("groups") or [])
+        if isinstance(group, dict) and str(group.get("title") or "").strip()
+    ]
+    options_sources = []
+    requirements = metadata.get("context_requirements") if isinstance(metadata.get("context_requirements"), dict) else {}
+    for item in requirements.get("options_sources") or []:
+        text = str(item or "").strip()
+        if text:
+            options_sources.append(text)
+    metadata_capabilities = metadata.get("capabilities") if isinstance(metadata.get("capabilities"), dict) else {}
+    merged_capabilities = dict(capabilities or {})
+    merged_capabilities.update(metadata_capabilities)
+    capability_labels = []
+    for key, label in [
+        ("dynamic_options", "动态候选"),
+        ("conditional_fields", "条件字段"),
+        ("field_dependencies", "字段依赖"),
+        ("field_actions", "字段动作"),
+        ("advanced_fields", "高级字段"),
+    ]:
+        if merged_capabilities.get(key):
+            capability_labels.append(label)
+    lines.append(f"参数字段：{field_count} 个")
+    if group_titles:
+        lines.append("参数分组：" + "、".join(group_titles[:6]))
+    if options_sources:
+        lines.append("候选来源：" + "、".join(options_sources[:6]))
+    if capability_labels:
+        lines.append("参数能力：" + "、".join(capability_labels))
+    return lines
+
+
+def _plugin_config_compatibility_lines(compatibility):
+    if not isinstance(compatibility, dict):
+        return []
+    lines = []
+    primary_path = str(compatibility.get("primary_config_path") or "").strip()
+    recommendation = str(compatibility.get("ui_recommendation") or "").strip()
+    if primary_path:
+        line = f"主配置路径：{primary_path}"
+        if recommendation:
+            line += f"；UI建议 {recommendation}"
+        lines.append(line)
+    capability_labels = []
+    for key, label in [
+        ("schema_config", "schema配置"),
+        ("config_description", "配置描述"),
+        ("config_patch", "结构化patch"),
+        ("config_effect_preview", "配置效果预览"),
+        ("legacy_custom_config", "旧版窗口"),
+        ("legacy_fallback_available", "旧版fallback"),
+        ("external_only", "独立环境"),
+    ]:
+        if compatibility.get(key):
+            capability_labels.append(label)
+    if capability_labels:
+        lines.append("兼容能力：" + "、".join(capability_labels))
+    lifecycle = str(compatibility.get("legacy_lifecycle") or "").strip()
+    migration_target = str(compatibility.get("migration_target") or "").strip()
+    remove_when = str(compatibility.get("remove_when") or "").strip()
+    lifecycle_parts = []
+    if lifecycle:
+        lifecycle_parts.append(f"生命周期 {lifecycle}")
+    if migration_target:
+        lifecycle_parts.append(f"迁移目标 {migration_target}")
+    if remove_when:
+        lifecycle_parts.append(f"退场条件 {remove_when}")
+    if lifecycle_parts:
+        lines.append("兼容状态：" + "；".join(lifecycle_parts))
+    return lines
+
+
+def _plugin_compatibility_lifecycle_summary(item):
+    if not isinstance(item, dict):
+        return ""
+    parts = []
+    lifecycle = str(item.get("lifecycle") or "").strip()
+    migration_target = str(item.get("migration_target") or "").strip()
+    remove_when = str(item.get("remove_when") or "").strip()
+    if lifecycle:
+        parts.append(f"生命周期 {lifecycle}")
+    if migration_target:
+        parts.append(f"迁移目标 {migration_target}")
+    if remove_when:
+        parts.append(f"退场条件 {remove_when}")
+    return "，".join(parts)
+
+
+def _plugin_protocol_schema_summary(schema, title):
+    if not isinstance(schema, dict):
+        return ""
+    kind = str(schema.get("kind") or schema.get("protocol_family") or "").strip()
+    parts = [title + (f"：{kind}" if kind else "")]
+    operations = []
+    for item in schema.get("operations") or []:
+        if isinstance(item, dict):
+            operation = str(item.get("operation") or "").strip()
+        else:
+            operation = str(item or "").strip()
+        if operation:
+            operations.append(operation)
+    if operations:
+        parts.append("操作 " + "、".join(operations[:6]))
+    fields = []
+    for item in schema.get("fields") or []:
+        if isinstance(item, dict):
+            key = str(item.get("key") or "").strip()
+        else:
+            key = str(item or "").strip()
+        if key:
+            fields.append(key)
+    if fields:
+        parts.append("字段 " + "、".join(fields[:8]))
+    sections = schema.get("sections")
+    if isinstance(sections, dict) and sections:
+        parts.append("区域 " + "、".join(str(key) for key in list(sections.keys())[:6]))
+    return "；".join(part for part in parts if part)
+
+
+def _plugin_protocol_manifest_summary(manifest):
+    if not isinstance(manifest, dict):
+        return ""
+    parts = []
+    schema_version = str(manifest.get("schema_version") or "").strip()
+    if schema_version:
+        parts.append(f"协议清单：{schema_version}")
+    interfaces = manifest.get("interfaces") if isinstance(manifest.get("interfaces"), dict) else {}
+    enabled_interfaces = [
+        key
+        for key, enabled in interfaces.items()
+        if enabled and str(key or "").strip()
+    ]
+    if enabled_interfaces:
+        parts.append("接口 " + "、".join(enabled_interfaces[:6]))
+    views = [item for item in (manifest.get("views") or []) if isinstance(item, dict)]
+    if views:
+        parts.append(f"视图 {len(views)} 个")
+    models = [str(item) for item in (manifest.get("models") or []) if str(item).strip()]
+    if models:
+        parts.append("模型 " + "、".join(models[:6]))
+    patch = manifest.get("patch") if isinstance(manifest.get("patch"), dict) else {}
+    patch_sections = [str(item) for item in (patch.get("sections") or []) if str(item).strip()]
+    if patch_sections:
+        parts.append("Patch区域 " + "、".join(patch_sections[:6]))
+    config_effect = manifest.get("config_effect") if isinstance(manifest.get("config_effect"), dict) else {}
+    provider = str(config_effect.get("provider") or "").strip()
+    if provider:
+        parts.append("效果预览 " + provider)
+    return "；".join(parts)
+
+
+def _format_plugin_warning_item(item):
+    if not isinstance(item, dict):
+        return ""
+    message = str(item.get("message") or "").strip()
+    if not message:
+        return ""
+    details = []
+    view_id = str(item.get("view_id") or "").strip()
+    field = str(item.get("field") or "").strip()
+    path = str(item.get("path") or "").strip()
+    config_path = item.get("config_path")
+    code = str(item.get("code") or "").strip()
+    if view_id:
+        details.append(f"视图 {view_id}")
+    if field:
+        details.append(f"字段 {field}")
+    if path:
+        details.append(f"路径 {path}")
+    config_path_text = _format_plugin_config_path(config_path)
+    if config_path_text:
+        details.append(f"配置 {config_path_text}")
+    if code:
+        details.append(f"代码 {code}")
+    return f"{message}（{'；'.join(details)}）" if details else message
+
+
+def _format_plugin_config_path(value):
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (list, tuple)):
+        parts = [str(part).strip() for part in value if str(part).strip()]
+        return ".".join(parts)
+    return ""
 
 
 def _plugin_config_effect_summary(effect):
