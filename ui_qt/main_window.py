@@ -934,6 +934,13 @@ class QtWorkflowMainWindow:
         config_actions = [item for item in actions if str(item.get("kind") or "") != "compatibility"]
         if compatibility_actions:
             lines.append("兼容动作：" + "、".join(str(item.get("label") or item.get("action_id") or "") for item in compatibility_actions[:6]))
+            lifecycle_lines = []
+            for item in compatibility_actions[:3]:
+                line = self._plugin_compatibility_lifecycle_summary(item)
+                if line:
+                    lifecycle_lines.append(line)
+            if lifecycle_lines:
+                lines.append("兼容状态：" + "；".join(lifecycle_lines))
             compatibility_warnings = [
                 str(item.get("warning") or "").strip()
                 for item in compatibility_actions
@@ -948,6 +955,21 @@ class QtWorkflowMainWindow:
         body = "<br>".join(html.escape(line) for line in lines if line)
         if body:
             self.node_detail_sections.append(f"<p><b>配置协议</b><br>{body}</p>")
+
+    def _plugin_compatibility_lifecycle_summary(self, item):
+        if not isinstance(item, dict):
+            return ""
+        parts = []
+        lifecycle = str(item.get("lifecycle") or "").strip()
+        migration_target = str(item.get("migration_target") or "").strip()
+        remove_when = str(item.get("remove_when") or "").strip()
+        if lifecycle:
+            parts.append(f"生命周期 {lifecycle}")
+        if migration_target:
+            parts.append(f"迁移目标 {migration_target}")
+        if remove_when:
+            parts.append(f"退场条件 {remove_when}")
+        return "，".join(parts)
 
     def _plugin_protocol_schema_summary(self, schema, title):
         if not isinstance(schema, dict):
@@ -1828,6 +1850,18 @@ class QtWorkflowMainWindow:
             custom_window.get("warning")
             or "兼容旧 Tk 插件设置窗口；标准配置仍以当前表单为主。"
         )
+        lifecycle_parts = []
+        lifecycle = str(custom_window.get("lifecycle") or "").strip()
+        migration_target = str(custom_window.get("migration_target") or "").strip()
+        remove_when = str(custom_window.get("remove_when") or "").strip()
+        if lifecycle:
+            lifecycle_parts.append(f"生命周期：{lifecycle}")
+        if migration_target:
+            lifecycle_parts.append(f"迁移目标：{migration_target}")
+        if remove_when:
+            lifecycle_parts.append(f"退场条件：{remove_when}")
+        if lifecycle_parts:
+            tooltip = tooltip + "\n" + "\n".join(lifecycle_parts)
         self.legacy_plugin_config_button.setVisible(visible)
         self.legacy_plugin_config_button.setEnabled(visible and not bool(self.current_job_id))
         self.legacy_plugin_config_button.setText(str(custom_window.get("label") or "打开旧版插件设置"))
