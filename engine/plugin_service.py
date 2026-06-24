@@ -489,6 +489,9 @@ class PluginService:
                 "compatibility": str(custom_window.get("compatibility") or "legacy"),
                 "fallback": True,
                 "deprecated": True,
+                "lifecycle": "legacy_fallback",
+                "migration_target": "describe_config + parameter_metadata + config_patch",
+                "remove_when": "插件已提供等价 schema/patch 配置能力且目标 UI 已完成承接。",
                 "warning": legacy_warning,
             })
         actions = _merge_plugin_config_items(actions, plugin_extension.get("actions"), "action_id")
@@ -735,6 +738,9 @@ class PluginService:
                 "compatibility": "legacy_tk",
                 "fallback": True,
                 "deprecated": True,
+                "lifecycle": "legacy_fallback",
+                "migration_target": "describe_config + parameter_metadata + config_patch",
+                "remove_when": "插件已提供等价 schema/patch 配置能力且目标 UI 已完成承接。",
                 "warning": "旧版 Tk 设置窗口仅作为兼容 fallback；标准配置请优先使用 schema/patch 协议。",
             },
             "info": info,

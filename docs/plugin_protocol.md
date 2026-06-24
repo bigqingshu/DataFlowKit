@@ -403,3 +403,20 @@ editor_kind:
 ```
 
 第一阶段 UI 可以只显示摘要和结构化列表；第二阶段再分别实现专用编辑器。这样旧 Tk 配置窗口可以保留为兼容入口，同时新 UI 不需要继承 Tk 窗口内部逻辑。
+
+### 12.1 旧 Tk 配置窗口 fallback 退场规则
+
+`open_config_window(parent, current_params, context)` 仍可保留，但只能作为兼容入口。`describe_plugin_config` 返回的兼容动作会带有：
+
+- `fallback: true`
+- `deprecated: true`
+- `lifecycle: legacy_fallback`
+- `migration_target: describe_config + parameter_metadata + config_patch`
+- `remove_when: 插件已提供等价 schema/patch 配置能力且目标 UI 已完成承接。`
+
+新 UI 的推荐处理顺序：
+
+1. 优先渲染 `parameter_metadata`、`views`、`models`、`patch_schema`、`warning_schema`、`protocol_manifest`。
+2. 只有当协议配置能力不足时，才显示 `open_legacy_config` 兼容入口。
+3. 兼容入口必须以降级/旧版方式展示，不应作为默认主按钮。
+4. 插件完成等价协议迁移后，保留旧窗口一段过渡期，再从 UI 主路径移除。
