@@ -593,6 +593,9 @@ def _visual_mapping_patch_schema(config_name, *, operations=None, sections=None)
             {"key": "plugin_id", "type": "string", "required": False, "default": PLUGIN_INFO["id"]},
             {"key": "config_key", "type": "string", "required": False, "default": _as_text(config_name) or "default"},
             {"key": "config_name", "type": "string", "required": False, "default": _as_text(config_name) or "default"},
+            {"key": "view_id", "type": "string", "required": False},
+            {"key": "editor_kind", "type": "string", "required": False},
+            {"key": "action_id", "type": "string", "required": False},
             {"key": "section", "type": "string", "required": True, "choices": sorted(CONFIG_SECTIONS)},
             {"key": "operation", "type": "string", "required": True},
             {"key": "path", "type": "path", "required": False},
@@ -1323,7 +1326,7 @@ def _normalize_config_patch(params, patch):
         "operation": operation,
         "path": list(path or ["plugin_settings", "configs", config_name, section]),
     }
-    for key in ("target_id", "enabled"):
+    for key in ("view_id", "editor_kind", "action_id", "target_id", "enabled"):
         if key in patch:
             normalized[key] = copy.deepcopy(patch.get(key))
     if "target_index" in patch:

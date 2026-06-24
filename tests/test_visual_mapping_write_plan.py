@@ -320,6 +320,9 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertIn("protocol_family", patch_field_keys)
         self.assertIn("plugin_id", patch_field_keys)
         self.assertIn("config_key", patch_field_keys)
+        self.assertIn("view_id", patch_field_keys)
+        self.assertIn("editor_kind", patch_field_keys)
+        self.assertIn("action_id", patch_field_keys)
         self.assertIn("target_index", patch_field_keys)
         self.assertIn("payload", patch_field_keys)
         rule_patch_schema = view_by_id["visual_mapping.rules"]["patch_schema"]
@@ -465,6 +468,9 @@ class VisualMappingWritePlanTests(unittest.TestCase):
                 "schema_version": visual.CONFIG_SCHEMA_VERSION,
                 "operation": "update_item",
                 "path": ["plugin_settings", "configs", "default", "rules", 0],
+                "view_id": "visual_mapping.rules",
+                "editor_kind": "visual_mapping.rules",
+                "action_id": "visual_mapping.edit.rules",
                 "payload": {
                     "id": "standard_rule",
                     "name": "标准规则",
@@ -534,6 +540,9 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertEqual(disabled["patch"]["payload"], {"enabled": False})
         self.assertTrue(standard_updated["ok"])
         self.assertEqual(standard_updated["patch"]["operation"], "replace_item")
+        self.assertEqual(standard_updated["patch"]["view_id"], "visual_mapping.rules")
+        self.assertEqual(standard_updated["patch"]["editor_kind"], "visual_mapping.rules")
+        self.assertEqual(standard_updated["patch"]["action_id"], "visual_mapping.edit.rules")
         self.assertEqual(standard_updated["patch"]["target_index"], 0)
         self.assertEqual(standard_updated["patch"]["path"], ["plugin_settings", "configs", "default", "rules", 0])
         self.assertEqual(standard_updated["description"]["config_schema_version"], visual.CONFIG_SCHEMA_VERSION)

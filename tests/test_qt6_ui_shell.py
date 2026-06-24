@@ -353,6 +353,9 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertEqual(controller.current_plan["nodes"][-1]["config"]["params"]["items"][-1]["name"], "from_view")
             append_patch = controller.current_plan["nodes"][-1]["config"]["params"]["last_patch"]
             self.assertEqual(append_patch["schema_version"], "demo.config.v1")
+            self.assertEqual(append_patch["view_id"], "demo.items")
+            self.assertEqual(append_patch["editor_kind"], "demo.items")
+            self.assertEqual(append_patch["action_id"], "demo.edit_items")
             self.assertEqual(append_patch["path"], ["items"])
             self.assertEqual(append_patch["payload"], {"name": "from_view", "enabled": True})
             self.assertEqual(append_patch["value"], {"name": "from_view", "enabled": True})
@@ -480,6 +483,7 @@ class Qt6UiShellTests(unittest.TestCase):
             {
                 "view_id": "demo.rules",
                 "kind": "structured_list",
+                "editor_kind": "demo.rules",
                 "config_path": ["items"],
                 "section": "items",
                 "patch_operations": ["update_item"],
@@ -515,6 +519,7 @@ class Qt6UiShellTests(unittest.TestCase):
                 "protocol_family": "plugin_complex_config",
                 "plugin_id": "demo.plugin",
                 "config_key": "main",
+                "actions": [{"action_id": "demo.edit_rules", "editor_kind": "demo.rules"}],
             },
         )
 
@@ -535,6 +540,9 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(patch["plugin_id"], "demo.plugin")
         self.assertEqual(patch["config_key"], "main")
         self.assertEqual(patch["config_name"], "main")
+        self.assertEqual(patch["view_id"], "demo.rules")
+        self.assertEqual(patch["editor_kind"], "demo.rules")
+        self.assertEqual(patch["action_id"], "demo.edit_rules")
         self.assertEqual(patch["section"], "items")
         self.assertEqual(patch["operation"], "update_item")
         self.assertEqual(patch["path"], ["items"])

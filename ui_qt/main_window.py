@@ -1140,6 +1140,26 @@ class QtWorkflowMainWindow:
             return self._make_plugin_resource_list_widget(view, described)
         return self._make_plugin_protocol_text_widget(view)
 
+    def _plugin_config_action_id_for_view(self, view, described=None):
+        if not isinstance(view, dict):
+            return ""
+        explicit_action_id = str(view.get("action_id") or "").strip()
+        if explicit_action_id:
+            return explicit_action_id
+        view_id = str(view.get("view_id") or "").strip()
+        editor_kind = str(view.get("editor_kind") or "").strip()
+        for action in (described or {}).get("actions") or []:
+            if not isinstance(action, dict):
+                continue
+            action_id = str(action.get("action_id") or "").strip()
+            if not action_id:
+                continue
+            if view_id and str(action.get("view_id") or "").strip() == view_id:
+                return action_id
+            if editor_kind and str(action.get("editor_kind") or "").strip() == editor_kind:
+                return action_id
+        return ""
+
     def _make_plugin_summary_widget(self, summary):
         qt = self.qt
         table = qt.QtWidgets.QTableWidget()
@@ -1248,6 +1268,9 @@ class QtWorkflowMainWindow:
         frame.plugin_config_protocol_family = str((described or {}).get("protocol_family") or "")
         frame.plugin_config_plugin_id = str((described or {}).get("plugin_id") or "")
         frame.plugin_config_config_key = str((described or {}).get("config_key") or "")
+        frame.plugin_config_view_id = str(view.get("view_id") or "")
+        frame.plugin_config_editor_kind = str(view.get("editor_kind") or "")
+        frame.plugin_config_action_id = self._plugin_config_action_id_for_view(view, described)
         frame.plugin_config_section = str(view.get("section") or "")
         if "append_value" in view:
             append_value = view.get("append_value")
@@ -1718,6 +1741,15 @@ class QtWorkflowMainWindow:
             "path": copy.deepcopy(target_path),
             "target": copy.deepcopy(target_path),
         }
+        view_id = str(getattr(frame, "plugin_config_view_id", "") or view.get("view_id") or "").strip()
+        editor_kind = str(getattr(frame, "plugin_config_editor_kind", "") or view.get("editor_kind") or "").strip()
+        action_id = str(getattr(frame, "plugin_config_action_id", "") or view.get("action_id") or "").strip()
+        if view_id:
+            patch["view_id"] = view_id
+        if editor_kind:
+            patch["editor_kind"] = editor_kind
+        if action_id:
+            patch["action_id"] = action_id
         selected_row = table.currentRow() if table is not None else -1
         if operation in ("delete_item", "set_enabled", "move_item", "update_item", "replace_item"):
             if selected_row < 0:
