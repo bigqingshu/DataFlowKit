@@ -280,6 +280,28 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertTrue(loaded["result"]["config"]["remove_duplicates"])
         self.assertEqual(loaded["result"]["config"]["conditions"][0]["value_source"], "字段值")
 
+    def test_advanced_filter_service_actions_work_over_stdio(self):
+        worker = StdioWorker()
+
+        described = worker.handle_request(request("describe_advanced_filter_service"))
+        state = worker.handle_request(request("describe_advanced_filter_state", {
+            "selected_tables": ["orders"],
+            "columns_by_table": {"orders": ["id", "name"]},
+        }))
+        applied = worker.handle_request(request("apply_advanced_filter_command", {
+            "state": state["result"]["state"],
+            "command": {"type": "add_all_output_fields"},
+        }))
+
+        self.assertTrue(described["ok"])
+        self.assertEqual(described["result"]["schema_version"], "advanced_filter_service.v1")
+        self.assertIn("save_preview_to_table", described["result"]["commands"])
+        self.assertTrue(state["ok"])
+        self.assertEqual(state["result"]["schema_version"], "advanced_filter_state.v1")
+        self.assertEqual(state["result"]["state"]["field_display_cache"], ["orders.id", "orders.name"])
+        self.assertTrue(applied["ok"])
+        self.assertEqual(applied["result"]["state"]["output_fields"], ["orders.id", "orders.name"])
+
     def test_resolve_node_config_options_returns_filter_candidates_over_stdio(self):
         worker = StdioWorker()
 

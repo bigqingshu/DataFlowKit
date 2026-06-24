@@ -291,6 +291,19 @@ class StdioWorker:
                 backup=bool(payload.get("backup", True)),
                 confirmed=bool(payload.get("confirmed", False)),
             )
+        if action == "describe_advanced_filter_service":
+            return self.engine.describe_advanced_filter_service()
+        if action == "describe_advanced_filter_state":
+            return self.engine.describe_advanced_filter_state(
+                payload.get("state"),
+                selected_tables=payload.get("selected_tables"),
+                columns_by_table=payload.get("columns_by_table"),
+            )
+        if action == "apply_advanced_filter_command":
+            return self.engine.apply_advanced_filter_command(
+                payload.get("state", {}),
+                payload.get("command", {}),
+            )
         if action == "validate_config":
             node = payload.get("node")
             node_or_type = node if isinstance(node, dict) else (

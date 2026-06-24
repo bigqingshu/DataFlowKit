@@ -67,6 +67,11 @@ from workflow.nodes.filter_plan_nodes import (
     build_filter_runtime_plan,
     get_required_columns_for_plan_table,
 )
+from workflow.advanced_filter_command_service import (
+    apply_advanced_filter_command as apply_advanced_filter_service_command,
+    describe_advanced_filter_service as describe_advanced_filter_service_payload,
+    describe_advanced_filter_state as describe_advanced_filter_state_payload,
+)
 from workflow.nodes.file_nodes import (
     BATCH_RENAME_LOG_HEADERS,
     apply_batch_rename_node,
@@ -423,6 +428,28 @@ class HeadlessWorkflowEngine:
             backup=backup,
             confirmed=confirmed,
         )
+
+    def describe_advanced_filter_service(self):
+        result = describe_advanced_filter_service_payload()
+        result["ok"] = True
+        result["issues"] = []
+        return result
+
+    def describe_advanced_filter_state(self, state=None, *, selected_tables=None, columns_by_table=None):
+        service_state = describe_advanced_filter_state_payload(
+            state,
+            selected_tables=selected_tables,
+            columns_by_table=columns_by_table,
+        )
+        return {
+            "ok": True,
+            "schema_version": service_state.get("schema_version", "advanced_filter_state.v1"),
+            "state": service_state,
+            "issues": [],
+        }
+
+    def apply_advanced_filter_command(self, state=None, command=None):
+        return apply_advanced_filter_service_command(state or {}, command or {})
 
     def build_table_access(self, node):
         return self.access.build_table_access(node)

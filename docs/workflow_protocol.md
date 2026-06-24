@@ -287,6 +287,12 @@ For `core.filter`, `shared_config_context` carries
 `advanced_filter_ui_hints.v1`. The command set includes rule editing,
 output-field editing, preview-oriented state commands, and template commands.
 
+Clients that need a dedicated advanced-filter editor can also call the service
+directly through `describe_advanced_filter_service`,
+`describe_advanced_filter_state`, and `apply_advanced_filter_command`. This is
+the preferred path for non-node standalone panels because it avoids importing
+legacy Tk window classes.
+
 Template command results are structured so non-Python clients do not need to
 import Tkinter code:
 
