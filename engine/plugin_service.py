@@ -99,6 +99,7 @@ class PluginService:
             "warnings": plugin["warnings"],
             "risk": plugin["risk"],
             "capabilities": capabilities,
+            "config_compatibility": copy.deepcopy(plugin.get("config_compatibility") or {}),
             "form": {
                 "schema_version": PLUGIN_FORM_SCHEMA_VERSION,
                 "dynamic_rules": True,
@@ -570,6 +571,7 @@ class PluginService:
             "context": copy.deepcopy(plugin_extension.get("context") or {}),
             "models": copy.deepcopy(plugin_extension.get("models") or {}),
             "protocol_manifest": copy.deepcopy(plugin_extension.get("protocol_manifest") or {}),
+            "config_compatibility": copy.deepcopy(plugin.get("config_compatibility") or {}),
             "capabilities": combined_capabilities,
             "warnings": warning_messages,
             "warning_items": warning_items,
@@ -706,6 +708,11 @@ class PluginService:
             warnings.append(str(item.get("import_error")))
         if has_custom_config:
             warnings.append("该插件提供旧版自定义设置窗口，仅建议作为兼容 fallback 使用。")
+        config_compatibility = _plugin_config_compatibility(
+            item,
+            has_custom_config=has_custom_config,
+            load_status=load_status,
+        )
         return {
             "plugin_id": plugin_id,
             "node_type_id": plugin_node_type_id(plugin_id),
@@ -743,6 +750,7 @@ class PluginService:
                 "remove_when": "插件已提供等价 schema/patch 配置能力且目标 UI 已完成承接。",
                 "warning": "旧版 Tk 设置窗口仅作为兼容 fallback；标准配置请优先使用 schema/patch 协议。",
             },
+            "config_compatibility": config_compatibility,
             "info": info,
         }
 
@@ -817,6 +825,54 @@ def _plugin_badges(item):
 def _plugin_is_headless_runnable(item):
     item = item or {}
     return bool((item.get("import_ok") and item.get("module") is not None) or item.get("external_entry") or item.get("path"))
+
+
+def _plugin_config_compatibility(item, *, has_custom_config=None, load_status=""):
+    item = item or {}
+    module = item.get("module")
+    schema = item.get("schema") or []
+    has_schema = bool(schema)
+    has_description = callable(getattr(module, "describe_config", None))
+    has_patch = callable(getattr(module, "validate_config_patch", None)) and callable(getattr(module, "apply_config_patch", None))
+    has_effect_preview = callable(getattr(module, "preview_config_effect", None))
+    if has_custom_config is None:
+        has_custom_config = callable(getattr(module, "open_config_window", None))
+    if has_description and has_patch:
+        primary_path = "schema_patch"
+        recommendation = "prefer_schema_patch"
+    elif has_description:
+        primary_path = "describe_config"
+        recommendation = "prefer_describe_config"
+    elif has_schema:
+        primary_path = "schema_form"
+        recommendation = "prefer_schema_form"
+    elif has_custom_config:
+        primary_path = "legacy_custom_config"
+        recommendation = "migrate_to_schema"
+    else:
+        primary_path = "none"
+        recommendation = "metadata_required"
+
+    legacy_required = bool(has_custom_config and primary_path == "legacy_custom_config")
+    legacy_fallback = bool(has_custom_config and not legacy_required)
+    migration_target = "describe_config + parameter_metadata + config_patch" if has_custom_config else ""
+    remove_when = "插件已提供等价 schema/patch 配置能力且目标 UI 已完成承接。" if has_custom_config else ""
+    return {
+        "schema_version": "plugin_config_compatibility.v1",
+        "primary_config_path": primary_path,
+        "ui_recommendation": recommendation,
+        "schema_config": has_schema,
+        "config_description": has_description,
+        "config_patch": has_patch,
+        "config_effect_preview": has_effect_preview,
+        "legacy_custom_config": bool(has_custom_config),
+        "legacy_ui_required": legacy_required,
+        "legacy_fallback_available": legacy_fallback,
+        "legacy_lifecycle": "legacy_fallback" if has_custom_config else "",
+        "migration_target": migration_target,
+        "remove_when": remove_when,
+        "external_only": str(load_status or item.get("load_status") or "") == "仅独立环境运行",
+    }
 
 
 def _plugin_capabilities(item, plugin=None):
