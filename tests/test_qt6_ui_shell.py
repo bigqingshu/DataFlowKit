@@ -344,6 +344,7 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertIn("推荐主入口：否", controller.legacy_plugin_config_button.toolTip())
             self.assertIn("打开前建议提示兼容风险", controller.legacy_plugin_config_button.toolTip())
             self.assertIn("迁移目标：describe_config + parameter_metadata + config_patch", controller.legacy_plugin_config_button.toolTip())
+            self.assertIn("来源：plugin_config_description.actions", controller.legacy_plugin_config_button.toolTip())
             self.assertIn("配置动作：编辑 Demo Items", controller.node_detail_sections.toPlainText())
             self.assertFalse(controller.plugin_config_view_tabs.isHidden())
             self.assertLess(controller.plugin_config_view_tabs.minimumHeight(), 170)
@@ -437,7 +438,12 @@ class Qt6UiShellTests(unittest.TestCase):
             _items_page, items_table = current_items_table()
             self.assertEqual(items_table.rowCount(), 2)
             self.assertIn("Demo plugin", detail["detail"]["description"])
-            controller.open_legacy_plugin_config()
+            with patch("ui_qt.main_window.QtWorkflowMainWindow._confirm_prompt", return_value=True) as mock_confirm:
+                controller.open_legacy_plugin_config()
+            self.assertTrue(mock_confirm.called)
+            prompt = mock_confirm.call_args.args[0]["prompt"]
+            self.assertEqual(prompt["code"], "confirm_legacy_plugin_config")
+            self.assertIn("兼容 fallback", prompt["message"])
             self.assertEqual(controller.current_plan["nodes"][-1]["config"]["params"]["limit"], 11)
             self.assertIn("旧版插件设置已写回当前节点配置", controller.info_text.toPlainText())
             controller.refresh_plugins()

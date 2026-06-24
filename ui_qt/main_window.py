@@ -68,6 +68,8 @@ class QtWorkflowMainWindow:
         self.node_enabled_icon_cache = {}
         self.plugin_config_view_widgets_by_id = {}
         self.plugin_warning_targets_by_link = {}
+        self.current_plugin_config_description = {}
+        self.current_legacy_plugin_config_action = {}
 
         self._build_ui()
         self.refresh_data_source_service_description()
@@ -872,6 +874,7 @@ class QtWorkflowMainWindow:
         if row is None or row < 0 or node is None:
             self.config_form.set_node(None)
             self.config_header_label.setText("未选择节点")
+            self.current_plugin_config_description = {}
             self._update_legacy_plugin_config_button({})
             self._clear_plugin_config_views()
             self.refresh_action_states(selected_indexes=[])
@@ -891,6 +894,7 @@ class QtWorkflowMainWindow:
             except Exception:
                 pass
         plugin_config_description = self._describe_plugin_config_for_node(node_type_id, node)
+        self.current_plugin_config_description = copy.deepcopy(plugin_config_description if isinstance(plugin_config_description, dict) else {})
         if plugin_config_description.get("ok") and isinstance(plugin_config_description.get("node_ui_schema"), dict):
             schema = plugin_config_description["node_ui_schema"]
             self.node_schema_by_id[node_type_id] = schema
@@ -904,7 +908,7 @@ class QtWorkflowMainWindow:
             plan=self.current_plan,
             schema=schema,
         )
-        self._update_legacy_plugin_config_button(schema)
+        self._update_legacy_plugin_config_button(schema, plugin_config_description)
         self.show_node_detail(node_type_id, preview_headers=config_headers)
         self._append_plugin_config_detail(plugin_config_description)
         self._render_plugin_config_views(plugin_config_description)
@@ -2291,31 +2295,81 @@ class QtWorkflowMainWindow:
             text = str(value)
         return text if len(text) <= 500 else text[:497] + "..."
 
-    def _update_legacy_plugin_config_button(self, schema):
-        plugin = schema.get("plugin") if isinstance(schema, dict) and isinstance(schema.get("plugin"), dict) else {}
+    def _legacy_plugin_config_action(self, schema=None, described=None):
+        schema = schema if isinstance(schema, dict) else {}
+        described = described if isinstance(described, dict) else {}
+        plugin = schema.get("plugin") if isinstance(schema.get("plugin"), dict) else {}
+        actions = described.get("actions") if isinstance(described.get("actions"), list) else []
+        for item in actions:
+            if not isinstance(item, dict):
+                continue
+            action_id = str(item.get("action_id") or "").strip()
+            kind = str(item.get("kind") or "").strip()
+            if action_id == "open_legacy_config" or kind == "compatibility":
+                action = copy.deepcopy(item)
+                action.setdefault("source", "plugin_config_description.actions")
+                return action
+
         custom_window = plugin.get("custom_config_window") if isinstance(plugin.get("custom_config_window"), dict) else {}
+        legacy_state = plugin.get("legacy_config_state") if isinstance(plugin.get("legacy_config_state"), dict) else {}
+        if not (legacy_state.get("ui_visible") or legacy_state.get("available") or custom_window.get("available")):
+            return {}
+        action = {
+            "action_id": str(legacy_state.get("action_id") or "open_legacy_config"),
+            "label": str(legacy_state.get("label") or custom_window.get("label") or "兼容旧版设置"),
+            "kind": "compatibility",
+            "compatibility": str(legacy_state.get("compatibility") or custom_window.get("compatibility") or "legacy"),
+            "mode": str(legacy_state.get("mode") or ""),
+            "fallback": bool(legacy_state.get("fallback", custom_window.get("fallback", True))),
+            "deprecated": bool(legacy_state.get("deprecated", custom_window.get("deprecated", True))),
+            "lifecycle": str(legacy_state.get("lifecycle") or custom_window.get("lifecycle") or "legacy_fallback"),
+            "preferred": bool(legacy_state.get("preferred", custom_window.get("preferred", False))),
+            "ui_role": str(legacy_state.get("ui_role") or custom_window.get("ui_role") or "fallback_action"),
+            "ui_prominence": str(legacy_state.get("ui_prominence") or custom_window.get("ui_prominence") or "low"),
+            "ui_placement": str(legacy_state.get("ui_placement") or custom_window.get("ui_placement") or "compatibility_menu"),
+            "requires_confirmation": bool(legacy_state.get("requires_confirmation", custom_window.get("requires_confirmation", True))),
+            "migration_target": str(legacy_state.get("migration_target") or custom_window.get("migration_target") or "describe_config + parameter_metadata + config_patch"),
+            "remove_when": str(legacy_state.get("remove_when") or custom_window.get("remove_when") or "插件已提供等价 schema/patch 配置能力且目标 UI 已完成承接。"),
+            "warning": str(
+                legacy_state.get("warning")
+                or custom_window.get("warning")
+                or "兼容旧 Tk 插件设置窗口；标准配置仍以当前表单为主。"
+            ),
+            "legacy_config_state": copy.deepcopy(legacy_state),
+            "source": "node_ui_schema.plugin.legacy_config_state",
+        }
+        return action
+
+    def _update_legacy_plugin_config_button(self, schema, described=None):
+        schema = schema if isinstance(schema, dict) else {}
+        described = described if isinstance(described, dict) else {}
+        plugin = schema.get("plugin") if isinstance(schema.get("plugin"), dict) else {}
         legacy_state = plugin.get("legacy_config_state") if isinstance(plugin.get("legacy_config_state"), dict) else {}
         compatibility = plugin.get("config_compatibility") if isinstance(plugin.get("config_compatibility"), dict) else {}
         if not compatibility and isinstance(schema.get("config_compatibility"), dict):
             compatibility = schema.get("config_compatibility") or {}
-        visible = bool(legacy_state.get("ui_visible", custom_window.get("available")))
+        if not compatibility and isinstance(described.get("config_compatibility"), dict):
+            compatibility = described.get("config_compatibility") or {}
+        action = self._legacy_plugin_config_action(schema, described)
+        self.current_legacy_plugin_config_action = copy.deepcopy(action)
+        visible = bool(action)
         tooltip = str(
-            legacy_state.get("warning")
-            or custom_window.get("warning")
+            action.get("warning")
             or "兼容旧 Tk 插件设置窗口；标准配置仍以当前表单为主。"
         )
         lifecycle_parts = []
-        mode = str(legacy_state.get("mode") or "").strip()
-        lifecycle = str(legacy_state.get("lifecycle") or custom_window.get("lifecycle") or "").strip()
-        ui_placement = str(legacy_state.get("ui_placement") or custom_window.get("ui_placement") or "").strip()
-        ui_prominence = str(legacy_state.get("ui_prominence") or custom_window.get("ui_prominence") or "").strip()
-        preferred = bool(legacy_state.get("preferred", custom_window.get("preferred", False)))
-        requires_confirmation = bool(legacy_state.get("requires_confirmation", custom_window.get("requires_confirmation", False)))
-        migration_target = str(legacy_state.get("migration_target") or custom_window.get("migration_target") or "").strip()
-        remove_when = str(legacy_state.get("remove_when") or custom_window.get("remove_when") or "").strip()
+        mode = str(action.get("mode") or "").strip()
+        lifecycle = str(action.get("lifecycle") or "").strip()
+        ui_placement = str(action.get("ui_placement") or "").strip()
+        ui_prominence = str(action.get("ui_prominence") or "").strip()
+        preferred = bool(action.get("preferred", False))
+        requires_confirmation = bool(action.get("requires_confirmation", False))
+        migration_target = str(action.get("migration_target") or "").strip()
+        remove_when = str(action.get("remove_when") or "").strip()
         compatibility_tier = str(compatibility.get("compatibility_tier") or "").strip()
         ui_support = compatibility.get("ui_support") if isinstance(compatibility.get("ui_support"), dict) else {}
         direct_ui = ui_support.get("direct_ui") if isinstance(ui_support.get("direct_ui"), dict) else {}
+        action_source = str(action.get("source") or "").strip()
         if mode:
             lifecycle_parts.append(f"模式：{mode}")
         if lifecycle:
@@ -2346,13 +2400,47 @@ class QtWorkflowMainWindow:
             lifecycle_parts.append(f"迁移目标：{migration_target}")
         if remove_when:
             lifecycle_parts.append(f"退场条件：{remove_when}")
+        if action_source:
+            lifecycle_parts.append(f"来源：{action_source}")
         if lifecycle_parts:
             tooltip = tooltip + "\n" + "\n".join(lifecycle_parts)
         self.legacy_plugin_config_button.setVisible(visible)
-        enabled_default = bool(legacy_state.get("ui_enabled_default", visible))
+        enabled_default = bool(action.get("ui_enabled_default", legacy_state.get("ui_enabled_default", visible)))
         self.legacy_plugin_config_button.setEnabled(visible and enabled_default and not bool(self.current_job_id))
-        self.legacy_plugin_config_button.setText(str(legacy_state.get("label") or custom_window.get("label") or "兼容旧版设置"))
+        self.legacy_plugin_config_button.setText(str(action.get("label") or "兼容旧版设置"))
         self.legacy_plugin_config_button.setToolTip(tooltip)
+
+    def _legacy_plugin_config_confirmation_prompt(self, action):
+        action = action if isinstance(action, dict) else {}
+        if not action.get("requires_confirmation"):
+            return {"ok": True, "prompt": {"required": False}}
+        details = []
+        for key, label in [
+            ("mode", "模式"),
+            ("lifecycle", "生命周期"),
+            ("migration_target", "迁移目标"),
+            ("remove_when", "退场条件"),
+        ]:
+            value = str(action.get(key) or "").strip()
+            if value:
+                details.append(f"{label}：{value}")
+        warning = str(action.get("warning") or "").strip()
+        if warning:
+            details.insert(0, warning)
+        return {
+            "ok": True,
+            "prompt": {
+                "required": True,
+                "kind": "confirm",
+                "code": "confirm_legacy_plugin_config",
+                "title": "确认打开旧版插件设置",
+                "message": "该入口是旧 Tk 插件设置窗口的兼容 fallback，建议优先使用当前协议化配置面板。",
+                "details": details,
+                "confirm_label": str(action.get("label") or "打开旧版设置"),
+                "cancel_label": "取消",
+                "severity": "warning",
+            },
+        }
 
     def open_legacy_plugin_config(self):
         index = self.selected_node_index()
@@ -2367,6 +2455,12 @@ class QtWorkflowMainWindow:
             node_type_id = self._node_type_id_for_node(node)
             config = node.get("config", {}) or {}
             plugin_id = config.get("plugin_id") or node_type_id
+            action = self.current_legacy_plugin_config_action or self._legacy_plugin_config_action(
+                getattr(self.config_form, "schema", {}) or {},
+                self.current_plugin_config_description,
+            )
+            if not self._confirm_prompt(self._legacy_plugin_config_confirmation_prompt(action)):
+                return
             result = self.engine_client.run_plugin_custom_config_window(
                 plugin_id,
                 config=config,
@@ -3914,12 +4008,23 @@ class QtWorkflowMainWindow:
             "add_node": self.add_node_button,
             "refresh_catalog": self.refresh_schema_button,
             "refresh_plugins": self.refresh_plugin_button,
-            "legacy_plugin_config": self.legacy_plugin_config_button,
         }
         for action_key, button in button_map.items():
             if button is None:
                 continue
             button.setEnabled(bool((actions.get(action_key) or {}).get("enabled", False)))
+        legacy_enabled = bool((actions.get("legacy_plugin_config") or {}).get("enabled", False))
+        legacy_action_enabled = bool(
+            (self.current_legacy_plugin_config_action or {}).get(
+                "ui_enabled_default",
+                bool(self.current_legacy_plugin_config_action),
+            )
+        )
+        self.legacy_plugin_config_button.setEnabled(
+            self.legacy_plugin_config_button.isVisible()
+            and legacy_enabled
+            and legacy_action_enabled
+        )
         self._refresh_node_enabled_tool_button()
 
     def _apply_job_progress_state(self, progress):
