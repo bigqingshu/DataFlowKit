@@ -35,6 +35,7 @@ class DataSourceManagerWindow:
         self.search_index = -1
         self.search_navigation = {}
         self.save_mode_entries = []
+        self.save_modes_description = {}
         self.page_source = None
         self.page_offset = 0
         self.page_limit = 500
@@ -175,6 +176,44 @@ class DataSourceManagerWindow:
         headers, rows = self.table_model.table_data()
         return {"type": "table", "headers": headers, "rows": rows}
 
+    def describe_state(self):
+        table = self.current_table()
+        try:
+            actions = self.engine_client.describe_data_source_actions(
+                table,
+                source=self.current_source,
+                dirty=self.dirty,
+            )
+        except Exception:
+            actions = {"ok": False, "action_state": {}, "action_schema": {}}
+        action_schema = actions.get("action_schema") if isinstance(actions.get("action_schema"), dict) else {}
+        save_modes = self.save_modes_description if isinstance(self.save_modes_description, dict) else {}
+        return {
+            "ok": True,
+            "source": copy.deepcopy(self.current_source or {}),
+            "dirty": bool(self.dirty),
+            "partial": bool(self.current_table_is_partial),
+            "shape": {
+                "rows": len(table.get("rows") or []),
+                "columns": len(table.get("headers") or []),
+            },
+            "action_state": copy.deepcopy(actions.get("action_state") or {}),
+            "action_schema": {
+                "schema_version": str(action_schema.get("schema_version") or ""),
+                "action_ids": sorted(str(key) for key in (action_schema.get("actions") or {}).keys()),
+                "result_schemas": copy.deepcopy(action_schema.get("result_schemas") or {}),
+            },
+            "save_modes": {
+                "schema_version": str(save_modes.get("schema_version") or ""),
+                "mode_ids": [
+                    str(item.get("id") or "")
+                    for item in (save_modes.get("modes") or self.save_mode_entries)
+                    if str(item.get("id") or "")
+                ],
+                "mode_field": copy.deepcopy(save_modes.get("mode_field") or {}),
+            },
+        }
+
     def set_table(self, headers, rows, *, source=None, title="", dirty=False, page_info=None, partial=False):
         self.current_source = copy.deepcopy(source or {"type": "memory"})
         self.dirty = bool(dirty)
@@ -283,6 +322,7 @@ class DataSourceManagerWindow:
             described = self.engine_client.describe_table_save_modes()
         except Exception:
             described = {"ok": False, "modes": []}
+        self.save_modes_description = copy.deepcopy(described if isinstance(described, dict) else {})
         self.save_mode_entries = list(described.get("modes") or [])
         if not self.save_mode_entries:
             self.save_mode_entries = [

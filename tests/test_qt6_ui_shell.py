@@ -2131,12 +2131,22 @@ class Qt6UiShellTests(unittest.TestCase):
             manager.search_current_table(reset=True)
             first_index = manager.table_view.currentIndex()
             manager.goto_search_match(1)
+            manager_state = manager.describe_state()
             manager.apply_to_workflow()
             app.processEvents()
 
             background_role = qt_enum(qt, "ItemDataRole", "BackgroundRole")
             current_index = manager.table_view.currentIndex()
             self.assertEqual(manager.current_table()["headers"], ["id", "name"])
+            self.assertEqual(manager_state["shape"], {"rows": 3, "columns": 2})
+            self.assertEqual(manager_state["action_schema"]["schema_version"], "data_source_action_schema.v1")
+            self.assertIn("patch_cell", manager_state["action_schema"]["action_ids"])
+            self.assertEqual(
+                manager_state["action_schema"]["result_schemas"]["data_source_state"]["schema_version"],
+                "data_source_state.v1",
+            )
+            self.assertEqual(manager_state["save_modes"]["schema_version"], "table_save_modes.v1")
+            self.assertEqual(manager_state["save_modes"]["mode_field"]["choices_source"], "modes")
             self.assertEqual((first_index.row(), first_index.column()), (1, 1))
             self.assertEqual((current_index.row(), current_index.column()), (2, 1))
             self.assertEqual(manager.search_status_label.text(), "2/2")

@@ -345,6 +345,13 @@ class QtHeadlessEngineClient:
             display_name=display_name,
         )
 
+    def describe_data_source_actions(self, table=None, *, source=None, dirty=False):
+        return self.engine.describe_data_source_actions(
+            copy.deepcopy(table or {}),
+            source=copy.deepcopy(source or {}),
+            dirty=dirty,
+        )
+
     def describe_table_save_modes(self):
         return self.engine.describe_table_save_modes()
 
