@@ -669,6 +669,14 @@ class PluginServiceTests(unittest.TestCase):
         )
         self.assertEqual(schema["result"]["schema"]["legacy_config_state"]["mode"], "legacy_fallback")
         self.assertEqual(
+            schema["result"]["schema"]["parameter_metadata"]["layout_index"]["schema_version"],
+            "plugin_parameter_layout.v1",
+        )
+        self.assertEqual(
+            schema["result"]["schema"]["parameter_metadata"]["ui_hints"]["schema_version"],
+            "plugin_parameter_ui_hints.v1",
+        )
+        self.assertEqual(
             schema["result"]["schema"]["parameter_metadata"]["options_source_index"]["preview_headers"][0]["field_key"],
             "params.field",
         )
@@ -679,6 +687,18 @@ class PluginServiceTests(unittest.TestCase):
             "plugin_legacy_config_state.v1",
         )
         self.assertEqual(described["result"]["views"][0]["kind"], "form")
+        self.assertEqual(
+            described["result"]["parameter_metadata"]["layout_index"]["schema_version"],
+            "plugin_parameter_layout.v1",
+        )
+        self.assertEqual(
+            described["result"]["parameter_metadata"]["ui_hints"]["schema_version"],
+            "plugin_parameter_ui_hints.v1",
+        )
+        view_by_id = {view["view_id"]: view for view in described["result"]["views"]}
+        self.assertIn("plugin.parameter_metadata", view_by_id)
+        self.assertEqual(view_by_id["plugin.parameter_metadata"]["kind"], "summary")
+        self.assertEqual(view_by_id["plugin.parameter_metadata"]["summary"]["field_count"], 2)
         self.assertEqual(described["result"]["actions"][0]["legacy_config_state"]["mode"], "legacy_fallback")
         self.assertTrue(resolved_options["ok"])
         self.assertEqual(resolved_options["result"]["schema_version"], "plugin_parameter_options.v1")

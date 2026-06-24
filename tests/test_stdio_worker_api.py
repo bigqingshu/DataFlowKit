@@ -109,6 +109,67 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertEqual(mapping_columns["source_field"]["context_requirements"][0]["kind"], "table_columns")
         self.assertEqual(mapping_columns["source_field"]["context_requirements"][1]["field"], "source_table")
 
+    def test_plugin_schema_and_description_expose_parameter_layout_over_stdio(self):
+        worker = StdioWorker()
+
+        with TemporaryDirectory() as temp_dir:
+            plugin_path = Path(temp_dir) / "stdio_demo_plugin.py"
+            plugin_path.write_text(
+                "\n".join([
+                    "PLUGIN_INFO = {'id': 'stdio_demo', 'name': 'Stdio Demo', 'api_version': '1.0'}",
+                    "PARAMETER_SCHEMA = [",
+                    "    {'name': 'field', 'label': '字段', 'type': 'field_select', 'default': 'A'}",
+                    "]",
+                    "def describe_config(params, context):",
+                    "    return {'schema_version': 'stdio_demo.config.v1', 'summary': {'field': params.get('field', '')}}",
+                    "def run(input_data, params, context):",
+                    "    return {'ok': True, 'output': input_data}",
+                ]),
+                encoding="utf-8",
+            )
+
+            schema = worker.handle_request(request("get_plugin_schema", {
+                "plugin_id": "plugin.stdio_demo",
+                "plugins_dir": temp_dir,
+                "preview_headers": ["A"],
+            }))
+            described = worker.handle_request(request("describe_plugin_config", {
+                "plugin_id": "plugin.stdio_demo",
+                "plugins_dir": temp_dir,
+                "input_table": {"headers": ["A"], "rows": [["x"]]},
+            }))
+
+        self.assertTrue(schema["ok"])
+        self.assertEqual(
+            schema["result"]["schema"]["parameter_metadata"]["layout_index"]["schema_version"],
+            "plugin_parameter_layout.v1",
+        )
+        self.assertEqual(
+            schema["result"]["schema"]["parameter_metadata"]["ui_hints"]["schema_version"],
+            "plugin_parameter_ui_hints.v1",
+        )
+        self.assertEqual(
+            schema["result"]["schema"]["parameter_metadata"]["layout_index"]["field_order"],
+            ["params.field"],
+        )
+        self.assertTrue(described["ok"])
+        self.assertEqual(
+            described["result"]["parameter_metadata"]["layout_index"]["schema_version"],
+            "plugin_parameter_layout.v1",
+        )
+        self.assertEqual(
+            described["result"]["parameter_metadata"]["ui_hints"]["schema_version"],
+            "plugin_parameter_ui_hints.v1",
+        )
+        self.assertEqual(
+            described["result"]["parameter_metadata"]["layout_index"]["field_order"],
+            ["params.field"],
+        )
+        view_by_id = {view["view_id"]: view for view in described["result"]["views"]}
+        self.assertIn("plugin.parameter_metadata", view_by_id)
+        self.assertEqual(view_by_id["plugin.parameter_metadata"]["kind"], "summary")
+        self.assertEqual(view_by_id["plugin.parameter_metadata"]["summary"]["field_count"], 1)
+
     def test_describe_node_config_context_exposes_filter_shared_state(self):
         worker = StdioWorker()
 

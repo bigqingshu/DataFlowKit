@@ -540,6 +540,10 @@ class PluginService:
                 "resource_ids": [item["resource_id"] for item in resources],
             })
         views = _plugin_config_views_with_action_state(views, actions)
+        parameter_metadata = copy.deepcopy(schema.get("parameter_metadata") or {})
+        parameter_metadata_view = _plugin_parameter_metadata_view(parameter_metadata)
+        if parameter_metadata_view:
+            views = _merge_plugin_config_items(views, [parameter_metadata_view], "view_id")
 
         schema_warning_items = _normalize_plugin_config_warning_items(
             schema.get("warnings") or [],
@@ -2112,6 +2116,39 @@ def _plugin_parameter_ui_hint_lines(metadata):
         values = [str(item).strip() for item in (ui_hints.get(key) or []) if str(item).strip()]
         lines.append(f"{label}：{len(values)} 个")
     return lines
+
+
+def _plugin_parameter_metadata_view(metadata):
+    if not isinstance(metadata, dict):
+        return {}
+    field_count = int(metadata.get("field_count") or len(metadata.get("fields") or []))
+    layout = metadata.get("layout_index") if isinstance(metadata.get("layout_index"), dict) else {}
+    ui_hints = metadata.get("ui_hints") if isinstance(metadata.get("ui_hints"), dict) else {}
+    groups = [item for item in (metadata.get("groups") or []) if isinstance(item, dict)]
+    if not field_count and not groups and not layout and not ui_hints:
+        return {}
+    summary = {
+        "schema_version": str(metadata.get("schema_version") or ""),
+        "plugin_id": str(metadata.get("plugin_id") or ""),
+        "field_count": field_count,
+        "group_count": len(groups),
+        "group_titles": [
+            str(group.get("title") or "").strip()
+            for group in groups[:6]
+            if str(group.get("title") or "").strip()
+        ],
+        "layout_index": copy.deepcopy(layout),
+        "ui_hints": copy.deepcopy(ui_hints),
+        "capabilities": copy.deepcopy(metadata.get("capabilities") or {}),
+        "context_requirements": copy.deepcopy(metadata.get("context_requirements") or {}),
+    }
+    return {
+        "view_id": "plugin.parameter_metadata",
+        "title": "参数元数据",
+        "kind": "summary",
+        "summary": summary,
+        "state": copy.deepcopy(metadata),
+    }
 
 
 def _plugin_config_compatibility_lines(compatibility):
