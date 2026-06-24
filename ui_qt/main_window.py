@@ -2371,7 +2371,7 @@ class QtWorkflowMainWindow:
         except Exception:
             described = {}
         try:
-            context = self.engine_client.facade.describe_node_config_context(
+            context = self.engine_client.describe_node_config_context(
                 node_type_id,
                 preview_headers=headers,
                 **self._table_context(),

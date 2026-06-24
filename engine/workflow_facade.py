@@ -18,7 +18,6 @@ from workflow.node_ui_schema import (
     plan_reference_choices,
     runtime_reference_choices,
 )
-from workflow.filter_config_helpers import describe_filter_config_context
 
 
 def _plugin_config_capability_labels(capabilities):
@@ -1042,7 +1041,23 @@ class WorkflowFacade:
             "detail": detail,
         }
 
-    def describe_node_config_context(self, node_type_id, *, preview_headers=None, table_names=None, table_columns=None):
+    def describe_node_config_context(
+        self,
+        node_type_id="",
+        *,
+        node=None,
+        config=None,
+        preview_headers=None,
+        table_names=None,
+        table_columns=None,
+        transit_context=None,
+    ):
+        node = copy.deepcopy(node or {}) if isinstance(node, dict) else {}
+        if not node_type_id and node:
+            node_type_id = node.get("node_type_id") or node.get("type") or ""
+        config_source = config
+        if config_source is None and node:
+            config_source = node.get("config")
         schema = self.engine.get_node_ui_schema(
             node_type_id,
             preview_headers=preview_headers,
@@ -1069,11 +1084,16 @@ class WorkflowFacade:
                     })
         shared_config_context = {}
         if normalize_node_type_id(node_type_id) == "core.filter":
+            from workflow.filter_config_helpers import describe_filter_config_context
+
+            if not isinstance(config_source, dict):
+                config_source = schema.get("default_config") or {}
             shared_config_context = describe_filter_config_context(
-                schema.get("default_config") or {},
+                config_source,
                 preview_headers,
                 table_names=table_names,
                 table_columns=table_columns,
+                transit_context=transit_context,
             )
         shared_config_sections = self._shared_config_context_sections(shared_config_context)
         return {
@@ -1497,6 +1517,8 @@ class WorkflowFacade:
             "apply_result": copy.deepcopy(apply_result),
             "node_config_context": self.describe_node_config_context(
                 node.get("node_type_id") or node.get("type"),
+                node=node,
+                config=node.get("config"),
                 preview_headers=preview_headers,
                 table_names=table_names,
                 table_columns=table_columns,

@@ -109,6 +109,36 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertEqual(mapping_columns["source_field"]["context_requirements"][0]["kind"], "table_columns")
         self.assertEqual(mapping_columns["source_field"]["context_requirements"][1]["field"], "source_table")
 
+    def test_describe_node_config_context_exposes_filter_shared_state(self):
+        worker = StdioWorker()
+
+        response = worker.handle_request(request("describe_node_config_context", {
+            "node": {
+                "node_type_id": "core.filter",
+                "enabled": True,
+                "config": {
+                    "extra_tables": ["lookup", "中转:cached"],
+                    "output_fields": ["当前表.Code", "lookup.Name", "中转:cached.Value"],
+                },
+            },
+            "preview_headers": ["Code"],
+            "table_names": ["lookup"],
+            "table_columns": {"lookup": ["Code", "Name"]},
+            "transit_context": {"transit_tables": {"cached": {"headers": ["Value"]}}},
+        }))
+
+        self.assertTrue(response["ok"])
+        context = response["result"]["shared_config_context"]
+        self.assertEqual(context["schema_version"], "filter_config_context.v1")
+        self.assertEqual(context["selected_tables"], ["当前表", "lookup", "中转:cached"])
+        self.assertEqual(
+            context["available_fields"],
+            ["当前表.Code", "lookup.Code", "lookup.Name", "中转:cached.Value"],
+        )
+        self.assertEqual(context["field_state"]["first_external"], "lookup.Code")
+        self.assertIn("实际输出字段", context["output_text"])
+        self.assertEqual(response["result"]["shared_config_sections"][0]["source"], "filter_config_context.v1")
+
     def test_make_default_node_and_validate_plan(self):
         worker = StdioWorker()
 
