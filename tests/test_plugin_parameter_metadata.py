@@ -81,6 +81,22 @@ class PluginParameterMetadataTests(unittest.TestCase):
         self.assertEqual(fields["params.win32_open_retries"]["step"], 1)
         self.assertEqual(fields["params.win32_open_retries"]["unit"], "次")
         self.assertEqual(fields["params.word_text_write_mode"]["depends_on"], ["params.write_engine"])
+        self.assertEqual(fields["params.word_text_write_mode"]["refresh_on_change"], ["params.word_text_write_mode"])
+        self.assertEqual(
+            fields["params.scoped_replace_default"]["visible_when"],
+            {
+                "all": [
+                    {"field": "params.write_engine", "equals": "win32"},
+                    {"field": "params.word_text_write_mode", "equals": "按old_text查找替换"},
+                ],
+            },
+        )
+        self.assertEqual(
+            fields["params.scoped_replace_default"]["depends_on"],
+            ["params.write_engine", "params.word_text_write_mode"],
+        )
+        self.assertEqual(fields["params.old_text_field"]["depends_on"], ["params.word_text_write_mode"])
+        self.assertEqual(fields["params.replace_scope_field"]["depends_on"], ["params.word_text_write_mode"])
 
         for key in (
             "params.path_field",
