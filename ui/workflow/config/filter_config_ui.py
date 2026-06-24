@@ -10,6 +10,7 @@ from workflow.filter_config_helpers import (
     build_filter_condition_input_state,
     build_filter_field_refresh_state,
     build_filter_field_refresh_status,
+    build_filter_options_state,
     build_filter_join_input_state,
     build_filter_risk_display_state,
     build_filter_selectable_tables,
@@ -244,14 +245,12 @@ def build_filter_output_section(window, frame, config, all_fields, start_row=5):
 
 
 def refresh_filter_risk_text(window, headers, config, risk_var, risk_label):
-    warnings = window.get_plan_filter_config_warnings(
+    options_state = build_filter_options_state(
+        config,
         headers,
-        config.get("extra_tables", []),
-        config.get("conditions", []),
-        config.get("join_rules", []),
-        config.get("join_logic", "AND"),
+        window.get_plan_filter_available_fields(headers, config.get("extra_tables", []), {"transit_tables": {}}),
     )
-    display = build_filter_risk_display_state(warnings)
+    display = options_state["risk_state"]
     risk_var.set(display["text"])
     risk_label.configure(foreground=display["foreground"])
 
@@ -517,12 +516,8 @@ def refresh_filter_field_sources(
     value_source_var = condition_section["value_source_var"]
     config["extra_tables"] = [table_list.get(index) for index in table_list.curselection()]
     available_fields = window.get_plan_filter_available_fields(headers, config.get("extra_tables", []), transit_context)
-    state = build_filter_field_refresh_state(
-        headers,
-        available_fields,
-        value_source_var.get(),
-        config.get("output_fields", []),
-    )
+    options_state = build_filter_options_state(config, headers, available_fields, transit_context=transit_context)
+    state = options_state["field_state"]
     field_state.clear()
     field_state.update(state)
     window.refresh_combo_values(
@@ -558,6 +553,7 @@ def refresh_filter_field_sources(
         state["all_values"],
         state["selected_output"],
     )
+    config["output_fields"] = list(state["selected_output"])
     sync_output_fields()
     refresh_condition_value_input_callback()
     refresh_filter_risk_text_callback()
@@ -590,11 +586,7 @@ def build_filter_config(window, config, headers, transit_context=None):
     selected_tables = list(config.get("extra_tables", []))
     transit_context = transit_context or {"transit_tables": {}}
     all_fields = window.get_plan_filter_available_fields(headers, selected_tables, transit_context)
-    field_state = build_filter_field_refresh_state(
-        headers,
-        all_fields,
-        selected_output_fields=config.get("output_fields", []),
-    )
+    field_state = build_filter_options_state(config, headers, all_fields, transit_context=transit_context)["field_state"]
     current_fields = field_state["current_values"]
 
     def sync_extra_tables(rebuild=False):

@@ -102,6 +102,40 @@ def build_filter_config_service_state(config, headers, all_fields):
     })
 
 
+def build_filter_options_state(config, headers, all_fields, transit_context=None):
+    config = ensure_filter_config_defaults(config or {})
+    headers = list(headers or [])
+    all_fields = list(all_fields or [])
+    extra_tables = list(config.get("extra_tables", []) or [])
+    field_state = build_filter_field_refresh_state(
+        headers,
+        all_fields,
+        value_source="字段值" if str(config.get("value_source", "")).strip() == "字段值" else "固定值",
+        selected_output_fields=config.get("output_fields", []),
+    )
+    output_text = build_filter_actual_output_text(
+        config.get("output_fields", []),
+        headers,
+        all_fields,
+        config.get("extra_tables", []),
+    )
+    state = build_filter_config_service_state(config, headers, all_fields)
+    selected_tables = state.get("selected_tables", [])
+    return {
+        "config_state": state,
+        "field_state": field_state,
+        "output_text": output_text,
+        "selected_tables": selected_tables,
+        "all_fields": all_fields,
+        "headers": headers,
+        "extra_tables": extra_tables,
+        "transit_context": transit_context or {"transit_tables": {}},
+        "risk_state": build_filter_risk_display_state(
+            _build_filter_risk_warnings(headers, extra_tables, config, transit_context),
+        ),
+    }
+
+
 def apply_filter_config_service_command(config, headers, all_fields, command):
     state = build_filter_config_service_state(config, headers, all_fields)
     return apply_advanced_filter_command(state, command)
@@ -432,3 +466,15 @@ def _filter_fields_to_columns_by_table(fields):
         if column and column not in columns_by_table[table]:
             columns_by_table[table].append(column)
     return columns_by_table
+
+
+def _build_filter_risk_warnings(headers, extra_tables, config, transit_context):
+    transit_context = transit_context or {"transit_tables": {}}
+    warnings = []
+    if extra_tables and not headers:
+        warnings.append("当前表没有字段，副表匹配可能无法生成结果。")
+    if len(extra_tables) > 3:
+        warnings.append("副表数量较多时，可能产生较大的组合开销。")
+    if not extra_tables and config.get("join_rules"):
+        warnings.append("已配置匹配规则，但没有选择副表。")
+    return warnings

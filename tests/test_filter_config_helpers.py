@@ -9,6 +9,7 @@ from workflow.filter_config_helpers import (
     build_filter_join_input_state,
     build_filter_risk_display_state,
     build_filter_config_service_state,
+    build_filter_options_state,
     build_filter_selectable_tables,
     build_treeview_cell_edit_state,
     choose_filter_actual_output_lookup_fields,
@@ -338,6 +339,23 @@ class FilterConfigHelpersTests(unittest.TestCase):
             build_filter_field_refresh_status(2, 7),
             "高级筛选字段已局部刷新：2 个副表，7 个可用字段。",
         )
+
+    def test_options_state_wraps_field_and_risk_state(self):
+        state = build_filter_options_state(
+            {
+                "extra_tables": ["t1", "t2", "t3", "t4"],
+                "output_fields": ["当前表.A"],
+                "join_rules": [{"left": "当前表.B", "op": "等于", "right": "t.B"}],
+            },
+            ["A"],
+            ["当前表.A", "当前表.B", "t.A"],
+        )
+
+        self.assertEqual(state["field_state"]["first_any"], "当前表.A")
+        self.assertEqual(state["output_text"], "实际输出字段：A")
+        self.assertIn("副表数量较多时", state["risk_state"]["text"])
+        self.assertEqual(state["selected_tables"], ["当前表", "t1", "t2", "t3", "t4"])
+        self.assertEqual(state["extra_tables"], ["t1", "t2", "t3", "t4"])
 
 
 if __name__ == "__main__":
