@@ -183,6 +183,7 @@ class StdioWorkerApiTests(unittest.TestCase):
             "source": {"type": "clipboard"},
             "dirty": True,
         }))
+        service_desc = worker.handle_request(request("describe_data_source_service"))
 
         self.assertTrue(parsed["ok"])
         self.assertEqual(table["headers"], ["A", "B"])
@@ -202,6 +203,10 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertTrue(actions["result"]["actions"]["save_sqlite"]["enabled"])
         self.assertFalse(actions["result"]["actions"]["delete_sqlite"]["enabled"])
         self.assertEqual(actions["result"]["action_schema"]["actions"]["patch_cell"]["engine_action"], "patch_table_cell")
+        self.assertTrue(service_desc["ok"])
+        self.assertEqual(service_desc["result"]["schema_version"], "data_source_service.v1")
+        self.assertEqual(service_desc["result"]["data_actions"]["save_sqlite"]["engine_action"], "save_table")
+        self.assertTrue(service_desc["result"]["capabilities"]["sqlite_save"])
 
     def test_data_source_save_and_delete_table_actions(self):
         worker = StdioWorker()

@@ -40,6 +40,8 @@ TABLE_SAVE_MODES = [
 DATA_SOURCE_STATE_SCHEMA_VERSION = "data_source_state.v1"
 DATA_SOURCE_ACTIONS_SCHEMA_VERSION = "data_source_actions.v1"
 DATA_SOURCE_ACTION_SCHEMA_VERSION = "data_source_action_schema.v1"
+DATA_SOURCE_SERVICE_SCHEMA_VERSION = "data_source_service.v1"
+DATA_SOURCE_PROTOCOL_FAMILY = "data_source_service"
 TABLE_SAVE_MODES_SCHEMA_VERSION = "table_save_modes.v1"
 
 _SAVE_MODE_ALIASES = {}
@@ -212,6 +214,12 @@ class TableDataService:
             "action_schema": describe_data_source_action_schema(),
             "issues": [],
         }
+
+    def describe_data_source_service(self):
+        described = describe_data_source_service()
+        described["ok"] = True
+        described["issues"] = []
+        return described
 
     def describe_table_save_modes(self):
         return {
@@ -802,7 +810,7 @@ def build_data_source_action_state(table=None, *, source=None, dirty=False):
 def describe_data_source_action_schema():
     return {
         "schema_version": DATA_SOURCE_ACTION_SCHEMA_VERSION,
-        "protocol_family": "data_source_service",
+        "protocol_family": DATA_SOURCE_PROTOCOL_FAMILY,
         "actions": {
             "load_clipboard": {
                 "engine_action": "parse_clipboard_table",
@@ -888,6 +896,74 @@ def describe_data_source_action_schema():
             "data_source_state": {"schema_version": DATA_SOURCE_STATE_SCHEMA_VERSION},
             "data_source_actions": {"schema_version": DATA_SOURCE_ACTIONS_SCHEMA_VERSION},
             "table_save_modes": {"schema_version": TABLE_SAVE_MODES_SCHEMA_VERSION},
+        },
+    }
+
+
+def describe_data_source_service():
+    action_schema = describe_data_source_action_schema()
+    actions = action_schema.get("actions") or {}
+    return {
+        "schema_version": DATA_SOURCE_SERVICE_SCHEMA_VERSION,
+        "protocol_family": DATA_SOURCE_PROTOCOL_FAMILY,
+        "service_id": "table_data_service",
+        "title": "输入数据源共享服务",
+        "summary": "UI 无关的数据源解析、编辑、搜索、分页和 SQLite 保存/删除协议。",
+        "capabilities": {
+            "clipboard_parse": True,
+            "file_import": True,
+            "table_paging": True,
+            "table_handles": True,
+            "cell_edit": True,
+            "search_navigation": True,
+            "sqlite_save": True,
+            "sqlite_delete": True,
+            "action_state": True,
+        },
+        "actions": {
+            "describe_data_source_service": {
+                "engine_action": "describe_data_source_service",
+                "inputs": [],
+                "result": "data_source_service",
+            },
+            "describe_data_source_actions": {
+                "engine_action": "describe_data_source_actions",
+                "inputs": [
+                    {"key": "table", "type": "table"},
+                    {"key": "source", "type": "object"},
+                    {"key": "dirty", "type": "bool", "default": False},
+                ],
+                "result": "data_source_actions",
+            },
+            "describe_table_save_modes": {
+                "engine_action": "describe_table_save_modes",
+                "inputs": [],
+                "result": "table_save_modes",
+            },
+            "normalize_table_save_mode": {
+                "engine_action": "normalize_table_save_mode",
+                "inputs": [
+                    {"key": "mode", "type": "text", "default": "replace"},
+                ],
+                "result": "table_save_mode",
+            },
+        },
+        "data_actions": actions,
+        "action_schema": action_schema,
+        "save_modes": {
+            "schema_version": TABLE_SAVE_MODES_SCHEMA_VERSION,
+            "default_mode": "replace",
+            "modes": describe_save_modes(),
+        },
+        "result_schemas": {
+            "data_source_service": {"schema_version": DATA_SOURCE_SERVICE_SCHEMA_VERSION},
+            "data_source_state": {"schema_version": DATA_SOURCE_STATE_SCHEMA_VERSION},
+            "data_source_actions": {"schema_version": DATA_SOURCE_ACTIONS_SCHEMA_VERSION},
+            "data_source_action_schema": {"schema_version": DATA_SOURCE_ACTION_SCHEMA_VERSION},
+            "table_save_modes": {"schema_version": TABLE_SAVE_MODES_SCHEMA_VERSION},
+            "table_page": {"schema_version": "table_page.v1"},
+            "search_navigation": {"schema_version": "search_navigation.v1"},
+            "delete_result": {"schema_version": "delete_result.v1"},
         },
     }
 

@@ -176,6 +176,7 @@ class TableDataServiceTests(unittest.TestCase):
             source={"type": "sqlite", "db_path": "input.db", "table_name": "demo"},
             dirty=False,
         )
+        service_desc = TableDataService().describe_data_source_service()
 
         self.assertEqual(promoted["headers"], ["H1", "H1_2"])
         self.assertEqual(patched["rows"], [["a", "changed"]])
@@ -197,6 +198,17 @@ class TableDataServiceTests(unittest.TestCase):
             sqlite_actions["action_schema"]["result_schemas"]["data_source_state"]["schema_version"],
             "data_source_state.v1",
         )
+        self.assertTrue(service_desc["ok"])
+        self.assertEqual(service_desc["schema_version"], "data_source_service.v1")
+        self.assertEqual(service_desc["protocol_family"], "data_source_service")
+        self.assertTrue(service_desc["capabilities"]["clipboard_parse"])
+        self.assertEqual(service_desc["data_actions"]["patch_cell"]["engine_action"], "patch_table_cell")
+        self.assertEqual(
+            service_desc["actions"]["describe_data_source_actions"]["engine_action"],
+            "describe_data_source_actions",
+        )
+        self.assertEqual([item["id"] for item in service_desc["save_modes"]["modes"]], ["replace", "timestamp", "fail", "append"])
+        self.assertEqual(service_desc["result_schemas"]["data_source_state"]["schema_version"], "data_source_state.v1")
         self.assertEqual(normalize_table_headers(["", "A", "A"]), ["列1", "A", "A_2"])
 
     def test_table_search_navigation_is_ui_free(self):

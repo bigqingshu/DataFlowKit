@@ -352,6 +352,9 @@ class QtHeadlessEngineClient:
             dirty=dirty,
         )
 
+    def describe_data_source_service(self):
+        return self.engine.describe_data_source_service()
+
     def describe_table_save_modes(self):
         return self.engine.describe_table_save_modes()
 

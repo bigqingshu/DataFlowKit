@@ -356,6 +356,9 @@ class HeadlessWorkflowEngine:
             dirty=dirty,
         )
 
+    def describe_data_source_service(self):
+        return self.tables.describe_data_source_service()
+
     def describe_table_save_modes(self):
         return self.tables.describe_table_save_modes()
 

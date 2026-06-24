@@ -203,6 +203,8 @@ class StdioWorker:
                 source=payload.get("source"),
                 dirty=bool(payload.get("dirty", False)),
             )
+        if action == "describe_data_source_service":
+            return self.engine.describe_data_source_service()
         if action == "describe_table_save_modes":
             return self.engine.describe_table_save_modes()
         if action == "normalize_table_save_mode":
