@@ -1304,12 +1304,25 @@ def _plugin_parameter_metadata(default_config, parameter_schema):
         for field in parameter_fields
         if isinstance(field.get("options_source"), dict) and str((field.get("options_source") or {}).get("type") or "")
     })
+    field_index = _plugin_parameter_field_index(parameter_fields)
+    group_index = {
+        group["group_key"]: {
+            "title": group["title"],
+            "advanced": group["advanced"],
+            "field_keys": list(group["field_keys"]),
+            "param_keys": list(group["param_keys"]),
+        }
+        for group in groups
+    }
     return {
         "schema_version": "plugin_parameters.v1",
         "plugin_id": plugin_id,
         "field_count": len(parameter_fields),
         "fields": copy.deepcopy(parameter_fields),
         "groups": groups,
+        "field_index": field_index,
+        "group_index": group_index,
+        "dependency_index": _plugin_parameter_dependency_index(parameter_fields),
         "default_params": copy.deepcopy((default_config or {}).get("params") or {}),
         "context_requirements": {
             "options_sources": options_sources,
@@ -1326,6 +1339,73 @@ def _plugin_parameter_metadata(default_config, parameter_schema):
             "advanced_fields": any(bool(field.get("advanced")) for field in parameter_fields),
         },
     }
+
+
+def _plugin_parameter_field_index(parameter_fields):
+    result = {}
+    for field in parameter_fields or []:
+        if not isinstance(field, dict):
+            continue
+        key = str(field.get("key") or "").strip()
+        if not key:
+            continue
+        entry = {
+            "param_key": field.get("param_key"),
+            "config_path": copy.deepcopy(field.get("config_path") or []),
+            "label": field.get("label"),
+            "type": field.get("type"),
+            "group": _plugin_parameter_group_title(field),
+            "advanced": bool(field.get("advanced")),
+            "required": bool(field.get("required")),
+        }
+        options_source = field.get("options_source")
+        if isinstance(options_source, dict):
+            entry["options_source"] = copy.deepcopy(options_source)
+        for meta_key in ("depends_on", "refresh_on_change", "visible_when", "enabled_when"):
+            if meta_key in field:
+                entry[meta_key] = copy.deepcopy(field.get(meta_key))
+        result[key] = entry
+    return result
+
+
+def _plugin_parameter_dependency_index(parameter_fields):
+    result = {}
+    for field in parameter_fields or []:
+        if not isinstance(field, dict):
+            continue
+        key = str(field.get("key") or "").strip()
+        if not key:
+            continue
+        dependencies = []
+        for meta_key in ("depends_on", "refresh_on_change"):
+            values = field.get(meta_key) or []
+            if isinstance(values, str):
+                values = [values]
+            dependencies.extend(str(value).strip() for value in values if str(value).strip())
+        for meta_key in ("visible_when", "enabled_when"):
+            dependencies.extend(_parameter_condition_field_refs(field.get(meta_key)))
+        for dependency in sorted(set(dependencies)):
+            result.setdefault(dependency, []).append(key)
+    for dependents in result.values():
+        dependents.sort()
+    return result
+
+
+def _parameter_condition_field_refs(condition):
+    if not isinstance(condition, dict):
+        return []
+    refs = []
+    for key, value in condition.items():
+        if key == "field":
+            text = str(value or "").strip()
+            if text:
+                refs.append(text)
+        elif key in ("all", "any") and isinstance(value, list):
+            for item in value:
+                refs.extend(_parameter_condition_field_refs(item))
+        elif key == "not":
+            refs.extend(_parameter_condition_field_refs(value))
+    return refs
 
 
 def _plugin_parameter_group_map(parameter_fields):

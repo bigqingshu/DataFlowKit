@@ -264,6 +264,12 @@ class PluginServiceTests(unittest.TestCase):
         metadata_groups = {group["title"]: group for group in metadata["groups"]}
         self.assertEqual(metadata_groups["插件参数 / 输入"]["field_keys"], ["params.table_name"])
         self.assertEqual(metadata_groups["高级参数"]["param_keys"], ["directory_path"])
+        self.assertEqual(metadata["field_index"]["params.table_name"]["config_path"], ["params", "table_name"])
+        self.assertEqual(metadata["field_index"]["params.table_name"]["group"], "插件参数 / 输入")
+        self.assertEqual(metadata["field_index"]["params.config_name"]["options_source"]["type"], "plugin_dynamic_choices")
+        self.assertEqual(metadata["group_index"]["plugin.parameters.插件参数_输入"]["param_keys"], ["table_name"])
+        self.assertEqual(metadata["dependency_index"]["params.input_alias"], ["params.directory_path"])
+        self.assertEqual(metadata["dependency_index"]["params.config_name"], ["params.directory_path"])
         metadata_fields = {field["key"]: field for field in metadata["fields"]}
         self.assertEqual(metadata_fields["params.input_alias"]["options_source"], {"type": "plugin_input_tables"})
         self.assertEqual(metadata_fields["params.directory_path"]["visible_when"], {"field": "params.input_alias", "equals": "当前表"})
@@ -281,6 +287,10 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(
             described["node_ui_schema"]["parameter_metadata"]["fields"],
             described["parameter_metadata"]["fields"],
+        )
+        self.assertEqual(
+            described["node_ui_schema"]["parameter_metadata"]["field_index"],
+            described["parameter_metadata"]["field_index"],
         )
         self.assertEqual(described["resources"][0]["file"], "extended_settings.json")
         self.assertEqual(described["views"][1]["kind"], "resource_list")
