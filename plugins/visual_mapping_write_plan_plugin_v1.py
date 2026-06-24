@@ -418,6 +418,7 @@ def describe_config(params, context):
             operations=patch_operations,
             sections=patch_sections,
         ),
+        "warning_schema": _visual_mapping_warning_schema(config_name),
         "warnings": _normalize_config_warnings(context.get("settings_warnings") or []),
         "capabilities": {
             "schema_config": True,
@@ -425,11 +426,33 @@ def describe_config(params, context):
             "config_patch": True,
             "config_effect_preview": True,
             "preview_config_effect": True,
+            "structured_warnings": True,
             "legacy_custom_config": True,
             "supported_sections": sorted(CONFIG_SECTIONS),
             "supported_patch_operations": patch_operations,
             "view_kinds": ["summary", "structured_list"],
         },
+    }
+
+
+def _visual_mapping_warning_schema(config_name):
+    return {
+        "schema_version": CONFIG_SCHEMA_VERSION,
+        "protocol_family": CONFIG_PROTOCOL_FAMILY,
+        "kind": "config_warning",
+        "config_key": _as_text(config_name) or "default",
+        "levels": ["info", "warning", "error"],
+        "fields": [
+            {"key": "code", "type": "string", "required": True},
+            {"key": "level", "type": "string", "required": True, "choices": ["info", "warning", "error"]},
+            {"key": "message", "type": "string", "required": True},
+            {"key": "plugin_id", "type": "string", "required": False},
+            {"key": "view_id", "type": "string", "required": False},
+            {"key": "field", "type": "string", "required": False},
+            {"key": "path", "type": "string", "required": False},
+            {"key": "config_path", "type": "path", "required": False},
+            {"key": "hint", "type": "string", "required": False},
+        ],
     }
 
 
@@ -573,6 +596,7 @@ def preview_config_effect(params, context):
                 "execute_actions_only": True,
             },
         ],
+        "warning_schema": _visual_mapping_warning_schema(config_name),
         "warnings": _normalize_config_warnings(warnings),
         "issues": [],
     }
@@ -1099,14 +1123,24 @@ def _config_patch_issue(code, message, path="/patch"):
     return {"level": "error", "code": code, "message": message, "path": path, "source": PLUGIN_INFO["id"]}
 
 
-def _config_warning(code, message, *, level="warning", view_id="", field="", hint=""):
-    warning = {"code": code, "level": level, "message": message}
+def _config_warning(code, message, *, level="warning", view_id="", field="", hint="", path="", config_path=None):
+    warning = {
+        "code": code,
+        "level": level,
+        "message": message,
+        "plugin_id": PLUGIN_INFO["id"],
+    }
     if view_id:
         warning["view_id"] = view_id
     if field:
         warning["field"] = field
+    if config_path is not None:
+        warning["config_path"] = list(config_path)
+    elif field:
+        warning["config_path"] = [part for part in _as_text(field).split(".") if part]
     if hint:
         warning["hint"] = hint
+    warning["path"] = path or _warning_default_path(warning)
     return warning
 
 
@@ -1117,13 +1151,40 @@ def _normalize_config_warnings(warnings):
             item = copy.deepcopy(warning)
             item.setdefault("level", "warning")
             item.setdefault("code", f"plugin_warning_{index}")
-            item.setdefault("message", _as_text(item.get("message")))
+            item["message"] = _as_text(item.get("message") or item.get("text"))
+            if not item["message"]:
+                continue
+            item.setdefault("plugin_id", PLUGIN_INFO["id"])
+            if item.get("field") and not item.get("config_path"):
+                item["config_path"] = [part for part in _as_text(item.get("field")).split(".") if part]
+            item.setdefault("path", _warning_default_path(item, index=index))
             result.append(item)
         else:
             message = _as_text(warning)
             if message:
-                result.append(_config_warning(f"plugin_warning_{index}", message))
+                result.append(_config_warning(
+                    f"plugin_warning_{index}",
+                    message,
+                    view_id="visual_mapping.overview",
+                    path="/plugin_settings",
+                    hint="请检查插件配置文件或备份恢复信息。",
+                ))
     return result
+
+
+def _warning_default_path(warning, *, index=0):
+    view_id = _as_text((warning or {}).get("view_id"))
+    field = _as_text((warning or {}).get("field"))
+    code = _as_text((warning or {}).get("code"))
+    if view_id and field:
+        return f"/views/{view_id}/fields/{field}"
+    if view_id:
+        return f"/views/{view_id}"
+    if field:
+        return f"/fields/{field}"
+    if code:
+        return f"/warnings/{code}"
+    return f"/warnings/{index or 0}"
 
 
 def _config_patch_target(params, patch):

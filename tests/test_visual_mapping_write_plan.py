@@ -176,6 +176,11 @@ class VisualMappingWritePlanTests(unittest.TestCase):
                         "headers": ["old", "new"],
                         "rows": [["old", "new"]],
                     },
+                    "空新内容": {
+                        "type": "table",
+                        "headers": [],
+                        "rows": [],
+                    },
                 },
             }
             cfg = {
@@ -218,6 +223,15 @@ class VisualMappingWritePlanTests(unittest.TestCase):
                 },
                 dict(context, settings_warnings=["测试警告"]),
             )
+            missing_content_effect = visual.preview_config_effect(
+                {
+                    "config_name": "default",
+                    "doc_table_alias": "文档",
+                    "content_table_alias": "空新内容",
+                    "replace_aux_table_alias": "辅助",
+                },
+                dict(context),
+            )
 
         self.assertEqual(described["schema_version"], "DataFlowKit.visual_mapping.config.v1")
         self.assertEqual(described["protocol_family"], "plugin_complex_config")
@@ -225,8 +239,18 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertEqual(described["config_key"], "default")
         self.assertTrue(described["capabilities"]["config_patch"])
         self.assertTrue(described["capabilities"]["config_effect_preview"])
+        self.assertTrue(described["capabilities"]["structured_warnings"])
         self.assertIn("rules", described["capabilities"]["supported_sections"])
         self.assertEqual(described["warnings"][0]["message"], "测试警告")
+        self.assertEqual(described["warnings"][0]["plugin_id"], visual.PLUGIN_INFO["id"])
+        self.assertEqual(described["warnings"][0]["view_id"], "visual_mapping.overview")
+        self.assertEqual(described["warnings"][0]["path"], "/plugin_settings")
+        warning_schema = described["warning_schema"]
+        self.assertEqual(warning_schema["schema_version"], visual.CONFIG_SCHEMA_VERSION)
+        self.assertEqual(warning_schema["kind"], "config_warning")
+        warning_field_keys = {field["key"] for field in warning_schema["fields"]}
+        self.assertIn("path", warning_field_keys)
+        self.assertIn("config_path", warning_field_keys)
         self.assertEqual(described["summary"]["rules"], 1)
         self.assertEqual(described["summary"]["features"], 1)
         self.assertEqual(described["summary"]["global_rules"], 1)
@@ -351,6 +375,20 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertEqual(effect["required_input_tables"][0]["row_count"], 1)
         self.assertIn("source_file", effect["expected_output_fields"])
         self.assertIn("file_write", [item["kind"] for item in effect["side_effects"]])
+        self.assertEqual(effect["warning_schema"]["kind"], "config_warning")
+        missing_warning_by_code = {item["code"]: item for item in missing_content_effect["warnings"]}
+        self.assertEqual(
+            missing_warning_by_code["visual_mapping_no_content_fields"]["field"],
+            "mapping.content_field",
+        )
+        self.assertEqual(
+            missing_warning_by_code["visual_mapping_no_content_fields"]["config_path"],
+            ["mapping", "content_field"],
+        )
+        self.assertEqual(
+            missing_warning_by_code["visual_mapping_no_content_fields"]["path"],
+            "/views/visual_mapping.rules/fields/mapping.content_field",
+        )
 
     def test_plugin_service_applies_visual_mapping_rules_config_patch(self):
         with tempfile.TemporaryDirectory(dir=".") as temp_dir:
@@ -489,6 +527,13 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         ]
         self.assertTrue(plugin_warning_items)
         self.assertIn(plugin_warning_items[0]["message"], described_with_warning["warnings"])
+        self.assertEqual(plugin_warning_items[0]["plugin_id"], visual.PLUGIN_INFO["id"])
+        self.assertEqual(plugin_warning_items[0]["view_id"], "visual_mapping.overview")
+        self.assertEqual(plugin_warning_items[0]["path"], "/plugin_settings")
+        self.assertEqual(
+            described_with_warning["plugin_extension"]["warning_schema"]["kind"],
+            "config_warning",
+        )
         rules_view = next(
             view for view in standard_updated["description"]["views"]
             if view.get("view_id") == "visual_mapping.rules"
