@@ -248,11 +248,16 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertTrue(manifest["interfaces"]["preview_config_effect"])
         manifest_views = {view["view_id"]: view for view in manifest["views"]}
         self.assertEqual(manifest_views["visual_mapping.rules"]["section"], "rules")
+        self.assertEqual(manifest_views["visual_mapping.rules"]["item_identity"]["target_id_fields"], ["id", "name"])
+        self.assertEqual(manifest_views["visual_mapping.rules"]["selection"]["target"], "item")
+        self.assertEqual(manifest_views["visual_mapping.rules"]["patch_target"]["target_id_field"], "target_id")
         self.assertIn("source_match", manifest_views["visual_mapping.rules"]["detail_sections"])
         self.assertIn("actions", manifest_views["visual_mapping.linked_rules"]["detail_sections"])
         self.assertIn("rule_default", manifest["models"])
         self.assertIn("replace_item", manifest["patch"]["operations"])
         self.assertIn("rules", manifest["patch"]["sections"])
+        self.assertTrue(manifest["patch"]["target_id_supported"])
+        self.assertEqual(manifest["patch"]["target_id_fields"]["rules"], ["id", "name"])
         self.assertIn("config_path", manifest["warnings"]["fields"])
         self.assertEqual(manifest["config_effect"]["provider"], "preview_config_effect")
         self.assertEqual(described["warnings"][0]["message"], "测试警告")
@@ -279,6 +284,9 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertEqual(view_by_id["visual_mapping.rules"]["items"][0]["source_locator"]["row_index"], 1)
         self.assertEqual(view_by_id["visual_mapping.rules"]["section"], "rules")
         self.assertEqual(view_by_id["visual_mapping.rules"]["item_model_key"], "rule_default")
+        self.assertEqual(view_by_id["visual_mapping.rules"]["item_identity"]["target_id_fields"], ["id", "name"])
+        self.assertEqual(view_by_id["visual_mapping.rules"]["selection"]["identity"]["section"], "rules")
+        self.assertEqual(view_by_id["visual_mapping.rules"]["patch_target"]["target_id_fields"], ["id", "name"])
         self.assertEqual(view_by_id["visual_mapping.rules"]["append_value"], {})
         self.assertEqual(view_by_id["visual_mapping.rules"]["item_schema"]["model_key"], "rule_default")
         self.assertEqual(view_by_id["visual_mapping.rules"]["item_schema"]["display_columns"][0]["key"], "enabled")
@@ -327,6 +335,8 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertIn("payload", patch_field_keys)
         rule_patch_schema = view_by_id["visual_mapping.rules"]["patch_schema"]
         self.assertEqual(rule_patch_schema["sections"]["rules"]["view_id"], "visual_mapping.rules")
+        self.assertTrue(rule_patch_schema["sections"]["rules"]["supports_target_id"])
+        self.assertEqual(rule_patch_schema["sections"]["rules"]["target_id_fields"], ["id", "name"])
         self.assertIn(
             "target_index",
             next(
@@ -338,6 +348,7 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertEqual(view_by_id["visual_mapping.features"]["items"][0]["condition_count"], 1)
         self.assertEqual(view_by_id["visual_mapping.features"]["items"][0]["conditions"][0]["value"], "old")
         self.assertEqual(view_by_id["visual_mapping.features"]["item_model_key"], "feature_default")
+        self.assertEqual(view_by_id["visual_mapping.features"]["item_identity"]["target_id_fields"], ["name"])
         feature_schema_columns = {
             column["key"]: column
             for column in view_by_id["visual_mapping.features"]["item_schema"]["columns"]
@@ -591,6 +602,57 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertEqual(features_view["items"][-1]["name"], "协议特征")
         self.assertFalse(invalid["ok"])
         self.assertEqual(invalid["issues"][0]["code"], "visual_mapping_config_patch_invalid")
+
+    def test_visual_mapping_config_patch_can_target_item_by_id(self):
+        with tempfile.TemporaryDirectory(dir=".") as temp_dir:
+            context = {"plugin_data_dir": temp_dir}
+            visual._save_settings(context, {
+                "version": 1,
+                "configs": {
+                    "default": {
+                        "rules": [
+                            {"id": "rule_a", "name": "A", "enabled": True, "mapping": {"content_field": "old_a"}},
+                            {"id": "rule_b", "name": "B", "enabled": True, "mapping": {"content_field": "old_b"}},
+                        ]
+                    }
+                },
+            })
+            validated = visual.validate_config_patch(
+                {"config_name": "default"},
+                context,
+                {
+                    "section": "rules",
+                    "operation": "set_enabled",
+                    "target_id": "rule_b",
+                    "payload": {"enabled": False},
+                },
+            )
+            updated = visual.apply_config_patch(
+                {"config_name": "default"},
+                context,
+                {
+                    "section": "rules",
+                    "operation": "replace_item",
+                    "target_id": "rule_b",
+                    "payload": {"id": "rule_b", "name": "B2", "enabled": True, "mapping": {"content_field": "new_b"}},
+                },
+            )
+            _name, cfg, _settings = visual._get_config({"config_name": "default"}, context)
+            missing = visual.validate_config_patch(
+                {"config_name": "default"},
+                context,
+                {"section": "rules", "operation": "delete_item", "target_id": "missing"},
+            )
+
+        self.assertTrue(validated["ok"])
+        self.assertTrue(updated["ok"])
+        self.assertEqual(cfg["rules"][0]["id"], "rule_a")
+        self.assertEqual(cfg["rules"][0]["mapping"]["content_field"], "old_a")
+        self.assertEqual(cfg["rules"][1]["id"], "rule_b")
+        self.assertEqual(cfg["rules"][1]["name"], "B2")
+        self.assertEqual(cfg["rules"][1]["mapping"]["content_field"], "new_b")
+        self.assertFalse(missing["ok"])
+        self.assertIn("target_id", missing["message"])
 
     def test_anchor_match_uses_content_field_value(self):
         table_context, content = self.content_context()

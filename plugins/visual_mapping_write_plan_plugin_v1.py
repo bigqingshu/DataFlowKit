@@ -322,7 +322,25 @@ def describe_config(params, context):
     for spec in editor_specs:
         section = _as_text((spec.get("config_path") or [""])[-1])
         model_key = section_model_keys.get(section, "")
+        item_identity = _visual_mapping_section_item_identity(section)
         spec["section"] = section
+        spec["item_identity"] = copy.deepcopy(item_identity)
+        spec["selection"] = {
+            "mode": "single",
+            "target": "item",
+            "default_index": 0,
+            "empty_text": f"暂无{spec.get('title') or '配置项'}",
+            "identity": copy.deepcopy(item_identity),
+        }
+        spec["patch_target"] = {
+            "section": section,
+            "path": copy.deepcopy(spec.get("config_path") or []),
+            "target_index_field": "target_index",
+            "target_id_field": "target_id",
+            "target_id_fields": list(item_identity.get("target_id_fields") or []),
+            "target_id_requires_unique_match": True,
+            "fallback_target_index": True,
+        }
         spec["patch_operations"] = list(patch_operations)
         spec["append_value"] = {}
         spec["item_schema"] = {
@@ -358,6 +376,9 @@ def describe_config(params, context):
             "path": copy.deepcopy(spec.get("config_path") or []),
             "model_key": model_key,
             "operations": list(patch_operations),
+            "item_identity": copy.deepcopy(item_identity),
+            "target_id_fields": list(item_identity.get("target_id_fields") or []),
+            "supports_target_id": True,
         }
         spec["patch_schema"] = _visual_mapping_patch_schema(
             config_name,
@@ -380,6 +401,7 @@ def describe_config(params, context):
             "editor_kind": spec["editor_kind"],
             "config_path": spec["config_path"],
             "view_id": spec["view_id"],
+            "patch_target": copy.deepcopy(spec["patch_target"]),
         }
         for spec in editor_specs
     ]
@@ -466,6 +488,9 @@ def _visual_mapping_protocol_manifest(config_name, *, views=None, actions=None, 
             "section": view.get("section"),
             "config_path": copy.deepcopy(view.get("config_path") or []),
             "item_model_key": view.get("item_model_key"),
+            "item_identity": copy.deepcopy(view.get("item_identity") or {}),
+            "selection": copy.deepcopy(view.get("selection") or {}),
+            "patch_target": copy.deepcopy(view.get("patch_target") or {}),
             "detail_sections": detail_sections,
             "patch_operations": copy.deepcopy(view.get("patch_operations") or []),
         })
@@ -478,6 +503,7 @@ def _visual_mapping_protocol_manifest(config_name, *, views=None, actions=None, 
             "kind": action.get("kind"),
             "view_id": action.get("view_id"),
             "config_path": copy.deepcopy(action.get("config_path") or []),
+            "patch_target": copy.deepcopy(action.get("patch_target") or {}),
         })
     patch_schema = patch_schema if isinstance(patch_schema, dict) else {}
     warning_schema = warning_schema if isinstance(warning_schema, dict) else {}
@@ -504,6 +530,8 @@ def _visual_mapping_protocol_manifest(config_name, *, views=None, actions=None, 
                 if isinstance(operation, dict) and operation.get("operation")
             ],
             "sections": sorted((patch_schema.get("sections") or {}).keys()),
+            "target_id_supported": bool(patch_schema.get("target_id_supported", False)),
+            "target_id_fields": copy.deepcopy(patch_schema.get("target_id_fields") or {}),
         },
         "warnings": {
             "schema_version": warning_schema.get("schema_version"),
@@ -545,6 +573,12 @@ def _visual_mapping_warning_schema(config_name):
 
 def _visual_mapping_patch_schema(config_name, *, operations=None, sections=None):
     operation_items = []
+    sections = copy.deepcopy(sections or {})
+    target_id_fields = {
+        section: list((spec or {}).get("target_id_fields") or [])
+        for section, spec in sections.items()
+        if isinstance(spec, dict) and (spec.get("target_id_fields") or [])
+    }
     operation_defs = {
         "append_item": {
             "label": "新增项",
@@ -605,7 +639,9 @@ def _visual_mapping_patch_schema(config_name, *, operations=None, sections=None)
             {"key": "payload", "type": "object", "required": False},
         ],
         "operations": operation_items,
-        "sections": copy.deepcopy(sections or {}),
+        "sections": sections,
+        "target_id_supported": bool(target_id_fields),
+        "target_id_fields": target_id_fields,
     }
 
 
@@ -1379,15 +1415,15 @@ def _apply_config_patch_to_section(cfg, section, patch):
         items.append(_ensure_config_section_item(section, (patch or {}).get("payload"), len(items) + 1))
         return
     if operation == "replace_item":
-        index = _config_patch_index(patch, len(items), section)
+        index = _config_patch_item_index(patch, items, section)
         items[index] = _ensure_config_section_item(section, (patch or {}).get("payload"), index + 1)
         return
     if operation == "delete_item":
-        index = _config_patch_index(patch, len(items), section)
+        index = _config_patch_item_index(patch, items, section)
         items.pop(index)
         return
     if operation == "move_item":
-        index = _config_patch_index(patch, len(items), section)
+        index = _config_patch_item_index(patch, items, section)
         to_index = _to_int((patch or {}).get("to_index"), index)
         if to_index < 0 or to_index >= len(items):
             raise ValueError("目标位置超出范围")
@@ -1395,7 +1431,7 @@ def _apply_config_patch_to_section(cfg, section, patch):
         items.insert(to_index, item)
         return
     if operation == "set_enabled":
-        index = _config_patch_index(patch, len(items), section)
+        index = _config_patch_item_index(patch, items, section)
         if not isinstance(items[index], dict):
             items[index] = _ensure_config_section_item(section, items[index], index + 1)
         payload = (patch or {}).get("payload")
@@ -1419,6 +1455,30 @@ def _config_patch_index(patch, length, section="rules"):
     if index < 0 or index >= length:
         raise ValueError(f"{section} 索引超出范围")
     return index
+
+
+def _config_patch_item_index(patch, items, section="rules"):
+    target_id = _as_text((patch or {}).get("target_id"))
+    if target_id:
+        return _config_patch_target_id_index(target_id, items, section)
+    return _config_patch_index(patch, len(items), section)
+
+
+def _config_patch_target_id_index(target_id, items, section="rules"):
+    fields = _visual_mapping_section_item_identity(section).get("target_id_fields") or ["name"]
+    matches = []
+    for index, item in enumerate(items or []):
+        if not isinstance(item, dict):
+            continue
+        for field in fields:
+            if _as_text(item.get(field)) == target_id:
+                matches.append(index)
+                break
+    if not matches:
+        raise ValueError(f"{section} 未找到 target_id：{target_id}")
+    if len(matches) > 1:
+        raise ValueError(f"{section} target_id 不唯一：{target_id}")
+    return matches[0]
 
 
 def _ensure_config_section_item(section, item, index=1):
@@ -1475,6 +1535,36 @@ def _ensure_mapping_rule(rule, index=1):
     if not isinstance(result.get("mapping"), dict):
         result["mapping"] = {"content_field": "", "empty_policy": "跟随节点设置"}
     return result
+
+
+def _visual_mapping_section_item_identity(section):
+    section = _as_text(section)
+    fields_by_section = {
+        "rules": ["id", "name"],
+        "features": ["name"],
+        "global_rules": ["name"],
+        "linked_rules": ["name"],
+    }
+    labels = {
+        "rules": "规则",
+        "features": "表特征",
+        "global_rules": "全局规则",
+        "linked_rules": "联动规则",
+    }
+    target_id_fields = fields_by_section.get(section, ["name"])
+    return {
+        "schema_version": CONFIG_SCHEMA_VERSION,
+        "kind": "visual_mapping_item_identity",
+        "section": section,
+        "label": labels.get(section, "配置项"),
+        "index_base": 0,
+        "display_index_base": 1,
+        "target_index_field": "target_index",
+        "target_id_field": "target_id",
+        "target_id_fields": target_id_fields,
+        "target_id_match": "first_unique_nonempty",
+        "target_id_requires_unique_match": True,
+    }
 
 
 def _unique_nonempty(values):
