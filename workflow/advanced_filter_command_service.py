@@ -31,17 +31,25 @@ from workflow.advanced_filter_window_logic import (
 ADVANCED_FILTER_STATE_SCHEMA_VERSION = "advanced_filter_state.v1"
 ADVANCED_FILTER_COMMAND_SCHEMA_VERSION = "advanced_filter_command.v1"
 ADVANCED_FILTER_SERVICE_SCHEMA_VERSION = "advanced_filter_service.v1"
+ADVANCED_FILTER_LAYOUT_SCHEMA_VERSION = "advanced_filter_layout.v1"
+ADVANCED_FILTER_UI_HINTS_SCHEMA_VERSION = "advanced_filter_ui_hints.v1"
 ADVANCED_FILTER_PROTOCOL_FAMILY = "advanced_filter_service"
 
 EMPTY_VALUE_OPERATORS = {"为空", "不为空"}
 
 
 def describe_advanced_filter_service():
+    command_schema = describe_advanced_filter_command_schema()
+    layout = describe_advanced_filter_layout()
+    ui_hints = describe_advanced_filter_ui_hints()
     return {
         "schema_version": ADVANCED_FILTER_SERVICE_SCHEMA_VERSION,
         "protocol_family": ADVANCED_FILTER_PROTOCOL_FAMILY,
         "state_schema": ADVANCED_FILTER_STATE_SCHEMA_VERSION,
         "command_schema": ADVANCED_FILTER_COMMAND_SCHEMA_VERSION,
+        "command_schema_detail": command_schema,
+        "layout": layout,
+        "ui_hints": ui_hints,
         "commands": [
             "refresh_fields",
             "filter_valid_state",
@@ -61,6 +69,252 @@ def describe_advanced_filter_service():
             "export_template",
             "apply_template",
         ],
+        "command_ids": list(command_schema.get("command_ids") or []),
+        "result_schemas": {
+            "advanced_filter_state": {"schema_version": ADVANCED_FILTER_STATE_SCHEMA_VERSION},
+            "advanced_filter_command": {"schema_version": ADVANCED_FILTER_COMMAND_SCHEMA_VERSION},
+            "advanced_filter_layout": {"schema_version": ADVANCED_FILTER_LAYOUT_SCHEMA_VERSION},
+            "advanced_filter_ui_hints": {"schema_version": ADVANCED_FILTER_UI_HINTS_SCHEMA_VERSION},
+            "advanced_filter_preview": {"schema_version": "advanced_filter_preview.v1"},
+            "advanced_filter_template": {"schema_version": "advanced_filter_template.v1"},
+            "main_preview_snapshot": {"schema_version": "main_preview_snapshot.v1"},
+        },
+    }
+
+
+def describe_advanced_filter_command_schema():
+    commands = {
+        "refresh_fields": {
+            "section_id": "source_tables",
+            "label": "刷新字段",
+            "inputs": [
+                {"key": "selected_tables", "type": "list", "item_type": "text"},
+                {"key": "columns_by_table", "type": "object"},
+            ],
+            "result": "advanced_filter_state",
+        },
+        "filter_valid_state": {
+            "section_id": "source_tables",
+            "label": "清理无效配置",
+            "inputs": [],
+            "result": "advanced_filter_state",
+        },
+        "add_condition": {
+            "section_id": "conditions",
+            "label": "添加筛选条件",
+            "inputs": [
+                {"key": "field", "type": "field", "required": True, "options_source": "field_display_cache"},
+                {"key": "op", "type": "select", "default": "等于"},
+                {"key": "value", "type": "text", "default": ""},
+                {"key": "allow_empty_value", "type": "bool", "default": False},
+            ],
+            "requires_confirmation_when": ["empty_condition_value"],
+            "result": "advanced_filter_state",
+        },
+        "delete_conditions": {
+            "section_id": "conditions",
+            "label": "删除筛选条件",
+            "inputs": [{"key": "indexes", "type": "list", "item_type": "number"}],
+            "result": "advanced_filter_state",
+        },
+        "clear_conditions": {
+            "section_id": "conditions",
+            "label": "清空筛选条件",
+            "inputs": [],
+            "result": "advanced_filter_state",
+        },
+        "add_join_rule": {
+            "section_id": "join_rules",
+            "label": "添加匹配规则",
+            "inputs": [
+                {"key": "left", "type": "field", "required": True, "options_source": "field_display_cache"},
+                {"key": "op", "type": "select", "default": "等于"},
+                {"key": "right", "type": "field", "required": True, "options_source": "field_display_cache"},
+                {"key": "allow_same_field", "type": "bool", "default": False},
+            ],
+            "requires_confirmation_when": ["same_join_field"],
+            "result": "advanced_filter_state",
+        },
+        "delete_join_rules": {
+            "section_id": "join_rules",
+            "label": "删除匹配规则",
+            "inputs": [{"key": "indexes", "type": "list", "item_type": "number"}],
+            "result": "advanced_filter_state",
+        },
+        "clear_join_rules": {
+            "section_id": "join_rules",
+            "label": "清空匹配规则",
+            "inputs": [],
+            "result": "advanced_filter_state",
+        },
+        "add_output_fields": {
+            "section_id": "output_fields",
+            "label": "添加输出字段",
+            "inputs": [{"key": "indexes", "type": "list", "item_type": "number"}],
+            "result": "advanced_filter_state",
+        },
+        "add_all_output_fields": {
+            "section_id": "output_fields",
+            "label": "添加全部输出字段",
+            "inputs": [],
+            "result": "advanced_filter_state",
+        },
+        "remove_output_fields": {
+            "section_id": "output_fields",
+            "label": "移除输出字段",
+            "inputs": [{"key": "indexes", "type": "list", "item_type": "number"}],
+            "result": "advanced_filter_state",
+        },
+        "clear_output_fields": {
+            "section_id": "output_fields",
+            "label": "清空输出字段",
+            "inputs": [],
+            "result": "advanced_filter_state",
+        },
+        "build_preview": {
+            "section_id": "preview",
+            "label": "生成预览",
+            "inputs": [{"key": "table_records_map", "type": "object", "required": True}],
+            "result": "advanced_filter_preview",
+        },
+        "dedupe_preview": {
+            "section_id": "preview",
+            "label": "预览去重",
+            "inputs": [],
+            "result": "advanced_filter_preview",
+        },
+        "build_main_preview_snapshot": {
+            "section_id": "preview",
+            "label": "载入主预览",
+            "inputs": [],
+            "result": "main_preview_snapshot",
+        },
+        "export_template": {
+            "section_id": "templates",
+            "label": "导出模板",
+            "inputs": [],
+            "result": "advanced_filter_template",
+        },
+        "apply_template": {
+            "section_id": "templates",
+            "label": "应用模板",
+            "inputs": [{"key": "template", "type": "object", "required": True}],
+            "result": "advanced_filter_state",
+        },
+    }
+    return {
+        "schema_version": ADVANCED_FILTER_COMMAND_SCHEMA_VERSION,
+        "protocol_family": ADVANCED_FILTER_PROTOCOL_FAMILY,
+        "commands": commands,
+        "command_ids": list(commands.keys()),
+    }
+
+
+def describe_advanced_filter_layout():
+    sections = [
+        {
+            "section_id": "source_tables",
+            "title": "数据源与字段",
+            "role": "source_selector",
+            "state_keys": ["selected_tables", "columns_by_table", "field_display_cache"],
+            "command_ids": ["refresh_fields", "filter_valid_state"],
+        },
+        {
+            "section_id": "conditions",
+            "title": "筛选条件",
+            "role": "condition_editor",
+            "state_keys": ["conditions", "logic", "filter_field"],
+            "command_ids": ["add_condition", "delete_conditions", "clear_conditions"],
+        },
+        {
+            "section_id": "join_rules",
+            "title": "匹配规则",
+            "role": "join_rule_editor",
+            "state_keys": ["join_rules", "join_logic", "join_left", "join_right"],
+            "command_ids": ["add_join_rule", "delete_join_rules", "clear_join_rules"],
+        },
+        {
+            "section_id": "output_fields",
+            "title": "输出字段",
+            "role": "output_field_editor",
+            "state_keys": ["output_fields"],
+            "command_ids": ["add_output_fields", "add_all_output_fields", "remove_output_fields", "clear_output_fields"],
+        },
+        {
+            "section_id": "limits",
+            "title": "执行限制",
+            "role": "execution_limits",
+            "state_keys": ["result_limit", "max_intermediate", "save_table"],
+            "command_ids": [],
+        },
+        {
+            "section_id": "preview",
+            "title": "预览结果",
+            "role": "preview",
+            "state_keys": ["preview_headers", "preview_rows"],
+            "command_ids": ["build_preview", "dedupe_preview", "build_main_preview_snapshot"],
+        },
+        {
+            "section_id": "templates",
+            "title": "模板",
+            "role": "template_io",
+            "state_keys": [],
+            "command_ids": ["export_template", "apply_template"],
+        },
+    ]
+    return {
+        "schema_version": ADVANCED_FILTER_LAYOUT_SCHEMA_VERSION,
+        "protocol_family": ADVANCED_FILTER_PROTOCOL_FAMILY,
+        "default_section_id": "conditions",
+        "section_order": [section["section_id"] for section in sections],
+        "sections": sections,
+        "preferred_navigation": "tabs_with_table_center",
+    }
+
+
+def describe_advanced_filter_ui_hints():
+    return {
+        "schema_version": ADVANCED_FILTER_UI_HINTS_SCHEMA_VERSION,
+        "protocol_family": ADVANCED_FILTER_PROTOCOL_FAMILY,
+        "display_mode": "complex_node_panel",
+        "density": "comfortable",
+        "default_focus": "conditions",
+        "section_hints": {
+            "source_tables": {
+                "description": "选择当前表和副表，刷新字段候选，并清理失效规则。",
+                "empty_text": "当前没有可用字段，请先载入输入表或选择副表。",
+            },
+            "conditions": {
+                "description": "按字段、运算符和值添加筛选条件；空值条件需要确认。",
+            },
+            "join_rules": {
+                "description": "配置当前表与副表之间的匹配字段；左右字段相同时需要确认。",
+            },
+            "output_fields": {
+                "description": "选择高级筛选输出字段，顺序会影响最终结果列。",
+                "empty_text": "尚未选择输出字段。",
+            },
+            "limits": {
+                "description": "控制预览行数和中间组合上限，避免大表匹配卡顿。",
+            },
+            "preview": {
+                "description": "生成、去重并载入预览结果；可复用已生成的 preview_headers/preview_rows。",
+                "empty_text": "请先生成预览结果。",
+            },
+            "templates": {
+                "description": "导出或应用高级筛选模板。",
+            },
+        },
+        "command_prominence": {
+            "build_preview": "primary",
+            "build_main_preview_snapshot": "primary",
+            "add_condition": "secondary",
+            "add_join_rule": "secondary",
+            "add_output_fields": "secondary",
+            "clear_conditions": "danger",
+            "clear_join_rules": "danger",
+            "clear_output_fields": "danger",
+        },
     }
 
 

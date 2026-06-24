@@ -2,7 +2,10 @@
 import unittest
 
 from workflow.advanced_filter_command_service import (
+    ADVANCED_FILTER_COMMAND_SCHEMA_VERSION,
+    ADVANCED_FILTER_LAYOUT_SCHEMA_VERSION,
     ADVANCED_FILTER_SERVICE_SCHEMA_VERSION,
+    ADVANCED_FILTER_UI_HINTS_SCHEMA_VERSION,
     apply_advanced_filter_command,
     describe_advanced_filter_service,
     describe_advanced_filter_state,
@@ -19,6 +22,19 @@ class AdvancedFilterCommandServiceTests(unittest.TestCase):
         self.assertIn("add_output_fields", service["commands"])
         self.assertIn("build_preview", service["commands"])
         self.assertIn("apply_template", service["commands"])
+        self.assertEqual(service["command_schema"], ADVANCED_FILTER_COMMAND_SCHEMA_VERSION)
+        self.assertEqual(service["command_schema_detail"]["schema_version"], ADVANCED_FILTER_COMMAND_SCHEMA_VERSION)
+        self.assertEqual(service["layout"]["schema_version"], ADVANCED_FILTER_LAYOUT_SCHEMA_VERSION)
+        self.assertEqual(service["ui_hints"]["schema_version"], ADVANCED_FILTER_UI_HINTS_SCHEMA_VERSION)
+        self.assertIn("conditions", service["layout"]["section_order"])
+        self.assertEqual(service["layout"]["default_section_id"], "conditions")
+        self.assertEqual(service["command_schema_detail"]["commands"]["add_condition"]["section_id"], "conditions")
+        self.assertEqual(service["command_schema_detail"]["commands"]["add_join_rule"]["requires_confirmation_when"], ["same_join_field"])
+        self.assertEqual(service["ui_hints"]["command_prominence"]["build_preview"], "primary")
+        self.assertEqual(
+            service["result_schemas"]["advanced_filter_layout"]["schema_version"],
+            ADVANCED_FILTER_LAYOUT_SCHEMA_VERSION,
+        )
 
     def test_describe_state_builds_fields_and_combo_defaults(self):
         state = describe_advanced_filter_state(

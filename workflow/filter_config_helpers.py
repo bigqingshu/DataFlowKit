@@ -13,6 +13,7 @@ from workflow.nodes.filter_plan_nodes import (
 )
 from workflow.advanced_filter_command_service import (
     apply_advanced_filter_command,
+    describe_advanced_filter_service,
     describe_advanced_filter_state,
 )
 
@@ -88,6 +89,7 @@ def describe_filter_config_context(config, headers, *, table_names=None, table_c
         available_fields,
         transit_context=transit_context,
     )
+    service_description = describe_advanced_filter_service()
     return {
         "ok": True,
         "schema_version": FILTER_CONFIG_CONTEXT_SCHEMA_VERSION,
@@ -95,6 +97,10 @@ def describe_filter_config_context(config, headers, *, table_names=None, table_c
         "node_type_id": "core.filter",
         "service_schema": "advanced_filter_service.v1",
         "state_schema": "advanced_filter_state.v1",
+        "service": service_description,
+        "command_schema": copy.deepcopy(service_description.get("command_schema_detail") or {}),
+        "layout": copy.deepcopy(service_description.get("layout") or {}),
+        "ui_hints": copy.deepcopy(service_description.get("ui_hints") or {}),
         "options_state_schema": FILTER_OPTIONS_STATE_SCHEMA_VERSION,
         "config": config_copy,
         "headers": list(headers or []),
