@@ -110,6 +110,28 @@ def write_patch_plugin(root):
     return plugin
 
 
+def write_config_options_plugin(root):
+    plugin = Path(root) / "config_options_plugin.py"
+    plugin.write_text(
+        "\n".join([
+            "PLUGIN_INFO = {'id': 'config_options_demo', 'name': 'Config Options Demo', 'api_version': '1.0'}",
+            "PARAMETER_SCHEMA = [{'name': 'mode', 'label': '模式', 'type': 'text', 'default': 'default'}]",
+            "def describe_config(params, context):",
+            "    return {",
+            "        'schema_version': 'demo.config.v1',",
+            "        'protocol_family': 'plugin_complex_config',",
+            "        'config_key': params.get('mode', 'default'),",
+            "        'context': {'demo_fields': ['A', 'B']},",
+            "        'views': [{'view_id': 'demo.items', 'title': 'Demo Items', 'kind': 'structured_list', 'section': 'items', 'item_schema': {'columns': [{'key': 'field', 'label': '字段', 'type': 'select', 'options_source': {'type': 'plugin_config_context', 'key': 'demo_fields'}}]}}],",
+            "    }",
+            "def run(input_data, params, context):",
+            "    return {'ok': True, 'output': input_data}",
+        ]),
+        encoding="utf-8",
+    )
+    return plugin
+
+
 class PluginServiceTests(unittest.TestCase):
     def test_lists_plugins_and_builds_json_safe_schema(self):
         with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:
@@ -579,6 +601,30 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(default_config["result"]["config"]["params"]["field"], "A")
         self.assertTrue(run["ok"])
         self.assertEqual(run["result"]["result"]["headers"], ["A"])
+
+    def test_stdio_worker_resolves_plugin_config_options(self):
+        with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:
+            write_config_options_plugin(temp_dir)
+            worker = StdioWorker()
+
+            response = worker.handle_request(request("resolve_plugin_config_options", {
+                "plugin_id": "plugin.config_options_demo",
+                "plugins_dir": temp_dir,
+                "field_key": "field",
+                "view_id": "demo.items",
+                "section": "items",
+                "config": {"plugin_id": "config_options_demo", "params": {"mode": "default"}},
+            }))
+
+        self.assertTrue(response["ok"])
+        result = response["result"]
+        self.assertEqual(result["schema_version"], "DataFlowKit.plugin_config_options.v1")
+        self.assertEqual(result["plugin_id"], "config_options_demo")
+        self.assertEqual(result["protocol_family"], "plugin_complex_config")
+        self.assertEqual(result["source"], "demo_fields")
+        self.assertEqual(result["choices"], ["A", "B"])
+        self.assertEqual(result["view_id"], "demo.items")
+        self.assertEqual(result["section"], "items")
 
     def test_stdio_worker_exposes_plugin_config_patch_actions(self):
         with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:

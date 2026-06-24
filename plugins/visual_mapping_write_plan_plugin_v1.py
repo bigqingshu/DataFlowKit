@@ -469,6 +469,67 @@ def describe_config(params, context):
     }
 
 
+def resolve_config_options(params, context, field_key="", current_values=None, view_id="", section=""):
+    described = describe_config(params, context)
+    field_key = _as_text(field_key).strip()
+    view_id = _as_text(view_id).strip()
+    section = _as_text(section).strip()
+    current_values = current_values if isinstance(current_values, dict) else {}
+    context_payload = described.get("context") if isinstance(described.get("context"), dict) else {}
+    views = [view for view in (described.get("views") or []) if isinstance(view, dict)]
+    field_schema = _visual_mapping_find_option_field_schema(
+        views,
+        field_key=field_key,
+        view_id=view_id,
+        section=section,
+    )
+    options_source = field_schema.get("options_source") if isinstance(field_schema.get("options_source"), dict) else {}
+    choices = []
+    source = "unknown"
+    empty_text = "字段暂不支持共享候选。"
+    source_type = _as_text(options_source.get("type")).strip()
+    source_key = _as_text(options_source.get("key")).strip()
+    if source_type == "visual_mapping_context" and source_key:
+        source = source_key
+        choices = context_payload.get(source_key) or []
+        empty_text = _visual_mapping_options_empty_text(source_key)
+    elif field_schema.get("choices") is not None:
+        source = "field_choices"
+        choices = field_schema.get("choices") or []
+        empty_text = "当前字段没有可选项。"
+    elif field_key in {"config_name", "params.config_name"}:
+        source = "available_configs"
+        choices = (described.get("summary") or {}).get("available_configs") or []
+        empty_text = "当前没有可用配置。"
+    return {
+        "ok": True,
+        "schema_version": "DataFlowKit.plugin_config_options.v1",
+        "protocol_family": CONFIG_PROTOCOL_FAMILY,
+        "plugin_id": PLUGIN_INFO["id"],
+        "config_key": described.get("config_key") or _as_text((params or {}).get("config_name")) or "default",
+        "view_id": view_id or field_schema.get("view_id", ""),
+        "section": section or field_schema.get("section", ""),
+        "field_key": field_key,
+        "source": source,
+        "options_source": copy.deepcopy(options_source),
+        "choices": _unique_nonempty(choices),
+        "candidate_count": len(_unique_nonempty(choices)),
+        "empty_text": empty_text,
+        "allow_custom": bool(field_schema.get("allow_custom", True)),
+        "current_values": copy.deepcopy(current_values),
+        "context": {
+            "table_names": list(context_payload.get("table_names") or []),
+            "content_fields": list(context_payload.get("content_fields") or []),
+            "aux_fields": list(context_payload.get("aux_fields") or []),
+            "sheet_names": list(context_payload.get("sheet_names") or []),
+            "feature_names": list(context_payload.get("feature_names") or []),
+            "rule_names": list(context_payload.get("rule_names") or []),
+            "linked_trigger_options": list(context_payload.get("linked_trigger_options") or []),
+        },
+        "issues": [],
+    }
+
+
 def _visual_mapping_protocol_manifest(config_name, *, views=None, actions=None, models=None, patch_schema=None, warning_schema=None):
     view_items = []
     for view in views or []:
@@ -797,6 +858,55 @@ def _visual_mapping_config_effect_status_message(status, table_rows, output_fiel
     if status == "warning":
         parts.append(f"提示 {len(warnings)} 项")
     return "配置效果预览：" + "，".join(parts) + "。"
+
+
+def _visual_mapping_find_option_field_schema(views, *, field_key="", view_id="", section=""):
+    field_key = _as_text(field_key).strip()
+    view_id = _as_text(view_id).strip()
+    section = _as_text(section).strip()
+    if not field_key:
+        return {}
+    for view in views or []:
+        if not isinstance(view, dict):
+            continue
+        current_view_id = _as_text(view.get("view_id")).strip()
+        current_section = _as_text(view.get("section")).strip()
+        if view_id and current_view_id != view_id:
+            continue
+        if section and current_section != section:
+            continue
+        candidates = []
+        item_schema = view.get("item_schema") if isinstance(view.get("item_schema"), dict) else {}
+        candidates.extend(_visual_mapping_schema_fields(item_schema.get("columns") or []))
+        for detail in item_schema.get("detail_sections") or []:
+            if not isinstance(detail, dict):
+                continue
+            candidates.extend(_visual_mapping_schema_fields(detail.get("fields") or []))
+            detail_item_schema = detail.get("item_schema") if isinstance(detail.get("item_schema"), dict) else {}
+            candidates.extend(_visual_mapping_schema_fields(detail_item_schema.get("columns") or []))
+        for field in candidates:
+            if _as_text(field.get("key")).strip() == field_key:
+                result = copy.deepcopy(field)
+                result.setdefault("view_id", current_view_id)
+                result.setdefault("section", current_section)
+                return result
+    return {}
+
+
+def _visual_mapping_schema_fields(fields):
+    return [field for field in (fields or []) if isinstance(field, dict)]
+
+
+def _visual_mapping_options_empty_text(source_key):
+    return {
+        "table_names": "当前没有可用输入表。",
+        "content_fields": "新内容表没有可选字段。",
+        "aux_fields": "替换辅助表没有可选字段。",
+        "sheet_names": "当前没有可选工作表。",
+        "feature_names": "当前没有可选表特征。",
+        "rule_names": "当前没有可选规则。",
+        "linked_trigger_options": "当前没有可选触发规则。",
+    }.get(_as_text(source_key).strip(), "当前没有可选项。")
 
 
 def _visual_mapping_item_schema_columns(

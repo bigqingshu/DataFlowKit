@@ -673,6 +673,73 @@ class PluginService:
             "issues": copy.deepcopy(result.get("issues") or []),
         }
 
+    def resolve_plugin_config_options(
+        self,
+        plugin_id,
+        *,
+        field_key="",
+        current_values=None,
+        view_id="",
+        section="",
+        config=None,
+        input_table=None,
+        context=None,
+        plugins_dir=None,
+    ):
+        schema_result = self.get_plugin_schema(plugin_id, plugins_dir=plugins_dir)
+        if not schema_result.get("ok"):
+            return schema_result
+        key = self._resolve_plugin_key(plugin_id)
+        item = self.registry.get(key, {})
+        module = item.get("module")
+        current_config = copy.deepcopy(config or schema_result.get("default_config") or {})
+        if not isinstance(current_config, dict):
+            current_config = copy.deepcopy(schema_result.get("default_config") or {})
+        params = copy.deepcopy(current_config.get("params", {}) or {})
+        runtime_context = context if isinstance(context, dict) else {}
+        _input_data, plugin_context = self._make_plugin_config_probe_context(
+            key,
+            current_config,
+            input_table,
+            runtime_context,
+        )
+        resolver = getattr(module, "resolve_config_options", None)
+        if callable(resolver):
+            try:
+                result = resolver(
+                    copy.deepcopy(params),
+                    copy.deepcopy(plugin_context),
+                    field_key=field_key,
+                    current_values=copy.deepcopy(current_values or {}),
+                    view_id=view_id,
+                    section=section,
+                )
+            except Exception as exc:
+                return _plugin_failure("plugin_config_options_error", str(exc), "/field_key")
+            return _normalize_plugin_config_options_result(
+                key,
+                result,
+                field_key=field_key,
+                current_values=current_values,
+                view_id=view_id,
+                section=section,
+            )
+        described = self.describe_plugin_config(
+            key,
+            config=current_config,
+            input_table=input_table,
+            context=runtime_context,
+            plugins_dir=plugins_dir,
+        )
+        return _resolve_plugin_config_options_from_description(
+            key,
+            described,
+            field_key=field_key,
+            current_values=current_values,
+            view_id=view_id,
+            section=section,
+        )
+
     def _make_plugin_config_probe_context(self, key, current_config, input_table, runtime_context):
         self._ensure_runtime_context_snapshot(runtime_context)
         input_data = _make_plugin_service_input_data(key, input_table, runtime_context)
@@ -1298,6 +1365,163 @@ def _resolve_plugin_parameter_options_field(module, field, *, params=None, conte
         "empty_text": str(field.get("empty_text") or ""),
         "issues": issues,
     }
+
+
+def _normalize_plugin_config_options_result(
+    plugin_id,
+    result,
+    *,
+    field_key="",
+    current_values=None,
+    view_id="",
+    section="",
+):
+    if not isinstance(result, dict):
+        return _plugin_failure(
+            "plugin_config_options_invalid",
+            "插件配置候选接口必须返回 dict。",
+            "/field_key",
+        )
+    payload = copy.deepcopy(result)
+    if payload.get("ok") is False:
+        if payload.get("issues"):
+            payload.setdefault("plugin_id", plugin_id)
+            return payload
+        return _plugin_failure(
+            "plugin_config_options_failed",
+            str(payload.get("message") or "插件配置候选解析失败。"),
+            "/field_key",
+        )
+    choices = _unique_string_values(payload.get("choices") or [])
+    payload["ok"] = True
+    payload.setdefault("schema_version", "DataFlowKit.plugin_config_options.v1")
+    payload.setdefault("plugin_id", plugin_id)
+    payload.setdefault("field_key", str(field_key or ""))
+    payload.setdefault("view_id", str(view_id or ""))
+    payload.setdefault("section", str(section or ""))
+    payload.setdefault("source", "plugin_config")
+    payload["choices"] = choices
+    payload["candidate_count"] = len(choices)
+    payload.setdefault("empty_text", "当前没有可选项。")
+    payload.setdefault("allow_custom", True)
+    payload.setdefault("current_values", copy.deepcopy(current_values or {}))
+    payload.setdefault("issues", [])
+    return payload
+
+
+def _resolve_plugin_config_options_from_description(
+    plugin_id,
+    described,
+    *,
+    field_key="",
+    current_values=None,
+    view_id="",
+    section="",
+):
+    if not described.get("ok"):
+        return described
+    field = _plugin_config_option_field_from_views(
+        described.get("views") or [],
+        field_key=field_key,
+        view_id=view_id,
+        section=section,
+    )
+    context = described.get("context") if isinstance(described.get("context"), dict) else {}
+    options_source = field.get("options_source") if isinstance(field.get("options_source"), dict) else {}
+    source_type = str(options_source.get("type") or "").strip()
+    source_key = str(options_source.get("key") or "").strip()
+    source = "unknown"
+    choices = []
+    empty_text = "字段暂不支持共享候选。"
+    if source_type in {"plugin_config_context", "visual_mapping_context"} and source_key:
+        source = source_key
+        choices = context.get(source_key) or []
+        empty_text = _plugin_config_options_empty_text(source_key)
+    elif field.get("choices") is not None:
+        source = "field_choices"
+        choices = field.get("choices") or []
+        empty_text = "当前字段没有可选项。"
+    return _normalize_plugin_config_options_result(
+        plugin_id,
+        {
+            "ok": True,
+            "schema_version": "DataFlowKit.plugin_config_options.v1",
+            "protocol_family": str(described.get("protocol_family") or ""),
+            "config_key": str(described.get("config_key") or ""),
+            "field_key": str(field_key or ""),
+            "view_id": str(view_id or field.get("view_id") or ""),
+            "section": str(section or field.get("section") or ""),
+            "source": source,
+            "options_source": copy.deepcopy(options_source),
+            "choices": choices,
+            "empty_text": empty_text,
+            "allow_custom": bool(field.get("allow_custom", True)),
+        },
+        field_key=field_key,
+        current_values=current_values,
+        view_id=view_id,
+        section=section,
+    )
+
+
+def _plugin_config_option_field_from_views(views, *, field_key="", view_id="", section=""):
+    field_key = str(field_key or "").strip()
+    view_id = str(view_id or "").strip()
+    section = str(section or "").strip()
+    if not field_key:
+        return {}
+    for view in views or []:
+        if not isinstance(view, dict):
+            continue
+        current_view_id = str(view.get("view_id") or "").strip()
+        current_section = str(view.get("section") or "").strip()
+        if view_id and current_view_id != view_id:
+            continue
+        if section and current_section != section:
+            continue
+        item_schema = view.get("item_schema") if isinstance(view.get("item_schema"), dict) else {}
+        candidates = []
+        candidates.extend(_plugin_config_option_fields(item_schema.get("columns") or []))
+        for detail in item_schema.get("detail_sections") or []:
+            if not isinstance(detail, dict):
+                continue
+            candidates.extend(_plugin_config_option_fields(detail.get("fields") or []))
+            detail_schema = detail.get("item_schema") if isinstance(detail.get("item_schema"), dict) else {}
+            candidates.extend(_plugin_config_option_fields(detail_schema.get("columns") or []))
+        for field in candidates:
+            if str(field.get("key") or "").strip() == field_key:
+                result = copy.deepcopy(field)
+                result.setdefault("view_id", current_view_id)
+                result.setdefault("section", current_section)
+                return result
+    return {}
+
+
+def _plugin_config_option_fields(fields):
+    return [field for field in (fields or []) if isinstance(field, dict)]
+
+
+def _plugin_config_options_empty_text(source_key):
+    return {
+        "table_names": "当前没有可用输入表。",
+        "content_fields": "当前没有可选内容字段。",
+        "aux_fields": "当前没有可选辅助字段。",
+        "sheet_names": "当前没有可选工作表。",
+        "feature_names": "当前没有可选表特征。",
+        "rule_names": "当前没有可选规则。",
+        "linked_trigger_options": "当前没有可选触发规则。",
+    }.get(str(source_key or "").strip(), "当前没有可选项。")
+
+
+def _unique_string_values(values):
+    result = []
+    seen = set()
+    for value in values or []:
+        text = str(value).strip()
+        if text and text not in seen:
+            result.append(text)
+            seen.add(text)
+    return result
 
 
 def _describe_plugin_config_extension(module, params, context):

@@ -163,6 +163,40 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(node_detail["detail"]["node_type_id"], "core.new_columns")
         self.assertTrue(node_detail["detail"]["sections"])
 
+    def test_engine_client_exposes_plugin_config_options(self):
+        class FakeEngine:
+            def __init__(self):
+                self.calls = []
+
+            def resolve_plugin_config_options(self, plugin_id, **kwargs):
+                self.calls.append({"plugin_id": plugin_id, **copy.deepcopy(kwargs)})
+                return {
+                    "ok": True,
+                    "schema_version": "DataFlowKit.plugin_config_options.v1",
+                    "choices": ["A"],
+                }
+
+        fake = FakeEngine()
+        client = QtHeadlessEngineClient(engine=fake)
+
+        result = client.resolve_plugin_config_options(
+            "plugin.demo",
+            field_key="mapping.content_field",
+            current_values={"row": 1},
+            view_id="visual_mapping.rules",
+            section="rules",
+            config={"params": {"config_name": "default"}},
+            input_table={"headers": ["A"], "rows": []},
+            context={"input_tables": {}},
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(fake.calls[0]["plugin_id"], "plugin.demo")
+        self.assertEqual(fake.calls[0]["field_key"], "mapping.content_field")
+        self.assertEqual(fake.calls[0]["current_values"], {"row": 1})
+        self.assertEqual(fake.calls[0]["view_id"], "visual_mapping.rules")
+        self.assertEqual(fake.calls[0]["section"], "rules")
+
     def test_qt_shell_lists_and_configures_plugin_nodes(self):
         try:
             qt = qt_app.load_qt6()

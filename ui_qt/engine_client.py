@@ -529,6 +529,29 @@ class QtHeadlessEngineClient:
             context=copy.deepcopy(context),
         )
 
+    def resolve_plugin_config_options(
+        self,
+        plugin_id,
+        *,
+        field_key="",
+        current_values=None,
+        view_id="",
+        section="",
+        config=None,
+        input_table=None,
+        context=None,
+    ):
+        return self.engine.resolve_plugin_config_options(
+            plugin_id,
+            field_key=field_key,
+            current_values=copy.deepcopy(current_values),
+            view_id=view_id,
+            section=section,
+            config=copy.deepcopy(config),
+            input_table=copy.deepcopy(input_table),
+            context=copy.deepcopy(context),
+        )
+
     def preview_plugin_config_effect(self, plugin_id, *, config=None, input_table=None, context=None):
         return self.engine.preview_plugin_config_effect(
             plugin_id,

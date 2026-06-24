@@ -427,6 +427,81 @@ class VisualMappingWritePlanTests(unittest.TestCase):
             "/views/visual_mapping.rules/fields/mapping.content_field",
         )
 
+    def test_resolve_config_options_exposes_visual_mapping_context_candidates(self):
+        with tempfile.TemporaryDirectory(dir=".") as temp_dir:
+            context = {
+                "plugin_data_dir": temp_dir,
+                "input_tables": {
+                    "文档": {
+                        "type": "table",
+                        "headers": ["source_file", "block_type", "sheet_name", "row_index", "col_index", "cell_address", "text"],
+                        "rows": [["doc.docx", "word_table_cell", "Sheet1", 1, 1, "A1", "old"]],
+                    },
+                    "新内容": {
+                        "type": "table",
+                        "headers": ["target_file", "write_value"],
+                        "rows": [["out.docx", "new"]],
+                    },
+                },
+            }
+            cfg = {
+                "rules": [{
+                    "id": "Sheet1:R1C1",
+                    "name": "普通规则",
+                    "mapping": {"content_field": "write_value"},
+                }],
+                "features": [{"name": "主表"}],
+                "global_rules": [self.global_replace_rule()],
+                "linked_rules": [],
+            }
+            visual._save_settings(context, {"version": 1, "configs": {"default": cfg}})
+
+            content_options = visual.resolve_config_options(
+                {
+                    "config_name": "default",
+                    "doc_table_alias": "文档",
+                    "content_table_alias": "新内容",
+                },
+                context,
+                field_key="mapping.content_field",
+                view_id="visual_mapping.rules",
+                section="rules",
+            )
+            sheet_options = visual.resolve_config_options(
+                {
+                    "config_name": "default",
+                    "doc_table_alias": "文档",
+                    "content_table_alias": "新内容",
+                },
+                context,
+                field_key="source_locator.sheet_name",
+                view_id="visual_mapping.rules",
+                section="rules",
+            )
+            trigger_options = visual.resolve_config_options(
+                {
+                    "config_name": "default",
+                    "doc_table_alias": "文档",
+                    "content_table_alias": "新内容",
+                },
+                context,
+                field_key="trigger_rule",
+                view_id="visual_mapping.linked_rules",
+                section="linked_rules",
+            )
+
+        self.assertTrue(content_options["ok"])
+        self.assertEqual(content_options["schema_version"], "DataFlowKit.plugin_config_options.v1")
+        self.assertEqual(content_options["protocol_family"], "plugin_complex_config")
+        self.assertEqual(content_options["plugin_id"], visual.PLUGIN_INFO["id"])
+        self.assertEqual(content_options["source"], "content_fields")
+        self.assertEqual(content_options["choices"], ["target_file", "write_value"])
+        self.assertEqual(content_options["candidate_count"], 2)
+        self.assertEqual(content_options["options_source"], {"type": "visual_mapping_context", "key": "content_fields"})
+        self.assertEqual(sheet_options["choices"], ["Sheet1"])
+        self.assertIn("普通规则", trigger_options["choices"])
+        self.assertIn("全局:全局替换", trigger_options["choices"])
+
     def test_plugin_service_applies_visual_mapping_rules_config_patch(self):
         with tempfile.TemporaryDirectory(dir=".") as temp_dir:
             app_dir = Path(temp_dir)
