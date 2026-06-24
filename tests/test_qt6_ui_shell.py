@@ -1519,6 +1519,23 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertTrue(clear_prompt["prompt"]["required"])
         self.assertEqual(clear_prompt["prompt"]["code"], "confirm_clear_nodes")
 
+        legacy_prompt = client.describe_confirmation_prompt(
+            action="legacy_plugin_config",
+            compatibility_action={
+                "label": "兼容旧版设置",
+                "requires_confirmation": True,
+                "mode": "legacy_fallback",
+                "lifecycle": "legacy_fallback",
+                "migration_target": "describe_config + parameter_metadata + config_patch",
+                "warning": "旧版 Tk 设置窗口仅作为兼容 fallback。",
+            },
+        )
+        self.assertTrue(legacy_prompt["prompt"]["required"])
+        self.assertEqual(legacy_prompt["prompt"]["code"], "confirm_legacy_plugin_config")
+        self.assertEqual(legacy_prompt["prompt"]["confirm_label"], "兼容旧版设置")
+        self.assertIn("兼容 fallback", legacy_prompt["prompt"]["message"])
+        self.assertIn("模式：legacy_fallback", legacy_prompt["prompt"]["details"])
+
         run_prompt = client.describe_confirmation_prompt(
             action="run_plan",
             plan=SAMPLE_PLAN,

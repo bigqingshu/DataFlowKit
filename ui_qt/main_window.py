@@ -2514,38 +2514,6 @@ class QtWorkflowMainWindow:
         self.legacy_plugin_config_button.setText(str(action.get("label") or "兼容旧版设置"))
         self.legacy_plugin_config_button.setToolTip(tooltip)
 
-    def _legacy_plugin_config_confirmation_prompt(self, action):
-        action = action if isinstance(action, dict) else {}
-        if not action.get("requires_confirmation"):
-            return {"ok": True, "prompt": {"required": False}}
-        details = []
-        for key, label in [
-            ("mode", "模式"),
-            ("lifecycle", "生命周期"),
-            ("migration_target", "迁移目标"),
-            ("remove_when", "退场条件"),
-        ]:
-            value = str(action.get(key) or "").strip()
-            if value:
-                details.append(f"{label}：{value}")
-        warning = str(action.get("warning") or "").strip()
-        if warning:
-            details.insert(0, warning)
-        return {
-            "ok": True,
-            "prompt": {
-                "required": True,
-                "kind": "confirm",
-                "code": "confirm_legacy_plugin_config",
-                "title": "确认打开旧版插件设置",
-                "message": "该入口是旧 Tk 插件设置窗口的兼容 fallback，建议优先使用当前协议化配置面板。",
-                "details": details,
-                "confirm_label": str(action.get("label") or "打开旧版设置"),
-                "cancel_label": "取消",
-                "severity": "warning",
-            },
-        }
-
     def open_legacy_plugin_config(self):
         index = self.selected_node_index()
         if index is None:
@@ -2563,7 +2531,11 @@ class QtWorkflowMainWindow:
                 getattr(self.config_form, "schema", {}) or {},
                 self.current_plugin_config_description,
             )
-            if not self._confirm_prompt(self._legacy_plugin_config_confirmation_prompt(action)):
+            prompt = self.engine_client.describe_confirmation_prompt(
+                action="legacy_plugin_config",
+                compatibility_action=action,
+            )
+            if not self._confirm_prompt(prompt):
                 return
             result = self.engine_client.run_plugin_custom_config_window(
                 plugin_id,

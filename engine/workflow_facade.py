@@ -664,7 +664,7 @@ class WorkflowFacade:
             ).get("panel") or {},
         }
 
-    def describe_confirmation_prompt(self, *, action="", plan=None, output_settings=None, access_precheck=None):
+    def describe_confirmation_prompt(self, *, action="", plan=None, output_settings=None, access_precheck=None, compatibility_action=None):
         action = str(action or "")
         plan = copy.deepcopy(plan or {})
         output_settings = OutputSettings.from_payload(output_settings or {}).to_dict()
@@ -720,6 +720,37 @@ class WorkflowFacade:
                     "confirm_label": "继续执行",
                     "cancel_label": "取消",
                     "severity": "warning" if issues or mode == "覆盖当前表" else "info",
+                },
+            }
+
+        if action == "legacy_plugin_config":
+            compatibility_action = copy.deepcopy(compatibility_action or {})
+            requires_confirm = bool(compatibility_action.get("requires_confirmation"))
+            details = []
+            warning = str(compatibility_action.get("warning") or "").strip()
+            if warning:
+                details.append(warning)
+            for key, label in [
+                ("mode", "模式"),
+                ("lifecycle", "生命周期"),
+                ("migration_target", "迁移目标"),
+                ("remove_when", "退场条件"),
+            ]:
+                value = str(compatibility_action.get(key) or "").strip()
+                if value:
+                    details.append(f"{label}：{value}")
+            return {
+                "ok": True,
+                "prompt": {
+                    "required": requires_confirm,
+                    "kind": "confirm",
+                    "code": "confirm_legacy_plugin_config" if requires_confirm else "",
+                    "title": "确认打开旧版插件设置" if requires_confirm else "",
+                    "message": "该入口是旧 Tk 插件设置窗口的兼容 fallback，建议优先使用当前协议化配置面板。" if requires_confirm else "",
+                    "details": details,
+                    "confirm_label": str(compatibility_action.get("label") or "打开旧版设置"),
+                    "cancel_label": "取消",
+                    "severity": "warning" if requires_confirm else "info",
                 },
             }
 
