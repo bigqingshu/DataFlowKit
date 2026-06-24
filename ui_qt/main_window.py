@@ -2256,6 +2256,9 @@ class QtWorkflowMainWindow:
         plugin = schema.get("plugin") if isinstance(schema, dict) and isinstance(schema.get("plugin"), dict) else {}
         custom_window = plugin.get("custom_config_window") if isinstance(plugin.get("custom_config_window"), dict) else {}
         legacy_state = plugin.get("legacy_config_state") if isinstance(plugin.get("legacy_config_state"), dict) else {}
+        compatibility = plugin.get("config_compatibility") if isinstance(plugin.get("config_compatibility"), dict) else {}
+        if not compatibility and isinstance(schema.get("config_compatibility"), dict):
+            compatibility = schema.get("config_compatibility") or {}
         visible = bool(legacy_state.get("ui_visible", custom_window.get("available")))
         tooltip = str(
             legacy_state.get("warning")
@@ -2271,10 +2274,28 @@ class QtWorkflowMainWindow:
         requires_confirmation = bool(legacy_state.get("requires_confirmation", custom_window.get("requires_confirmation", False)))
         migration_target = str(legacy_state.get("migration_target") or custom_window.get("migration_target") or "").strip()
         remove_when = str(legacy_state.get("remove_when") or custom_window.get("remove_when") or "").strip()
+        compatibility_tier = str(compatibility.get("compatibility_tier") or "").strip()
+        ui_support = compatibility.get("ui_support") if isinstance(compatibility.get("ui_support"), dict) else {}
+        direct_ui = ui_support.get("direct_ui") if isinstance(ui_support.get("direct_ui"), dict) else {}
         if mode:
             lifecycle_parts.append(f"模式：{mode}")
         if lifecycle:
             lifecycle_parts.append(f"生命周期：{lifecycle}")
+        if compatibility_tier:
+            lifecycle_parts.append(f"兼容等级：{compatibility_tier}")
+        supported_ui = [
+            label
+            for key, label in [
+                ("tk", "Tk"),
+                ("qt", "Qt"),
+                ("dotnet", ".NET"),
+                ("web", "Web"),
+                ("electron", "Electron"),
+            ]
+            if direct_ui.get(key)
+        ]
+        if supported_ui:
+            lifecycle_parts.append("标准协议支持UI：" + "、".join(supported_ui))
         if ui_placement:
             lifecycle_parts.append(f"建议位置：{ui_placement}")
         if ui_prominence:
