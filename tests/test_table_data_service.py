@@ -190,6 +190,13 @@ class TableDataServiceTests(unittest.TestCase):
         self.assertFalse(state["action_state"]["actions"]["delete_sqlite"]["enabled"])
         self.assertTrue(sqlite_actions["action_state"]["is_sqlite_source"])
         self.assertTrue(sqlite_actions["actions"]["delete_sqlite"]["requires_confirmation"])
+        self.assertEqual(sqlite_actions["action_schema"]["schema_version"], "data_source_action_schema.v1")
+        self.assertEqual(sqlite_actions["action_schema"]["actions"]["save_sqlite"]["engine_action"], "save_table")
+        self.assertTrue(sqlite_actions["action_schema"]["actions"]["delete_sqlite"]["requires_confirmation"])
+        self.assertEqual(
+            sqlite_actions["action_schema"]["result_schemas"]["data_source_state"]["schema_version"],
+            "data_source_state.v1",
+        )
         self.assertEqual(normalize_table_headers(["", "A", "A"]), ["列1", "A", "A_2"])
 
     def test_table_search_navigation_is_ui_free(self):
@@ -227,7 +234,9 @@ class TableDataServiceTests(unittest.TestCase):
         self.assertEqual(normalize_save_mode("timestamp_new"), "timestamp")
         self.assertEqual(normalize_save_mode("追加"), "append")
         self.assertTrue(described["ok"])
+        self.assertEqual(described["schema_version"], "table_save_modes.v1")
         self.assertEqual([item["id"] for item in described["modes"]], ["replace", "timestamp", "fail", "append"])
+        self.assertEqual(described["mode_field"]["choices_source"], "modes")
         self.assertEqual(normalized["mode"], "fail")
         self.assertFalse(invalid["ok"])
         self.assertEqual(invalid["issues"][0]["code"], "invalid_save_mode")

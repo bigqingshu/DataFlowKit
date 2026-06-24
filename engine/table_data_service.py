@@ -39,6 +39,8 @@ TABLE_SAVE_MODES = [
 ]
 DATA_SOURCE_STATE_SCHEMA_VERSION = "data_source_state.v1"
 DATA_SOURCE_ACTIONS_SCHEMA_VERSION = "data_source_actions.v1"
+DATA_SOURCE_ACTION_SCHEMA_VERSION = "data_source_action_schema.v1"
+TABLE_SAVE_MODES_SCHEMA_VERSION = "table_save_modes.v1"
 
 _SAVE_MODE_ALIASES = {}
 for _mode in TABLE_SAVE_MODES:
@@ -207,14 +209,23 @@ class TableDataService:
             "ok": True,
             "action_state": action_state,
             "actions": dict(action_state.get("actions") or {}),
+            "action_schema": describe_data_source_action_schema(),
             "issues": [],
         }
 
     def describe_table_save_modes(self):
         return {
             "ok": True,
+            "schema_version": TABLE_SAVE_MODES_SCHEMA_VERSION,
             "default_mode": "replace",
             "modes": describe_save_modes(),
+            "mode_field": {
+                "key": "mode",
+                "label": "保存模式",
+                "type": "select",
+                "choices_source": "modes",
+                "default": "replace",
+            },
             "issues": [],
         }
 
@@ -785,6 +796,99 @@ def build_data_source_action_state(table=None, *, source=None, dirty=False):
         "has_rows": has_rows,
         "is_sqlite_source": is_sqlite_source,
         "actions": actions,
+    }
+
+
+def describe_data_source_action_schema():
+    return {
+        "schema_version": DATA_SOURCE_ACTION_SCHEMA_VERSION,
+        "protocol_family": "data_source_service",
+        "actions": {
+            "load_clipboard": {
+                "engine_action": "parse_clipboard_table",
+                "inputs": [
+                    {"key": "text", "type": "text", "required": True, "source": "clipboard"},
+                    {"key": "first_row_header", "type": "bool", "default": True},
+                ],
+                "result": "data_source_state",
+            },
+            "import_file": {
+                "engine_action": "import_table_file",
+                "inputs": [
+                    {"key": "path", "type": "path", "required": True},
+                ],
+                "result": "table_page",
+            },
+            "clear_table": {
+                "engine_action": "build_data_source_state",
+                "inputs": [],
+                "result": "data_source_state",
+            },
+            "promote_first_row": {
+                "engine_action": "promote_first_row_to_headers",
+                "inputs": [
+                    {"key": "table", "type": "table", "required": True},
+                ],
+                "result": "data_source_state",
+            },
+            "search_table": {
+                "engine_action": "search_table",
+                "inputs": [
+                    {"key": "table", "type": "table", "required": True},
+                    {"key": "keyword", "type": "text", "required": True},
+                    {"key": "current_index", "type": "number", "default": -1},
+                    {"key": "offset", "type": "number", "default": 0},
+                    {"key": "reset", "type": "bool", "default": True},
+                ],
+                "result": "search_navigation",
+            },
+            "patch_cell": {
+                "engine_action": "patch_table_cell",
+                "inputs": [
+                    {"key": "table", "type": "table", "required": True},
+                    {"key": "row", "type": "number", "required": True},
+                    {"key": "column", "type": "number", "required": True},
+                    {"key": "value", "type": "text", "default": ""},
+                ],
+                "result": "data_source_state",
+            },
+            "save_sqlite": {
+                "engine_action": "save_table",
+                "inputs": [
+                    {"key": "table", "type": "table", "required": True},
+                    {"key": "db_path", "type": "path", "required": True},
+                    {"key": "table_name", "type": "text", "required": True},
+                    {"key": "mode", "type": "select", "default": "replace", "options_source": "describe_table_save_modes"},
+                ],
+                "result": "data_source_state",
+            },
+            "delete_sqlite": {
+                "engine_action": "delete_table",
+                "inputs": [
+                    {"key": "db_path", "type": "path", "required": True},
+                    {"key": "table_name", "type": "text", "required": True},
+                    {"key": "backup", "type": "bool", "default": True},
+                    {"key": "confirmed", "type": "bool", "required": True},
+                ],
+                "requires_confirmation": True,
+                "result": "delete_result",
+            },
+            "apply_to_workflow": {
+                "engine_action": "build_data_source_state",
+                "inputs": [
+                    {"key": "table", "type": "table", "required": True},
+                    {"key": "source", "type": "object"},
+                    {"key": "dirty", "type": "bool", "default": False},
+                    {"key": "display_name", "type": "text", "default": ""},
+                ],
+                "result": "data_source_state",
+            },
+        },
+        "result_schemas": {
+            "data_source_state": {"schema_version": DATA_SOURCE_STATE_SCHEMA_VERSION},
+            "data_source_actions": {"schema_version": DATA_SOURCE_ACTIONS_SCHEMA_VERSION},
+            "table_save_modes": {"schema_version": TABLE_SAVE_MODES_SCHEMA_VERSION},
+        },
     }
 
 

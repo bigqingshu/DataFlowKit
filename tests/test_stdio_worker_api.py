@@ -193,6 +193,7 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertEqual(searched["result"]["navigation"]["current_cell"], {"row": 1, "column": 1})
         self.assertEqual(navigation["result"]["navigation"]["status_text"], "1/1")
         self.assertEqual([item["id"] for item in save_modes["result"]["modes"]], ["replace", "timestamp", "fail", "append"])
+        self.assertEqual(save_modes["result"]["schema_version"], "table_save_modes.v1")
         self.assertEqual(normalized_mode["result"]["mode"], "timestamp")
         self.assertEqual(state["result"]["state"]["schema_version"], "data_source_state.v1")
         self.assertTrue(state["result"]["state"]["action_state"]["actions"]["patch_cell"]["enabled"])
@@ -200,6 +201,7 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertTrue(state["result"]["state"]["dirty"])
         self.assertTrue(actions["result"]["actions"]["save_sqlite"]["enabled"])
         self.assertFalse(actions["result"]["actions"]["delete_sqlite"]["enabled"])
+        self.assertEqual(actions["result"]["action_schema"]["actions"]["patch_cell"]["engine_action"], "patch_table_cell")
 
     def test_data_source_save_and_delete_table_actions(self):
         worker = StdioWorker()
