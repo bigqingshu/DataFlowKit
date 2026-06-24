@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import csv
+import copy
 import io
 import uuid
 from dataclasses import dataclass, field
@@ -41,6 +42,7 @@ DATA_SOURCE_STATE_SCHEMA_VERSION = "data_source_state.v1"
 DATA_SOURCE_ACTIONS_SCHEMA_VERSION = "data_source_actions.v1"
 DATA_SOURCE_ACTION_SCHEMA_VERSION = "data_source_action_schema.v1"
 DATA_SOURCE_SERVICE_SCHEMA_VERSION = "data_source_service.v1"
+DATA_SOURCE_PANEL_STATE_SCHEMA_VERSION = "data_source_panel_state.v1"
 DATA_SOURCE_PROTOCOL_FAMILY = "data_source_service"
 TABLE_SAVE_MODES_SCHEMA_VERSION = "table_save_modes.v1"
 
@@ -212,6 +214,31 @@ class TableDataService:
             "action_state": action_state,
             "actions": dict(action_state.get("actions") or {}),
             "action_schema": describe_data_source_action_schema(),
+            "issues": [],
+        }
+
+    def build_data_source_panel_state(
+        self,
+        table=None,
+        *,
+        source=None,
+        dirty=False,
+        display_name="",
+        partial=False,
+        page_info=None,
+        search_navigation=None,
+    ):
+        return {
+            "ok": True,
+            "panel_state": build_data_source_panel_state(
+                table or {},
+                source=source,
+                dirty=dirty,
+                display_name=display_name,
+                partial=partial,
+                page_info=page_info,
+                search_navigation=search_navigation,
+            ),
             "issues": [],
         }
 
@@ -753,6 +780,118 @@ def build_data_source_state(table=None, *, source=None, dirty=False, display_nam
     }
 
 
+def build_data_source_panel_state(
+    table=None,
+    *,
+    source=None,
+    dirty=False,
+    display_name="",
+    partial=False,
+    page_info=None,
+    search_navigation=None,
+):
+    state = build_data_source_state(
+        table or {},
+        source=source,
+        dirty=dirty,
+        display_name=display_name,
+    )
+    action_state = state.get("action_state") or {}
+    service = describe_data_source_service()
+    action_schema = service.get("action_schema") if isinstance(service.get("action_schema"), dict) else describe_data_source_action_schema()
+    save_modes = {
+        "schema_version": TABLE_SAVE_MODES_SCHEMA_VERSION,
+        "default_mode": "replace",
+        "modes": describe_save_modes(),
+        "mode_field": {
+            "key": "mode",
+            "label": "保存模式",
+            "type": "select",
+            "choices_source": "modes",
+            "default": "replace",
+        },
+    }
+    page = page_info if isinstance(page_info, dict) else {}
+    search = search_navigation if isinstance(search_navigation, dict) else {}
+    source_payload = state.get("source") if isinstance(state.get("source"), dict) else {}
+    table_name = str(source_payload.get("table_name") or source_payload.get("table") or "").strip()
+    db_path = str(source_payload.get("db_path") or "").strip()
+    display_name_text = str(state.get("display_name") or display_name or table_name or "输入数据源").strip()
+    rows = int(state.get("row_count") or 0)
+    columns = int(state.get("column_count") or 0)
+    dirty_note = "，未保存" if dirty else ""
+    partial_note = "，分页预览" if partial else ""
+    view_state = {
+        "title": display_name_text,
+        "source_type": state.get("source_type"),
+        "table_name": table_name,
+        "db_path": db_path,
+        "shape_text": f"{rows} 行 x {columns} 列",
+        "status_text": f"{display_name_text}：{rows} 行 x {columns} 列{partial_note}{dirty_note}",
+        "dirty_text": "未保存" if dirty else "",
+        "partial": bool(partial),
+        "page": copy_page_info(page),
+        "search": copy_search_navigation(search),
+        "action_enabled": {
+            key: bool((value or {}).get("enabled"))
+            for key, value in (action_state.get("actions") or {}).items()
+            if isinstance(value, dict)
+        },
+    }
+    return {
+        "schema_version": DATA_SOURCE_PANEL_STATE_SCHEMA_VERSION,
+        "protocol_family": DATA_SOURCE_PROTOCOL_FAMILY,
+        "state": state,
+        "source": source_payload,
+        "dirty": bool(dirty),
+        "partial": bool(partial),
+        "shape": copy.deepcopy(state.get("shape") or {}),
+        "action_state": copy.deepcopy(action_state),
+        "service": {
+            "schema_version": service.get("schema_version"),
+            "protocol_family": service.get("protocol_family"),
+            "service_id": service.get("service_id"),
+            "capabilities": copy.deepcopy(service.get("capabilities") or {}),
+            "action_ids": sorted(str(key) for key in (service.get("actions") or {}).keys()),
+            "data_action_ids": sorted(str(key) for key in (service.get("data_actions") or {}).keys()),
+            "result_schemas": copy.deepcopy(service.get("result_schemas") or {}),
+        },
+        "action_schema": {
+            "schema_version": action_schema.get("schema_version"),
+            "action_ids": sorted(str(key) for key in (action_schema.get("actions") or {}).keys()),
+            "result_schemas": copy.deepcopy(action_schema.get("result_schemas") or {}),
+        },
+        "save_modes": {
+            "schema_version": save_modes.get("schema_version"),
+            "mode_ids": [str(item.get("id") or "") for item in save_modes.get("modes") or [] if str(item.get("id") or "")],
+            "mode_field": copy.deepcopy(save_modes.get("mode_field") or {}),
+        },
+        "view_state": view_state,
+    }
+
+
+def copy_page_info(page):
+    return {
+        "offset": int(page.get("offset") or 0) if isinstance(page, dict) else 0,
+        "limit": page.get("limit") if isinstance(page, dict) else None,
+        "has_more": bool(page.get("has_more")) if isinstance(page, dict) else False,
+        "total_rows": page.get("total_rows") if isinstance(page, dict) else None,
+    }
+
+
+def copy_search_navigation(search):
+    if not isinstance(search, dict):
+        return {}
+    return {
+        "keyword": str(search.get("keyword") or ""),
+        "status_text": str(search.get("status_text") or ""),
+        "current_index": search.get("current_index", -1),
+        "count": search.get("count", 0),
+        "current_cell": copy.deepcopy(search.get("current_cell") or {}),
+        "highlighted_rows": list(search.get("highlighted_rows") or []),
+    }
+
+
 def build_data_source_action_state(table=None, *, source=None, dirty=False):
     table_data = TableData.from_payload(table or {}).to_dict()
     headers = list(table_data.get("headers") or [])
@@ -919,6 +1058,7 @@ def describe_data_source_service():
             "sqlite_save": True,
             "sqlite_delete": True,
             "action_state": True,
+            "panel_state": True,
         },
         "actions": {
             "describe_data_source_service": {
@@ -934,6 +1074,19 @@ def describe_data_source_service():
                     {"key": "dirty", "type": "bool", "default": False},
                 ],
                 "result": "data_source_actions",
+            },
+            "build_data_source_panel_state": {
+                "engine_action": "build_data_source_panel_state",
+                "inputs": [
+                    {"key": "table", "type": "table"},
+                    {"key": "source", "type": "object"},
+                    {"key": "dirty", "type": "bool", "default": False},
+                    {"key": "display_name", "type": "text", "default": ""},
+                    {"key": "partial", "type": "bool", "default": False},
+                    {"key": "page_info", "type": "object"},
+                    {"key": "search_navigation", "type": "object"},
+                ],
+                "result": "data_source_panel_state",
             },
             "describe_table_save_modes": {
                 "engine_action": "describe_table_save_modes",
@@ -957,6 +1110,7 @@ def describe_data_source_service():
         },
         "result_schemas": {
             "data_source_service": {"schema_version": DATA_SOURCE_SERVICE_SCHEMA_VERSION},
+            "data_source_panel_state": {"schema_version": DATA_SOURCE_PANEL_STATE_SCHEMA_VERSION},
             "data_source_state": {"schema_version": DATA_SOURCE_STATE_SCHEMA_VERSION},
             "data_source_actions": {"schema_version": DATA_SOURCE_ACTIONS_SCHEMA_VERSION},
             "data_source_action_schema": {"schema_version": DATA_SOURCE_ACTION_SCHEMA_VERSION},

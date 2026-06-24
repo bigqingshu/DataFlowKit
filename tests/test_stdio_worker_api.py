@@ -183,6 +183,13 @@ class StdioWorkerApiTests(unittest.TestCase):
             "source": {"type": "clipboard"},
             "dirty": True,
         }))
+        panel = worker.handle_request(request("build_data_source_panel_state", {
+            "table": patched["result"]["table"],
+            "source": {"type": "clipboard"},
+            "dirty": True,
+            "display_name": "临时输入",
+            "search_navigation": searched["result"]["navigation"],
+        }))
         service_desc = worker.handle_request(request("describe_data_source_service"))
 
         self.assertTrue(parsed["ok"])
@@ -203,6 +210,9 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertTrue(actions["result"]["actions"]["save_sqlite"]["enabled"])
         self.assertFalse(actions["result"]["actions"]["delete_sqlite"]["enabled"])
         self.assertEqual(actions["result"]["action_schema"]["actions"]["patch_cell"]["engine_action"], "patch_table_cell")
+        self.assertEqual(panel["result"]["panel_state"]["schema_version"], "data_source_panel_state.v1")
+        self.assertEqual(panel["result"]["panel_state"]["view_state"]["search"]["current_cell"], {"row": 1, "column": 1})
+        self.assertIn("describe_data_source_service", panel["result"]["panel_state"]["service"]["action_ids"])
         self.assertTrue(service_desc["ok"])
         self.assertEqual(service_desc["result"]["schema_version"], "data_source_service.v1")
         self.assertEqual(service_desc["result"]["data_actions"]["save_sqlite"]["engine_action"], "save_table")

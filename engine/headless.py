@@ -356,6 +356,27 @@ class HeadlessWorkflowEngine:
             dirty=dirty,
         )
 
+    def build_data_source_panel_state(
+        self,
+        table=None,
+        *,
+        source=None,
+        dirty=False,
+        display_name="",
+        partial=False,
+        page_info=None,
+        search_navigation=None,
+    ):
+        return self.tables.build_data_source_panel_state(
+            table,
+            source=source,
+            dirty=dirty,
+            display_name=display_name,
+            partial=partial,
+            page_info=page_info,
+            search_navigation=search_navigation,
+        )
+
     def describe_data_source_service(self):
         return self.tables.describe_data_source_service()
 

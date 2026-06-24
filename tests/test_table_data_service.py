@@ -177,6 +177,15 @@ class TableDataServiceTests(unittest.TestCase):
             dirty=False,
         )
         service_desc = TableDataService().describe_data_source_service()
+        panel = TableDataService().build_data_source_panel_state(
+            patched,
+            source={"type": "sqlite", "db_path": "input.db", "table_name": "demo"},
+            dirty=True,
+            display_name="demo",
+            partial=True,
+            page_info={"offset": 10, "limit": 50, "has_more": True},
+            search_navigation={"keyword": "chan", "status_text": "1/1", "current_cell": {"row": 0, "column": 1}, "highlighted_rows": [0]},
+        )
 
         self.assertEqual(promoted["headers"], ["H1", "H1_2"])
         self.assertEqual(patched["rows"], [["a", "changed"]])
@@ -202,6 +211,11 @@ class TableDataServiceTests(unittest.TestCase):
         self.assertEqual(service_desc["schema_version"], "data_source_service.v1")
         self.assertEqual(service_desc["protocol_family"], "data_source_service")
         self.assertTrue(service_desc["capabilities"]["clipboard_parse"])
+        self.assertTrue(service_desc["capabilities"]["panel_state"])
+        self.assertEqual(
+            service_desc["actions"]["build_data_source_panel_state"]["engine_action"],
+            "build_data_source_panel_state",
+        )
         self.assertEqual(service_desc["data_actions"]["patch_cell"]["engine_action"], "patch_table_cell")
         self.assertEqual(
             service_desc["actions"]["describe_data_source_actions"]["engine_action"],
@@ -209,6 +223,16 @@ class TableDataServiceTests(unittest.TestCase):
         )
         self.assertEqual([item["id"] for item in service_desc["save_modes"]["modes"]], ["replace", "timestamp", "fail", "append"])
         self.assertEqual(service_desc["result_schemas"]["data_source_state"]["schema_version"], "data_source_state.v1")
+        self.assertEqual(service_desc["result_schemas"]["data_source_panel_state"]["schema_version"], "data_source_panel_state.v1")
+        self.assertTrue(panel["ok"])
+        panel_state = panel["panel_state"]
+        self.assertEqual(panel_state["schema_version"], "data_source_panel_state.v1")
+        self.assertEqual(panel_state["view_state"]["status_text"], "demo：1 行 x 2 列，分页预览，未保存")
+        self.assertEqual(panel_state["view_state"]["page"]["offset"], 10)
+        self.assertEqual(panel_state["view_state"]["search"]["current_cell"], {"row": 0, "column": 1})
+        self.assertTrue(panel_state["view_state"]["action_enabled"]["delete_sqlite"])
+        self.assertIn("build_data_source_panel_state", panel_state["service"]["action_ids"])
+        self.assertEqual(panel_state["save_modes"]["mode_ids"], ["replace", "timestamp", "fail", "append"])
         self.assertEqual(normalize_table_headers(["", "A", "A"]), ["列1", "A", "A_2"])
 
     def test_table_search_navigation_is_ui_free(self):

@@ -180,6 +180,26 @@ class DataSourceManagerWindow:
     def describe_state(self):
         table = self.current_table()
         try:
+            panel = self.engine_client.build_data_source_panel_state(
+                table,
+                source=self.current_source,
+                dirty=self.dirty,
+                display_name=self.status_label.text().split("：", 1)[0] if hasattr(self, "status_label") else "",
+                partial=self.current_table_is_partial,
+                page_info={
+                    "offset": self.page_offset,
+                    "limit": self.page_limit,
+                    "has_more": self.page_has_more,
+                },
+                search_navigation=self.search_navigation,
+            )
+            if panel.get("ok") and isinstance(panel.get("panel_state"), dict):
+                result = copy.deepcopy(panel["panel_state"])
+                result["ok"] = True
+                return result
+        except Exception:
+            pass
+        try:
             actions = self.engine_client.describe_data_source_actions(
                 table,
                 source=self.current_source,

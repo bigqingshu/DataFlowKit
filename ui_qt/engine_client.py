@@ -352,6 +352,27 @@ class QtHeadlessEngineClient:
             dirty=dirty,
         )
 
+    def build_data_source_panel_state(
+        self,
+        table=None,
+        *,
+        source=None,
+        dirty=False,
+        display_name="",
+        partial=False,
+        page_info=None,
+        search_navigation=None,
+    ):
+        return self.engine.build_data_source_panel_state(
+            copy.deepcopy(table or {}),
+            source=copy.deepcopy(source or {}),
+            dirty=dirty,
+            display_name=display_name,
+            partial=partial,
+            page_info=copy.deepcopy(page_info or {}),
+            search_navigation=copy.deepcopy(search_navigation or {}),
+        )
+
     def describe_data_source_service(self):
         return self.engine.describe_data_source_service()
 
