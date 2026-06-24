@@ -157,6 +157,7 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
             "format_jump_issue",
             "get_plugin_schema",
             "describe_plugin_config",
+            "resolve_plugin_parameter_options",
             "preview_plugin_config_effect",
             "validate_plugin_config_patch",
             "apply_plugin_config_patch",

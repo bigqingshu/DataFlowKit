@@ -239,6 +239,17 @@ class PluginServiceTests(unittest.TestCase):
                 "plugin.extended",
                 config={"plugin_id": "extended", "params": {"config_name": "default"}},
             )
+            dynamic_options = service.resolve_plugin_parameter_options(
+                "plugin.extended",
+                param_key="config_name",
+                config={"plugin_id": "extended", "params": {"config_name": "default"}},
+            )
+            table_options = service.resolve_plugin_parameter_options(
+                "plugin.extended",
+                field_key="params.table_name",
+                config={"plugin_id": "extended", "params": {"config_name": "default"}},
+                context={"table_names": ["orders", "archive"]},
+            )
 
         self.assertTrue(schema["ok"])
         self.assertEqual(schema["schema"]["parameters"][0]["name"], "table_name")
@@ -340,6 +351,13 @@ class PluginServiceTests(unittest.TestCase):
             described["node_ui_schema"]["parameter_metadata"]["field_index"],
             described["parameter_metadata"]["field_index"],
         )
+        self.assertEqual(dynamic_options["schema_version"], "plugin_parameter_options.v1")
+        self.assertEqual(dynamic_options["param_key"], "config_name")
+        self.assertEqual(dynamic_options["choices"], ["default", "advanced"])
+        self.assertTrue(dynamic_options["dynamic"])
+        self.assertEqual(table_options["field_key"], "params.table_name")
+        self.assertEqual(table_options["choices"], ["orders", "archive"])
+        self.assertFalse(table_options["dynamic"])
         self.assertEqual(described["resources"][0]["file"], "extended_settings.json")
         self.assertEqual(described["views"][1]["kind"], "resource_list")
 
@@ -515,6 +533,12 @@ class PluginServiceTests(unittest.TestCase):
                 "plugins_dir": temp_dir,
                 "input_table": {"headers": ["A"], "rows": [["x"]]},
             }))
+            resolved_options = worker.handle_request(request("resolve_plugin_parameter_options", {
+                "plugin_id": "plugin.demo",
+                "plugins_dir": temp_dir,
+                "field_key": "params.field",
+                "input_table": {"headers": ["A", "B"], "rows": [["x", "y"]]},
+            }))
             default_config = worker.handle_request(request("make_plugin_default_config", {
                 "plugin_id": "demo",
                 "plugins_dir": temp_dir,
@@ -547,6 +571,10 @@ class PluginServiceTests(unittest.TestCase):
         )
         self.assertEqual(described["result"]["views"][0]["kind"], "form")
         self.assertEqual(described["result"]["actions"][0]["legacy_config_state"]["mode"], "legacy_fallback")
+        self.assertTrue(resolved_options["ok"])
+        self.assertEqual(resolved_options["result"]["schema_version"], "plugin_parameter_options.v1")
+        self.assertEqual(resolved_options["result"]["choices"], ["A", "B"])
+        self.assertEqual(resolved_options["result"]["options_source"], {"type": "preview_headers"})
         self.assertTrue(default_config["ok"])
         self.assertEqual(default_config["result"]["config"]["params"]["field"], "A")
         self.assertTrue(run["ok"])

@@ -610,6 +610,69 @@ class PluginService:
             "plugin_extension": plugin_extension,
         }
 
+    def resolve_plugin_parameter_options(
+        self,
+        plugin_id,
+        *,
+        field_key="",
+        param_key="",
+        config=None,
+        input_table=None,
+        context=None,
+        plugins_dir=None,
+    ):
+        schema_result = self.get_plugin_schema(plugin_id, plugins_dir=plugins_dir)
+        if not schema_result.get("ok"):
+            return schema_result
+        key = self._resolve_plugin_key(plugin_id)
+        item = self.registry.get(key, {})
+        module = item.get("module")
+        current_config = copy.deepcopy(config or schema_result.get("default_config") or {})
+        if not isinstance(current_config, dict):
+            current_config = copy.deepcopy(schema_result.get("default_config") or {})
+        params = copy.deepcopy(current_config.get("params", {}) or {})
+        runtime_context = context if isinstance(context, dict) else {}
+        _input_data, plugin_context = self._make_plugin_config_probe_context(
+            key,
+            current_config,
+            input_table,
+            runtime_context,
+        )
+        metadata = (schema_result.get("schema") or {}).get("parameter_metadata") or {}
+        field = _plugin_parameter_field_for_options(
+            metadata,
+            field_key=field_key,
+            param_key=param_key,
+        )
+        if not field:
+            return _plugin_failure(
+                "plugin_parameter_options_field_not_found",
+                f"未找到插件参数字段：{field_key or param_key}",
+                "/field_key",
+            )
+        result = _resolve_plugin_parameter_options_field(
+            module,
+            field,
+            params=params,
+            context=plugin_context,
+            input_table=input_table,
+        )
+        return {
+            "ok": result.get("ok", True),
+            "schema_version": "plugin_parameter_options.v1",
+            "plugin_id": key,
+            "field_key": field.get("key"),
+            "param_key": field.get("param_key"),
+            "label": field.get("label"),
+            "options_source": copy.deepcopy(field.get("options_source") or {}),
+            "choices": list(result.get("choices") or []),
+            "candidate_count": len(result.get("choices") or []),
+            "empty_text": str(field.get("empty_text") or result.get("empty_text") or ""),
+            "allow_custom": bool(field.get("allow_custom", True)),
+            "dynamic": bool(result.get("dynamic")),
+            "issues": copy.deepcopy(result.get("issues") or []),
+        }
+
     def _make_plugin_config_probe_context(self, key, current_config, input_table, runtime_context):
         self._ensure_runtime_context_snapshot(runtime_context)
         input_data = _make_plugin_service_input_data(key, input_table, runtime_context)
@@ -1120,6 +1183,8 @@ def _make_plugin_service_context(plugin_id, *, config=None, context=None, execut
         "is_config_probe": bool(context.get("is_config_probe")) if isinstance(context, dict) else False,
         "transit_tables": (context or {}).get("transit_tables", {}) if isinstance(context, dict) else {},
         "input_tables": (context or {}).get("input_tables", {}) if isinstance(context, dict) else {},
+        "table_names": (context or {}).get("table_names", []) if isinstance(context, dict) else [],
+        "table_columns": (context or {}).get("table_columns", {}) if isinstance(context, dict) else {},
         "safety_policy": (context or {}).get("safety_policy", {}) if isinstance(context, dict) else {},
     }
 
@@ -1170,6 +1235,69 @@ def _enrich_plugin_dynamic_choices(schema, module, params, context):
     parameter_metadata = schema.get("parameter_metadata") if isinstance(schema.get("parameter_metadata"), dict) else {}
     for field in parameter_metadata.get("fields") or []:
         enrich_field(field)
+
+
+def _plugin_parameter_field_for_options(metadata, *, field_key="", param_key=""):
+    fields = [field for field in (metadata.get("fields") or []) if isinstance(field, dict)]
+    field_key = str(field_key or "").strip()
+    param_key = str(param_key or "").strip()
+    if field_key:
+        for field in fields:
+            if str(field.get("key") or "") == field_key:
+                return copy.deepcopy(field)
+    if param_key:
+        for field in fields:
+            if str(field.get("param_key") or "") == param_key:
+                return copy.deepcopy(field)
+    return {}
+
+
+def _resolve_plugin_parameter_options_field(module, field, *, params=None, context=None, input_table=None):
+    options_source = field.get("options_source") if isinstance(field.get("options_source"), dict) else {}
+    source_type = str(options_source.get("type") or "").strip()
+    choices = [str(item) for item in (field.get("choices") or []) if str(item).strip()]
+    issues = []
+    dynamic = False
+    if source_type == "preview_headers":
+        table = input_table if isinstance(input_table, dict) else {}
+        choices = [str(item) for item in (table.get("headers") or []) if str(item).strip()]
+    elif source_type == "table_names":
+        choices = [str(item) for item in ((context or {}).get("table_names") or []) if str(item).strip()]
+    elif source_type == "plugin_input_tables":
+        input_tables = (context or {}).get("input_tables") or {}
+        aliases = ["当前表", "workflow_current", "primary"]
+        aliases.extend(str(key) for key in input_tables.keys() if str(key).strip())
+        seen = set()
+        choices = []
+        for alias in aliases:
+            if alias not in seen:
+                choices.append(alias)
+                seen.add(alias)
+    elif source_type == "plugin_dynamic_choices":
+        dynamic = True
+        provider = getattr(module, "get_dynamic_parameter_options", None)
+        param_key = str(field.get("param_key") or options_source.get("param_key") or "").strip()
+        if callable(provider) and param_key:
+            try:
+                choices = [str(item) for item in (provider(param_key, copy.deepcopy(params or {}), copy.deepcopy(context or {})) or []) if str(item).strip()]
+            except Exception as exc:
+                issues.append(make_issue(
+                    "warning",
+                    "plugin_parameter_options_failed",
+                    f"插件动态候选解析失败：{exc}",
+                    path="/options_source",
+                    source="PluginService",
+                ))
+                choices = []
+        else:
+            choices = [str(item) for item in (options_source.get("choices") or choices) if str(item).strip()]
+    return {
+        "ok": not has_error_issues(issues),
+        "choices": choices,
+        "dynamic": dynamic,
+        "empty_text": str(field.get("empty_text") or ""),
+        "issues": issues,
+    }
 
 
 def _describe_plugin_config_extension(module, params, context):
