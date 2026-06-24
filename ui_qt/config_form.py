@@ -590,7 +590,7 @@ class NodeConfigForm:
             current = str(editor.currentText())
             editor.blockSignals(True)
             editor.clear()
-            values = self._choices_for_options_source(options_source)
+            values = self._choices_for_options_source(options_source, field_key=key)
             if current and current not in values:
                 values.insert(0, current)
             editor.addItems(values)
@@ -757,16 +757,21 @@ class NodeConfigForm:
         for column_index, column in enumerate(columns):
             key = str(column.get("key") or "")
             cell_value = item.get(key, column.get("default", "")) if isinstance(item, dict) else column.get("default", "")
-            editor = self._structured_cell_editor(frame, column, cell_value)
+            editor = self._structured_cell_editor(frame, column, cell_value, row_values=item if isinstance(item, dict) else {})
             table.setCellWidget(row, column_index, editor)
             self._connect_dynamic_refresh(editor, self._structured_column_kind(column))
         table.setCurrentCell(row, 0)
 
-    def _structured_cell_editor(self, frame, column, value):
+    def _structured_cell_editor(self, frame, column, value, row_values=None):
         choices = list(column.get("choices") or [])
         options_source = column.get("options_source") or {}
         if not choices:
-            choices = self._choices_for_options_source(options_source)
+            choices = self._choices_for_options_source(
+                options_source,
+                row_values=row_values,
+                field_key=self._structured_option_field_key(frame, column.get("key")),
+            )
+        value = self._structured_display_value_for_choices(frame, column, value, choices, row_values=row_values)
         kind = self._structured_column_kind(column)
         key = str(column.get("key") or "")
         editor = self._editor_for_field(key, kind, value, choices, field_schema=column)
@@ -862,6 +867,17 @@ class NodeConfigForm:
         current_values = self._current_field_values()
         if isinstance(row_values, dict):
             current_values.update(row_values)
+        node_options = self._node_config_options_for_field(
+            str(options_source.get("field_key") or ""),
+            current_values,
+        )
+        if node_options:
+            return {
+                "source": node_options.get("source", ""),
+                "candidates": list(node_options.get("choices") or []),
+                "empty_text": str(node_options.get("empty_text") or ""),
+                "schema_version": str(node_options.get("schema_version") or ""),
+            }
         if source_type == "preview_headers":
             return {
                 "source": "preview_headers",
@@ -875,9 +891,63 @@ class NodeConfigForm:
             current_values=current_values,
         ).get("picker_context") or {}
 
-    def _choices_for_options_source(self, options_source, row_values=None):
+    def _choices_for_options_source(self, options_source, row_values=None, field_key=""):
+        options_source = dict(options_source or {})
+        if field_key:
+            options_source.setdefault("field_key", field_key)
         picker_context = self._picker_context_for_options_source(options_source, row_values=row_values)
         return [str(item) for item in (picker_context.get("candidates") or []) if str(item).strip()]
+
+    def _node_config_options_for_field(self, field_key, current_values=None):
+        if not isinstance(self.node, dict):
+            return {}
+        node_type_id = normalize_node_type_id(self.node.get("node_type_id") or self.node.get("type") or "")
+        if node_type_id != "core.filter":
+            return {}
+        field_key = str(field_key or "").strip()
+        if not field_key:
+            return {}
+        try:
+            result = self.engine_client.resolve_node_config_options(
+                node_type_id,
+                node=copy.deepcopy(self.node),
+                config=self._current_config_snapshot(),
+                field_key=field_key,
+                current_values=copy.deepcopy(current_values or {}),
+                preview_headers=self.headers,
+                table_names=self.table_names,
+                table_columns=self.table_columns,
+            )
+        except Exception:
+            return {}
+        if not result.get("ok") or result.get("schema_version") != "filter_config_options.v1":
+            return {}
+        if str(result.get("source") or "") == "unknown":
+            return {}
+        return result
+
+    def _structured_option_field_key(self, frame, column_key):
+        parent_key = str(getattr(frame, "field_key", "") or "").strip()
+        column_key = str(column_key or "").strip()
+        if parent_key and column_key:
+            return f"{parent_key}.{column_key}"
+        return column_key
+
+    def _structured_display_value_for_choices(self, frame, column, value, choices, row_values=None):
+        if str(getattr(frame, "field_key", "") or "") != "join_rules":
+            return value
+        if str((column or {}).get("key") or "") != "right":
+            return value
+        text = str(value or "").strip()
+        if not text or "." in text:
+            return value
+        right_table = str((row_values or {}).get("right_table") or "").strip()
+        if not right_table:
+            return value
+        candidate = f"{right_table}.{text}"
+        if candidate in [str(item) for item in (choices or [])]:
+            return candidate
+        return value
 
     def _refresh_structured_list_options(self, editor):
         state = getattr(editor, "structured_state", {})
@@ -900,7 +970,11 @@ class NodeConfigForm:
                 if widget is None or self._structured_column_kind(column) != "choice":
                     continue
                 options_source = column.get("options_source") or {}
-                values = self._choices_for_options_source(options_source, row_values=row_values)
+                values = self._choices_for_options_source(
+                    options_source,
+                    row_values=row_values,
+                    field_key=self._structured_option_field_key(editor, column.get("key")),
+                )
                 if not values and str(options_source.get("type") or "") not in {"preview_headers", "table_names", "table_columns", "plan_refs", "runtime_refs", "field_values", "plugin_input_tables", "plugin_dynamic_choices"}:
                     continue
                 current = str(widget.currentText())

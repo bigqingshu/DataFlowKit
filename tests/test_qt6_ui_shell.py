@@ -2117,7 +2117,7 @@ class Qt6UiShellTests(unittest.TestCase):
         right_combo = form._structured_cell_widget(table.cellWidget(0, right_column), frame.structured_state["columns"][right_column])
 
         self.assertEqual(right_table_combo.currentText(), "people")
-        self.assertEqual(right_combo.currentText(), "code")
+        self.assertEqual(right_combo.currentText(), "people.code")
         self.assertEqual([right_table_combo.itemText(i) for i in range(right_table_combo.count())], ["people"])
         shared_context = form.describe_state()["shared_config_context"]
         self.assertEqual(shared_context["schema_version"], "filter_config_context.v1")
@@ -2126,9 +2126,9 @@ class Qt6UiShellTests(unittest.TestCase):
 
         right_table_combo.setCurrentText("people")
         app.processEvents()
-        self.assertEqual([right_combo.itemText(i) for i in range(right_combo.count())], ["code", "title"])
+        self.assertEqual([right_combo.itemText(i) for i in range(right_combo.count())], ["people.code", "people.title"])
 
-        right_combo.setCurrentText("title")
+        right_combo.setCurrentText("people.title")
         node = form.to_node()
         self.assertEqual(node["config"]["join_rules"], [{"left": "id", "op": "等于", "right_table": "people", "right": "people.title"}])
         self.assertEqual(config_layout_for_node("批量替换")[0]["title"], "目标与匹配")
@@ -2199,6 +2199,67 @@ class Qt6UiShellTests(unittest.TestCase):
         }
         self.assertEqual(mapping_columns["source_field"]["options_source"], {"type": "table_columns", "table_field": "source_table"})
         self.assertEqual(mapping_columns["target_field"]["action"]["key"], "pick_table_field")
+
+    def test_config_form_uses_shared_filter_option_resolver_for_join_rules(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+
+        class SpyClient(QtHeadlessEngineClient):
+            def __init__(self):
+                super().__init__()
+                self.option_calls = []
+
+            def resolve_node_config_options(self, node_type_id="", **kwargs):
+                self.option_calls.append({"node_type_id": node_type_id, **copy.deepcopy(kwargs)})
+                return super().resolve_node_config_options(node_type_id, **kwargs)
+
+        client = SpyClient()
+        schema = get_node_ui_schema(
+            "core.filter",
+            table_names=["people"],
+            table_columns={"people": ["code", "title"]},
+        )
+        form = NodeConfigForm(qt, headers=["id"], table_names=["people"], table_columns={"people": ["code", "title"]}, engine_client=client)
+        form.set_node(
+            {
+                "node_type_id": "core.filter",
+                "node_id": "n1",
+                "name": "高级筛选",
+                "enabled": True,
+                "node_version": "1.0.0",
+                "config": {
+                    "source_table": "",
+                    "extra_tables": ["people"],
+                    "join_rules": [
+                        {
+                            "left": "当前表.id",
+                            "op": "等于",
+                            "right_table": "people",
+                            "right": "people.code",
+                        }
+                    ],
+                },
+            },
+            headers=["id"],
+            table_names=["people"],
+            table_columns={"people": ["code", "title"]},
+            schema=schema,
+        )
+
+        frame = form.config_fields["join_rules"]["editor"]
+        table = frame.structured_state["table"]
+        right_column = next(i for i, col in enumerate(frame.structured_state["columns"]) if col.get("key") == "right")
+        right_combo = form._structured_cell_widget(table.cellWidget(0, right_column), frame.structured_state["columns"][right_column])
+
+        self.assertEqual([right_combo.itemText(i) for i in range(right_combo.count())], ["people.code", "people.title"])
+        self.assertTrue(any(call.get("field_key") == "join_rules.right" for call in client.option_calls))
+        right_call = next(call for call in client.option_calls if call.get("field_key") == "join_rules.right")
+        self.assertEqual(right_call["current_values"]["right_table"], "people")
+        self.assertEqual(right_call["preview_headers"], ["id"])
+        self.assertEqual(right_call["table_columns"], {"people": ["code", "title"]})
 
     def test_qt6_loader_rejects_qt5_binding(self):
         with self.assertRaises(QtBindingUnavailable):
