@@ -2297,6 +2297,7 @@ class QtWorkflowMainWindow:
         meta_items = [item for item in (detail.get("meta_items") or []) if isinstance(item, dict)]
         warning_items = [item for item in (context.get("warning_items") or []) if isinstance(item, dict)]
         help_sections = [item for item in (context.get("help_sections") or []) if isinstance(item, dict)]
+        shared_config_sections = [item for item in (context.get("shared_config_sections") or []) if isinstance(item, dict)]
 
         if warning_items:
             warning_lines = []
@@ -2316,6 +2317,11 @@ class QtWorkflowMainWindow:
                     preview_lines.append(f"{label}：{first_lines[0]}")
             if preview_lines:
                 sections.append({"title": "配置提示", "lines": preview_lines})
+        for section in shared_config_sections:
+            title = str(section.get("title") or "").strip()
+            lines = [str(line).strip() for line in (section.get("lines") or []) if str(line).strip()]
+            if title or lines:
+                sections.append({"title": title or "共享配置状态", "lines": lines})
 
         self.node_detail_title_label.setText(title)
         if meta_items:

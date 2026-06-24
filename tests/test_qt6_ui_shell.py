@@ -927,6 +927,9 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(filter_context["shared_config_context"]["schema_version"], "filter_config_context.v1")
         self.assertEqual(filter_context["shared_config_context"]["field_state"]["first_current"], "当前表.Code")
         self.assertIn("实际输出字段", filter_context["shared_config_context"]["output_text"])
+        shared_section = filter_context["shared_config_sections"][0]
+        self.assertEqual(shared_section["title"], "共享配置状态")
+        self.assertIn("可用字段：1 个", shared_section["lines"])
 
     def test_facade_describes_confirmation_prompts(self):
         client = QtHeadlessEngineClient()
@@ -2452,6 +2455,18 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertIn("配置项", controller.node_detail_sections.toPlainText())
             self.assertIn("配置提示", controller.node_detail_sections.toPlainText())
             self.assertIn("动态显示", controller.node_detail_sections.toPlainText())
+            controller._apply_node_detail_panel(
+                {"title": "高级筛选"},
+                schema={"node_type_id": "core.filter", "display_name": "高级筛选"},
+                context={
+                    "shared_config_sections": [{
+                        "title": "共享配置状态",
+                        "lines": ["可用字段：2 个", "实际输出字段：A、B", "状态：当前多表筛选未发现明显全组合风险。"],
+                    }]
+                },
+            )
+            self.assertIn("共享配置状态", controller.node_detail_sections.toPlainText())
+            self.assertIn("实际输出字段：A、B", controller.node_detail_sections.toPlainText())
             controller.copy_selected_node()
             self.assertEqual(len(controller.current_plan["nodes"]), 3)
             copied_node = controller.current_plan["nodes"][controller.selected_node_index()]

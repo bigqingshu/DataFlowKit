@@ -1075,6 +1075,7 @@ class WorkflowFacade:
                 table_names=table_names,
                 table_columns=table_columns,
             )
+        shared_config_sections = self._shared_config_context_sections(shared_config_context)
         return {
             "ok": True,
             "schema": schema,
@@ -1082,7 +1083,39 @@ class WorkflowFacade:
             "help_sections": help_sections,
             "warning_items": copy.deepcopy(schema.get("warning_items") or []),
             "shared_config_context": shared_config_context,
+            "shared_config_sections": shared_config_sections,
         }
+
+    def _shared_config_context_sections(self, shared_config_context):
+        context = shared_config_context if isinstance(shared_config_context, dict) else {}
+        if not context:
+            return []
+        schema_version = str(context.get("schema_version") or "").strip()
+        if schema_version == "filter_config_context.v1":
+            lines = []
+            selected_tables = [str(item) for item in (context.get("selected_tables") or []) if str(item).strip()]
+            if selected_tables:
+                lines.append("已选表：" + "、".join(selected_tables))
+            available_fields = [str(item) for item in (context.get("available_fields") or []) if str(item).strip()]
+            lines.append(f"可用字段：{len(available_fields)} 个")
+            output_text = str(context.get("output_text") or "").strip()
+            if output_text:
+                lines.append(output_text)
+            risk_text = str((context.get("risk_state") or {}).get("text") or "").strip()
+            if risk_text:
+                lines.append(risk_text)
+            return [{
+                "title": "共享配置状态",
+                "source": schema_version,
+                "lines": lines,
+            }]
+        protocol = str(context.get("protocol_family") or "").strip()
+        lines = []
+        if schema_version:
+            lines.append(f"协议版本：{schema_version}")
+        if protocol:
+            lines.append(f"协议族：{protocol}")
+        return [{"title": "共享配置状态", "source": schema_version, "lines": lines}] if lines else []
 
     def plan_status_text(self, plan=None, *, current_plan_path=None):
         plan = plan or {}
