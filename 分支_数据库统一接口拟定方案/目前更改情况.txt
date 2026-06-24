@@ -1,0 +1,69 @@
+**结论**
+
+方案可行，而且方向是对的：现在主程序已经有 `PluginDatabaseAPI` 这个雏形，但还没有真正变成“所有节点读写表的唯一入口”。我建议把它升级成 `TableAccessManager` 门面类：节点继续负责业务规则，管理类负责表绑定、字段映射、权限校验、写入模式、日志和进度事件。
+
+**当前变动情况**
+
+当前分支相对 `main` 已有提交差异：`DataFlowKit.py` 约 `+446/-48`，三个插件也有较大配套变化。主程序新增的重点不是权限管理，而是插件字段懒加载、`get_output_schema()` 支持、高级筛选字段值匹配/性能优化、进度显示调整。
+
+现有统一点：`PluginDatabaseAPI` 已能 list/read/write/backup/get_columns，且插件上下文里已经通过 `context["db"]` 暴露给插件：[DataFlowKit.py](C:/Users/12650/桌面/工具/PythonProject/DataFlowKit/DataFlowKit.py:73)、[DataFlowKit.py](C:/Users/12650/桌面/工具/PythonProject/DataFlowKit/DataFlowKit.py:6303)。
+
+主要散点还在：主页加载/保存表、工作流最终输出、选定列写入、字段映射写入、高级筛选读副表、插件输入表读取等仍直接 SQLite 操作。例如：[DataFlowKit.py](C:/Users/12650/桌面/工具/PythonProject/DataFlowKit/DataFlowKit.py:1170)、[DataFlowKit.py](C:/Users/12650/桌面/工具/PythonProject/DataFlowKit/DataFlowKit.py:10284)、[DataFlowKit.py](C:/Users/12650/桌面/工具/PythonProject/DataFlowKit/DataFlowKit.py:15602)、[DataFlowKit.py](C:/Users/12650/桌面/工具/PythonProject/DataFlowKit/DataFlowKit.py:16521)。
+
+**窗口方案**
+
+左边节点、中间表、右边字段，这个结构很适合当前工作流。中间建议不是简单“读/写两列”，而是按“表角色”展示：
+
+`current / source / target / lookup / transit / output`
+
+因为同一张表可能既是读取表又是写入表，角色比表名更稳定。
+
+下拉菜单设置权限可以用，但建议做成“预设下拉 + 高级展开”，不要只存一个文本值。表级可以下拉：
+
+`只读`、`默认读写只记录`、`追加写入`、`更新写入`、`追加或更新`、`覆盖/清空`、`新建表`、`禁止访问`
+
+字段级可以下拉：
+
+`只读`、`可写`、`读写`、`键字段只读`、`保护字段`、`自动创建并写入`、`禁止`
+
+这样 UI 简洁，底层仍保存明确布尔权限，后面校验不会糊。
+
+**必须补充**
+
+第一，给节点补稳定 `node_id`。当前节点添加/复制主要靠列表顺序，模板也是直接保存 `nodes`：[DataFlowKit.py](C:/Users/12650/桌面/工具/PythonProject/DataFlowKit/DataFlowKit.py:7145)、[DataFlowKit.py](C:/Users/12650/桌面/工具/PythonProject/DataFlowKit/DataFlowKit.py:16565)。权限、日志、复制节点都需要稳定 ID。
+
+第二，权限和写入模式分开。权限回答“能不能”，写入模式回答“怎么写”。不要让一个下拉同时表达 `write_table`、`update_rows`、`append_rows`、`replace_table`。
+
+第三，保留旧节点配置兼容。现有 `enable_write / write_mode / field_mappings / backup_before_write` 不要废掉，先在运行期自动转换成 `table_access` 默认配置。
+
+第四，管理类不要变成一个真正的巨类。可以外部叫 `TableAccessManager`，内部拆成 schema、permission、executor、logger 四块，不然后面会很难维护。
+
+**推荐落地顺序**
+
+1. 先新增 `node_id` 和 `table_access` 配置结构，不改变现有行为。
+2. 把 `PluginDatabaseAPI` 升级为 `TableAccessManager` 门面，先兼容原 API。
+3. 先接管工作流最终保存、保存中转到 SQLite、选定列写入、字段映射写入。
+4. 再接管高级筛选/插件/节点组/循环节点的读表入口。
+5. 最后做三栏管理窗口，并加“检查权限 / 预览影响 / 保存配置”。
+
+整体判断：这个分支现在的基础已经够接这个重构了，尤其插件 schema 懒加载和进度事件已经铺好。真正要小心的是别把“权限管理”做成第二套业务规则系统，边界保持你方案.md 里的那句就稳：节点管业务，管理器管读写权限和执行。
+
+
+第二次对话:
+
+
+已按第一轮落地顺序重构，改动集中在 [DataFlowKit.py](C:/Users/12650/桌面/工具/PythonProject/DataFlowKit/DataFlowKit.py)。
+
+完成内容：
+- 新增 `TableAccessManager`，统一承接 SQLite 表读取、写入、追加、备份、字段清空、按 rowid 写回、只读查询日志。
+- 保留 `PluginDatabaseAPI` 作为兼容别名，插件里的 `context["db"]` 不需要改。
+- 给工作流节点补 `node_id` 和自动生成的 `table_access` 基础结构；复制节点会生成新 ID，模板保存/载入会自动补齐。
+- 工作流执行时写入 `current_node_info`，表访问日志会带节点身份并进入 `context["table_access_logs"]`。
+- 已把工作流核心表读写入口改走 manager：插件输入表、高级筛选读副表、选定列读写目标、保存中转 SQLite、字段映射写回、工作流最终保存。
+
+验证已通过：
+- `.\Python38\python.exe -m py_compile DataFlowKit.py`
+- `git diff --check -- DataFlowKit.py`
+- 临时 SQLite 烟测：`replace / append / timestamp / read_records` 正常。
+
+剩余未做的是下一阶段：真正的“三栏表节点映射管理窗口”和权限强制校验。目前 `table_access` 已经写入节点结构，但还没有做 UI 和拦截拒绝。主页旧保存/加载、独立高级筛选窗口、插件日志表仍保留原直连 SQLite，下一轮可以继续收束。
