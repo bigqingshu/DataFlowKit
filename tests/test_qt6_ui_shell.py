@@ -297,6 +297,7 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertIn("参数元数据", controller.node_detail_sections.toPlainText())
             self.assertIn("参数能力：动态候选", controller.node_detail_sections.toPlainText())
             self.assertIn("schema/patch", controller.legacy_plugin_config_button.toolTip())
+            self.assertIn("模式：legacy_fallback", controller.legacy_plugin_config_button.toolTip())
             self.assertIn("生命周期：legacy_fallback", controller.legacy_plugin_config_button.toolTip())
             self.assertIn("迁移目标：describe_config + parameter_metadata + config_patch", controller.legacy_plugin_config_button.toolTip())
             self.assertIn("配置动作：编辑 Demo Items", controller.node_detail_sections.toPlainText())

@@ -100,6 +100,7 @@ class PluginService:
             "risk": plugin["risk"],
             "capabilities": capabilities,
             "config_compatibility": copy.deepcopy(plugin.get("config_compatibility") or {}),
+            "legacy_config_state": copy.deepcopy(plugin.get("legacy_config_state") or {}),
             "form": {
                 "schema_version": PLUGIN_FORM_SCHEMA_VERSION,
                 "dynamic_rules": True,
@@ -487,22 +488,26 @@ class PluginService:
 
         actions = []
         custom_window = plugin.get("custom_config_window") if isinstance(plugin.get("custom_config_window"), dict) else {}
-        if custom_window.get("available"):
+        legacy_config_state = plugin.get("legacy_config_state") if isinstance(plugin.get("legacy_config_state"), dict) else {}
+        if legacy_config_state.get("available") or custom_window.get("available"):
             legacy_warning = str(
-                custom_window.get("warning")
+                legacy_config_state.get("warning")
+                or custom_window.get("warning")
                 or "旧版插件设置窗口仅作为兼容 fallback；标准配置请优先使用 schema/patch 协议。"
             )
             actions.append({
-                "action_id": "open_legacy_config",
-                "label": str(custom_window.get("label") or "打开旧版插件设置"),
+                "action_id": str(legacy_config_state.get("action_id") or "open_legacy_config"),
+                "label": str(legacy_config_state.get("label") or custom_window.get("label") or "打开旧版插件设置"),
                 "kind": "compatibility",
-                "compatibility": str(custom_window.get("compatibility") or "legacy"),
-                "fallback": True,
-                "deprecated": True,
-                "lifecycle": "legacy_fallback",
-                "migration_target": "describe_config + parameter_metadata + config_patch",
-                "remove_when": "插件已提供等价 schema/patch 配置能力且目标 UI 已完成承接。",
+                "compatibility": str(legacy_config_state.get("compatibility") or custom_window.get("compatibility") or "legacy"),
+                "mode": str(legacy_config_state.get("mode") or ""),
+                "fallback": bool(legacy_config_state.get("fallback", True)),
+                "deprecated": bool(legacy_config_state.get("deprecated", True)),
+                "lifecycle": str(legacy_config_state.get("lifecycle") or "legacy_fallback"),
+                "migration_target": str(legacy_config_state.get("migration_target") or "describe_config + parameter_metadata + config_patch"),
+                "remove_when": str(legacy_config_state.get("remove_when") or "插件已提供等价 schema/patch 配置能力且目标 UI 已完成承接。"),
                 "warning": legacy_warning,
+                "legacy_config_state": copy.deepcopy(legacy_config_state),
             })
         actions = _merge_plugin_config_items(actions, plugin_extension.get("actions"), "action_id")
 
@@ -596,6 +601,7 @@ class PluginService:
             "models": copy.deepcopy(plugin_extension.get("models") or {}),
             "protocol_manifest": copy.deepcopy(plugin_extension.get("protocol_manifest") or {}),
             "config_compatibility": copy.deepcopy(plugin.get("config_compatibility") or {}),
+            "legacy_config_state": copy.deepcopy(plugin.get("legacy_config_state") or {}),
             "capabilities": combined_capabilities,
             "warnings": warning_messages,
             "warning_items": warning_items,
@@ -737,6 +743,7 @@ class PluginService:
             has_custom_config=has_custom_config,
             load_status=load_status,
         )
+        legacy_config_state = _plugin_legacy_config_state(config_compatibility, has_custom_config=has_custom_config)
         return {
             "plugin_id": plugin_id,
             "node_type_id": plugin_node_type_id(plugin_id),
@@ -775,6 +782,7 @@ class PluginService:
                 "warning": "旧版 Tk 设置窗口仅作为兼容 fallback；标准配置请优先使用 schema/patch 协议。",
             },
             "config_compatibility": config_compatibility,
+            "legacy_config_state": legacy_config_state,
             "info": info,
         }
 
@@ -896,6 +904,55 @@ def _plugin_config_compatibility(item, *, has_custom_config=None, load_status=""
         "migration_target": migration_target,
         "remove_when": remove_when,
         "external_only": str(load_status or item.get("load_status") or "") == "仅独立环境运行",
+    }
+
+
+def _plugin_legacy_config_state(compatibility=None, *, has_custom_config=False):
+    compatibility = compatibility if isinstance(compatibility, dict) else {}
+    available = bool(has_custom_config or compatibility.get("legacy_custom_config"))
+    legacy_required = bool(compatibility.get("legacy_ui_required"))
+    legacy_fallback = bool(compatibility.get("legacy_fallback_available"))
+    primary_path = str(compatibility.get("primary_config_path") or "").strip()
+    if not available:
+        mode = "hidden"
+        status = "unavailable"
+        recommendation = "hide"
+    elif legacy_required:
+        mode = "legacy_required"
+        status = "required"
+        recommendation = "migrate_to_schema"
+    else:
+        mode = "legacy_fallback"
+        status = "fallback"
+        recommendation = "prefer_schema_patch" if primary_path == "schema_patch" else "prefer_standard_config"
+    migration_target = str(compatibility.get("migration_target") or "").strip()
+    remove_when = str(compatibility.get("remove_when") or "").strip()
+    warning = ""
+    if available:
+        warning = (
+            "旧版 Tk 设置窗口仅作为兼容 fallback；标准配置请优先使用 schema/patch 协议。"
+            if legacy_fallback else
+            "该插件仍依赖旧版设置窗口；建议迁移到 describe_config + parameter_metadata + config_patch。"
+        )
+    return {
+        "schema_version": "plugin_legacy_config_state.v1",
+        "action_id": "open_legacy_config",
+        "available": available,
+        "ui_visible": available,
+        "ui_enabled_default": available,
+        "mode": mode,
+        "status": status,
+        "compatibility": "legacy_tk" if available else "",
+        "label": "打开旧版插件设置" if available else "",
+        "fallback": bool(legacy_fallback),
+        "required": bool(legacy_required),
+        "deprecated": available,
+        "lifecycle": "legacy_fallback" if available else "",
+        "primary_config_path": primary_path,
+        "ui_recommendation": recommendation,
+        "migration_target": migration_target,
+        "remove_when": remove_when,
+        "warning": warning,
     }
 
 
@@ -1508,6 +1565,10 @@ def _plugin_config_compatibility_lines(compatibility):
     if not isinstance(compatibility, dict):
         return []
     lines = []
+    legacy_state = _plugin_legacy_config_state(
+        compatibility,
+        has_custom_config=bool(compatibility.get("legacy_custom_config")),
+    )
     primary_path = str(compatibility.get("primary_config_path") or "").strip()
     recommendation = str(compatibility.get("ui_recommendation") or "").strip()
     if primary_path:
@@ -1515,6 +1576,10 @@ def _plugin_config_compatibility_lines(compatibility):
         if recommendation:
             line += f"；UI建议 {recommendation}"
         lines.append(line)
+    if legacy_state.get("available"):
+        lines.append(
+            f"旧窗口状态：{legacy_state.get('mode')}；状态 {legacy_state.get('status')}；UI建议 {legacy_state.get('ui_recommendation')}"
+        )
     capability_labels = []
     for key, label in [
         ("schema_config", "schema配置"),

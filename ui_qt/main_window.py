@@ -2015,15 +2015,20 @@ class QtWorkflowMainWindow:
     def _update_legacy_plugin_config_button(self, schema):
         plugin = schema.get("plugin") if isinstance(schema, dict) and isinstance(schema.get("plugin"), dict) else {}
         custom_window = plugin.get("custom_config_window") if isinstance(plugin.get("custom_config_window"), dict) else {}
-        visible = bool(custom_window.get("available"))
+        legacy_state = plugin.get("legacy_config_state") if isinstance(plugin.get("legacy_config_state"), dict) else {}
+        visible = bool(legacy_state.get("ui_visible", custom_window.get("available")))
         tooltip = str(
-            custom_window.get("warning")
+            legacy_state.get("warning")
+            or custom_window.get("warning")
             or "兼容旧 Tk 插件设置窗口；标准配置仍以当前表单为主。"
         )
         lifecycle_parts = []
-        lifecycle = str(custom_window.get("lifecycle") or "").strip()
-        migration_target = str(custom_window.get("migration_target") or "").strip()
-        remove_when = str(custom_window.get("remove_when") or "").strip()
+        mode = str(legacy_state.get("mode") or "").strip()
+        lifecycle = str(legacy_state.get("lifecycle") or custom_window.get("lifecycle") or "").strip()
+        migration_target = str(legacy_state.get("migration_target") or custom_window.get("migration_target") or "").strip()
+        remove_when = str(legacy_state.get("remove_when") or custom_window.get("remove_when") or "").strip()
+        if mode:
+            lifecycle_parts.append(f"模式：{mode}")
         if lifecycle:
             lifecycle_parts.append(f"生命周期：{lifecycle}")
         if migration_target:
@@ -2033,8 +2038,9 @@ class QtWorkflowMainWindow:
         if lifecycle_parts:
             tooltip = tooltip + "\n" + "\n".join(lifecycle_parts)
         self.legacy_plugin_config_button.setVisible(visible)
-        self.legacy_plugin_config_button.setEnabled(visible and not bool(self.current_job_id))
-        self.legacy_plugin_config_button.setText(str(custom_window.get("label") or "打开旧版插件设置"))
+        enabled_default = bool(legacy_state.get("ui_enabled_default", visible))
+        self.legacy_plugin_config_button.setEnabled(visible and enabled_default and not bool(self.current_job_id))
+        self.legacy_plugin_config_button.setText(str(legacy_state.get("label") or custom_window.get("label") or "打开旧版插件设置"))
         self.legacy_plugin_config_button.setToolTip(tooltip)
 
     def open_legacy_plugin_config(self):
