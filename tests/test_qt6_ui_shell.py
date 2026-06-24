@@ -703,6 +703,179 @@ class Qt6UiShellTests(unittest.TestCase):
         window.close()
         app.processEvents()
 
+    def test_plugin_structured_list_select_uses_plugin_config_options(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+        calls = []
+
+        def resolve_options(plugin_id, **kwargs):
+            calls.append({"plugin_id": plugin_id, **copy.deepcopy(kwargs)})
+            return {
+                "ok": True,
+                "schema_version": "DataFlowKit.plugin_config_options.v1",
+                "source": "content_fields",
+                "choices": ["from_protocol", "other"],
+            }
+
+        controller.engine_client.resolve_plugin_config_options = resolve_options
+        controller.current_headers = ["source_file", "A"]
+        controller.current_rows = [["demo.xlsx", "1"]]
+        controller.set_current_input_db_path("input.sqlite", refresh=False)
+        controller.output_db_path_edit.setText("output.sqlite")
+
+        widget = controller._make_plugin_structured_list_widget(
+            {
+                "view_id": "visual_mapping.rules",
+                "kind": "structured_list",
+                "editor_kind": "visual_mapping.rules",
+                "section": "rules",
+                "config_path": ["plugin_settings", "configs", "default", "rules"],
+                "patch_operations": ["update_item"],
+                "items": [{"mapping": {"content_field": "old"}}],
+                "item_schema": {
+                    "columns": [
+                        {
+                            "key": "mapping.content_field",
+                            "label": "写入字段",
+                            "type": "select",
+                            "config_path": ["mapping", "content_field"],
+                            "choices": ["old_static"],
+                            "options_source": {
+                                "type": "visual_mapping_context",
+                                "key": "content_fields",
+                            },
+                        },
+                    ],
+                },
+            },
+            {
+                "config_schema_version": "DataFlowKit.visual_mapping.config.v1",
+                "protocol_family": "plugin_complex_config",
+                "plugin_id": "visual_mapping_write_plan_v1",
+                "config_key": "default",
+                "config": {
+                    "plugin_id": "visual_mapping_write_plan_v1",
+                    "params": {"config_name": "default"},
+                },
+            },
+        )
+
+        table = widget.findChild(qt.QtWidgets.QTableWidget)
+        self.assertIsNotNone(table)
+        editor = table.cellWidget(0, 0)
+        self.assertIsInstance(editor, qt.QtWidgets.QComboBox)
+        choices = [editor.itemText(index) for index in range(editor.count())]
+        self.assertEqual(choices, ["old", "from_protocol", "other"])
+        self.assertEqual(editor.currentText(), "old")
+
+        self.assertEqual(len(calls), 1)
+        call = calls[0]
+        self.assertEqual(call["plugin_id"], "visual_mapping_write_plan_v1")
+        self.assertEqual(call["field_key"], "mapping.content_field")
+        self.assertEqual(call["view_id"], "visual_mapping.rules")
+        self.assertEqual(call["section"], "rules")
+        self.assertEqual(call["current_values"]["mapping"]["content_field"], "old")
+        self.assertEqual(call["config"]["params"]["config_name"], "default")
+        self.assertEqual(call["input_table"]["headers"], ["source_file", "A"])
+        self.assertEqual(call["context"]["db_path"], "input.sqlite")
+        self.assertEqual(call["context"]["input_db_path"], "input.sqlite")
+        self.assertEqual(call["context"]["output_db_path"], "output.sqlite")
+        window.close()
+        app.processEvents()
+
+    def test_plugin_structured_detail_form_select_uses_plugin_config_options(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+        calls = []
+
+        def resolve_options(plugin_id, **kwargs):
+            calls.append({"plugin_id": plugin_id, **copy.deepcopy(kwargs)})
+            return {
+                "ok": True,
+                "schema_version": "DataFlowKit.plugin_config_options.v1",
+                "source": "anchor_modes",
+                "choices": ["protocol_mode", "fallback_mode"],
+            }
+
+        controller.engine_client.resolve_plugin_config_options = resolve_options
+        widget = controller._make_plugin_structured_list_widget(
+            {
+                "view_id": "demo.rules",
+                "kind": "structured_list",
+                "section": "rules",
+                "patch_operations": ["update_item"],
+                "items": [{
+                    "name": "rule",
+                    "anchor": {"anchor_mode": "old"},
+                }],
+                "item_schema": {
+                    "columns": [
+                        {"key": "name", "label": "规则", "type": "text"},
+                    ],
+                    "detail_sections": [
+                        {
+                            "key": "anchor",
+                            "title": "锚点定位",
+                            "kind": "form",
+                            "config_path": ["anchor"],
+                            "fields": [
+                                {
+                                    "key": "anchor_mode",
+                                    "label": "锚点模式",
+                                    "type": "select",
+                                    "config_path": ["anchor_mode"],
+                                    "choices": ["static_mode"],
+                                    "options_source": {
+                                        "type": "plugin_config_context",
+                                        "key": "anchor_modes",
+                                    },
+                                },
+                            ],
+                        },
+                    ],
+                },
+            },
+            {
+                "config_schema_version": "demo.config.v1",
+                "protocol_family": "plugin_complex_config",
+                "plugin_id": "demo.plugin",
+                "config": {"plugin_id": "demo.plugin", "params": {"mode": "demo"}},
+            },
+        )
+
+        detail_tabs = widget.findChild(qt.QtWidgets.QTabWidget, "pluginConfigDetailTabs")
+        self.assertIsNotNone(detail_tabs)
+        anchor_page = detail_tabs.widget(0)
+        anchor_fields = {
+            ".".join(column["config_path"]): editor
+            for column, editor in anchor_page.plugin_detail_form_fields
+        }
+        editor = anchor_fields["anchor.anchor_mode"]
+        self.assertIsInstance(editor, qt.QtWidgets.QComboBox)
+        choices = [editor.itemText(index) for index in range(editor.count())]
+        self.assertEqual(choices, ["old", "protocol_mode", "fallback_mode"])
+        self.assertEqual(editor.currentText(), "old")
+
+        self.assertEqual(len(calls), 1)
+        call = calls[0]
+        self.assertEqual(call["plugin_id"], "demo.plugin")
+        self.assertEqual(call["field_key"], "anchor_mode")
+        self.assertEqual(call["view_id"], "demo.rules")
+        self.assertEqual(call["section"], "rules")
+        self.assertEqual(call["current_values"]["anchor"]["anchor_mode"], "old")
+        window.close()
+        app.processEvents()
+
     def test_plugin_structured_list_renders_detail_sections_as_update_patch(self):
         try:
             qt = qt_app.load_qt6()

@@ -896,10 +896,7 @@ class QtWorkflowMainWindow:
                 node_type_id,
                 config=copy.deepcopy((node or {}).get("config") or {}),
                 input_table=self._input_table_payload(),
-                context={
-                    "db_path": self.output_db_path_edit.text().strip(),
-                    "workflow_name": self.current_plan.get("plan_name", ""),
-                },
+                context=self._plugin_config_context_payload(),
             )
         except Exception:
             return {}
@@ -1297,6 +1294,7 @@ class QtWorkflowMainWindow:
         frame.plugin_config_items = copy.deepcopy(items)
         frame.plugin_config_table = table
         frame.plugin_config_editable = editable
+        frame.plugin_config_described = copy.deepcopy(described or {})
         frame.plugin_config_schema_version = str(
             (described or {}).get("config_schema_version")
             or (described or {}).get("schema_version")
@@ -1326,7 +1324,17 @@ class QtWorkflowMainWindow:
             for col, column in enumerate(columns):
                 value = self._plugin_structured_item_value(item, column)
                 if editable and not bool(column.get("read_only")):
-                    table.setCellWidget(row, col, self._plugin_structured_cell_editor(column, value))
+                    table.setCellWidget(
+                        row,
+                        col,
+                        self._plugin_structured_cell_editor(
+                            column,
+                            value,
+                            view=view,
+                            described=described,
+                            current_values=item,
+                        ),
+                    )
                 else:
                     table.setItem(row, col, qt.QtWidgets.QTableWidgetItem(
                         self._format_plugin_protocol_value(value)
@@ -1460,8 +1468,10 @@ class QtWorkflowMainWindow:
         item = copy.deepcopy(items[row]) if 0 <= row < len(items) and isinstance(items[row], dict) else {}
         tabs.clear()
         detail_widgets = []
+        view = getattr(frame, "plugin_config_view", {}) or {}
+        described = getattr(frame, "plugin_config_described", {}) or {}
         for section in sections:
-            widget = self._make_plugin_detail_section_widget(section, item)
+            widget = self._make_plugin_detail_section_widget(section, item, view=view, described=described)
             if widget is None:
                 continue
             title = str(section.get("title") or section.get("label") or section.get("key") or "详情")
@@ -1469,15 +1479,15 @@ class QtWorkflowMainWindow:
             detail_widgets.append(widget)
         frame.plugin_config_detail_widgets = detail_widgets
 
-    def _make_plugin_detail_section_widget(self, section, item):
+    def _make_plugin_detail_section_widget(self, section, item, *, view=None, described=None):
         kind = str((section or {}).get("kind") or "")
         if kind == "form":
-            return self._make_plugin_detail_form_widget(section, item)
+            return self._make_plugin_detail_form_widget(section, item, view=view, described=described)
         if kind == "structured_list":
-            return self._make_plugin_detail_structured_list_widget(section, item)
+            return self._make_plugin_detail_structured_list_widget(section, item, view=view, described=described)
         return self._make_plugin_protocol_text_widget(section)
 
-    def _make_plugin_detail_form_widget(self, section, item):
+    def _make_plugin_detail_form_widget(self, section, item, *, view=None, described=None):
         qt = self.qt
         widget = qt.QtWidgets.QWidget()
         widget.setObjectName("pluginConfigDetailForm")
@@ -1489,7 +1499,13 @@ class QtWorkflowMainWindow:
         for field in fields:
             column = self._plugin_detail_field_column(section, field)
             value = self._plugin_structured_item_value(item, column)
-            editor = self._plugin_structured_cell_editor(column, value)
+            editor = self._plugin_structured_cell_editor(
+                column,
+                value,
+                view=view,
+                described=described,
+                current_values=item,
+            )
             help_text = str(field.get("help") or field.get("description") or field.get("warning") or "").strip()
             if help_text:
                 editor.setToolTip(help_text)
@@ -1501,7 +1517,7 @@ class QtWorkflowMainWindow:
         widget.plugin_detail_form_fields = editors
         return widget
 
-    def _make_plugin_detail_structured_list_widget(self, section, item):
+    def _make_plugin_detail_structured_list_widget(self, section, item, *, view=None, described=None):
         qt = self.qt
         widget = qt.QtWidgets.QWidget()
         widget.setObjectName("pluginConfigDetailStructuredList")
@@ -1528,6 +1544,8 @@ class QtWorkflowMainWindow:
             section.get("item_default") if isinstance(section.get("item_default"), dict) else {}
         )
         widget.plugin_detail_table = table
+        widget.plugin_config_view = copy.deepcopy(view or {})
+        widget.plugin_config_described = copy.deepcopy(described or {})
         for row_value in rows:
             self._plugin_detail_table_append_row(widget, row_value)
         self._polish_plugin_protocol_table(table)
@@ -1568,7 +1586,17 @@ class QtWorkflowMainWindow:
                     self._format_plugin_protocol_value(cell_value)
                 ))
             else:
-                table.setCellWidget(row, col, self._plugin_structured_cell_editor(column, cell_value))
+                table.setCellWidget(
+                    row,
+                    col,
+                    self._plugin_structured_cell_editor(
+                        column,
+                        cell_value,
+                        view=getattr(widget, "plugin_config_view", {}) or {},
+                        described=getattr(widget, "plugin_config_described", {}) or {},
+                        current_values=row_value,
+                    ),
+                )
         table.selectRow(row)
 
     def _plugin_detail_table_delete_current_row(self, widget):
@@ -1676,7 +1704,7 @@ class QtWorkflowMainWindow:
             return "number"
         return "text"
 
-    def _plugin_structured_cell_editor(self, column, value):
+    def _plugin_structured_cell_editor(self, column, value, *, view=None, described=None, current_values=None):
         qt = self.qt
         kind = self._plugin_structured_column_kind(column)
         if kind == "bool":
@@ -1687,7 +1715,12 @@ class QtWorkflowMainWindow:
             widget = qt.QtWidgets.QComboBox()
             allow_custom = bool((column or {}).get("allow_custom", True))
             widget.setEditable(allow_custom)
-            choices = [str(item) for item in ((column or {}).get("choices") or [])]
+            choices = self._plugin_structured_cell_choices(
+                column,
+                view=view,
+                described=described,
+                current_values=current_values,
+            )
             current = "" if value is None else str(value)
             if current and current not in choices:
                 choices.insert(0, current)
@@ -1702,6 +1735,76 @@ class QtWorkflowMainWindow:
         widget = qt.QtWidgets.QLineEdit()
         widget.setText("" if value is None else str(value))
         return widget
+
+    def _plugin_structured_cell_choices(self, column, *, view=None, described=None, current_values=None):
+        static_choices = [str(item) for item in ((column or {}).get("choices") or []) if str(item).strip()]
+        options_source = column.get("options_source") if isinstance((column or {}).get("options_source"), dict) else {}
+        source_type = str(options_source.get("type") or "").strip()
+        if source_type not in {"plugin_config_context", "visual_mapping_context"}:
+            return static_choices
+        resolved = self._resolve_plugin_structured_cell_options(
+            column,
+            view=view,
+            described=described,
+            current_values=current_values,
+        )
+        if not resolved:
+            return static_choices
+        return [str(item) for item in (resolved.get("choices") or []) if str(item).strip()]
+
+    def _resolve_plugin_structured_cell_options(self, column, *, view=None, described=None, current_values=None):
+        described = described if isinstance(described, dict) else {}
+        plugin_id = str(described.get("plugin_id") or "").strip()
+        if not plugin_id:
+            return {}
+        field_key = str((column or {}).get("key") or "").strip()
+        if not field_key:
+            return {}
+        view = view if isinstance(view, dict) else {}
+        try:
+            result = self.engine_client.resolve_plugin_config_options(
+                plugin_id,
+                field_key=field_key,
+                current_values=copy.deepcopy(current_values or {}),
+                view_id=str(view.get("view_id") or "").strip(),
+                section=str(view.get("section") or "").strip(),
+                config=copy.deepcopy(described.get("config") or self._current_plugin_config()),
+                input_table=self._input_table_payload(),
+                context=self._plugin_config_context_payload(),
+            )
+        except Exception:
+            return {}
+        if not result.get("ok") or result.get("schema_version") != "DataFlowKit.plugin_config_options.v1":
+            return {}
+        if str(result.get("source") or "") == "unknown":
+            return {}
+        return result
+
+    def _current_plugin_config(self):
+        try:
+            node = self.config_form.to_node()
+        except Exception:
+            node = None
+        if isinstance(node, dict) and isinstance(node.get("config"), dict):
+            return copy.deepcopy(node.get("config") or {})
+        index = self.selected_node_index()
+        nodes = self.current_plan.get("nodes") if isinstance(self.current_plan, dict) else []
+        if index is not None and isinstance(nodes, list) and 0 <= index < len(nodes):
+            node = nodes[index]
+            if isinstance(node, dict) and isinstance(node.get("config"), dict):
+                return copy.deepcopy(node.get("config") or {})
+        return {}
+
+    def _plugin_config_context_payload(self):
+        input_db_path = self.current_data_source_db_path()
+        output_db_path = self.output_db_path_edit.text().strip()
+        db_path = input_db_path or output_db_path
+        return {
+            "db_path": db_path,
+            "input_db_path": input_db_path,
+            "output_db_path": output_db_path,
+            "workflow_name": self.current_plan.get("plan_name", "") if isinstance(self.current_plan, dict) else "",
+        }
 
     def _plugin_structured_editor_value(self, widget, column):
         kind = self._plugin_structured_column_kind(column)
@@ -1915,10 +2018,7 @@ class QtWorkflowMainWindow:
                 patch=copy.deepcopy(patch),
                 config=config,
                 input_table=self._input_table_payload(),
-                context={
-                    "db_path": self.output_db_path_edit.text().strip(),
-                    "workflow_name": self.current_plan.get("plan_name", ""),
-                },
+                context=self._plugin_config_context_payload(),
             )
         except Exception as exc:
             self.show_error("插件配置写回失败", str(exc))
@@ -2066,10 +2166,7 @@ class QtWorkflowMainWindow:
                 plugin_id,
                 config=config,
                 input_table=self._input_table_payload(),
-                context={
-                    "db_path": self.output_db_path_edit.text().strip(),
-                    "workflow_name": self.current_plan.get("plan_name", ""),
-                },
+                context=self._plugin_config_context_payload(),
                 parent=None,
             )
         except Exception as exc:
