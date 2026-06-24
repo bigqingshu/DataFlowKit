@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 
 from engine.issue_schema import has_error_issues, make_issue
+from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
 from workflow.advanced_filter_window_logic import (
     add_advanced_filter_condition,
     add_advanced_filter_join_rule,
@@ -68,6 +69,8 @@ def describe_advanced_filter_service():
             "build_main_preview_snapshot",
             "export_template",
             "apply_template",
+            "save_template_file",
+            "load_template_file",
         ],
         "command_ids": list(command_schema.get("command_ids") or []),
         "result_schemas": {
@@ -77,6 +80,7 @@ def describe_advanced_filter_service():
             "advanced_filter_ui_hints": {"schema_version": ADVANCED_FILTER_UI_HINTS_SCHEMA_VERSION},
             "advanced_filter_preview": {"schema_version": "advanced_filter_preview.v1"},
             "advanced_filter_template": {"schema_version": "advanced_filter_template.v1"},
+            "advanced_filter_template_file": {"schema_version": "advanced_filter_template_file.v1"},
             "main_preview_snapshot": {"schema_version": "main_preview_snapshot.v1"},
         },
     }
@@ -201,6 +205,41 @@ def describe_advanced_filter_command_schema():
             "inputs": [{"key": "template", "type": "object", "required": True}],
             "result": "advanced_filter_state",
         },
+        "save_template_file": {
+            "section_id": "templates",
+            "label": "保存模板文件",
+            "inputs": [
+                {"key": "path", "type": "file_path", "required": True, "dialog": "save_file"},
+                {"key": "keep_backup", "type": "bool", "default": True},
+            ],
+            "file_dialog": {
+                "dialog": "save_file",
+                "title": "保存筛选模板",
+                "defaultextension": ".json",
+                "filters": [
+                    {"label": "JSON 文件", "pattern": "*.json"},
+                    {"label": "所有文件", "pattern": "*.*"},
+                ],
+            },
+            "result": "advanced_filter_template_file",
+        },
+        "load_template_file": {
+            "section_id": "templates",
+            "label": "载入模板文件",
+            "inputs": [
+                {"key": "path", "type": "file_path", "required": True, "dialog": "open_file"},
+                {"key": "apply", "type": "bool", "default": True},
+            ],
+            "file_dialog": {
+                "dialog": "open_file",
+                "title": "载入筛选模板",
+                "filters": [
+                    {"label": "JSON 文件", "pattern": "*.json"},
+                    {"label": "所有文件", "pattern": "*.*"},
+                ],
+            },
+            "result": "advanced_filter_template_file",
+        },
     }
     return {
         "schema_version": ADVANCED_FILTER_COMMAND_SCHEMA_VERSION,
@@ -259,7 +298,7 @@ def describe_advanced_filter_layout():
             "title": "模板",
             "role": "template_io",
             "state_keys": [],
-            "command_ids": ["export_template", "apply_template"],
+            "command_ids": ["export_template", "apply_template", "save_template_file", "load_template_file"],
         },
     ]
     return {
@@ -302,7 +341,7 @@ def describe_advanced_filter_ui_hints():
                 "empty_text": "请先生成预览结果。",
             },
             "templates": {
-                "description": "导出或应用高级筛选模板。",
+                "description": "导出、应用、保存或载入高级筛选模板。UI 只负责选择文件路径，模板读写和恢复提示由共享服务返回。",
             },
         },
         "command_prominence": {
@@ -314,6 +353,8 @@ def describe_advanced_filter_ui_hints():
             "clear_conditions": "danger",
             "clear_join_rules": "danger",
             "clear_output_fields": "danger",
+            "save_template_file": "secondary",
+            "load_template_file": "secondary",
         },
     }
 
@@ -525,6 +566,79 @@ def apply_advanced_filter_command(state, command):
         })
         changed = True
 
+    elif command_type == "save_template_file":
+        path = str(command.get("path") or "").strip()
+        if not path:
+            issues.append(_issue("error", "missing_template_path", "保存模板需要文件路径。", path="/command/path"))
+        else:
+            try:
+                template = _advanced_filter_template_payload(current)
+                target = atomic_write_json(path, template, keep_backup=bool(command.get("keep_backup", True)))
+                changed = False
+                command["_template_file_result"] = {
+                    "schema_version": "advanced_filter_template_file.v1",
+                    "action": "save",
+                    "path": target,
+                    "template": template,
+                    "load_info": {},
+                }
+            except Exception as exc:
+                issues.append(_issue("error", "save_template_file_failed", str(exc), path="/command/path"))
+
+    elif command_type == "load_template_file":
+        path = str(command.get("path") or "").strip()
+        if not path:
+            issues.append(_issue("error", "missing_template_path", "载入模板需要文件路径。", path="/command/path"))
+        else:
+            try:
+                template_data, load_info = load_json_with_backup(path)
+                if bool(command.get("apply", True)):
+                    selected_tables = select_advanced_filter_template_tables(
+                        template_data,
+                        current["tables_cache"],
+                    )
+                    current["selected_tables"] = selected_tables
+                    if template_data.get("main_table"):
+                        current["main_table"] = str(template_data.get("main_table") or "")
+                    current["field_display_cache"] = build_advanced_filter_field_display_cache(
+                        selected_tables,
+                        current["columns_by_table"],
+                    )
+                    normalized = normalize_advanced_filter_template_data(
+                        template_data,
+                        current["tables_cache"],
+                        current["field_display_cache"],
+                        current_save_table=current["save_table"],
+                    )
+                    current.update({
+                        "selected_tables": normalized["selected_tables"],
+                        "conditions": normalized["conditions"],
+                        "join_rules": normalized["join_rules"],
+                        "output_fields": normalized["output_fields"],
+                        "logic": normalized["logic"],
+                        "join_logic": normalized["join_logic"],
+                        "result_limit": normalized["result_limit"],
+                        "max_intermediate": normalized["max_intermediate"],
+                        "save_table": normalized["save_table"],
+                    })
+                    changed = True
+                if load_info.get("warning"):
+                    issues.append(_issue(
+                        "warning",
+                        "template_file_recovered_from_backup",
+                        str(load_info.get("warning") or ""),
+                        path="/command/path",
+                    ))
+                command["_template_file_result"] = {
+                    "schema_version": "advanced_filter_template_file.v1",
+                    "action": "load",
+                    "path": path,
+                    "template": copy.deepcopy(template_data),
+                    "load_info": copy.deepcopy(load_info or {}),
+                }
+            except Exception as exc:
+                issues.append(_issue("error", "load_template_file_failed", str(exc), path="/command/path"))
+
     else:
         issues.append(_issue("error", "unknown_command", f"未知高级筛选 command：{command_type}", path="/command/type"))
 
@@ -535,7 +649,22 @@ def apply_advanced_filter_command(state, command):
         issues,
         command_type,
         requires_confirmation=requires_confirmation,
-        extra=_command_extra(current, command_type),
+        extra=_command_extra(current, command_type, command),
+    )
+
+
+def _advanced_filter_template_payload(state):
+    return build_advanced_filter_template_data(
+        state.get("main_table", ""),
+        state.get("selected_tables", []),
+        state.get("conditions", []),
+        state.get("logic", "AND"),
+        state.get("join_logic", "AND"),
+        state.get("join_rules", []),
+        state.get("output_fields", []),
+        state.get("result_limit", "5000"),
+        state.get("max_intermediate", "200000"),
+        state.get("save_table", ""),
     )
 
 
@@ -616,7 +745,7 @@ def _result(state, changed, issues, command_type, *, requires_confirmation, extr
     return payload
 
 
-def _command_extra(state, command_type):
+def _command_extra(state, command_type, command=None):
     if command_type == "dedupe_preview":
         return {
             "preview": {
@@ -642,19 +771,12 @@ def _command_extra(state, command_type):
         }
     if command_type == "export_template":
         return {
-            "template": build_advanced_filter_template_data(
-                state.get("main_table", ""),
-                state.get("selected_tables", []),
-                state.get("conditions", []),
-                state.get("logic", "AND"),
-                state.get("join_logic", "AND"),
-                state.get("join_rules", []),
-                state.get("output_fields", []),
-                state.get("result_limit", "5000"),
-                state.get("max_intermediate", "200000"),
-                state.get("save_table", ""),
-            )
+            "template": _advanced_filter_template_payload(state)
         }
+    if command_type in {"save_template_file", "load_template_file"}:
+        command = command or {}
+        if command.get("_template_file_result"):
+            return {"template_file": copy.deepcopy(command.get("_template_file_result"))}
     return {}
 
 

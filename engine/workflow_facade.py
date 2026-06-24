@@ -1187,6 +1187,8 @@ class WorkflowFacade:
                 context.get("available_fields") or [],
                 command or {},
                 transit_context=transit_context,
+                table_names=table_names,
+                table_columns=table_columns,
             )
             node_config_context = self.describe_node_config_context(
                 normalized_type,

@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from workflow.filter_config_helpers import (
     apply_filter_config_command,
+    build_filter_config_template_data,
     build_filter_available_fields,
     build_filter_actual_output_text,
     build_filter_condition_input_state,
@@ -448,6 +451,66 @@ class FilterConfigHelpersTests(unittest.TestCase):
         })
 
         self.assertEqual(removed["config"]["output_fields"], ["当前表.Code", "lookup.Name"])
+
+    def test_filter_config_template_commands_preserve_node_specific_fields(self):
+        config = {
+            "extra_tables": ["lookup"],
+            "conditions": [{
+                "field": "当前表.Code",
+                "op": "等于",
+                "value_source": "字段值",
+                "value": "lookup.Code",
+            }],
+            "join_rules": [{
+                "left": "当前表.Code",
+                "op": "等于",
+                "right_table": "lookup",
+                "right": "lookup.Code",
+            }],
+            "output_fields": ["lookup.Name"],
+            "remove_duplicates": True,
+        }
+        headers = ["Code"]
+        fields = ["当前表.Code", "lookup.Code", "lookup.Name"]
+
+        template = build_filter_config_template_data(config, headers, fields)
+        applied = apply_filter_config_command({}, headers, fields, {
+            "type": "apply_template",
+            "template": template,
+        }, table_names=["lookup"], table_columns={"lookup": ["Code", "Name"]})
+
+        self.assertEqual(template["schema_version"], "filter_config_template.v1")
+        self.assertEqual(template["template_type"], "advanced_filter_node_config")
+        self.assertTrue(applied["ok"])
+        self.assertEqual(applied["config"]["conditions"][0]["value_source"], "字段值")
+        self.assertEqual(applied["config"]["join_rules"][0]["right_table"], "lookup")
+        self.assertEqual(applied["config"]["output_fields"], ["lookup.Name"])
+        self.assertTrue(applied["config"]["remove_duplicates"])
+
+    def test_filter_config_template_file_commands_are_ui_free(self):
+        config = {
+            "extra_tables": ["lookup"],
+            "output_fields": ["lookup.Name"],
+        }
+        headers = ["Code"]
+        fields = ["当前表.Code", "lookup.Code", "lookup.Name"]
+
+        with TemporaryDirectory() as temp_dir:
+            path = str(Path(temp_dir) / "node_filter_template.json")
+            saved = apply_filter_config_command(config, headers, fields, {
+                "type": "save_template_file",
+                "path": path,
+            }, table_names=["lookup"], table_columns={"lookup": ["Code", "Name"]})
+            loaded = apply_filter_config_command({}, headers, fields, {
+                "type": "load_template_file",
+                "path": path,
+            }, table_names=["lookup"], table_columns={"lookup": ["Code", "Name"]})
+
+        self.assertTrue(saved["ok"])
+        self.assertEqual(saved["template_file"]["schema_version"], "filter_config_template_file.v1")
+        self.assertTrue(loaded["ok"])
+        self.assertEqual(loaded["config"]["extra_tables"], ["lookup"])
+        self.assertEqual(loaded["config"]["output_fields"], ["lookup.Name"])
 
     def test_resolve_filter_config_options_returns_field_and_value_candidates(self):
         config = {

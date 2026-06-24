@@ -275,6 +275,33 @@ This keeps stdio, HTTP, WebSocket, and in-process adapters aligned.
 }
 ```
 
+### 7.1 Shared Node Configuration Commands
+
+Complex node editors should expose UI-neutral state through
+`describe_node_config_context` and mutate configuration through
+`apply_node_config_command`.
+
+For `core.filter`, `shared_config_context` carries
+`filter_config_context.v1`, which wraps `advanced_filter_service.v1`,
+`advanced_filter_command.v1`, `advanced_filter_layout.v1`, and
+`advanced_filter_ui_hints.v1`. The command set includes rule editing,
+output-field editing, preview-oriented state commands, and template commands.
+
+Template command results are structured so non-Python clients do not need to
+import Tkinter code:
+
+- `export_template` returns `filter_config_template.v1`.
+- `apply_template` accepts the same template payload and writes the node config.
+- `save_template_file` accepts a client-selected file path and returns
+  `filter_config_template_file.v1`.
+- `load_template_file` accepts a client-selected file path, applies the
+  template by default, and returns `filter_config_template_file.v1`.
+
+File picker presentation remains a UI responsibility. Command schemas may
+include `file_dialog` hints such as title, filter list, and open/save mode, but
+the engine owns JSON read/write, backup recovery warnings, template filtering,
+and issue reporting.
+
 Recommended actions:
 
 - `list_node_types`

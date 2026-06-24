@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 
+from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
 from workflow.nodes.filter_plan_nodes import (
     get_plan_filter_output_header_conflicts,
     get_plan_filter_output_headers,
@@ -19,6 +20,7 @@ from workflow.advanced_filter_command_service import (
 
 
 FILTER_CONFIG_CONTEXT_SCHEMA_VERSION = "filter_config_context.v1"
+FILTER_CONFIG_TEMPLATE_SCHEMA_VERSION = "filter_config_template.v1"
 FILTER_OPTIONS_STATE_SCHEMA_VERSION = "filter_options_state.v1"
 FILTER_CONFIG_COMMAND_RESULT_SCHEMA_VERSION = "filter_config_command_result.v1"
 FILTER_CONFIG_OPTIONS_SCHEMA_VERSION = "filter_config_options.v1"
@@ -102,6 +104,7 @@ def describe_filter_config_context(config, headers, *, table_names=None, table_c
         "layout": copy.deepcopy(service_description.get("layout") or {}),
         "ui_hints": copy.deepcopy(service_description.get("ui_hints") or {}),
         "options_state_schema": FILTER_OPTIONS_STATE_SCHEMA_VERSION,
+        "template_schema": FILTER_CONFIG_TEMPLATE_SCHEMA_VERSION,
         "config": config_copy,
         "headers": list(headers or []),
         "table_names": list(table_names or []),
@@ -308,7 +311,16 @@ def apply_filter_config_service_command(config, headers, all_fields, command):
     return apply_advanced_filter_command(state, command)
 
 
-def apply_filter_config_command(config, headers, all_fields, command, *, transit_context=None):
+def apply_filter_config_command(
+    config,
+    headers,
+    all_fields,
+    command,
+    *,
+    transit_context=None,
+    table_names=None,
+    table_columns=None,
+):
     """Apply a UI-neutral command to an advanced-filter node config."""
 
     config_copy = ensure_filter_config_defaults(copy.deepcopy(config or {}))
@@ -324,6 +336,7 @@ def apply_filter_config_command(config, headers, all_fields, command, *, transit
         return _filter_config_command_result(config_copy, headers, all_fields, command_type, False, issues, transit_context)
 
     service_result = None
+    extra_payload = {}
     if command_type == "add_condition":
         field = str(command.get("field") or "").strip()
         op = str(command.get("op") or command.get("operator") or "等于").strip()
@@ -403,6 +416,87 @@ def apply_filter_config_command(config, headers, all_fields, command, *, transit
         if service_result.get("ok"):
             config_copy["output_fields"] = list((service_result.get("state") or {}).get("output_fields") or [])
 
+    elif command_type == "export_template":
+        service_result = apply_filter_config_service_command(config_copy, headers, all_fields, {"type": "export_template"})
+        extra_payload["template"] = build_filter_config_template_data(config_copy, headers, all_fields)
+
+    elif command_type == "apply_template":
+        template_data = command.get("template") or command.get("data") or {}
+        config_copy, all_fields, template_issues = apply_filter_config_template_data(
+            config_copy,
+            template_data,
+            headers,
+            all_fields,
+            table_names=table_names,
+            table_columns=table_columns,
+            transit_context=transit_context,
+        )
+        issues.extend(template_issues)
+        service_result = apply_filter_config_service_command(config_copy, headers, all_fields, {
+            "type": "export_template",
+        })
+        extra_payload["template"] = build_filter_config_template_data(config_copy, headers, all_fields)
+
+    elif command_type == "save_template_file":
+        path = str(command.get("path") or "").strip()
+        if not path:
+            issues.append(_filter_config_issue("error", "missing_template_path", "保存模板需要文件路径。", path="/command/path"))
+            service_result = {"ok": False, "issues": [], "command": command_type}
+        else:
+            try:
+                template = build_filter_config_template_data(config_copy, headers, all_fields)
+                target = atomic_write_json(path, template, keep_backup=bool(command.get("keep_backup", True)))
+                service_result = {"ok": True, "issues": [], "command": command_type}
+                extra_payload["template_file"] = {
+                    "schema_version": "filter_config_template_file.v1",
+                    "action": "save",
+                    "path": target,
+                    "template": template,
+                    "load_info": {},
+                }
+            except Exception as exc:
+                issues.append(_filter_config_issue("error", "save_template_file_failed", str(exc), path="/command/path"))
+                service_result = {"ok": False, "issues": [], "command": command_type}
+
+    elif command_type == "load_template_file":
+        path = str(command.get("path") or "").strip()
+        if not path:
+            issues.append(_filter_config_issue("error", "missing_template_path", "载入模板需要文件路径。", path="/command/path"))
+            service_result = {"ok": False, "issues": [], "command": command_type}
+        else:
+            try:
+                template_data, load_info = load_json_with_backup(path)
+                if load_info.get("warning"):
+                    issues.append(_filter_config_issue(
+                        "warning",
+                        "template_file_recovered_from_backup",
+                        str(load_info.get("warning") or ""),
+                        path="/command/path",
+                    ))
+                if bool(command.get("apply", True)):
+                    config_copy, all_fields, template_issues = apply_filter_config_template_data(
+                        config_copy,
+                        template_data,
+                        headers,
+                        all_fields,
+                        table_names=table_names,
+                        table_columns=table_columns,
+                        transit_context=transit_context,
+                    )
+                    issues.extend(template_issues)
+                service_result = {"ok": True, "issues": [], "command": command_type}
+                extra_payload["template_file"] = {
+                    "schema_version": "filter_config_template_file.v1",
+                    "action": "load",
+                    "path": path,
+                    "template": copy.deepcopy(template_data),
+                    "load_info": copy.deepcopy(load_info or {}),
+                }
+                extra_payload["template"] = build_filter_config_template_data(config_copy, headers, all_fields)
+            except Exception as exc:
+                issues.append(_filter_config_issue("error", "load_template_file_failed", str(exc), path="/command/path"))
+                service_result = {"ok": False, "issues": [], "command": command_type}
+
     else:
         issues.append(_filter_config_issue(
             "error",
@@ -426,7 +520,84 @@ def apply_filter_config_command(config, headers, all_fields, command, *, transit
         ok=ok,
         requires_confirmation=bool((service_result or {}).get("requires_confirmation")),
         service_result=service_result,
+        extra=extra_payload,
     )
+
+
+def build_filter_config_template_data(config, headers, all_fields):
+    config = ensure_filter_config_defaults(copy.deepcopy(config or {}))
+    extra_tables = _unique_strings(config.get("extra_tables") or [])
+    return {
+        "schema_version": FILTER_CONFIG_TEMPLATE_SCHEMA_VERSION,
+        "template_type": "advanced_filter_node_config",
+        "node_type_id": "core.filter",
+        "main_table": "当前表",
+        "selected_tables": ["当前表"] + extra_tables,
+        "extra_tables": extra_tables,
+        "conditions": copy.deepcopy(config.get("conditions") or []),
+        "logic": str(config.get("logic") or "AND"),
+        "join_logic": str(config.get("join_logic") or "AND"),
+        "join_rules": copy.deepcopy(config.get("join_rules") or []),
+        "output_fields": list(config.get("output_fields") or []),
+        "result_limit": str(config.get("result_limit") or "5000"),
+        "max_intermediate": str(config.get("max_intermediate") or "200000"),
+        "remove_duplicates": bool(config.get("remove_duplicates", False)),
+        "save_table": str(config.get("save_table") or ""),
+        "headers": list(headers or []),
+        "available_fields": list(all_fields or []),
+    }
+
+
+def apply_filter_config_template_data(
+    config,
+    template_data,
+    headers,
+    all_fields,
+    *,
+    table_names=None,
+    table_columns=None,
+    transit_context=None,
+):
+    config_copy = ensure_filter_config_defaults(copy.deepcopy(config or {}))
+    template_data = template_data if isinstance(template_data, dict) else {}
+    extra_tables = _filter_template_extra_tables(template_data)
+    merged_fields = _unique_strings(
+        build_filter_available_fields(
+            headers,
+            extra_tables,
+            table_columns=table_columns,
+            transit_context=transit_context,
+        )
+        + list(all_fields or [])
+    )
+    valid_fields = set(merged_fields)
+    conditions, condition_drops = _filter_template_conditions(template_data.get("conditions"), valid_fields)
+    join_rules, join_drops = _filter_template_join_rules(template_data.get("join_rules"), valid_fields)
+    output_fields, output_drops = _filter_template_output_fields(template_data.get("output_fields"), valid_fields)
+    config_copy.update({
+        "extra_tables": extra_tables,
+        "conditions": conditions,
+        "logic": str(template_data.get("logic") or config_copy.get("logic") or "AND"),
+        "join_logic": str(template_data.get("join_logic") or config_copy.get("join_logic") or "AND"),
+        "join_rules": join_rules,
+        "output_fields": output_fields,
+        "result_limit": str(template_data.get("result_limit") or config_copy.get("result_limit") or "5000"),
+        "max_intermediate": str(template_data.get("max_intermediate") or config_copy.get("max_intermediate") or "200000"),
+        "remove_duplicates": bool(template_data.get("remove_duplicates", config_copy.get("remove_duplicates", False))),
+    })
+    if "save_table" in template_data:
+        config_copy["save_table"] = str(template_data.get("save_table") or "")
+
+    issues = []
+    dropped = condition_drops + join_drops + output_drops
+    if dropped:
+        issues.append(_filter_config_issue(
+            "warning",
+            "template_items_ignored",
+            f"模板中有 {dropped} 项字段不在当前候选范围内，已跳过。",
+            path="/command/template",
+        ))
+    return config_copy, merged_fields, issues
 
 
 def append_filter_condition_row_via_service(rows, config, headers, all_fields, field, op, value_source, value):
@@ -768,6 +939,78 @@ def _build_filter_risk_warnings(headers, extra_tables, config, transit_context):
     return warnings
 
 
+def _filter_template_extra_tables(template_data):
+    if not isinstance(template_data, dict):
+        return []
+    extra_tables = template_data.get("extra_tables")
+    if extra_tables is None:
+        selected_tables = list(template_data.get("selected_tables") or [])
+        extra_tables = [
+            table for table in selected_tables
+            if str(table or "").strip() and str(table or "").strip() != "当前表"
+        ]
+    return _unique_strings(extra_tables or [])
+
+
+def _filter_template_conditions(items, valid_fields):
+    result = []
+    dropped = 0
+    valid_fields = set(valid_fields or [])
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        field = str(item.get("field") or "").strip()
+        value_source = normalize_filter_condition_value_source(item)
+        value = item.get("value", "")
+        if field not in valid_fields:
+            dropped += 1
+            continue
+        if value_source == "字段值" and str(value or "").strip() not in valid_fields:
+            dropped += 1
+            continue
+        result.append({
+            "field": field,
+            "op": str(item.get("op") or "等于"),
+            "value_source": value_source,
+            "value": value,
+        })
+    return result, dropped
+
+
+def _filter_template_join_rules(items, valid_fields):
+    result = []
+    dropped = 0
+    valid_fields = set(valid_fields or [])
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        left = str(item.get("left") or "").strip()
+        right = str(item.get("right") or "").strip()
+        if left not in valid_fields or right not in valid_fields:
+            dropped += 1
+            continue
+        result.append(filter_join_rule_from_row((
+            left,
+            str(item.get("op") or "等于"),
+            str(item.get("right_table") or ""),
+            right,
+        )))
+    return result, dropped
+
+
+def _filter_template_output_fields(items, valid_fields):
+    result = []
+    dropped = 0
+    valid_fields = set(valid_fields or [])
+    for value in items or []:
+        field = str(value or "").strip()
+        if field in valid_fields:
+            result.append(field)
+        elif field:
+            dropped += 1
+    return _unique_strings(result), dropped
+
+
 def _filter_config_command_result(
     config,
     headers,
@@ -780,6 +1023,7 @@ def _filter_config_command_result(
     ok=None,
     requires_confirmation=False,
     service_result=None,
+    extra=None,
 ):
     has_error = any(str(issue.get("severity") or "").lower() == "error" for issue in issues or [])
     if ok is None:
@@ -790,7 +1034,7 @@ def _filter_config_command_result(
         all_fields,
         transit_context=transit_context,
     )
-    return {
+    payload = {
         "ok": bool(ok) and not has_error and not requires_confirmation,
         "schema_version": FILTER_CONFIG_COMMAND_RESULT_SCHEMA_VERSION,
         "protocol_family": FILTER_CONFIG_PROTOCOL_FAMILY,
@@ -803,6 +1047,8 @@ def _filter_config_command_result(
         "requires_confirmation": bool(requires_confirmation),
         "service_result": copy.deepcopy(service_result or {}),
     }
+    payload.update(copy.deepcopy(extra or {}))
+    return payload
 
 
 def _filter_config_issue(severity, code, message, *, path=""):

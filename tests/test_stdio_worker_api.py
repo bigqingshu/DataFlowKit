@@ -231,6 +231,53 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertEqual(result["shared_config_context"]["selected_tables"], ["当前表", "lookup"])
         self.assertIn("实际输出字段", result["shared_config_context"]["output_text"])
 
+    def test_filter_config_template_file_commands_work_over_stdio(self):
+        worker = StdioWorker()
+
+        with TemporaryDirectory() as temp_dir:
+            path = str(Path(temp_dir) / "filter_node_template.json")
+            saved = worker.handle_request(request("apply_node_config_command", {
+                "node_type_id": "core.filter",
+                "config": {
+                    "extra_tables": ["lookup"],
+                    "conditions": [{
+                        "field": "当前表.Code",
+                        "op": "等于",
+                        "value_source": "字段值",
+                        "value": "lookup.Code",
+                    }],
+                    "join_rules": [{
+                        "left": "当前表.Code",
+                        "op": "等于",
+                        "right_table": "lookup",
+                        "right": "lookup.Code",
+                    }],
+                    "output_fields": ["lookup.Name"],
+                    "remove_duplicates": True,
+                },
+                "command": {"type": "save_template_file", "path": path},
+                "preview_headers": ["Code"],
+                "table_names": ["lookup"],
+                "table_columns": {"lookup": ["Code", "Name"]},
+            }))
+            loaded = worker.handle_request(request("apply_node_config_command", {
+                "node_type_id": "core.filter",
+                "config": {},
+                "command": {"type": "load_template_file", "path": path},
+                "preview_headers": ["Code"],
+                "table_names": ["lookup"],
+                "table_columns": {"lookup": ["Code", "Name"]},
+            }))
+
+        self.assertTrue(saved["ok"])
+        self.assertEqual(saved["result"]["template_file"]["schema_version"], "filter_config_template_file.v1")
+        self.assertEqual(saved["result"]["template_file"]["template"]["schema_version"], "filter_config_template.v1")
+        self.assertTrue(loaded["ok"])
+        self.assertEqual(loaded["result"]["config"]["extra_tables"], ["lookup"])
+        self.assertEqual(loaded["result"]["config"]["output_fields"], ["lookup.Name"])
+        self.assertTrue(loaded["result"]["config"]["remove_duplicates"])
+        self.assertEqual(loaded["result"]["config"]["conditions"][0]["value_source"], "字段值")
+
     def test_resolve_node_config_options_returns_filter_candidates_over_stdio(self):
         worker = StdioWorker()
 

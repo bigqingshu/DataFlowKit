@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from workflow.advanced_filter_command_service import (
     ADVANCED_FILTER_COMMAND_SCHEMA_VERSION,
@@ -291,6 +293,46 @@ class AdvancedFilterCommandServiceTests(unittest.TestCase):
         self.assertEqual(applied["state"]["logic"], "OR")
         self.assertEqual(applied["state"]["result_limit"], "56")
         self.assertEqual(applied["state"]["save_table"], "templated")
+
+    def test_template_file_commands_are_ui_free(self):
+        state = {
+            "main_table": "orders",
+            "tables_cache": ["orders", "people"],
+            "selected_tables": ["orders"],
+            "columns_by_table": {
+                "orders": ["id", "name"],
+                "people": ["id", "name"],
+            },
+            "conditions": [{"field": "orders.id", "op": "等于", "value": "1"}],
+            "output_fields": ["orders.name"],
+            "save_table": "out",
+        }
+
+        with TemporaryDirectory() as temp_dir:
+            path = str(Path(temp_dir) / "filter_template.json")
+            saved = apply_advanced_filter_command(state, {
+                "type": "save_template_file",
+                "path": path,
+            })
+            loaded = apply_advanced_filter_command({
+                "tables_cache": ["orders", "people"],
+                "columns_by_table": {
+                    "orders": ["id", "name"],
+                    "people": ["id", "name"],
+                },
+            }, {
+                "type": "load_template_file",
+                "path": path,
+            })
+
+        self.assertTrue(saved["ok"])
+        self.assertEqual(saved["template_file"]["schema_version"], "advanced_filter_template_file.v1")
+        self.assertEqual(saved["template_file"]["action"], "save")
+        self.assertEqual(saved["template_file"]["template"]["save_table"], "out")
+        self.assertTrue(loaded["ok"])
+        self.assertEqual(loaded["template_file"]["action"], "load")
+        self.assertEqual(loaded["state"]["conditions"], [{"field": "orders.id", "op": "等于", "value": "1"}])
+        self.assertEqual(loaded["state"]["output_fields"], ["orders.name"])
 
 
 if __name__ == "__main__":
