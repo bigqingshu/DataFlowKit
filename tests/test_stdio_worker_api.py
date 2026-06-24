@@ -165,6 +165,12 @@ class StdioWorkerApiTests(unittest.TestCase):
             described["result"]["parameter_metadata"]["layout_index"]["field_order"],
             ["params.field"],
         )
+        self.assertEqual(described["result"]["layout"]["schema_version"], "plugin_config_layout.v1")
+        self.assertEqual(described["result"]["layout"]["default_view_id"], "plugin.params")
+        self.assertIn("plugin.params", described["result"]["layout"]["view_order"])
+        self.assertEqual(described["result"]["ui_hints"]["schema_version"], "plugin_config_ui_hints.v1")
+        self.assertEqual(described["result"]["ui_hints"]["parameter_field_hints"]["schema_version"], "plugin_parameter_ui_hints.v1")
+        self.assertEqual(described["result"]["ui_hints"]["view_hints"]["plugin.params"]["kind"], "form")
         view_by_id = {view["view_id"]: view for view in described["result"]["views"]}
         self.assertIn("plugin.parameter_metadata", view_by_id)
         self.assertEqual(view_by_id["plugin.parameter_metadata"]["kind"], "summary")
@@ -191,6 +197,12 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertTrue(response["ok"])
         context = response["result"]["shared_config_context"]
         self.assertEqual(context["schema_version"], "filter_config_context.v1")
+        self.assertEqual(context["service"]["schema_version"], "advanced_filter_service.v1")
+        self.assertEqual(context["command_schema"]["schema_version"], "advanced_filter_command.v1")
+        self.assertEqual(context["layout"]["schema_version"], "advanced_filter_layout.v1")
+        self.assertEqual(context["ui_hints"]["schema_version"], "advanced_filter_ui_hints.v1")
+        self.assertEqual(context["layout"]["default_section_id"], "conditions")
+        self.assertEqual(context["command_schema"]["commands"]["build_preview"]["section_id"], "preview")
         self.assertEqual(context["selected_tables"], ["当前表", "lookup", "中转:cached"])
         self.assertEqual(
             context["available_fields"],
