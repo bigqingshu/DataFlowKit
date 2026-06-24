@@ -1951,6 +1951,8 @@ def _plugin_parameter_metadata(default_config, parameter_schema):
         for field in parameter_fields
         if isinstance(field.get("options_source"), dict) and str((field.get("options_source") or {}).get("type") or "")
     })
+    options_source_index = _plugin_parameter_options_source_index(parameter_fields)
+    options_source_details = _plugin_parameter_options_source_details(options_source_index)
     field_index = _plugin_parameter_field_index(parameter_fields)
     group_index = {
         group["group_key"]: {
@@ -1970,6 +1972,8 @@ def _plugin_parameter_metadata(default_config, parameter_schema):
         "field_index": field_index,
         "group_index": group_index,
         "dependency_index": _plugin_parameter_dependency_index(parameter_fields),
+        "options_source_index": options_source_index,
+        "options_source_details": options_source_details,
         "default_params": copy.deepcopy((default_config or {}).get("params") or {}),
         "context_requirements": {
             "options_sources": options_sources,
@@ -1986,6 +1990,76 @@ def _plugin_parameter_metadata(default_config, parameter_schema):
             "advanced_fields": any(bool(field.get("advanced")) for field in parameter_fields),
         },
     }
+
+
+def _plugin_parameter_options_source_index(parameter_fields):
+    result = {}
+    for field in parameter_fields or []:
+        if not isinstance(field, dict):
+            continue
+        key = str(field.get("key") or "").strip()
+        source = field.get("options_source")
+        source_type = str((source or {}).get("type") or "").strip() if isinstance(source, dict) else ""
+        if not key or not source_type:
+            continue
+        entry = {
+            "field_key": key,
+            "param_key": field.get("param_key"),
+            "label": field.get("label"),
+            "type": field.get("type"),
+            "options_source": copy.deepcopy(source),
+            "allow_custom": bool(field.get("allow_custom", True)),
+        }
+        for meta_key in ("empty_text", "invalid_value_text", "depends_on", "refresh_on_change", "visible_when", "enabled_when"):
+            if meta_key in field:
+                entry[meta_key] = copy.deepcopy(field.get(meta_key))
+        result.setdefault(source_type, []).append(entry)
+    for entries in result.values():
+        entries.sort(key=lambda item: str(item.get("field_key") or ""))
+    return result
+
+
+def _plugin_parameter_options_source_details(options_source_index):
+    labels = {
+        "preview_headers": "当前输入表字段",
+        "table_names": "SQLite 数据库表",
+        "table_columns": "SQLite 表字段",
+        "plugin_input_tables": "插件输入表",
+        "plugin_dynamic_choices": "插件动态候选",
+    }
+    empty_texts = {
+        "preview_headers": "当前输入表没有可选字段",
+        "table_names": "当前没有可选数据库表",
+        "table_columns": "当前表没有可选字段",
+        "plugin_input_tables": "当前插件没有可选输入表",
+        "plugin_dynamic_choices": "当前没有可选项",
+    }
+    result = {}
+    for source_type, entries in sorted((options_source_index or {}).items()):
+        fields = [str(item.get("field_key") or "") for item in entries if str(item.get("field_key") or "")]
+        depends_on = sorted({
+            str(dep)
+            for item in entries
+            for dep in (item.get("depends_on") or [])
+            if str(dep).strip()
+        })
+        refresh_on_change = sorted({
+            str(dep)
+            for item in entries
+            for dep in (item.get("refresh_on_change") or [])
+            if str(dep).strip()
+        })
+        result[source_type] = {
+            "type": source_type,
+            "label": labels.get(source_type, source_type),
+            "field_keys": fields,
+            "field_count": len(fields),
+            "empty_text": empty_texts.get(source_type, "当前没有可选项"),
+            "depends_on": depends_on,
+            "refresh_on_change": refresh_on_change,
+            "dynamic": source_type == "plugin_dynamic_choices",
+        }
+    return result
 
 
 def _plugin_parameter_field_index(parameter_fields):

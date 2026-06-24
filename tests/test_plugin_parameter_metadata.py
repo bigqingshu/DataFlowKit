@@ -59,6 +59,10 @@ class PluginParameterMetadataTests(unittest.TestCase):
         self.assertEqual(fields["params.path_field"]["depends_on"], ["params.path_source"])
         self.assertEqual(fields["params.path_field"]["empty_text"], FIELD_SELECT_EMPTY_TEXT)
         self.assertEqual(fields["params.path_field"]["invalid_value_text"], FIELD_SELECT_INVALID_TEXT)
+        metadata = schema["parameter_metadata"]
+        self.assertIn("preview_headers", metadata["options_source_index"])
+        self.assertIn("params.path_field", metadata["options_source_details"]["preview_headers"]["field_keys"])
+        self.assertEqual(metadata["options_source_details"]["preview_headers"]["label"], "当前输入表字段")
         self.assertEqual(fields["params.directory_path"]["type"], "directory")
         self.assertEqual(fields["params.directory_path"]["depends_on"], ["params.path_source"])
         self.assertEqual(fields["params.force_refresh"]["enabled_when"]["field"], "params.enable_cache")

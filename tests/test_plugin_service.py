@@ -287,6 +287,25 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(metadata["group_index"]["plugin.parameters.插件参数_输入"]["param_keys"], ["table_name"])
         self.assertEqual(metadata["dependency_index"]["params.input_alias"], ["params.directory_path"])
         self.assertEqual(metadata["dependency_index"]["params.config_name"], ["params.directory_path"])
+        self.assertEqual(
+            [item["field_key"] for item in metadata["options_source_index"]["table_names"]],
+            ["params.table_name"],
+        )
+        self.assertEqual(
+            [item["field_key"] for item in metadata["options_source_index"]["plugin_input_tables"]],
+            ["params.input_alias"],
+        )
+        self.assertEqual(
+            metadata["options_source_index"]["plugin_dynamic_choices"][0]["options_source"]["param_key"],
+            "config_name",
+        )
+        self.assertEqual(metadata["options_source_details"]["table_names"]["label"], "SQLite 数据库表")
+        self.assertEqual(metadata["options_source_details"]["table_names"]["field_count"], 1)
+        self.assertEqual(
+            metadata["options_source_details"]["plugin_dynamic_choices"]["field_keys"],
+            ["params.config_name"],
+        )
+        self.assertTrue(metadata["options_source_details"]["plugin_dynamic_choices"]["dynamic"])
         metadata_fields = {field["key"]: field for field in metadata["fields"]}
         self.assertEqual(metadata_fields["params.input_alias"]["options_source"], {"type": "plugin_input_tables"})
         self.assertEqual(metadata_fields["params.directory_path"]["visible_when"], {"field": "params.input_alias", "equals": "当前表"})
