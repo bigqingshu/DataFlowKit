@@ -221,9 +221,25 @@ class TableDataServiceTests(unittest.TestCase):
             service_desc["actions"]["describe_data_source_actions"]["engine_action"],
             "describe_data_source_actions",
         )
+        self.assertEqual(service_desc["table_actions"]["load_table"]["engine_action"], "load_table")
+        self.assertEqual(
+            service_desc["table_actions"]["create_table_handle"]["result"],
+            "table_handle",
+        )
+        self.assertEqual(
+            service_desc["table_actions"]["get_table_handle_page"]["engine_action"],
+            "get_table_handle_page",
+        )
+        self.assertIn("table_actions", service_desc)
+        self.assertIn("load_table", service_desc["action_schema"]["actions"])
+        self.assertEqual(
+            service_desc["action_schema"]["actions"]["release_table_handle"]["result"],
+            "table_handle_release",
+        )
         self.assertEqual([item["id"] for item in service_desc["save_modes"]["modes"]], ["replace", "timestamp", "fail", "append"])
         self.assertEqual(service_desc["result_schemas"]["data_source_state"]["schema_version"], "data_source_state.v1")
         self.assertEqual(service_desc["result_schemas"]["data_source_panel_state"]["schema_version"], "data_source_panel_state.v1")
+        self.assertEqual(service_desc["result_schemas"]["table_handle"]["schema_version"], "table_handle.v1")
         self.assertTrue(panel["ok"])
         panel_state = panel["panel_state"]
         self.assertEqual(panel_state["schema_version"], "data_source_panel_state.v1")
@@ -237,6 +253,7 @@ class TableDataServiceTests(unittest.TestCase):
         self.assertEqual(panel_state["view_state"]["search"]["current_cell"], {"row": 0, "column": 1})
         self.assertTrue(panel_state["view_state"]["action_enabled"]["delete_sqlite"])
         self.assertIn("build_data_source_panel_state", panel_state["service"]["action_ids"])
+        self.assertIn("create_table_handle", panel_state["service"]["table_action_ids"])
         self.assertEqual(panel_state["save_modes"]["mode_ids"], ["replace", "timestamp", "fail", "append"])
         self.assertEqual(normalize_table_headers(["", "A", "A"]), ["列1", "A", "A_2"])
 

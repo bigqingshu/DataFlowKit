@@ -291,6 +291,12 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertTrue(service_desc["ok"])
         self.assertEqual(service_desc["result"]["schema_version"], "data_source_service.v1")
         self.assertEqual(service_desc["result"]["data_actions"]["save_sqlite"]["engine_action"], "save_table")
+        self.assertEqual(service_desc["result"]["table_actions"]["load_table"]["engine_action"], "load_table")
+        self.assertEqual(
+            service_desc["result"]["table_actions"]["create_table_handle"]["result"],
+            "table_handle",
+        )
+        self.assertIn("get_table_handle_page", service_desc["result"]["action_schema"]["actions"])
         self.assertTrue(service_desc["result"]["capabilities"]["sqlite_save"])
 
     def test_data_source_save_and_delete_table_actions(self):

@@ -869,6 +869,7 @@ def build_data_source_panel_state(
             "capabilities": copy.deepcopy(service.get("capabilities") or {}),
             "action_ids": sorted(str(key) for key in (service.get("actions") or {}).keys()),
             "data_action_ids": sorted(str(key) for key in (service.get("data_actions") or {}).keys()),
+            "table_action_ids": sorted(str(key) for key in (service.get("table_actions") or {}).keys()),
             "result_schemas": copy.deepcopy(service.get("result_schemas") or {}),
         },
         "action_schema": {
@@ -990,6 +991,7 @@ def build_data_source_action_state(table=None, *, source=None, dirty=False):
 
 
 def describe_data_source_action_schema():
+    data_actions = _describe_data_source_data_actions()
     return {
         "schema_version": DATA_SOURCE_ACTION_SCHEMA_VERSION,
         "protocol_family": DATA_SOURCE_PROTOCOL_FAMILY,
@@ -1073,11 +1075,84 @@ def describe_data_source_action_schema():
                 ],
                 "result": "data_source_state",
             },
+            **data_actions,
         },
         "result_schemas": {
             "data_source_state": {"schema_version": DATA_SOURCE_STATE_SCHEMA_VERSION},
             "data_source_actions": {"schema_version": DATA_SOURCE_ACTIONS_SCHEMA_VERSION},
             "table_save_modes": {"schema_version": TABLE_SAVE_MODES_SCHEMA_VERSION},
+            "table_page": {"schema_version": "table_page.v1"},
+            "table_handle": {"schema_version": "table_handle.v1"},
+            "table_handle_list": {"schema_version": "table_handle_list.v1"},
+            "table_handle_release": {"schema_version": "table_handle_release.v1"},
+        },
+    }
+
+
+def _describe_data_source_data_actions():
+    return {
+        "list_tables": {
+            "engine_action": "list_tables",
+            "inputs": [
+                {"key": "db_path", "type": "path"},
+            ],
+            "result": "table_list",
+        },
+        "load_table": {
+            "engine_action": "load_table",
+            "inputs": [
+                {"key": "source", "type": "object"},
+                {"key": "db_path", "type": "path"},
+                {"key": "table_name", "type": "text"},
+                {"key": "path", "type": "path"},
+                {"key": "limit", "type": "number"},
+                {"key": "offset", "type": "number", "default": 0},
+            ],
+            "result": "table_page",
+        },
+        "get_table_page": {
+            "engine_action": "get_table_page",
+            "inputs": [
+                {"key": "table", "type": "table_or_handle", "required": True},
+                {"key": "source", "type": "object"},
+                {"key": "limit", "type": "number"},
+                {"key": "offset", "type": "number", "default": 0},
+            ],
+            "result": "table_page",
+        },
+        "create_table_handle": {
+            "engine_action": "create_table_handle",
+            "inputs": [
+                {"key": "table", "type": "table"},
+                {"key": "source", "type": "object"},
+                {"key": "db_path", "type": "path"},
+                {"key": "table_name", "type": "text"},
+                {"key": "path", "type": "path"},
+                {"key": "limit", "type": "number"},
+                {"key": "offset", "type": "number", "default": 0},
+            ],
+            "result": "table_handle",
+        },
+        "get_table_handle_page": {
+            "engine_action": "get_table_handle_page",
+            "inputs": [
+                {"key": "handle", "type": "text", "required": True},
+                {"key": "limit", "type": "number"},
+                {"key": "offset", "type": "number", "default": 0},
+            ],
+            "result": "table_page",
+        },
+        "list_table_handles": {
+            "engine_action": "list_table_handles",
+            "inputs": [],
+            "result": "table_handle_list",
+        },
+        "release_table_handle": {
+            "engine_action": "release_table_handle",
+            "inputs": [
+                {"key": "handle", "type": "text", "required": True},
+            ],
+            "result": "table_handle_release",
         },
     }
 
@@ -1085,6 +1160,12 @@ def describe_data_source_action_schema():
 def describe_data_source_service():
     action_schema = describe_data_source_action_schema()
     actions = action_schema.get("actions") or {}
+    table_actions = _describe_data_source_data_actions()
+    data_actions = {
+        key: value
+        for key, value in actions.items()
+        if key not in table_actions
+    }
     return {
         "schema_version": DATA_SOURCE_SERVICE_SCHEMA_VERSION,
         "protocol_family": DATA_SOURCE_PROTOCOL_FAMILY,
@@ -1144,7 +1225,8 @@ def describe_data_source_service():
                 "result": "table_save_mode",
             },
         },
-        "data_actions": actions,
+        "data_actions": data_actions,
+        "table_actions": table_actions,
         "action_schema": action_schema,
         "save_modes": {
             "schema_version": TABLE_SAVE_MODES_SCHEMA_VERSION,
@@ -1159,6 +1241,10 @@ def describe_data_source_service():
             "data_source_action_schema": {"schema_version": DATA_SOURCE_ACTION_SCHEMA_VERSION},
             "table_save_modes": {"schema_version": TABLE_SAVE_MODES_SCHEMA_VERSION},
             "table_page": {"schema_version": "table_page.v1"},
+            "table_list": {"schema_version": "table_list.v1"},
+            "table_handle": {"schema_version": "table_handle.v1"},
+            "table_handle_list": {"schema_version": "table_handle_list.v1"},
+            "table_handle_release": {"schema_version": "table_handle_release.v1"},
             "search_navigation": {"schema_version": "search_navigation.v1"},
             "delete_result": {"schema_version": "delete_result.v1"},
         },
