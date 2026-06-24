@@ -465,7 +465,15 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(warning_by_code["plugin_config_warning_1"]["message"], "demo warning")
         self.assertEqual(warning_by_code["plugin_config_warning_1"]["source"], "plugin_config")
         self.assertEqual(warning_by_code["plugin_config_warning_1"]["plugin_id"], "protocol_demo")
+        self.assertEqual(
+            warning_by_code["plugin_config_warning_1"]["target"]["schema_version"],
+            "plugin_config_warning_target.v1",
+        )
+        self.assertFalse(warning_by_code["plugin_config_warning_1"]["target"]["can_focus_view"])
         self.assertEqual(warning_by_code["demo_structured_warning"]["view_id"], "demo.items")
+        self.assertEqual(warning_by_code["demo_structured_warning"]["target"]["view_id"], "demo.items")
+        self.assertEqual(warning_by_code["demo_structured_warning"]["target"]["focus_path"], "/views/demo.items")
+        self.assertTrue(warning_by_code["demo_structured_warning"]["target"]["can_focus_view"])
 
     def test_plugin_config_patch_validates_applies_and_refreshes_description(self):
         with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:

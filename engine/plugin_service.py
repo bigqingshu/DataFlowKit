@@ -2047,10 +2047,13 @@ def _format_plugin_warning_item(item):
     if not message:
         return ""
     details = []
-    view_id = str(item.get("view_id") or "").strip()
-    field = str(item.get("field") or "").strip()
-    path = str(item.get("path") or "").strip()
+    target = item.get("target") if isinstance(item.get("target"), dict) else {}
+    view_id = str(item.get("view_id") or target.get("view_id") or "").strip()
+    field = str(item.get("field") or target.get("field") or "").strip()
+    path = str(item.get("path") or target.get("path") or target.get("focus_path") or "").strip()
     config_path = item.get("config_path")
+    if config_path in (None, "", []):
+        config_path = target.get("config_path")
     code = str(item.get("code") or "").strip()
     if view_id:
         details.append(f"视图 {view_id}")
@@ -2197,8 +2200,37 @@ def _normalize_plugin_config_warning_items(warnings, *, plugin_id="", source="pl
         item.setdefault("source", source_text)
         if plugin_text:
             item.setdefault("plugin_id", plugin_text)
+        item.setdefault("target", _plugin_config_warning_target(item))
         result.append(item)
     return result
+
+
+def _plugin_config_warning_target(item):
+    if not isinstance(item, dict):
+        return {}
+    view_id = str(item.get("view_id") or "").strip()
+    field = str(item.get("field") or "").strip()
+    path = str(item.get("path") or "").strip()
+    config_path = item.get("config_path")
+    config_path_text = _format_plugin_config_path(config_path)
+    target = {
+        "schema_version": "plugin_config_warning_target.v1",
+        "kind": "plugin_config_warning_target",
+        "view_id": view_id,
+        "field": field,
+        "path": path,
+        "config_path": copy.deepcopy(config_path if isinstance(config_path, (list, tuple)) else []),
+        "config_path_text": config_path_text,
+        "can_focus_view": bool(view_id),
+        "can_focus_field": bool(view_id and (field or config_path_text or path)),
+    }
+    focus_path = path
+    if not focus_path and view_id and field:
+        focus_path = f"/views/{view_id}/fields/{field}"
+    elif not focus_path and view_id:
+        focus_path = f"/views/{view_id}"
+    target["focus_path"] = focus_path
+    return target
 
 
 def _normalize_plugin_config_patch_validation_result(plugin_id, result, patch):

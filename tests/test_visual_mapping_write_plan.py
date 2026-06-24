@@ -664,6 +664,13 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertEqual(plugin_warning_items[0]["view_id"], "visual_mapping.overview")
         self.assertEqual(plugin_warning_items[0]["path"], "/plugin_settings")
         self.assertEqual(
+            plugin_warning_items[0]["target"]["schema_version"],
+            "plugin_config_warning_target.v1",
+        )
+        self.assertEqual(plugin_warning_items[0]["target"]["view_id"], "visual_mapping.overview")
+        self.assertEqual(plugin_warning_items[0]["target"]["focus_path"], "/plugin_settings")
+        self.assertTrue(plugin_warning_items[0]["target"]["can_focus_view"])
+        self.assertEqual(
             described_with_warning["plugin_extension"]["warning_schema"]["kind"],
             "config_warning",
         )

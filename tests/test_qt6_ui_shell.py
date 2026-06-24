@@ -610,6 +610,35 @@ class Qt6UiShellTests(unittest.TestCase):
         window.close()
         app.processEvents()
 
+    def test_plugin_warning_formatter_uses_target_payload(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+
+        line = controller._format_plugin_warning_item({
+            "code": "demo_warning",
+            "message": "需要检查配置",
+            "target": {
+                "schema_version": "plugin_config_warning_target.v1",
+                "view_id": "demo.items",
+                "field": "items.enabled",
+                "focus_path": "/views/demo.items/fields/items.enabled",
+                "config_path": ["items", "enabled"],
+            },
+        })
+
+        self.assertIn("需要检查配置", line)
+        self.assertIn("视图 demo.items", line)
+        self.assertIn("字段 items.enabled", line)
+        self.assertIn("路径 /views/demo.items/fields/items.enabled", line)
+        self.assertIn("配置 items.enabled", line)
+        window.close()
+        app.processEvents()
+
     def test_plugin_structured_list_edits_item_schema_columns_as_update_patch(self):
         try:
             qt = qt_app.load_qt6()

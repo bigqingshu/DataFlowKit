@@ -1062,10 +1062,13 @@ class QtWorkflowMainWindow:
         if not message:
             return ""
         details = []
-        view_id = str(item.get("view_id") or "").strip()
-        field = str(item.get("field") or "").strip()
-        path = str(item.get("path") or "").strip()
+        target = item.get("target") if isinstance(item.get("target"), dict) else {}
+        view_id = str(item.get("view_id") or target.get("view_id") or "").strip()
+        field = str(item.get("field") or target.get("field") or "").strip()
+        path = str(item.get("path") or target.get("path") or target.get("focus_path") or "").strip()
         config_path = item.get("config_path")
+        if config_path in (None, "", []):
+            config_path = target.get("config_path")
         code = str(item.get("code") or "").strip()
         if view_id:
             details.append(f"视图 {view_id}")
