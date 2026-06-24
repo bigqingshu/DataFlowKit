@@ -902,6 +902,7 @@ class QtWorkflowMainWindow:
         if not described.get("ok"):
             return
         lines = []
+        plugin_extension = described.get("plugin_extension") if isinstance(described.get("plugin_extension"), dict) else {}
         views = [item for item in (described.get("views") or []) if isinstance(item, dict)]
         resources = [item for item in (described.get("resources") or []) if isinstance(item, dict)]
         actions = [item for item in (described.get("actions") or []) if isinstance(item, dict)]
@@ -909,6 +910,12 @@ class QtWorkflowMainWindow:
             lines.append("配置视图：" + "、".join(str(item.get("title") or item.get("view_id") or "") for item in views[:6]))
         if resources:
             lines.append("配置资源：" + "、".join(str(item.get("label") or item.get("resource_id") or "") for item in resources[:6]))
+        patch_schema_line = self._plugin_protocol_schema_summary(plugin_extension.get("patch_schema"), "Patch协议")
+        if patch_schema_line:
+            lines.append(patch_schema_line)
+        warning_schema_line = self._plugin_protocol_schema_summary(plugin_extension.get("warning_schema"), "警告协议")
+        if warning_schema_line:
+            lines.append(warning_schema_line)
         warning_items = [item for item in (described.get("warning_items") or []) if isinstance(item, dict)]
         if warning_items:
             warning_lines = []
@@ -919,6 +926,7 @@ class QtWorkflowMainWindow:
                 scopes = [
                     str(item.get("view_id") or "").strip(),
                     str(item.get("field") or "").strip(),
+                    str(item.get("path") or "").strip(),
                     str(item.get("code") or "").strip(),
                 ]
                 suffix = "/".join(scope for scope in scopes if scope)
@@ -943,6 +951,36 @@ class QtWorkflowMainWindow:
         body = "<br>".join(html.escape(line) for line in lines if line)
         if body:
             self.node_detail_sections.append(f"<p><b>配置协议</b><br>{body}</p>")
+
+    def _plugin_protocol_schema_summary(self, schema, title):
+        if not isinstance(schema, dict):
+            return ""
+        kind = str(schema.get("kind") or schema.get("protocol_family") or "").strip()
+        parts = [title + (f"：{kind}" if kind else "")]
+        operations = []
+        for item in schema.get("operations") or []:
+            if isinstance(item, dict):
+                operation = str(item.get("operation") or "").strip()
+            else:
+                operation = str(item or "").strip()
+            if operation:
+                operations.append(operation)
+        if operations:
+            parts.append("操作 " + "、".join(operations[:6]))
+        fields = []
+        for item in schema.get("fields") or []:
+            if isinstance(item, dict):
+                key = str(item.get("key") or "").strip()
+            else:
+                key = str(item or "").strip()
+            if key:
+                fields.append(key)
+        if fields:
+            parts.append("字段 " + "、".join(fields[:8]))
+        sections = schema.get("sections")
+        if isinstance(sections, dict) and sections:
+            parts.append("区域 " + "、".join(str(key) for key in list(sections.keys())[:6]))
+        return "；".join(part for part in parts if part)
 
     def _clear_plugin_config_views(self):
         if not hasattr(self, "plugin_config_view_tabs"):

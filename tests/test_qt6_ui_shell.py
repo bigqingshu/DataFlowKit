@@ -197,6 +197,8 @@ class Qt6UiShellTests(unittest.TestCase):
                     "        ],",
                     "        'actions': [{'action_id': 'demo.edit_items', 'label': '编辑 Demo Items', 'kind': 'config_editor', 'editor_kind': 'demo.items'}],",
                     "        'warnings': [{'code': 'demo_items_warning', 'level': 'warning', 'message': 'Demo Items 需要确认', 'view_id': 'demo.items'}],",
+                    "        'patch_schema': {'kind': 'config_patch', 'operations': [{'operation': 'append_item'}, {'operation': 'delete_item'}, {'operation': 'set_enabled'}, {'operation': 'move_item'}], 'fields': [{'key': 'operation'}, {'key': 'path'}, {'key': 'target_index'}, {'key': 'payload'}], 'sections': {'items': {'path': ['items'], 'model_key': 'demo_item'}}},",
+                    "        'warning_schema': {'kind': 'config_warning', 'fields': [{'key': 'code'}, {'key': 'message'}, {'key': 'view_id'}, {'key': 'field'}, {'key': 'path'}]},",
                     "    }",
                     "def preview_config_effect(params, context):",
                     "    return {'schema_version': 'demo.effect.v1', 'summary': {'items': len(params.get('items') or [])}, 'expected_output_fields': ['A', 'Demo'], 'side_effects': [{'kind': 'read_input_tables', 'label': '读取输入表'}]}",
@@ -276,6 +278,11 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertIn("旧版设置窗口", controller.node_detail_sections.toPlainText())
             self.assertIn("配置能力：schema配置、动态候选、配置描述、结构化patch、配置效果预览、旧版窗口fallback", controller.node_detail_sections.toPlainText())
             self.assertIn("配置协议", controller.node_detail_sections.toPlainText())
+            self.assertIn("Patch协议：config_patch", controller.node_detail_sections.toPlainText())
+            self.assertIn("操作 append_item、delete_item、set_enabled、move_item", controller.node_detail_sections.toPlainText())
+            self.assertIn("字段 operation、path、target_index、payload", controller.node_detail_sections.toPlainText())
+            self.assertIn("警告协议：config_warning", controller.node_detail_sections.toPlainText())
+            self.assertIn("字段 code、message、view_id、field、path", controller.node_detail_sections.toPlainText())
             self.assertIn("Demo Items 需要确认（demo.items/demo_items_warning）", controller.node_detail_sections.toPlainText())
             self.assertIn("兼容动作：打开旧版插件设置", controller.node_detail_sections.toPlainText())
             self.assertIn("兼容提示：旧版 Tk 设置窗口仅作为兼容 fallback", controller.node_detail_sections.toPlainText())
