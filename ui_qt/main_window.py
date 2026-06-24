@@ -1017,6 +1017,7 @@ class QtWorkflowMainWindow:
         self._clear_plugin_config_views()
         if not described.get("ok"):
             return
+        warnings_by_view = self._plugin_warning_items_by_view(described)
         added = 0
         for view in described.get("views") or []:
             if not isinstance(view, dict):
@@ -1029,9 +1030,43 @@ class QtWorkflowMainWindow:
             if widget is None:
                 continue
             title = str(view.get("title") or view_id or kind or "配置")
-            self.plugin_config_view_tabs.addTab(widget, title[:24])
+            tab_index = self.plugin_config_view_tabs.addTab(widget, title[:24])
+            self._apply_plugin_config_tab_warning(tab_index, warnings_by_view.get(view_id) or [])
             added += 1
         self.plugin_config_view_tabs.setVisible(added > 0)
+
+    def _plugin_warning_items_by_view(self, described):
+        result = {}
+        for item in described.get("warning_items") or []:
+            if not isinstance(item, dict):
+                continue
+            view_id = str(item.get("view_id") or "").strip()
+            line = self._format_plugin_warning_item(item)
+            if view_id and line:
+                result.setdefault(view_id, []).append(line)
+        return result
+
+    def _apply_plugin_config_tab_warning(self, tab_index, warning_lines):
+        if tab_index < 0 or not warning_lines:
+            return
+        tooltip = "\n".join(str(line) for line in warning_lines[:6] if str(line).strip())
+        if tooltip:
+            self.plugin_config_view_tabs.setTabToolTip(tab_index, tooltip)
+        try:
+            standard_pixmap = getattr(
+                self.qt.QtWidgets.QStyle.StandardPixmap,
+                "SP_MessageBoxWarning",
+            )
+        except Exception:
+            standard_pixmap = getattr(self.qt.QtWidgets.QStyle, "SP_MessageBoxWarning", None)
+        if standard_pixmap is None:
+            return
+        try:
+            icon = self.window.style().standardIcon(standard_pixmap)
+        except Exception:
+            return
+        if not icon.isNull():
+            self.plugin_config_view_tabs.setTabIcon(tab_index, icon)
 
     def _make_plugin_config_view_widget(self, view, described):
         kind = str(view.get("kind") or "")
