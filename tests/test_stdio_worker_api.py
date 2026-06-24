@@ -321,6 +321,18 @@ class StdioWorkerApiTests(unittest.TestCase):
             "page_info": {"offset": 1, "limit": 2, "has_more": True},
             "search_navigation": searched["result"]["navigation"],
         }))
+        manager = worker.handle_request(request("build_data_source_manager_state", {
+            "table": patched["result"]["table"],
+            "source": {"type": "sqlite", "db_path": "input.db", "table_name": "orders"},
+            "dirty": True,
+            "display_name": "临时输入",
+            "partial": True,
+            "page_info": {"offset": 1, "limit": 2, "has_more": True},
+            "search_navigation": searched["result"]["navigation"],
+            "db_path": "input.db",
+            "table_names": ["orders", "archive"],
+            "selected_table": "orders",
+        }))
         service_desc = worker.handle_request(request("describe_data_source_service"))
 
         self.assertTrue(parsed["ok"])
@@ -349,6 +361,11 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertTrue(panel["result"]["panel_state"]["view_state"]["page_controls"]["next_enabled"])
         self.assertTrue(panel["result"]["panel_state"]["view_state"]["page_controls"]["load_full_enabled"])
         self.assertIn("describe_data_source_service", panel["result"]["panel_state"]["service"]["action_ids"])
+        self.assertEqual(manager["result"]["manager_state"]["schema_version"], "data_source_manager_state.v1")
+        self.assertEqual(manager["result"]["manager_state"]["panel_state"]["schema_version"], "data_source_panel_state.v1")
+        self.assertEqual(manager["result"]["manager_state"]["source_controls"]["table_names"], ["orders", "archive"])
+        self.assertTrue(manager["result"]["manager_state"]["source_controls"]["load_enabled"])
+        self.assertIn("build_data_source_manager_state", manager["result"]["manager_state"]["service"]["action_ids"])
         self.assertTrue(service_desc["ok"])
         self.assertEqual(service_desc["result"]["schema_version"], "data_source_service.v1")
         self.assertEqual(service_desc["result"]["data_actions"]["save_sqlite"]["engine_action"], "save_table")
@@ -358,6 +375,11 @@ class StdioWorkerApiTests(unittest.TestCase):
             "table_handle",
         )
         self.assertIn("get_table_handle_page", service_desc["result"]["action_schema"]["actions"])
+        self.assertIn("build_data_source_manager_state", service_desc["result"]["actions"])
+        self.assertEqual(
+            service_desc["result"]["result_schemas"]["data_source_manager_state"]["schema_version"],
+            "data_source_manager_state.v1",
+        )
         self.assertTrue(service_desc["result"]["capabilities"]["sqlite_save"])
 
     def test_data_source_save_and_delete_table_actions(self):

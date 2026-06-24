@@ -454,6 +454,33 @@ class QtHeadlessEngineClient:
             search_navigation=copy.deepcopy(search_navigation or {}),
         )
 
+    def build_data_source_manager_state(
+        self,
+        table=None,
+        *,
+        source=None,
+        dirty=False,
+        display_name="",
+        partial=False,
+        page_info=None,
+        search_navigation=None,
+        db_path="",
+        table_names=None,
+        selected_table="",
+    ):
+        return self.engine.build_data_source_manager_state(
+            copy.deepcopy(table or {}),
+            source=copy.deepcopy(source or {}),
+            dirty=dirty,
+            display_name=display_name,
+            partial=partial,
+            page_info=copy.deepcopy(page_info or {}),
+            search_navigation=copy.deepcopy(search_navigation or {}),
+            db_path=db_path,
+            table_names=list(table_names or []),
+            selected_table=selected_table,
+        )
+
     def describe_data_source_service(self):
         return self.engine.describe_data_source_service()
 

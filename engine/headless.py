@@ -377,6 +377,33 @@ class HeadlessWorkflowEngine:
             search_navigation=search_navigation,
         )
 
+    def build_data_source_manager_state(
+        self,
+        table=None,
+        *,
+        source=None,
+        dirty=False,
+        display_name="",
+        partial=False,
+        page_info=None,
+        search_navigation=None,
+        db_path="",
+        table_names=None,
+        selected_table="",
+    ):
+        return self.tables.build_data_source_manager_state(
+            table,
+            source=source,
+            dirty=dirty,
+            display_name=display_name,
+            partial=partial,
+            page_info=page_info,
+            search_navigation=search_navigation,
+            db_path=db_path,
+            table_names=table_names,
+            selected_table=selected_table,
+        )
+
     def describe_data_source_service(self):
         return self.tables.describe_data_source_service()
 

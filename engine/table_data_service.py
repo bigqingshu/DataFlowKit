@@ -43,6 +43,7 @@ DATA_SOURCE_ACTIONS_SCHEMA_VERSION = "data_source_actions.v1"
 DATA_SOURCE_ACTION_SCHEMA_VERSION = "data_source_action_schema.v1"
 DATA_SOURCE_SERVICE_SCHEMA_VERSION = "data_source_service.v1"
 DATA_SOURCE_PANEL_STATE_SCHEMA_VERSION = "data_source_panel_state.v1"
+DATA_SOURCE_MANAGER_STATE_SCHEMA_VERSION = "data_source_manager_state.v1"
 DATA_SOURCE_PROTOCOL_FAMILY = "data_source_service"
 TABLE_SAVE_MODES_SCHEMA_VERSION = "table_save_modes.v1"
 
@@ -239,6 +240,78 @@ class TableDataService:
                 page_info=page_info,
                 search_navigation=search_navigation,
             ),
+            "issues": [],
+        }
+
+    def build_data_source_manager_state(
+        self,
+        table=None,
+        *,
+        source=None,
+        dirty=False,
+        display_name="",
+        partial=False,
+        page_info=None,
+        search_navigation=None,
+        db_path="",
+        table_names=None,
+        selected_table="",
+    ):
+        state = self.build_data_source_panel_state(
+            table,
+            source=source,
+            dirty=dirty,
+            display_name=display_name,
+            partial=partial,
+            page_info=page_info,
+            search_navigation=search_navigation,
+        ).get("panel_state") or {}
+        service = describe_data_source_service()
+        action_schema = service.get("action_schema") if isinstance(service.get("action_schema"), dict) else describe_data_source_action_schema()
+        table_save_modes = self.describe_table_save_modes()
+        db_path_text = str(db_path or "").strip()
+        table_names_list = [str(item).strip() for item in (table_names or []) if str(item).strip()]
+        selected_table_name = str(selected_table or "").strip()
+        if not selected_table_name:
+            source_payload = state.get("source") if isinstance(state.get("source"), dict) else {}
+            selected_table_name = str(source_payload.get("table_name") or source_payload.get("table") or "").strip()
+        manager_state = {
+            "schema_version": DATA_SOURCE_MANAGER_STATE_SCHEMA_VERSION,
+            "protocol_family": DATA_SOURCE_PROTOCOL_FAMILY,
+            "panel_state": copy.deepcopy(state),
+            "service": {
+                "schema_version": service.get("schema_version"),
+                "protocol_family": service.get("protocol_family"),
+                "service_id": service.get("service_id"),
+                "capabilities": copy.deepcopy(service.get("capabilities") or {}),
+                "action_ids": sorted(str(key) for key in (service.get("actions") or {}).keys()),
+                "data_action_ids": sorted(str(key) for key in (service.get("data_actions") or {}).keys()),
+                "table_action_ids": sorted(str(key) for key in (service.get("table_actions") or {}).keys()),
+                "result_schemas": copy.deepcopy(service.get("result_schemas") or {}),
+            },
+            "action_schema": {
+                "schema_version": action_schema.get("schema_version"),
+                "action_ids": sorted(str(key) for key in (action_schema.get("actions") or {}).keys()),
+                "result_schemas": copy.deepcopy(action_schema.get("result_schemas") or {}),
+            },
+            "save_modes": {
+                "schema_version": str(table_save_modes.get("schema_version") or ""),
+                "default_mode": str(table_save_modes.get("default_mode") or "replace"),
+                "modes": copy.deepcopy(table_save_modes.get("modes") or []),
+                "mode_field": copy.deepcopy(table_save_modes.get("mode_field") or {}),
+            },
+            "source_controls": {
+                "db_path": db_path_text,
+                "table_names": table_names_list,
+                "selected_table": selected_table_name,
+                "has_database": bool(db_path_text),
+                "has_tables": bool(table_names_list),
+                "load_enabled": bool(db_path_text and selected_table_name),
+            },
+        }
+        return {
+            "ok": True,
+            "manager_state": manager_state,
             "issues": [],
         }
 
@@ -1080,6 +1153,7 @@ def describe_data_source_action_schema():
         "result_schemas": {
             "data_source_state": {"schema_version": DATA_SOURCE_STATE_SCHEMA_VERSION},
             "data_source_actions": {"schema_version": DATA_SOURCE_ACTIONS_SCHEMA_VERSION},
+            "data_source_manager_state": {"schema_version": DATA_SOURCE_MANAGER_STATE_SCHEMA_VERSION},
             "table_save_modes": {"schema_version": TABLE_SAVE_MODES_SCHEMA_VERSION},
             "table_page": {"schema_version": "table_page.v1"},
             "table_handle": {"schema_version": "table_handle.v1"},
@@ -1212,6 +1286,22 @@ def describe_data_source_service():
                 ],
                 "result": "data_source_panel_state",
             },
+            "build_data_source_manager_state": {
+                "engine_action": "build_data_source_manager_state",
+                "inputs": [
+                    {"key": "table", "type": "table"},
+                    {"key": "source", "type": "object"},
+                    {"key": "dirty", "type": "bool", "default": False},
+                    {"key": "display_name", "type": "text", "default": ""},
+                    {"key": "partial", "type": "bool", "default": False},
+                    {"key": "page_info", "type": "object"},
+                    {"key": "search_navigation", "type": "object"},
+                    {"key": "db_path", "type": "path"},
+                    {"key": "table_names", "type": "list"},
+                    {"key": "selected_table", "type": "text", "default": ""},
+                ],
+                "result": "data_source_manager_state",
+            },
             "describe_table_save_modes": {
                 "engine_action": "describe_table_save_modes",
                 "inputs": [],
@@ -1236,6 +1326,7 @@ def describe_data_source_service():
         "result_schemas": {
             "data_source_service": {"schema_version": DATA_SOURCE_SERVICE_SCHEMA_VERSION},
             "data_source_panel_state": {"schema_version": DATA_SOURCE_PANEL_STATE_SCHEMA_VERSION},
+            "data_source_manager_state": {"schema_version": DATA_SOURCE_MANAGER_STATE_SCHEMA_VERSION},
             "data_source_state": {"schema_version": DATA_SOURCE_STATE_SCHEMA_VERSION},
             "data_source_actions": {"schema_version": DATA_SOURCE_ACTIONS_SCHEMA_VERSION},
             "data_source_action_schema": {"schema_version": DATA_SOURCE_ACTION_SCHEMA_VERSION},

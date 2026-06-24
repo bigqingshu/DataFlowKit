@@ -181,6 +181,11 @@ class DataSourceManagerWindow:
         return {"type": "table", "headers": headers, "rows": rows}
 
     def describe_state(self):
+        manager_state = self._describe_data_source_manager_state()
+        if manager_state:
+            result = copy.deepcopy(manager_state)
+            result["ok"] = True
+            return result
         panel_state = self._describe_data_source_panel_state()
         if panel_state:
             result = copy.deepcopy(panel_state)
@@ -233,6 +238,35 @@ class DataSourceManagerWindow:
                 "mode_field": copy.deepcopy(save_modes.get("mode_field") or {}),
             },
         }
+
+    def _describe_data_source_manager_state(self, *, display_name=""):
+        table_names = [
+            str(self.table_combo.itemData(index) or self.table_combo.itemText(index) or "").strip()
+            for index in range(self.table_combo.count())
+            if str(self.table_combo.itemData(index) or self.table_combo.itemText(index) or "").strip()
+        ]
+        try:
+            described = self.engine_client.build_data_source_manager_state(
+                self.current_table(),
+                source=self.current_source,
+                dirty=self.dirty,
+                display_name=str(display_name or self._current_status_title()),
+                partial=self.current_table_is_partial,
+                page_info={
+                    "offset": self.page_offset,
+                    "limit": self.page_limit,
+                    "has_more": self.page_has_more,
+                },
+                search_navigation=self.search_navigation,
+                db_path=self.db_path_edit.text().strip(),
+                table_names=table_names,
+                selected_table=self.table_combo.currentText().strip(),
+            )
+        except Exception:
+            return {}
+        if not described.get("ok") or not isinstance(described.get("manager_state"), dict):
+            return {}
+        return copy.deepcopy(described["manager_state"])
 
     def _describe_data_source_panel_state(self, *, display_name=""):
         try:

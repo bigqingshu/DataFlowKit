@@ -186,6 +186,18 @@ class TableDataServiceTests(unittest.TestCase):
             page_info={"offset": 10, "limit": 50, "has_more": True},
             search_navigation={"keyword": "chan", "status_text": "1/1", "current_cell": {"row": 0, "column": 1}, "highlighted_rows": [0]},
         )
+        manager = TableDataService().build_data_source_manager_state(
+            patched,
+            source={"type": "sqlite", "db_path": "input.db", "table_name": "demo"},
+            dirty=True,
+            display_name="demo",
+            partial=True,
+            page_info={"offset": 10, "limit": 50, "has_more": True},
+            search_navigation={"keyword": "chan", "status_text": "1/1", "current_cell": {"row": 0, "column": 1}, "highlighted_rows": [0]},
+            db_path="input.db",
+            table_names=["demo", "archive"],
+            selected_table="demo",
+        )
 
         self.assertEqual(promoted["headers"], ["H1", "H1_2"])
         self.assertEqual(patched["rows"], [["a", "changed"]])
@@ -215,6 +227,10 @@ class TableDataServiceTests(unittest.TestCase):
         self.assertEqual(
             service_desc["actions"]["build_data_source_panel_state"]["engine_action"],
             "build_data_source_panel_state",
+        )
+        self.assertEqual(
+            service_desc["actions"]["build_data_source_manager_state"]["engine_action"],
+            "build_data_source_manager_state",
         )
         self.assertEqual(service_desc["data_actions"]["patch_cell"]["engine_action"], "patch_table_cell")
         self.assertEqual(
@@ -255,6 +271,15 @@ class TableDataServiceTests(unittest.TestCase):
         self.assertIn("build_data_source_panel_state", panel_state["service"]["action_ids"])
         self.assertIn("create_table_handle", panel_state["service"]["table_action_ids"])
         self.assertEqual(panel_state["save_modes"]["mode_ids"], ["replace", "timestamp", "fail", "append"])
+        self.assertTrue(manager["ok"])
+        manager_state = manager["manager_state"]
+        self.assertEqual(manager_state["schema_version"], "data_source_manager_state.v1")
+        self.assertEqual(manager_state["panel_state"]["schema_version"], "data_source_panel_state.v1")
+        self.assertIn("build_data_source_manager_state", manager_state["service"]["action_ids"])
+        self.assertEqual(manager_state["source_controls"]["db_path"], "input.db")
+        self.assertEqual(manager_state["source_controls"]["table_names"], ["demo", "archive"])
+        self.assertEqual(manager_state["source_controls"]["selected_table"], "demo")
+        self.assertTrue(manager_state["source_controls"]["load_enabled"])
         self.assertEqual(normalize_table_headers(["", "A", "A"]), ["列1", "A", "A_2"])
 
     def test_table_search_navigation_is_ui_free(self):

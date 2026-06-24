@@ -258,6 +258,19 @@ class StdioWorker:
                 page_info=payload.get("page_info"),
                 search_navigation=payload.get("search_navigation"),
             )
+        if action == "build_data_source_manager_state":
+            return self.engine.build_data_source_manager_state(
+                payload.get("table", {}),
+                source=payload.get("source"),
+                dirty=bool(payload.get("dirty", False)),
+                display_name=payload.get("display_name", ""),
+                partial=bool(payload.get("partial", False)),
+                page_info=payload.get("page_info"),
+                search_navigation=payload.get("search_navigation"),
+                db_path=payload.get("db_path", ""),
+                table_names=payload.get("table_names"),
+                selected_table=payload.get("selected_table", ""),
+            )
         if action == "describe_data_source_service":
             return self.engine.describe_data_source_service()
         if action == "describe_table_save_modes":

@@ -2889,16 +2889,18 @@ class Qt6UiShellTests(unittest.TestCase):
             background_role = qt_enum(qt, "ItemDataRole", "BackgroundRole")
             current_index = manager.table_view.currentIndex()
             self.assertEqual(manager.current_table()["headers"], ["id", "name"])
-            self.assertEqual(manager_state["schema_version"], "data_source_panel_state.v1")
-            self.assertEqual(manager_state["shape"], {"rows": 3, "columns": 2})
-            self.assertEqual(manager_state["view_state"]["shape_text"], "3 行 x 2 列")
-            self.assertEqual(manager_state["view_state"]["search"]["current_cell"], {"row": 2, "column": 1})
-            self.assertTrue(manager_state["view_state"]["action_enabled"]["save_sqlite"])
+            self.assertEqual(manager_state["schema_version"], "data_source_manager_state.v1")
+            self.assertEqual(manager_state["panel_state"]["schema_version"], "data_source_panel_state.v1")
+            self.assertEqual(manager_state["panel_state"]["shape"], {"rows": 3, "columns": 2})
+            self.assertEqual(manager_state["panel_state"]["view_state"]["shape_text"], "3 行 x 2 列")
+            self.assertEqual(manager_state["panel_state"]["view_state"]["search"]["current_cell"], {"row": 2, "column": 1})
+            self.assertTrue(manager_state["panel_state"]["view_state"]["action_enabled"]["save_sqlite"])
             self.assertEqual(manager_state["service"]["schema_version"], "data_source_service.v1")
             self.assertEqual(manager_state["service"]["protocol_family"], "data_source_service")
             self.assertTrue(manager_state["service"]["capabilities"]["table_handles"])
             self.assertTrue(manager_state["service"]["capabilities"]["panel_state"])
             self.assertIn("build_data_source_panel_state", manager_state["service"]["action_ids"])
+            self.assertIn("build_data_source_manager_state", manager_state["service"]["action_ids"])
             self.assertIn("describe_data_source_actions", manager_state["service"]["action_ids"])
             self.assertIn("save_sqlite", manager_state["service"]["data_action_ids"])
             self.assertIn("load_table", manager_state["service"]["table_action_ids"])
@@ -2906,6 +2908,10 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertEqual(
                 manager_state["service"]["result_schemas"]["table_page"]["schema_version"],
                 "table_page.v1",
+            )
+            self.assertEqual(
+                manager_state["service"]["result_schemas"]["data_source_manager_state"]["schema_version"],
+                "data_source_manager_state.v1",
             )
             self.assertEqual(manager_state["action_schema"]["schema_version"], "data_source_action_schema.v1")
             self.assertIn("patch_cell", manager_state["action_schema"]["action_ids"])
@@ -2915,6 +2921,9 @@ class Qt6UiShellTests(unittest.TestCase):
             )
             self.assertEqual(manager_state["save_modes"]["schema_version"], "table_save_modes.v1")
             self.assertEqual(manager_state["save_modes"]["mode_field"]["choices_source"], "modes")
+            self.assertEqual(manager_state["source_controls"]["db_path"], db_path)
+            self.assertIn("orders", manager_state["source_controls"]["table_names"])
+            self.assertEqual(manager_state["source_controls"]["selected_table"], "orders")
             self.assertTrue(manager.clear_button.isEnabled())
             self.assertTrue(manager.promote_header_button.isEnabled())
             self.assertTrue(manager.search_button.isEnabled())
@@ -3008,7 +3017,7 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertTrue(manager.apply_input_button.isEnabled())
         self.assertFalse(manager.edit_mode_checkbox.isEnabled())
         self.assertTrue(manager.delete_table_button.isEnabled())
-        self.assertEqual(manager.describe_state()["view_state"]["action_enabled"]["save_sqlite"], True)
+        self.assertEqual(manager.describe_state()["panel_state"]["view_state"]["action_enabled"]["save_sqlite"], True)
         window.close()
         app.processEvents()
 
