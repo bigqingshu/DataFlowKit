@@ -66,6 +66,7 @@ class QtWorkflowMainWindow:
         self.data_source_manager_controller = None
         self.node_enabled_icon_cache = {}
         self.plugin_config_view_widgets_by_id = {}
+        self.plugin_warning_targets_by_link = {}
 
         self._build_ui()
         self.refresh_all()
@@ -427,6 +428,7 @@ class QtWorkflowMainWindow:
         self.node_detail_sections.setOpenExternalLinks(False)
         self.node_detail_sections.setReadOnly(True)
         self.node_detail_sections.setMaximumHeight(190)
+        self.node_detail_sections.anchorClicked.connect(self._handle_node_detail_link)
         self.plugin_config_view_tabs = qt.QtWidgets.QTabWidget()
         self.plugin_config_view_tabs.setVisible(False)
         self.plugin_config_view_tabs.setSizePolicy(
@@ -905,7 +907,9 @@ class QtWorkflowMainWindow:
     def _append_plugin_config_detail(self, described):
         if not described.get("ok"):
             return
-        if self._append_plugin_config_sections(described.get("config_sections")):
+        rendered_sections = self._append_plugin_config_sections(described.get("config_sections"))
+        self._append_plugin_warning_target_links(described.get("warning_items") or [])
+        if rendered_sections:
             return
         lines = []
         plugin_extension = described.get("plugin_extension") if isinstance(described.get("plugin_extension"), dict) else {}
@@ -961,6 +965,21 @@ class QtWorkflowMainWindow:
         body = "<br>".join(html.escape(line) for line in lines if line)
         if body:
             self.node_detail_sections.append(f"<p><b>配置协议</b><br>{body}</p>")
+
+    def _append_plugin_warning_target_links(self, warning_items):
+        lines = []
+        for item in warning_items:
+            if not isinstance(item, dict):
+                continue
+            link = self._plugin_warning_target_link(item)
+            if not link:
+                continue
+            text = html.escape(self._format_plugin_warning_item(item))
+            if text:
+                lines.append(f"{text} {link}")
+        if lines:
+            body = "<br>".join(lines[:6])
+            self.node_detail_sections.append(f"<p><b>配置警告定位</b><br>{body}</p>")
 
     def _append_plugin_config_sections(self, sections):
         rendered = 0
@@ -1083,6 +1102,27 @@ class QtWorkflowMainWindow:
         if code:
             details.append(f"代码 {code}")
         return f"{message}（{'；'.join(details)}）" if details else message
+
+    def _plugin_warning_target_link(self, item):
+        target = item.get("target") if isinstance(item, dict) and isinstance(item.get("target"), dict) else {}
+        if not target.get("can_focus_view"):
+            return ""
+        view_id = str(target.get("view_id") or "").strip()
+        if not view_id:
+            return ""
+        key = f"plugin_warning_{len(self.plugin_warning_targets_by_link)}"
+        self.plugin_warning_targets_by_link[key] = copy.deepcopy(target)
+        return f'<a href="dfk-plugin-warning:{html.escape(key, quote=True)}">定位</a>'
+
+    def _handle_node_detail_link(self, url):
+        text = url.toString() if hasattr(url, "toString") else str(url or "")
+        prefix = "dfk-plugin-warning:"
+        if not text.startswith(prefix):
+            return
+        key = text[len(prefix):]
+        target = self.plugin_warning_targets_by_link.get(key)
+        if self._focus_plugin_config_target(target):
+            self.status_bar.showMessage("已定位到插件配置警告。")
 
     def _format_plugin_config_path(self, value):
         if isinstance(value, str):
@@ -2575,6 +2615,7 @@ class QtWorkflowMainWindow:
 
     def _apply_node_detail_panel(self, detail, schema=None, context=None):
         self._clear_plugin_config_views()
+        self.plugin_warning_targets_by_link = {}
         detail = detail or {}
         schema = schema or {}
         context = context or {}

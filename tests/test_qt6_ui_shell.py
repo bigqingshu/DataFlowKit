@@ -665,6 +665,54 @@ class Qt6UiShellTests(unittest.TestCase):
         window.close()
         app.processEvents()
 
+    def test_plugin_warning_target_link_focuses_protocol_view(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+
+        controller._render_plugin_config_views({
+            "ok": True,
+            "views": [
+                {"view_id": "demo.summary", "kind": "summary", "title": "概览", "summary": {"状态": "ok"}},
+                {
+                    "view_id": "demo.items",
+                    "kind": "structured_list",
+                    "title": "条目",
+                    "items": [{"id": "item_1", "name": "第一条"}],
+                    "columns": [{"key": "name", "label": "名称"}],
+                },
+            ],
+        })
+        controller._append_plugin_warning_target_links([
+            {
+                "code": "demo_warning",
+                "message": "需要检查条目",
+                "target": {
+                    "schema_version": "plugin_config_warning_target.v1",
+                    "view_id": "demo.items",
+                    "field": "items.enabled",
+                    "focus_path": "/views/demo.items/fields/items.enabled",
+                    "can_focus_view": True,
+                },
+            },
+        ])
+
+        self.assertIn("配置警告定位", controller.node_detail_sections.toPlainText())
+        self.assertIn("定位", controller.node_detail_sections.toPlainText())
+        controller.node_tabs.setCurrentIndex(0)
+        controller.plugin_config_view_tabs.setCurrentIndex(0)
+        controller._handle_node_detail_link(qt.QtCore.QUrl("dfk-plugin-warning:plugin_warning_0"))
+
+        self.assertEqual(controller.node_tabs.currentIndex(), 1)
+        self.assertEqual(controller.plugin_config_view_tabs.currentIndex(), 1)
+        self.assertEqual(controller.status_bar.currentMessage(), "已定位到插件配置警告。")
+        window.close()
+        app.processEvents()
+
     def test_plugin_warning_formatter_uses_target_payload(self):
         try:
             qt = qt_app.load_qt6()
