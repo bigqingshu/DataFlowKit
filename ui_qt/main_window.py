@@ -897,6 +897,7 @@ class QtWorkflowMainWindow:
         self.current_plugin_config_description = copy.deepcopy(plugin_config_description if isinstance(plugin_config_description, dict) else {})
         if plugin_config_description.get("ok") and isinstance(plugin_config_description.get("node_ui_schema"), dict):
             schema = plugin_config_description["node_ui_schema"]
+            schema = self._schema_with_plugin_config_hints(schema, plugin_config_description)
             self.node_schema_by_id[node_type_id] = schema
         display = schema.get("display_name") or node.get("type") or node_type_id
         self.config_header_label.setText(f"节点类型：{display}    节点名称：{node.get('name', '')}")
@@ -926,6 +927,60 @@ class QtWorkflowMainWindow:
             )
         except Exception:
             return {}
+
+    def _schema_with_plugin_config_hints(self, schema, described):
+        schema_copy = copy.deepcopy(schema if isinstance(schema, dict) else {})
+        if not schema_copy or not isinstance(described, dict) or not described.get("ok"):
+            return schema_copy
+        hints_by_key = self._plugin_parameter_field_hints(described)
+        if not hints_by_key:
+            return schema_copy
+        form = schema_copy.get("form") if isinstance(schema_copy.get("form"), dict) else {}
+        for group in form.get("groups") or []:
+            if not isinstance(group, dict):
+                continue
+            for field in group.get("fields") or []:
+                if not isinstance(field, dict):
+                    continue
+                field_key = str(field.get("key") or "").strip()
+                hint = hints_by_key.get(field_key)
+                if not hint:
+                    continue
+                field.setdefault("protocol_hints", {})
+                field["protocol_hints"]["plugin_config_ui_hints"] = copy.deepcopy(hint)
+                self._merge_plugin_parameter_hint_into_field(field, hint)
+        return schema_copy
+
+    def _plugin_parameter_field_hints(self, described):
+        ui_hints = self._plugin_config_ui_hints(described)
+        parameter_hints = ui_hints.get("parameter_field_hints") if isinstance(ui_hints.get("parameter_field_hints"), dict) else {}
+        fields = parameter_hints.get("fields") if isinstance(parameter_hints.get("fields"), list) else []
+        if not fields:
+            metadata = described.get("parameter_metadata") if isinstance(described.get("parameter_metadata"), dict) else {}
+            metadata_hints = metadata.get("ui_hints") if isinstance(metadata.get("ui_hints"), dict) else {}
+            fields = metadata_hints.get("fields") if isinstance(metadata_hints.get("fields"), list) else []
+        result = {}
+        for item in fields:
+            if not isinstance(item, dict):
+                continue
+            field_key = str(item.get("field_key") or item.get("key") or "").strip()
+            if field_key:
+                result[field_key] = copy.deepcopy(item)
+        return result
+
+    def _merge_plugin_parameter_hint_into_field(self, field, hint):
+        for meta_key in ("placeholder", "empty_text", "invalid_value_text", "width_hint", "unit", "min", "max", "step"):
+            if meta_key in hint and meta_key not in field:
+                field[meta_key] = copy.deepcopy(hint.get(meta_key))
+        if hint.get("advanced"):
+            field["advanced"] = True
+        warning = str(hint.get("warning") or "").strip()
+        if warning:
+            existing = str(field.get("warning") or "").strip()
+            if not existing:
+                field["warning"] = warning
+            elif warning not in existing:
+                field["warning"] = existing + "\n" + warning
 
     def _append_plugin_config_detail(self, described):
         if not described.get("ok"):

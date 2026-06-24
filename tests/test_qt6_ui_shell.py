@@ -753,6 +753,80 @@ class Qt6UiShellTests(unittest.TestCase):
         window.close()
         app.processEvents()
 
+    def test_plugin_parameter_form_consumes_config_ui_hints(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+
+        schema = {
+            "node_type_id": "plugin.demo",
+            "display_name": "插件 / Demo",
+            "form": {
+                "groups": [{
+                    "title": "插件参数",
+                    "fields": [
+                        {"key": "params.path", "label": "路径字段", "type": "field_select", "config_path": ["params", "path"]},
+                        {"key": "params.limit", "label": "数量", "type": "number", "config_path": ["params", "limit"]},
+                    ],
+                }],
+            },
+        }
+        described = {
+            "ok": True,
+            "ui_hints": {
+                "schema_version": "plugin_config_ui_hints.v1",
+                "parameter_field_hints": {
+                    "schema_version": "plugin_parameter_ui_hints.v1",
+                    "fields": [
+                        {
+                            "field_key": "params.path",
+                            "placeholder": "选择路径字段",
+                            "warning": "路径字段为空时无法读取文件。",
+                            "empty_text": "当前输入表没有可选字段",
+                            "invalid_value_text": "字段不在当前输入表中",
+                            "advanced": True,
+                        },
+                        {
+                            "field_key": "params.limit",
+                            "min": 0,
+                            "step": 1,
+                            "unit": "行",
+                        },
+                    ],
+                },
+            },
+        }
+
+        merged = controller._schema_with_plugin_config_hints(schema, described)
+        fields = {
+            field["key"]: field
+            for group in merged["form"]["groups"]
+            for field in group["fields"]
+        }
+        self.assertTrue(fields["params.path"]["advanced"])
+        self.assertEqual(fields["params.path"]["placeholder"], "选择路径字段")
+        self.assertEqual(fields["params.path"]["protocol_hints"]["plugin_config_ui_hints"]["field_key"], "params.path")
+        self.assertEqual(fields["params.limit"]["unit"], "行")
+
+        controller.config_form.set_node(
+            {"node_type_id": "plugin.demo", "config": {"params": {"path": "", "limit": 3}}},
+            headers=[],
+            schema=merged,
+        )
+        path_tooltip = controller.config_form.config_fields["params.path"]["editor"].toolTip()
+        limit_tooltip = controller.config_form.config_fields["params.limit"]["editor"].toolTip()
+        self.assertIn("路径字段为空时无法读取文件", path_tooltip)
+        self.assertIn("占位提示：选择路径字段", path_tooltip)
+        self.assertIn("无候选时提示：当前输入表没有可选字段", path_tooltip)
+        self.assertIn("高级参数", path_tooltip)
+        self.assertIn("单位：行", limit_tooltip)
+        window.close()
+        app.processEvents()
+
     def test_plugin_warning_target_link_focuses_protocol_view(self):
         try:
             qt = qt_app.load_qt6()
