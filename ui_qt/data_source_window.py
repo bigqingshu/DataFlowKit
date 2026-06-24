@@ -178,27 +178,12 @@ class DataSourceManagerWindow:
         return {"type": "table", "headers": headers, "rows": rows}
 
     def describe_state(self):
+        panel_state = self._describe_data_source_panel_state()
+        if panel_state:
+            result = copy.deepcopy(panel_state)
+            result["ok"] = True
+            return result
         table = self.current_table()
-        try:
-            panel = self.engine_client.build_data_source_panel_state(
-                table,
-                source=self.current_source,
-                dirty=self.dirty,
-                display_name=self.status_label.text().split("：", 1)[0] if hasattr(self, "status_label") else "",
-                partial=self.current_table_is_partial,
-                page_info={
-                    "offset": self.page_offset,
-                    "limit": self.page_limit,
-                    "has_more": self.page_has_more,
-                },
-                search_navigation=self.search_navigation,
-            )
-            if panel.get("ok") and isinstance(panel.get("panel_state"), dict):
-                result = copy.deepcopy(panel["panel_state"])
-                result["ok"] = True
-                return result
-        except Exception:
-            pass
         try:
             actions = self.engine_client.describe_data_source_actions(
                 table,
@@ -244,6 +229,27 @@ class DataSourceManagerWindow:
                 "mode_field": copy.deepcopy(save_modes.get("mode_field") or {}),
             },
         }
+
+    def _describe_data_source_panel_state(self):
+        try:
+            panel = self.engine_client.build_data_source_panel_state(
+                self.current_table(),
+                source=self.current_source,
+                dirty=self.dirty,
+                display_name=self.status_label.text().split("：", 1)[0] if hasattr(self, "status_label") else "",
+                partial=self.current_table_is_partial,
+                page_info={
+                    "offset": self.page_offset,
+                    "limit": self.page_limit,
+                    "has_more": self.page_has_more,
+                },
+                search_navigation=self.search_navigation,
+            )
+        except Exception:
+            return {}
+        if not panel.get("ok") or not isinstance(panel.get("panel_state"), dict):
+            return {}
+        return copy.deepcopy(panel["panel_state"])
 
     def _describe_data_source_service(self):
         try:
@@ -375,6 +381,19 @@ class DataSourceManagerWindow:
     def _refresh_data_action_controls(self):
         if not hasattr(self, "save_button"):
             return
+        panel_state = self._describe_data_source_panel_state()
+        if panel_state:
+            action_enabled = (panel_state.get("view_state") or {}).get("action_enabled") or {}
+            selected_state = self._describe_data_source_panel_state_for_source(self._selected_sqlite_source() or self.current_source)
+            selected_enabled = (selected_state.get("view_state") or {}).get("action_enabled") if selected_state else {}
+            self.clear_button.setEnabled(bool(action_enabled.get("clear_table")))
+            self.promote_header_button.setEnabled(not self.current_table_is_partial and bool(action_enabled.get("promote_first_row")))
+            self.search_button.setEnabled(bool(action_enabled.get("search_table")))
+            self.save_button.setEnabled(not self.current_table_is_partial and bool(action_enabled.get("save_sqlite")))
+            self.apply_input_button.setEnabled(bool(action_enabled.get("apply_to_workflow")))
+            self.edit_mode_checkbox.setEnabled(not self.current_table_is_partial and bool(action_enabled.get("patch_cell")))
+            self.delete_table_button.setEnabled(bool((selected_enabled or {}).get("delete_sqlite")))
+            return
         actions = self._data_source_action_state()
         selected_actions = self._data_source_action_state(source=self._selected_sqlite_source() or self.current_source)
         editable_table = not self.current_table_is_partial
@@ -385,6 +404,27 @@ class DataSourceManagerWindow:
         self.apply_input_button.setEnabled(self._action_enabled(actions, "apply_to_workflow"))
         self.edit_mode_checkbox.setEnabled(editable_table and self._action_enabled(actions, "patch_cell"))
         self.delete_table_button.setEnabled(self._action_enabled(selected_actions, "delete_sqlite"))
+
+    def _describe_data_source_panel_state_for_source(self, source):
+        try:
+            panel = self.engine_client.build_data_source_panel_state(
+                self.current_table(),
+                source=source,
+                dirty=self.dirty,
+                display_name=self.status_label.text().split("：", 1)[0] if hasattr(self, "status_label") else "",
+                partial=self.current_table_is_partial,
+                page_info={
+                    "offset": self.page_offset,
+                    "limit": self.page_limit,
+                    "has_more": self.page_has_more,
+                },
+                search_navigation=self.search_navigation,
+            )
+        except Exception:
+            return {}
+        if not panel.get("ok") or not isinstance(panel.get("panel_state"), dict):
+            return {}
+        return copy.deepcopy(panel["panel_state"])
 
     def _populate_save_modes(self):
         try:

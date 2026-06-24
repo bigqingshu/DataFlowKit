@@ -2332,6 +2332,66 @@ class Qt6UiShellTests(unittest.TestCase):
             window.close()
             app.processEvents()
 
+    def test_data_source_manager_button_state_follows_panel_state(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+        controller.open_data_source_manager()
+        manager = controller.data_source_manager_controller
+
+        controller.engine_client.build_data_source_panel_state = lambda *args, **kwargs: {
+            "ok": True,
+            "panel_state": {
+                "schema_version": "data_source_panel_state.v1",
+                "view_state": {
+                    "action_enabled": {
+                        "clear_table": False,
+                        "promote_first_row": False,
+                        "search_table": True,
+                        "save_sqlite": True,
+                        "apply_to_workflow": True,
+                        "patch_cell": False,
+                        "delete_sqlite": True,
+                    },
+                },
+                "service": {"schema_version": "data_source_service.v1", "capabilities": {"panel_state": True}},
+                "action_schema": {"schema_version": "data_source_action_schema.v1"},
+                "save_modes": {"schema_version": "table_save_modes.v1", "mode_ids": ["replace"]},
+            },
+        }
+        controller.engine_client.describe_data_source_actions = lambda *args, **kwargs: {
+            "ok": True,
+            "action_state": {
+                "actions": {
+                    "clear_table": {"enabled": True},
+                    "promote_first_row": {"enabled": True},
+                    "search_table": {"enabled": False},
+                    "save_sqlite": {"enabled": False},
+                    "apply_to_workflow": {"enabled": False},
+                    "patch_cell": {"enabled": True},
+                    "delete_sqlite": {"enabled": False},
+                },
+            },
+            "action_schema": {},
+        }
+        manager.set_table(["A"], [["1"]], source={"type": "sqlite", "db_path": "demo.db", "table_name": "demo"}, dirty=True)
+        manager._refresh_data_action_controls()
+
+        self.assertFalse(manager.clear_button.isEnabled())
+        self.assertFalse(manager.promote_header_button.isEnabled())
+        self.assertTrue(manager.search_button.isEnabled())
+        self.assertTrue(manager.save_button.isEnabled())
+        self.assertTrue(manager.apply_input_button.isEnabled())
+        self.assertFalse(manager.edit_mode_checkbox.isEnabled())
+        self.assertTrue(manager.delete_table_button.isEnabled())
+        self.assertEqual(manager.describe_state()["view_state"]["action_enabled"]["save_sqlite"], True)
+        window.close()
+        app.processEvents()
+
     def test_data_source_manager_pages_sqlite_preview_and_applies_full_table(self):
         try:
             qt = qt_app.load_qt6()
