@@ -53,6 +53,13 @@ class PluginParameterMetadataTests(unittest.TestCase):
         self.assertEqual(metadata["field_count"], len(fields))
         self.assertEqual(set(metadata["field_index"].keys()), set(fields.keys()))
         self.assertEqual(set(metadata_fields.keys()), set(fields.keys()))
+        self.assertEqual(metadata["layout_index"]["schema_version"], "plugin_parameter_layout.v1")
+        self.assertEqual(metadata["ui_hints"]["schema_version"], "plugin_parameter_ui_hints.v1")
+        self.assertEqual(set(metadata["layout_index"]["field_order"]), set(fields.keys()))
+        self.assertEqual(
+            metadata["layout_index"]["group_order"],
+            [group["group_key"] for group in metadata["layout_index"]["groups"]],
+        )
 
         for key, field in fields.items():
             field_type = str(field.get("type") or "")
@@ -134,6 +141,14 @@ class PluginParameterMetadataTests(unittest.TestCase):
         self.assertIn("preview_headers", metadata["options_source_index"])
         self.assertIn("params.path_field", metadata["options_source_details"]["preview_headers"]["field_keys"])
         self.assertEqual(metadata["options_source_details"]["preview_headers"]["label"], "当前输入表字段")
+        layout_groups = {group["title"]: group for group in metadata["layout_index"]["groups"]}
+        self.assertEqual(layout_groups["插件参数 / 文件来源"]["field_keys"][0], "params.path_source")
+        self.assertTrue(layout_groups["高级参数 / 读取设置"]["advanced"])
+        ui_hints = {field["field_key"]: field for field in metadata["ui_hints"]["fields"]}
+        self.assertIn("params.directory_path", metadata["ui_hints"]["placeholder_fields"])
+        self.assertEqual(ui_hints["params.directory_path"]["placeholder"], "选择或输入固定目录路径")
+        self.assertIn("params.preview_write_db", metadata["ui_hints"]["warning_fields"])
+        self.assertIn("预览也会写入数据库", ui_hints["params.preview_write_db"]["warning"])
         self.assertEqual(fields["params.directory_path"]["type"], "directory")
         self.assertEqual(fields["params.directory_path"]["depends_on"], ["params.path_source"])
         self.assertEqual(fields["params.force_refresh"]["enabled_when"]["field"], "params.enable_cache")
@@ -159,6 +174,17 @@ class PluginParameterMetadataTests(unittest.TestCase):
         self.assertEqual(fields["params.win32_open_retries"]["min"], 0)
         self.assertEqual(fields["params.win32_open_retries"]["step"], 1)
         self.assertEqual(fields["params.win32_open_retries"]["unit"], "次")
+        metadata = schema["parameter_metadata"]
+        layout_groups = {group["title"]: group for group in metadata["layout_index"]["groups"]}
+        self.assertTrue(layout_groups["高级参数 / win32高级设置"]["advanced"])
+        self.assertIn("params.win32_open_retries", layout_groups["高级参数 / win32高级设置"]["field_keys"])
+        ui_hints = {field["field_key"]: field for field in metadata["ui_hints"]["fields"]}
+        self.assertIn("params.win32_open_retries", metadata["ui_hints"]["advanced_fields"])
+        self.assertIn("params.win32_open_retries", metadata["ui_hints"]["numeric_fields"])
+        self.assertEqual(ui_hints["params.win32_open_retries"]["min"], 0)
+        self.assertEqual(ui_hints["params.win32_open_retries"]["step"], 1)
+        self.assertEqual(ui_hints["params.win32_open_retries"]["unit"], "次")
+        self.assertIn("params.preview_write_files", metadata["ui_hints"]["warning_fields"])
         self.assertEqual(fields["params.word_text_write_mode"]["depends_on"], ["params.write_engine"])
         self.assertEqual(fields["params.word_text_write_mode"]["refresh_on_change"], ["params.word_text_write_mode"])
         self.assertEqual(

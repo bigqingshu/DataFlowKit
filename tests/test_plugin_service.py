@@ -360,6 +360,12 @@ class PluginServiceTests(unittest.TestCase):
         self.assertTrue(metadata["capabilities"]["conditional_fields"])
         self.assertTrue(metadata["capabilities"]["field_actions"])
         self.assertTrue(metadata["capabilities"]["advanced_fields"])
+        self.assertEqual(metadata["layout_index"]["schema_version"], "plugin_parameter_layout.v1")
+        self.assertEqual(metadata["ui_hints"]["schema_version"], "plugin_parameter_ui_hints.v1")
+        self.assertIn("params.directory_path", metadata["layout_index"]["field_order"])
+        self.assertIn("params.directory_path", metadata["ui_hints"]["advanced_fields"])
+        self.assertIn("params.directory_path", metadata["ui_hints"]["placeholder_fields"])
+        self.assertIn("params.directory_path", metadata["ui_hints"]["warning_fields"])
         metadata_groups = {group["title"]: group for group in metadata["groups"]}
         self.assertEqual(metadata_groups["插件参数 / 输入"]["field_keys"], ["params.table_name"])
         self.assertEqual(metadata_groups["高级参数"]["param_keys"], ["directory_path"])
@@ -409,6 +415,14 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(
             described["node_ui_schema"]["parameter_metadata"]["field_index"],
             described["parameter_metadata"]["field_index"],
+        )
+        self.assertEqual(
+            described["node_ui_schema"]["parameter_metadata"]["layout_index"],
+            described["parameter_metadata"]["layout_index"],
+        )
+        self.assertEqual(
+            described["node_ui_schema"]["parameter_metadata"]["ui_hints"],
+            described["parameter_metadata"]["ui_hints"],
         )
         self.assertEqual(dynamic_options["schema_version"], "plugin_parameter_options.v1")
         self.assertEqual(dynamic_options["param_key"], "config_name")

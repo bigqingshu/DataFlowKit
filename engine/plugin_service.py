@@ -2573,6 +2573,8 @@ def _plugin_parameter_metadata(default_config, parameter_schema):
         "groups": groups,
         "field_index": field_index,
         "group_index": group_index,
+        "layout_index": _plugin_parameter_layout_index(groups, parameter_fields),
+        "ui_hints": _plugin_parameter_ui_hints(parameter_fields),
         "dependency_index": _plugin_parameter_dependency_index(parameter_fields),
         "options_source_index": options_source_index,
         "options_source_details": options_source_details,
@@ -2591,6 +2593,75 @@ def _plugin_parameter_metadata(default_config, parameter_schema):
             "field_actions": any(field.get("action") for field in parameter_fields),
             "advanced_fields": any(bool(field.get("advanced")) for field in parameter_fields),
         },
+    }
+
+
+def _plugin_parameter_layout_index(groups, parameter_fields):
+    field_order = [str(field.get("key") or "") for field in parameter_fields or [] if str(field.get("key") or "")]
+    return {
+        "schema_version": "plugin_parameter_layout.v1",
+        "field_order": field_order,
+        "group_order": [str(group.get("group_key") or "") for group in groups or [] if str(group.get("group_key") or "")],
+        "groups": [
+            {
+                "group_key": group.get("group_key"),
+                "title": group.get("title"),
+                "advanced": bool(group.get("advanced")),
+                "field_keys": list(group.get("field_keys") or []),
+                "field_count": len(group.get("field_keys") or []),
+            }
+            for group in groups or []
+        ],
+    }
+
+
+def _plugin_parameter_ui_hints(parameter_fields):
+    hinted_fields = []
+    advanced_fields = []
+    warning_fields = []
+    placeholder_fields = []
+    numeric_fields = []
+    width_hint_fields = []
+    for field in parameter_fields or []:
+        if not isinstance(field, dict):
+            continue
+        key = str(field.get("key") or "").strip()
+        if not key:
+            continue
+        hint = {
+            "field_key": key,
+            "param_key": field.get("param_key"),
+            "label": field.get("label"),
+            "type": field.get("type"),
+        }
+        copied_any = False
+        for meta_key in ("placeholder", "warning", "empty_text", "invalid_value_text", "width_hint", "unit", "min", "max", "step"):
+            if meta_key in field:
+                hint[meta_key] = copy.deepcopy(field.get(meta_key))
+                copied_any = True
+        if field.get("advanced"):
+            hint["advanced"] = True
+            advanced_fields.append(key)
+            copied_any = True
+        if "warning" in field:
+            warning_fields.append(key)
+        if "placeholder" in field:
+            placeholder_fields.append(key)
+        if any(meta_key in field for meta_key in ("min", "max", "step", "unit")):
+            numeric_fields.append(key)
+        if "width_hint" in field:
+            width_hint_fields.append(key)
+        if copied_any:
+            hinted_fields.append(hint)
+    return {
+        "schema_version": "plugin_parameter_ui_hints.v1",
+        "field_count": len(hinted_fields),
+        "fields": hinted_fields,
+        "advanced_fields": advanced_fields,
+        "warning_fields": warning_fields,
+        "placeholder_fields": placeholder_fields,
+        "numeric_fields": numeric_fields,
+        "width_hint_fields": width_hint_fields,
     }
 
 
