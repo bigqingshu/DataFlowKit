@@ -404,6 +404,16 @@ editor_kind:
 
 第一阶段 UI 可以只显示摘要和结构化列表；第二阶段再分别实现专用编辑器。这样旧 Tk 配置窗口可以保留为兼容入口，同时新 UI 不需要继承 Tk 窗口内部逻辑。
 
+复杂插件还可以提供顶层 `layout` 与 `ui_hints`，用于告诉不同 UI 如何组织配置视图，而不是让 Qt、.NET、Web 各自猜页签顺序和默认入口。当前可视化映射插件已使用：
+
+- `layout.schema_version: DataFlowKit.visual_mapping.layout.v1`
+- `layout.default_view_id: visual_mapping.rules`
+- `layout.view_order / primary_views / advanced_views`
+- `ui_hints.schema_version: DataFlowKit.visual_mapping.ui_hints.v1`
+- `ui_hints.view_hints`：描述每个视图的说明、空状态、主动作和角色
+
+Qt 已能按这些字段重排插件配置页签、默认切到推荐视图，并把视图说明合并到 tab tooltip。后续 .NET/Web 应优先消费同一批字段，而不是复制 Qt 当前布局。
+
 ### 12.1 旧 Tk 配置窗口 fallback 退场规则
 
 `open_config_window(parent, current_params, context)` 仍可保留，但只能作为兼容入口。`describe_plugin_config` 返回的兼容动作会带有：
@@ -420,3 +430,5 @@ editor_kind:
 2. 只有当协议配置能力不足时，才显示 `open_legacy_config` 兼容入口。
 3. 兼容入口必须以降级/旧版方式展示，不应作为默认主按钮。
 4. 插件完成等价协议迁移后，保留旧窗口一段过渡期，再从 UI 主路径移除。
+
+旧窗口打开前的确认提示也应由共享 facade 生成：`describe_confirmation_prompt(action="legacy_plugin_config", compatibility_action=...)`。UI 只负责展示确认框，不应自行拼接兼容风险文案。

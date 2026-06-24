@@ -157,6 +157,7 @@ Qt 主窗口只持有当前工作流输入：
 - 保存/删除 SQLite 表。
 - 描述 `data_source_service.v1`、`data_source_actions.v1`、`table_save_modes.v1`。
 - 描述 `table_actions`，固定 `list_tables / load_table / get_table_page / create_table_handle / get_table_handle_page / list_table_handles / release_table_handle` 的 action id、engine action 和结果 schema。
+- 描述 `data_source_manager_layout.v1` 与 `data_source_manager_ui_hints.v1`，把数据源管理窗口的区域顺序、动作归属、默认焦点、动作优先级和提示信息沉到共享 payload。
 
 现有 `WorkflowFacade` 已经支持：
 
@@ -181,6 +182,7 @@ Qt 主窗口只持有当前工作流输入：
 当前剩余重点已经从“先有没有服务”转为：
 
 - Qt 是否充分消费 `data_source_service.v1` 和 action schema，而不是继续手写按钮状态。
+- Qt / `.NET` / Web 是否消费 `data_source_manager_layout.v1` 和 `data_source_manager_ui_hints.v1`，而不是各自重新设计窗口区域与按钮优先级。
 - Qt 是否把大表路径更多切到 `table_actions` 中的 table handle/page。
 - 输入数据库路径、工作区数据库路径、输出数据库路径是否继续拆清。
 - `.NET` / Web 是否只依赖 stdio/headless payload，不复用 Python UI 代码。
@@ -225,12 +227,13 @@ Qt 主窗口只持有当前工作流输入：
 
 - 大表载入改用 table handle / 分页。
 - stdio worker 暴露同一批数据源动作。
+- `data_source_manager_state.v1` 已携带 manager layout 与 UI hints，后续 UI 可以按协议组织顶部工具栏、数据库行、载入表行、分页行、保存行、搜索行、表格区和状态区。
 - .NET UI 只调用 stdio worker，不复用 Python UI 代码。
 - Qt 和 .NET 的数据源窗口共享同一套 payload 和行为规则。
 
 下一步建议拆成两块：
 
-1. Qt 侧优先改为从 `describe_data_source_service` 获取能力与动作说明，减少按钮逻辑硬编码。
+1. Qt 侧优先改为从 `describe_data_source_service` 与 `data_source_manager_state` 获取能力、动作、布局与提示说明，减少按钮逻辑硬编码。
 2. 大表载入路径优先使用 table handle/page，避免后续 `.NET` / Web 一开始就复制整表传输模式。
 
 ## 9. 风险点
