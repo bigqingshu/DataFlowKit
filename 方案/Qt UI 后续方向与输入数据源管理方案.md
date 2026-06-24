@@ -156,6 +156,7 @@ Qt 主窗口只持有当前工作流输入：
 - 表格搜索与搜索导航。
 - 保存/删除 SQLite 表。
 - 描述 `data_source_service.v1`、`data_source_actions.v1`、`table_save_modes.v1`。
+- 描述 `table_actions`，固定 `list_tables / load_table / get_table_page / create_table_handle / get_table_handle_page / list_table_handles / release_table_handle` 的 action id、engine action 和结果 schema。
 
 现有 `WorkflowFacade` 已经支持：
 
@@ -167,16 +168,20 @@ Qt 主窗口只持有当前工作流输入：
 
 - `describe_data_source_service`
 - `describe_table_save_modes`
+- `list_tables`
+- `load_table`
+- `get_table_page`
 - `save_table`
 - `delete_table`
 - `create_table_handle`
+- `list_table_handles`
 - `get_table_handle_page`
 - `release_table_handle`
 
 当前剩余重点已经从“先有没有服务”转为：
 
 - Qt 是否充分消费 `data_source_service.v1` 和 action schema，而不是继续手写按钮状态。
-- Qt 是否把大表路径更多切到 table handle/page。
+- Qt 是否把大表路径更多切到 `table_actions` 中的 table handle/page。
 - 输入数据库路径、工作区数据库路径、输出数据库路径是否继续拆清。
 - `.NET` / Web 是否只依赖 stdio/headless payload，不复用 Python UI 代码。
 

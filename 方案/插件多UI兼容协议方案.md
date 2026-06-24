@@ -337,6 +337,14 @@ def run(input_data, params, context):
 
 **legacy fallback，不再作为推荐主路径。**
 
+推荐协议字段：
+
+1. `preferred=false`
+2. `ui_role=fallback_action`
+3. `ui_prominence=low`
+4. `ui_placement=compatibility_menu`
+5. `requires_confirmation=true`
+
 ### 8.2 UI 对旧窗口的处理建议
 
 不同 UI 的处理方式建议如下：
@@ -344,7 +352,7 @@ def run(input_data, params, context):
 1. Tkinter 主程序
    - 继续允许调用旧窗口。
 2. Qt
-   - 可选兼容，但应明确提示“旧版插件设置窗口”。
+   - 可选兼容，但应明确提示“旧版插件设置窗口”，并放在低优先级兼容入口。
 3. `.NET` / Web / Electron
    - 默认不直接支持旧窗口，提示该插件需要迁移到 schema 配置模式。
 
@@ -375,7 +383,7 @@ def run(input_data, params, context):
 2. B档：schema + patch 混合
    - 可兼容，但复杂部分还在补
 3. C档：仅旧自定义窗口
-   - 仅兼容旧主程序 / 临时兼容 Qt
+   - 仅兼容旧主程序 / 临时兼容 Qt，其他 UI 默认提示迁移到协议配置
 
 这样主程序、Qt、后续 .NET 都能对插件兼容性给出明确提示。
 
