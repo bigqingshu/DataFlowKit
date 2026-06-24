@@ -1757,6 +1757,9 @@ class QtWorkflowMainWindow:
                 return
             patch["target_index"] = int(selected_row)
             patch["index"] = int(selected_row)
+            target_id = self._plugin_structured_target_id(frame, selected_row)
+            if target_id:
+                patch["target_id"] = target_id
         if operation == "append_item":
             value = copy.deepcopy(getattr(frame, "plugin_config_append_value", {}) or {})
             patch["payload"] = value
@@ -1781,6 +1784,25 @@ class QtWorkflowMainWindow:
                 return
             patch["to_index"] = to_index
         self._apply_plugin_config_patch(patch)
+
+    def _plugin_structured_target_id(self, frame, row):
+        items = getattr(frame, "plugin_config_items", []) or []
+        if row < 0 or row >= len(items) or not isinstance(items[row], dict):
+            return ""
+        view = getattr(frame, "plugin_config_view", {}) or {}
+        patch_target = view.get("patch_target") if isinstance(view.get("patch_target"), dict) else {}
+        item_identity = view.get("item_identity") if isinstance(view.get("item_identity"), dict) else {}
+        target_fields = (
+            patch_target.get("target_id_fields")
+            or item_identity.get("target_id_fields")
+            or []
+        )
+        for field in target_fields:
+            value = self._plugin_protocol_path_value(items[row], field, "")
+            text = str(value).strip() if value is not None else ""
+            if text:
+                return text
+        return ""
 
     def _apply_plugin_config_patch(self, patch):
         index = self.selected_node_index()

@@ -486,6 +486,7 @@ class Qt6UiShellTests(unittest.TestCase):
                 "editor_kind": "demo.rules",
                 "config_path": ["items"],
                 "section": "items",
+                "patch_target": {"target_id_fields": ["id", "name"]},
                 "patch_operations": ["update_item"],
                 "items": [{
                     "id": "rule_1",
@@ -548,6 +549,7 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(patch["path"], ["items"])
         self.assertEqual(patch["target_index"], 0)
         self.assertEqual(patch["index"], 0)
+        self.assertEqual(patch["target_id"], "rule_1")
         self.assertEqual(patch["payload"]["id"], "rule_1")
         self.assertEqual(patch["payload"]["name"], "renamed")
         self.assertFalse(patch["payload"]["enabled"])
