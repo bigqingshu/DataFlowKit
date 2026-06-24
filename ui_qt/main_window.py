@@ -920,17 +920,9 @@ class QtWorkflowMainWindow:
         if warning_items:
             warning_lines = []
             for item in warning_items[:4]:
-                message = str(item.get("message") or "").strip()
-                if not message:
-                    continue
-                scopes = [
-                    str(item.get("view_id") or "").strip(),
-                    str(item.get("field") or "").strip(),
-                    str(item.get("path") or "").strip(),
-                    str(item.get("code") or "").strip(),
-                ]
-                suffix = "/".join(scope for scope in scopes if scope)
-                warning_lines.append(f"{message}（{suffix}）" if suffix else message)
+                line = self._format_plugin_warning_item(item)
+                if line:
+                    warning_lines.append(line)
             if warning_lines:
                 lines.append("配置警告：" + "；".join(warning_lines))
         compatibility_actions = [item for item in actions if str(item.get("kind") or "") == "compatibility"]
@@ -981,6 +973,39 @@ class QtWorkflowMainWindow:
         if isinstance(sections, dict) and sections:
             parts.append("区域 " + "、".join(str(key) for key in list(sections.keys())[:6]))
         return "；".join(part for part in parts if part)
+
+    def _format_plugin_warning_item(self, item):
+        if not isinstance(item, dict):
+            return ""
+        message = str(item.get("message") or "").strip()
+        if not message:
+            return ""
+        details = []
+        view_id = str(item.get("view_id") or "").strip()
+        field = str(item.get("field") or "").strip()
+        path = str(item.get("path") or "").strip()
+        config_path = item.get("config_path")
+        code = str(item.get("code") or "").strip()
+        if view_id:
+            details.append(f"视图 {view_id}")
+        if field:
+            details.append(f"字段 {field}")
+        if path:
+            details.append(f"路径 {path}")
+        config_path_text = self._format_plugin_config_path(config_path)
+        if config_path_text:
+            details.append(f"配置 {config_path_text}")
+        if code:
+            details.append(f"代码 {code}")
+        return f"{message}（{'；'.join(details)}）" if details else message
+
+    def _format_plugin_config_path(self, value):
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, (list, tuple)):
+            parts = [str(part).strip() for part in value if str(part).strip()]
+            return ".".join(parts)
+        return ""
 
     def _clear_plugin_config_views(self):
         if not hasattr(self, "plugin_config_view_tabs"):
@@ -2095,7 +2120,11 @@ class QtWorkflowMainWindow:
         help_sections = [item for item in (context.get("help_sections") or []) if isinstance(item, dict)]
 
         if warning_items:
-            warning_lines = [str(item.get("message") or "").strip() for item in warning_items if str(item.get("message") or "").strip()]
+            warning_lines = []
+            for item in warning_items:
+                line = self._format_plugin_warning_item(item)
+                if line:
+                    warning_lines.append(line)
             if warning_lines:
                 sections.append({"title": "结构化警告", "lines": warning_lines})
         if help_sections:

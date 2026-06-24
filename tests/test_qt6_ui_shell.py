@@ -196,7 +196,7 @@ class Qt6UiShellTests(unittest.TestCase):
                     "            {'view_id': 'demo.items', 'title': 'Demo Items', 'kind': 'structured_list', 'editor_kind': 'demo.items', 'config_path': ['items'], 'item_count': len(items), 'columns': [{'key': 'name', 'label': '名称'}, {'key': 'enabled', 'label': '启用'}], 'items': items, 'append_value': {'name': 'from_view', 'enabled': True}, 'patch_operations': ['append_item', 'delete_item', 'set_enabled', 'move_item']},",
                     "        ],",
                     "        'actions': [{'action_id': 'demo.edit_items', 'label': '编辑 Demo Items', 'kind': 'config_editor', 'editor_kind': 'demo.items'}],",
-                    "        'warnings': [{'code': 'demo_items_warning', 'level': 'warning', 'message': 'Demo Items 需要确认', 'view_id': 'demo.items'}],",
+                    "        'warnings': [{'code': 'demo_items_warning', 'level': 'warning', 'message': 'Demo Items 需要确认', 'view_id': 'demo.items', 'field': 'items.enabled', 'path': '/views/demo.items/fields/items.enabled', 'config_path': ['items', 'enabled']}],",
                     "        'patch_schema': {'kind': 'config_patch', 'operations': [{'operation': 'append_item'}, {'operation': 'delete_item'}, {'operation': 'set_enabled'}, {'operation': 'move_item'}], 'fields': [{'key': 'operation'}, {'key': 'path'}, {'key': 'target_index'}, {'key': 'payload'}], 'sections': {'items': {'path': ['items'], 'model_key': 'demo_item'}}},",
                     "        'warning_schema': {'kind': 'config_warning', 'fields': [{'key': 'code'}, {'key': 'message'}, {'key': 'view_id'}, {'key': 'field'}, {'key': 'path'}]},",
                     "    }",
@@ -283,7 +283,7 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertIn("字段 operation、path、target_index、payload", controller.node_detail_sections.toPlainText())
             self.assertIn("警告协议：config_warning", controller.node_detail_sections.toPlainText())
             self.assertIn("字段 code、message、view_id、field、path", controller.node_detail_sections.toPlainText())
-            self.assertIn("Demo Items 需要确认（demo.items/demo_items_warning）", controller.node_detail_sections.toPlainText())
+            self.assertIn("Demo Items 需要确认（视图 demo.items；字段 items.enabled；路径 /views/demo.items/fields/items.enabled；配置 items.enabled；代码 demo_items_warning）", controller.node_detail_sections.toPlainText())
             self.assertIn("兼容动作：打开旧版插件设置", controller.node_detail_sections.toPlainText())
             self.assertIn("兼容提示：旧版 Tk 设置窗口仅作为兼容 fallback", controller.node_detail_sections.toPlainText())
             self.assertIn("schema/patch", controller.legacy_plugin_config_button.toolTip())
