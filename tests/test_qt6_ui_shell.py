@@ -330,6 +330,8 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertIn("兼容提示：旧版 Tk 设置窗口仅作为兼容 fallback", controller.node_detail_sections.toPlainText())
             self.assertIn("参数元数据", controller.node_detail_sections.toPlainText())
             self.assertIn("参数能力：动态候选", controller.node_detail_sections.toPlainText())
+            self.assertIn("参数布局：", controller.node_detail_sections.toPlainText())
+            self.assertIn("参数UI提示：", controller.node_detail_sections.toPlainText())
             self.assertIn("兼容等级 A_SCHEMA_PATCH", controller.node_detail_sections.toPlainText())
             self.assertIn("可直接支持UI：Tk、Qt、.NET、Web、Electron", controller.node_detail_sections.toPlainText())
             self.assertIn("schema/patch", controller.legacy_plugin_config_button.toolTip())
@@ -1655,6 +1657,42 @@ class Qt6UiShellTests(unittest.TestCase):
                 "group_index": {
                     "plugin.parameters": {"title": "插件参数", "field_keys": ["params.mode", "params.path"]},
                 },
+                "layout_index": {
+                    "schema_version": "plugin_parameter_layout.v1",
+                    "field_order": ["params.mode", "params.path"],
+                    "group_order": ["plugin.parameters"],
+                    "groups": [
+                        {"group_key": "plugin.parameters", "title": "插件参数", "advanced": False, "field_keys": ["params.mode", "params.path"], "field_count": 2},
+                    ],
+                },
+                "ui_hints": {
+                    "schema_version": "plugin_parameter_ui_hints.v1",
+                    "field_count": 2,
+                    "fields": [
+                        {
+                            "field_key": "params.mode",
+                            "param_key": "mode",
+                            "label": "模式",
+                            "type": "select",
+                            "placeholder": "选择模式",
+                            "warning": "模式会影响运行耗时",
+                            "advanced": True,
+                        },
+                        {
+                            "field_key": "params.path",
+                            "param_key": "path",
+                            "label": "目录",
+                            "type": "text",
+                            "placeholder": "选择插件目录",
+                            "width_hint": "wide",
+                        },
+                    ],
+                    "advanced_fields": ["params.mode"],
+                    "warning_fields": ["params.mode"],
+                    "placeholder_fields": ["params.mode", "params.path"],
+                    "numeric_fields": [],
+                    "width_hint_fields": ["params.path"],
+                },
                 "dependency_index": {"params.mode": ["params.path"]},
                 "capabilities": {"dynamic_options": True, "field_dependencies": True},
                 "context_requirements": {"needs_dynamic_options": True},
@@ -1678,6 +1716,13 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(state["parameter_metadata"]["field_index_keys"], ["params.mode", "params.path"])
         self.assertEqual(state["parameter_metadata"]["group_index_keys"], ["plugin.parameters"])
         self.assertEqual(state["parameter_metadata"]["dependency_index"]["params.mode"], ["params.path"])
+        self.assertEqual(state["parameter_metadata"]["layout_index"]["schema_version"], "plugin_parameter_layout.v1")
+        self.assertEqual(state["parameter_metadata"]["ui_hints"]["schema_version"], "plugin_parameter_ui_hints.v1")
+        self.assertIn("params.mode", state["parameter_metadata"]["layout_index"]["field_order"])
+        self.assertIn("params.mode", state["parameter_metadata"]["ui_hints"]["advanced_fields"])
+        self.assertIn("params.mode", state["parameter_metadata"]["ui_hints"]["warning_fields"])
+        self.assertIn("params.path", state["parameter_metadata"]["ui_hints"]["placeholder_fields"])
+        self.assertIn("params.path", state["parameter_metadata"]["ui_hints"]["width_hint_fields"])
         self.assertTrue(state["parameter_metadata"]["capabilities"]["dynamic_options"])
         self.assertTrue(state["parameter_metadata"]["context_requirements"]["needs_dynamic_options"])
         mode_state = state["fields"]["params.mode"]

@@ -215,6 +215,8 @@ class NodeConfigForm:
         field_index = metadata.get("field_index") if isinstance(metadata.get("field_index"), dict) else {}
         group_index = metadata.get("group_index") if isinstance(metadata.get("group_index"), dict) else {}
         dependency_index = metadata.get("dependency_index") if isinstance(metadata.get("dependency_index"), dict) else {}
+        layout_index = metadata.get("layout_index") if isinstance(metadata.get("layout_index"), dict) else {}
+        ui_hints = metadata.get("ui_hints") if isinstance(metadata.get("ui_hints"), dict) else {}
         return {
             "schema_version": str(metadata.get("schema_version") or ""),
             "plugin_id": str(metadata.get("plugin_id") or ""),
@@ -222,6 +224,8 @@ class NodeConfigForm:
             "field_index_keys": sorted(str(key) for key in field_index.keys()),
             "group_index_keys": sorted(str(key) for key in group_index.keys()),
             "dependency_index": copy.deepcopy(dependency_index),
+            "layout_index": copy.deepcopy(layout_index),
+            "ui_hints": copy.deepcopy(ui_hints),
             "capabilities": copy.deepcopy(metadata.get("capabilities") or {}),
             "context_requirements": copy.deepcopy(metadata.get("context_requirements") or {}),
         }

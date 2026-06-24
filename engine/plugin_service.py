@@ -1759,6 +1759,26 @@ def _plugin_config_sections(
             "lines": metadata_lines,
         })
 
+    layout_lines = _plugin_parameter_layout_lines(parameter_metadata)
+    if layout_lines:
+        sections.append({
+            "section_id": "plugin.parameter_layout",
+            "title": "参数布局",
+            "schema_version": "plugin_config_section.v1",
+            "kind": "summary_lines",
+            "lines": layout_lines,
+        })
+
+    ui_hint_lines = _plugin_parameter_ui_hint_lines(parameter_metadata)
+    if ui_hint_lines:
+        sections.append({
+            "section_id": "plugin.parameter_ui_hints",
+            "title": "参数UI提示",
+            "schema_version": "plugin_config_section.v1",
+            "kind": "summary_lines",
+            "lines": ui_hint_lines,
+        })
+
     compatibility_lines = _plugin_config_compatibility_lines(config_compatibility)
     if compatibility_lines:
         sections.append({
@@ -2041,6 +2061,56 @@ def _plugin_parameter_metadata_lines(metadata, *, capabilities=None):
         lines.append("候选来源：" + "、".join(options_sources[:6]))
     if capability_labels:
         lines.append("参数能力：" + "、".join(capability_labels))
+    return lines
+
+
+def _plugin_parameter_layout_lines(metadata):
+    if not isinstance(metadata, dict):
+        return []
+    layout = metadata.get("layout_index") if isinstance(metadata.get("layout_index"), dict) else {}
+    if not layout:
+        return []
+    lines = []
+    groups = [item for item in (layout.get("groups") or []) if isinstance(item, dict)]
+    if groups:
+        lines.append(
+            "参数布局：" + "、".join(
+                str(group.get("title") or group.get("group_key") or "").strip()
+                for group in groups[:6]
+                if str(group.get("title") or group.get("group_key") or "").strip()
+            )
+        )
+    field_order = [str(item or "").strip() for item in (layout.get("field_order") or []) if str(item or "").strip()]
+    if field_order:
+        lines.append("字段顺序：" + "、".join(field_order[:8]))
+    advanced_groups = [
+        str(group.get("title") or group.get("group_key") or "").strip()
+        for group in groups
+        if bool(group.get("advanced")) and str(group.get("title") or group.get("group_key") or "").strip()
+    ]
+    if advanced_groups:
+        lines.append("高级分组：" + "、".join(advanced_groups[:6]))
+    return lines
+
+
+def _plugin_parameter_ui_hint_lines(metadata):
+    if not isinstance(metadata, dict):
+        return []
+    ui_hints = metadata.get("ui_hints") if isinstance(metadata.get("ui_hints"), dict) else {}
+    if not ui_hints:
+        return []
+    lines = []
+    field_count = int(ui_hints.get("field_count") or len(ui_hints.get("fields") or []))
+    lines.append(f"参数UI提示：{field_count} 个字段")
+    for key, label in [
+        ("advanced_fields", "高级字段"),
+        ("warning_fields", "警告字段"),
+        ("placeholder_fields", "占位提示"),
+        ("numeric_fields", "数值约束"),
+        ("width_hint_fields", "宽度提示"),
+    ]:
+        values = [str(item).strip() for item in (ui_hints.get(key) or []) if str(item).strip()]
+        lines.append(f"{label}：{len(values)} 个")
     return lines
 
 

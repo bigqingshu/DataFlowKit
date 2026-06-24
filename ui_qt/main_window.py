@@ -979,6 +979,45 @@ class QtWorkflowMainWindow:
                 lines.append("兼容提示：" + "；".join(compatibility_warnings[:3]))
         if config_actions:
             lines.append("配置动作：" + "、".join(str(item.get("label") or item.get("action_id") or "") for item in config_actions[:6]))
+        parameter_metadata = described.get("parameter_metadata") if isinstance(described.get("parameter_metadata"), dict) else {}
+        layout_index = parameter_metadata.get("layout_index") if isinstance(parameter_metadata.get("layout_index"), dict) else {}
+        ui_hints = parameter_metadata.get("ui_hints") if isinstance(parameter_metadata.get("ui_hints"), dict) else {}
+        if layout_index:
+            group_order = [
+                str(group.get("title") or "").strip()
+                for group in (layout_index.get("groups") or [])
+                if isinstance(group, dict) and str(group.get("title") or "").strip()
+            ]
+            if group_order:
+                lines.append("参数布局：" + "、".join(group_order[:6]))
+            advanced_groups = [
+                str(group.get("title") or "").strip()
+                for group in (layout_index.get("groups") or [])
+                if isinstance(group, dict) and bool(group.get("advanced")) and str(group.get("title") or "").strip()
+            ]
+            if advanced_groups:
+                lines.append("高级分组：" + "、".join(advanced_groups[:6]))
+        if ui_hints:
+            hint_fields = [
+                str(item.get("label") or item.get("field_key") or "").strip()
+                for item in (ui_hints.get("fields") or [])
+                if isinstance(item, dict) and str(item.get("label") or item.get("field_key") or "").strip()
+            ]
+            if hint_fields:
+                lines.append("参数提示：" + "、".join(hint_fields[:6]))
+            hint_parts = []
+            for key, label in [
+                ("advanced_fields", "高级字段"),
+                ("warning_fields", "警告字段"),
+                ("placeholder_fields", "占位提示"),
+                ("numeric_fields", "数值约束"),
+                ("width_hint_fields", "宽度提示"),
+            ]:
+                values = [str(item) for item in (ui_hints.get(key) or []) if str(item).strip()]
+                if values:
+                    hint_parts.append(f"{label} {len(values)} 个")
+            if hint_parts:
+                lines.append("参数UI提示：" + "；".join(hint_parts[:6]))
         if not lines:
             return
         body = "<br>".join(html.escape(line) for line in lines if line)
