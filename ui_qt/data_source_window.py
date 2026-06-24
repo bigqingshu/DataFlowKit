@@ -252,6 +252,7 @@ class DataSourceManagerWindow:
         if self.current_table_is_partial:
             return
         self.dirty = True
+        self._refresh_data_action_controls()
         self._refresh_table_shape_status()
 
     def _refresh_table_shape_status(self, *, title=""):
@@ -311,9 +312,7 @@ class DataSourceManagerWindow:
         self.prev_page_button.setEnabled(self.current_table_is_partial and self.page_offset > 0)
         self.next_page_button.setEnabled(self.current_table_is_partial and self.page_has_more)
         self.load_full_table_button.setEnabled(can_page)
-        self.promote_header_button.setEnabled(not self.current_table_is_partial)
-        self.save_button.setEnabled(not self.current_table_is_partial)
-        self.edit_mode_checkbox.setEnabled(not self.current_table_is_partial)
+        self._refresh_data_action_controls()
         if self.current_table_is_partial and self.edit_mode_checkbox.isChecked():
             self.edit_mode_checkbox.blockSignals(True)
             self.edit_mode_checkbox.setChecked(False)
@@ -334,6 +333,38 @@ class DataSourceManagerWindow:
             self.page_status_label.setText("分页预览：当前为完整表")
         else:
             self.page_status_label.setText("分页预览：未载入")
+
+    def _data_source_action_state(self, *, source=None):
+        try:
+            actions = self.engine_client.describe_data_source_actions(
+                self.current_table(),
+                source=source if source is not None else self.current_source,
+                dirty=self.dirty,
+            )
+        except Exception:
+            return {}
+        return copy.deepcopy((actions.get("action_state") or {}).get("actions") or {})
+
+    @staticmethod
+    def _action_enabled(actions, action_id, default=False):
+        action = actions.get(action_id) if isinstance(actions, dict) else {}
+        if not isinstance(action, dict):
+            return bool(default)
+        return bool(action.get("enabled", default))
+
+    def _refresh_data_action_controls(self):
+        if not hasattr(self, "save_button"):
+            return
+        actions = self._data_source_action_state()
+        selected_actions = self._data_source_action_state(source=self._selected_sqlite_source() or self.current_source)
+        editable_table = not self.current_table_is_partial
+        self.clear_button.setEnabled(self._action_enabled(actions, "clear_table"))
+        self.promote_header_button.setEnabled(editable_table and self._action_enabled(actions, "promote_first_row"))
+        self.search_button.setEnabled(self._action_enabled(actions, "search_table"))
+        self.save_button.setEnabled(editable_table and self._action_enabled(actions, "save_sqlite"))
+        self.apply_input_button.setEnabled(self._action_enabled(actions, "apply_to_workflow"))
+        self.edit_mode_checkbox.setEnabled(editable_table and self._action_enabled(actions, "patch_cell"))
+        self.delete_table_button.setEnabled(self._action_enabled(selected_actions, "delete_sqlite"))
 
     def _populate_save_modes(self):
         try:
