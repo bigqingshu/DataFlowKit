@@ -506,6 +506,22 @@ class QtHeadlessEngineClient:
             confirmed=confirmed,
         )
 
+    def describe_advanced_filter_service(self):
+        return self.engine.describe_advanced_filter_service()
+
+    def describe_advanced_filter_state(self, state=None, *, selected_tables=None, columns_by_table=None):
+        return self.engine.describe_advanced_filter_state(
+            copy.deepcopy(state),
+            selected_tables=copy.deepcopy(selected_tables),
+            columns_by_table=copy.deepcopy(columns_by_table),
+        )
+
+    def apply_advanced_filter_command(self, state=None, command=None):
+        return self.engine.apply_advanced_filter_command(
+            copy.deepcopy(state or {}),
+            copy.deepcopy(command or {}),
+        )
+
     def build_table_access(self, node):
         return self.engine.build_table_access(copy.deepcopy(node))
 

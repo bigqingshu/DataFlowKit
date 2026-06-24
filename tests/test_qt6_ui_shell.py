@@ -1586,6 +1586,22 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(option_result["schema_version"], "filter_config_options.v1")
         self.assertEqual(option_result["choices"], ["当前表.Code", "people.Code", "people.Name"])
 
+        advanced_service = client.describe_advanced_filter_service()
+        advanced_state = client.describe_advanced_filter_state(
+            selected_tables=["people"],
+            columns_by_table={"people": ["Code", "Name"]},
+        )
+        advanced_command = client.apply_advanced_filter_command(
+            advanced_state["state"],
+            {"type": "add_all_output_fields"},
+        )
+        self.assertTrue(advanced_service["ok"])
+        self.assertIn("save_preview_to_table", advanced_service["commands"])
+        self.assertTrue(advanced_state["ok"])
+        self.assertEqual(advanced_state["state"]["field_display_cache"], ["people.Code", "people.Name"])
+        self.assertTrue(advanced_command["ok"])
+        self.assertEqual(advanced_command["state"]["output_fields"], ["people.Code", "people.Name"])
+
     def test_facade_describes_confirmation_prompts(self):
         client = QtHeadlessEngineClient()
 
