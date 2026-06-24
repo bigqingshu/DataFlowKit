@@ -948,12 +948,24 @@ class WorkflowFacade:
         selected_index = selected[0] if len(selected) == 1 else None
         has_nodes = bool(nodes)
         has_selection = bool(selected)
+        selected_node = nodes[selected_index] if selected_index is not None else {}
+        selected_node_type_id = str((selected_node or {}).get("node_type_id") or "").strip()
+        selected_plugin_node = selected_node_type_id.startswith("plugin.")
 
         actions = {
             "add_node": {"enabled": not is_running},
             "refresh_catalog": {"enabled": not is_running},
             "refresh_plugins": {"enabled": not is_running},
-            "legacy_plugin_config": {"enabled": selected_index is not None and not is_running},
+            "legacy_plugin_config": {
+                "enabled": selected_plugin_node and not is_running,
+                "kind": "compatibility",
+                "fallback": True,
+                "deprecated": True,
+                "preferred": False,
+                "ui_role": "fallback_action",
+                "ui_prominence": "low",
+                "ui_placement": "compatibility_menu",
+            },
             "delete_nodes": {"enabled": has_selection and not is_running},
             "move_node_up": {"enabled": selected_index is not None and selected_index > 0 and not is_running},
             "move_node_down": {"enabled": selected_index is not None and selected_index < len(nodes) - 1 and not is_running},

@@ -323,7 +323,7 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertIn("警告协议：config_warning", controller.node_detail_sections.toPlainText())
             self.assertIn("字段 code、message、view_id、field、path", controller.node_detail_sections.toPlainText())
             self.assertIn("Demo Items 需要确认（视图 demo.items；字段 items.enabled；路径 /views/demo.items/fields/items.enabled；配置 items.enabled；代码 demo_items_warning）", controller.node_detail_sections.toPlainText())
-            self.assertIn("兼容动作：打开旧版插件设置", controller.node_detail_sections.toPlainText())
+            self.assertIn("兼容动作：兼容旧版设置", controller.node_detail_sections.toPlainText())
             self.assertIn("兼容状态：生命周期 legacy_fallback", controller.node_detail_sections.toPlainText())
             self.assertIn("迁移目标 describe_config + parameter_metadata + config_patch", controller.node_detail_sections.toPlainText())
             self.assertIn("退场条件 插件已提供等价 schema/patch 配置能力且目标 UI 已完成承接", controller.node_detail_sections.toPlainText())
@@ -333,6 +333,10 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertIn("schema/patch", controller.legacy_plugin_config_button.toolTip())
             self.assertIn("模式：legacy_fallback", controller.legacy_plugin_config_button.toolTip())
             self.assertIn("生命周期：legacy_fallback", controller.legacy_plugin_config_button.toolTip())
+            self.assertIn("建议位置：compatibility_menu", controller.legacy_plugin_config_button.toolTip())
+            self.assertIn("显示优先级：low", controller.legacy_plugin_config_button.toolTip())
+            self.assertIn("推荐主入口：否", controller.legacy_plugin_config_button.toolTip())
+            self.assertIn("打开前建议提示兼容风险", controller.legacy_plugin_config_button.toolTip())
             self.assertIn("迁移目标：describe_config + parameter_metadata + config_patch", controller.legacy_plugin_config_button.toolTip())
             self.assertIn("配置动作：编辑 Demo Items", controller.node_detail_sections.toPlainText())
             self.assertFalse(controller.plugin_config_view_tabs.isHidden())
@@ -1083,8 +1087,19 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertFalse(idle_actions["actions"]["move_node_down"]["enabled"])
         self.assertTrue(idle_actions["actions"]["apply_node_config"]["enabled"])
         self.assertTrue(idle_actions["actions"]["refresh_plugins"]["enabled"])
-        self.assertTrue(idle_actions["actions"]["legacy_plugin_config"]["enabled"])
+        self.assertFalse(idle_actions["actions"]["legacy_plugin_config"]["enabled"])
+        self.assertTrue(idle_actions["actions"]["legacy_plugin_config"]["fallback"])
+        self.assertFalse(idle_actions["actions"]["legacy_plugin_config"]["preferred"])
+        self.assertEqual(idle_actions["actions"]["legacy_plugin_config"]["ui_placement"], "compatibility_menu")
         self.assertFalse(idle_actions["actions"]["cancel_job"]["enabled"])
+
+        plugin_actions = client.describe_workflow_actions(
+            plan={"nodes": [{"node_type_id": "plugin.demo", "config": {"plugin_id": "demo"}}]},
+            selected_indexes=[0],
+            is_running=False,
+        )
+        self.assertTrue(plugin_actions["actions"]["legacy_plugin_config"]["enabled"])
+        self.assertEqual(plugin_actions["actions"]["legacy_plugin_config"]["ui_prominence"], "low")
 
         running_actions = client.describe_workflow_actions(
             plan=SAMPLE_PLAN,

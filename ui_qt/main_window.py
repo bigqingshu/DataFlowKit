@@ -402,7 +402,7 @@ class QtWorkflowMainWindow:
         )
         self.apply_config_button = qt.QtWidgets.QPushButton("应用节点配置")
         self.apply_config_button.clicked.connect(lambda checked=False: self.apply_node_config())
-        self.legacy_plugin_config_button = qt.QtWidgets.QPushButton("打开旧版插件设置")
+        self.legacy_plugin_config_button = qt.QtWidgets.QPushButton("兼容旧版设置")
         self.legacy_plugin_config_button.clicked.connect(lambda checked=False: self.open_legacy_plugin_config())
         self.legacy_plugin_config_button.setVisible(False)
         config_button_row = qt.QtWidgets.QHBoxLayout()
@@ -2206,12 +2206,23 @@ class QtWorkflowMainWindow:
         lifecycle_parts = []
         mode = str(legacy_state.get("mode") or "").strip()
         lifecycle = str(legacy_state.get("lifecycle") or custom_window.get("lifecycle") or "").strip()
+        ui_placement = str(legacy_state.get("ui_placement") or custom_window.get("ui_placement") or "").strip()
+        ui_prominence = str(legacy_state.get("ui_prominence") or custom_window.get("ui_prominence") or "").strip()
+        preferred = bool(legacy_state.get("preferred", custom_window.get("preferred", False)))
+        requires_confirmation = bool(legacy_state.get("requires_confirmation", custom_window.get("requires_confirmation", False)))
         migration_target = str(legacy_state.get("migration_target") or custom_window.get("migration_target") or "").strip()
         remove_when = str(legacy_state.get("remove_when") or custom_window.get("remove_when") or "").strip()
         if mode:
             lifecycle_parts.append(f"模式：{mode}")
         if lifecycle:
             lifecycle_parts.append(f"生命周期：{lifecycle}")
+        if ui_placement:
+            lifecycle_parts.append(f"建议位置：{ui_placement}")
+        if ui_prominence:
+            lifecycle_parts.append(f"显示优先级：{ui_prominence}")
+        lifecycle_parts.append(f"推荐主入口：{'是' if preferred else '否'}")
+        if requires_confirmation:
+            lifecycle_parts.append("打开前建议提示兼容风险")
         if migration_target:
             lifecycle_parts.append(f"迁移目标：{migration_target}")
         if remove_when:
@@ -2221,7 +2232,7 @@ class QtWorkflowMainWindow:
         self.legacy_plugin_config_button.setVisible(visible)
         enabled_default = bool(legacy_state.get("ui_enabled_default", visible))
         self.legacy_plugin_config_button.setEnabled(visible and enabled_default and not bool(self.current_job_id))
-        self.legacy_plugin_config_button.setText(str(legacy_state.get("label") or custom_window.get("label") or "打开旧版插件设置"))
+        self.legacy_plugin_config_button.setText(str(legacy_state.get("label") or custom_window.get("label") or "兼容旧版设置"))
         self.legacy_plugin_config_button.setToolTip(tooltip)
 
     def open_legacy_plugin_config(self):
