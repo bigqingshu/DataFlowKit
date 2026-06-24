@@ -132,6 +132,22 @@ def write_config_options_plugin(root):
     return plugin
 
 
+def write_legacy_only_plugin(root):
+    plugin = Path(root) / "legacy_only_plugin.py"
+    plugin.write_text(
+        "\n".join([
+            "PLUGIN_INFO = {'id': 'legacy_only', 'name': 'Legacy Only', 'api_version': '1.0'}",
+            "PARAMETER_SCHEMA = []",
+            "def open_config_window(parent, current_params, context):",
+            "    return dict(current_params)",
+            "def run(input_data, params, context):",
+            "    return {'ok': True, 'output': input_data}",
+        ]),
+        encoding="utf-8",
+    )
+    return plugin
+
+
 class PluginServiceTests(unittest.TestCase):
     def test_lists_plugins_and_builds_json_safe_schema(self):
         with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:
@@ -199,8 +215,14 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(schema["schema"]["legacy_config_state"], legacy_state)
         compatibility = schema["plugin"]["config_compatibility"]
         self.assertEqual(compatibility["schema_version"], "plugin_config_compatibility.v1")
+        self.assertEqual(compatibility["compatibility_tier"], "B_SCHEMA_FORM")
         self.assertEqual(compatibility["primary_config_path"], "schema_form")
         self.assertEqual(compatibility["ui_recommendation"], "prefer_schema_form")
+        self.assertEqual(compatibility["ui_support"]["schema_version"], "plugin_config_ui_support.v1")
+        self.assertTrue(compatibility["ui_support"]["standard_supported"])
+        self.assertEqual(compatibility["ui_support"]["recommended_entry"], "standard_protocol")
+        self.assertTrue(compatibility["ui_support"]["direct_ui"]["dotnet"])
+        self.assertTrue(compatibility["ui_support"]["direct_ui"]["web"])
         self.assertTrue(compatibility["schema_config"])
         self.assertFalse(compatibility["config_patch"])
         self.assertTrue(compatibility["legacy_custom_config"])
@@ -398,6 +420,28 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(described["resources"][0]["file"], "extended_settings.json")
         self.assertEqual(described["views"][1]["kind"], "resource_list")
 
+    def test_legacy_only_plugin_marks_non_standard_ui_unsupported(self):
+        with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:
+            write_legacy_only_plugin(temp_dir)
+            service = PluginService(plugins_dir=temp_dir, app_dir=temp_dir)
+            schema = service.get_plugin_schema("plugin.legacy_only")
+            described = service.describe_plugin_config("plugin.legacy_only")
+
+        compatibility = schema["plugin"]["config_compatibility"]
+        self.assertEqual(compatibility["compatibility_tier"], "C_LEGACY_REQUIRED")
+        self.assertEqual(compatibility["primary_config_path"], "legacy_custom_config")
+        self.assertTrue(compatibility["legacy_ui_required"])
+        self.assertFalse(compatibility["ui_support"]["standard_supported"])
+        self.assertEqual(compatibility["ui_support"]["recommended_entry"], "legacy_window")
+        self.assertTrue(compatibility["ui_support"]["direct_ui"]["qt"])
+        self.assertFalse(compatibility["ui_support"]["direct_ui"]["dotnet"])
+        self.assertFalse(compatibility["ui_support"]["direct_ui"]["web"])
+        self.assertEqual(described["legacy_config_state"]["mode"], "legacy_required")
+        sections = {section["section_id"]: section for section in described["config_sections"]}
+        compatibility_text = "\n".join(sections["plugin.config_compatibility"]["lines"])
+        self.assertIn("兼容等级 C_LEGACY_REQUIRED", compatibility_text)
+        self.assertIn("可直接支持UI：Tk、Qt", compatibility_text)
+
     def test_plugin_config_description_merges_plugin_extension(self):
         with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:
             plugin = Path(temp_dir) / "protocol_plugin.py"
@@ -524,6 +568,9 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(applied["description"]["summary"]["mode"], "new")
         self.assertEqual(applied["description"]["plugin_extension"]["summary"]["mode"], "new")
         self.assertEqual(applied["description"]["config_compatibility"]["primary_config_path"], "schema_patch")
+        self.assertEqual(applied["description"]["config_compatibility"]["compatibility_tier"], "A_SCHEMA_PATCH")
+        self.assertTrue(applied["description"]["config_compatibility"]["ui_support"]["direct_ui"]["dotnet"])
+        self.assertTrue(applied["description"]["config_compatibility"]["ui_support"]["direct_ui"]["web"])
         self.assertTrue(applied["description"]["config_compatibility"]["config_patch"])
         self.assertFalse(applied["description"]["config_compatibility"]["legacy_custom_config"])
         self.assertFalse(invalid["ok"])

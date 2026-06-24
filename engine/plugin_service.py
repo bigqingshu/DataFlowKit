@@ -1029,10 +1029,26 @@ def _plugin_config_compatibility(item, *, has_custom_config=None, load_status=""
     legacy_fallback = bool(has_custom_config and not legacy_required)
     migration_target = "describe_config + parameter_metadata + config_patch" if has_custom_config else ""
     remove_when = "插件已提供等价 schema/patch 配置能力且目标 UI 已完成承接。" if has_custom_config else ""
+    compatibility_tier = _plugin_config_compatibility_tier(
+        primary_path,
+        schema_config=has_schema,
+        config_description=has_description,
+        config_patch=has_patch,
+        legacy_required=legacy_required,
+    )
     return {
         "schema_version": "plugin_config_compatibility.v1",
+        "compatibility_tier": compatibility_tier,
         "primary_config_path": primary_path,
         "ui_recommendation": recommendation,
+        "ui_support": _plugin_config_ui_support(
+            compatibility_tier,
+            schema_config=has_schema,
+            config_description=has_description,
+            config_patch=has_patch,
+            legacy_custom_config=has_custom_config,
+            legacy_required=legacy_required,
+        ),
         "schema_config": has_schema,
         "config_description": has_description,
         "config_patch": has_patch,
@@ -1044,6 +1060,54 @@ def _plugin_config_compatibility(item, *, has_custom_config=None, load_status=""
         "migration_target": migration_target,
         "remove_when": remove_when,
         "external_only": str(load_status or item.get("load_status") or "") == "仅独立环境运行",
+    }
+
+
+def _plugin_config_compatibility_tier(
+    primary_path,
+    *,
+    schema_config=False,
+    config_description=False,
+    config_patch=False,
+    legacy_required=False,
+):
+    if config_patch and config_description:
+        return "A_SCHEMA_PATCH"
+    if config_description:
+        return "A_DESCRIBE_CONFIG"
+    if schema_config:
+        return "B_SCHEMA_FORM"
+    if legacy_required or primary_path == "legacy_custom_config":
+        return "C_LEGACY_REQUIRED"
+    return "D_METADATA_REQUIRED"
+
+
+def _plugin_config_ui_support(
+    compatibility_tier,
+    *,
+    schema_config=False,
+    config_description=False,
+    config_patch=False,
+    legacy_custom_config=False,
+    legacy_required=False,
+):
+    standard_supported = bool(schema_config or config_description or config_patch)
+    direct_ui = {
+        "tk": bool(standard_supported or legacy_custom_config),
+        "qt": bool(standard_supported or legacy_custom_config),
+        "dotnet": bool(standard_supported),
+        "web": bool(standard_supported),
+        "electron": bool(standard_supported),
+    }
+    return {
+        "schema_version": "plugin_config_ui_support.v1",
+        "compatibility_tier": compatibility_tier,
+        "standard_supported": standard_supported,
+        "legacy_supported": bool(legacy_custom_config),
+        "legacy_required": bool(legacy_required),
+        "direct_ui": direct_ui,
+        "recommended_entry": "standard_protocol" if standard_supported else ("legacy_window" if legacy_required else "unavailable"),
+        "unsupported_ui_reason": "" if standard_supported else "插件缺少 schema/describe_config/patch 配置协议。",
     }
 
 
@@ -1990,10 +2054,32 @@ def _plugin_config_compatibility_lines(compatibility):
     )
     primary_path = str(compatibility.get("primary_config_path") or "").strip()
     recommendation = str(compatibility.get("ui_recommendation") or "").strip()
+    compatibility_tier = str(compatibility.get("compatibility_tier") or "").strip()
     if primary_path:
         line = f"主配置路径：{primary_path}"
         if recommendation:
             line += f"；UI建议 {recommendation}"
+        if compatibility_tier:
+            line += f"；兼容等级 {compatibility_tier}"
+        lines.append(line)
+    ui_support = compatibility.get("ui_support") if isinstance(compatibility.get("ui_support"), dict) else {}
+    direct_ui = ui_support.get("direct_ui") if isinstance(ui_support.get("direct_ui"), dict) else {}
+    supported_ui = [
+        label
+        for key, label in [
+            ("tk", "Tk"),
+            ("qt", "Qt"),
+            ("dotnet", ".NET"),
+            ("web", "Web"),
+            ("electron", "Electron"),
+        ]
+        if direct_ui.get(key)
+    ]
+    if supported_ui:
+        entry = str(ui_support.get("recommended_entry") or "").strip()
+        line = "可直接支持UI：" + "、".join(supported_ui)
+        if entry:
+            line += f"；推荐入口 {entry}"
         lines.append(line)
     if legacy_state.get("available"):
         lines.append(
