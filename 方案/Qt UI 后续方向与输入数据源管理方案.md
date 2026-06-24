@@ -182,7 +182,8 @@ Qt 主窗口只持有当前工作流输入：
 当前剩余重点已经从“先有没有服务”转为：
 
 - Qt 是否充分消费 `data_source_service.v1` 和 action schema，而不是继续手写按钮状态。
-- Qt / `.NET` / Web 是否消费 `data_source_manager_layout.v1` 和 `data_source_manager_ui_hints.v1`，而不是各自重新设计窗口区域与按钮优先级。
+- Qt 已开始消费 `data_source_manager_layout.v1` 和 `data_source_manager_ui_hints.v1`，数据源管理窗口控件会记录 section/action/prominence，按钮提示也来自共享 payload；后续重点是继续减少按钮状态和区域组织硬编码。
+- `.NET` / Web 应消费同一份 `data_source_manager_layout.v1 / data_source_manager_ui_hints.v1`，而不是各自重新设计窗口区域与按钮优先级。
 - Qt 是否把大表路径更多切到 `table_actions` 中的 table handle/page。
 - 输入数据库路径、工作区数据库路径、输出数据库路径是否继续拆清。
 - `.NET` / Web 是否只依赖 stdio/headless payload，不复用 Python UI 代码。
@@ -223,17 +224,18 @@ Qt 主窗口只持有当前工作流输入：
 
 ### 第四阶段：大表和多 UI 兼容
 
-当前状态：**后端与 stdio 已具备基础，Qt 和 .NET/Web 消费方式还需继续推进**
+当前状态：**后端与 stdio 已具备基础，Qt 已开始消费 manager layout/ui_hints，.NET/Web 消费方式还需继续推进**
 
 - 大表载入改用 table handle / 分页。
 - stdio worker 暴露同一批数据源动作。
 - `data_source_manager_state.v1` 已携带 manager layout 与 UI hints，后续 UI 可以按协议组织顶部工具栏、数据库行、载入表行、分页行、保存行、搜索行、表格区和状态区。
+- Qt 数据源窗口已把 manager layout / UI hints 映射到控件属性和 tooltip，后续应继续把按钮状态、区域显示、危险操作确认也压向共享 action payload。
 - .NET UI 只调用 stdio worker，不复用 Python UI 代码。
 - Qt 和 .NET 的数据源窗口共享同一套 payload 和行为规则。
 
 下一步建议拆成两块：
 
-1. Qt 侧优先改为从 `describe_data_source_service` 与 `data_source_manager_state` 获取能力、动作、布局与提示说明，减少按钮逻辑硬编码。
+1. Qt 侧继续从 `describe_data_source_service` 与 `data_source_manager_state` 获取能力、动作、布局与提示说明，减少按钮逻辑和危险提示硬编码。
 2. 大表载入路径优先使用 table handle/page，避免后续 `.NET` / Web 一开始就复制整表传输模式。
 
 ## 9. 风险点

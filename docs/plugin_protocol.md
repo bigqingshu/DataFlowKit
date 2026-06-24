@@ -414,6 +414,16 @@ editor_kind:
 
 Qt 已能按这些字段重排插件配置页签、默认切到推荐视图，并把视图说明合并到 tab tooltip。后续 .NET/Web 应优先消费同一批字段，而不是复制 Qt 当前布局。
 
+对于只有 `PARAMETER_SCHEMA`、没有自定义复杂 `describe_config().layout/ui_hints` 的普通参数型插件，`PluginService.describe_plugin_config()` 会生成默认：
+
+- `layout.schema_version: plugin_config_layout.v1`
+- `layout.default_view_id: plugin.params`
+- `layout.view_order / primary_views / secondary_views / parameter_groups / compatibility_action_ids`
+- `ui_hints.schema_version: plugin_config_ui_hints.v1`
+- `ui_hints.parameter_field_hints`：透传 `plugin_parameter_ui_hints.v1`，用于字段 warning、placeholder、empty_text、advanced、unit/min/step 等提示
+
+Qt 已将 `parameter_field_hints` 合并到参数表单 schema；其他 UI 应按同样方式渲染标准参数表单，而不是只读取 `PARAMETER_SCHEMA` 的基础字段。
+
 ### 12.1 旧 Tk 配置窗口 fallback 退场规则
 
 `open_config_window(parent, current_params, context)` 仍可保留，但只能作为兼容入口。`describe_plugin_config` 返回的兼容动作会带有：
