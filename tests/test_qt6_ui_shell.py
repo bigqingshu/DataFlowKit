@@ -520,6 +520,55 @@ class Qt6UiShellTests(unittest.TestCase):
         window.close()
         app.processEvents()
 
+    def test_plugin_config_patch_status_uses_patch_result(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+        captured = []
+
+        def apply_patch(plugin_id, *, patch=None, config=None, input_table=None, context=None):
+            captured.append({
+                "plugin_id": plugin_id,
+                "patch": copy.deepcopy(patch or {}),
+                "config": copy.deepcopy(config or {}),
+            })
+            return {
+                "ok": True,
+                "message": "旧消息",
+                "patch_result": {
+                    "schema_version": "plugin_config_patch_result.v1",
+                    "status_message": "协议状态消息",
+                },
+                "config": {"plugin_id": "demo", "params": {"mode": "new"}},
+            }
+
+        controller.engine_client.apply_plugin_config_patch = apply_patch
+        controller.current_plan = {
+            "plan_name": "demo",
+            "nodes": [{
+                "node_type_id": "plugin.demo",
+                "config": {"plugin_id": "demo", "params": {"mode": "old"}},
+            }],
+        }
+        controller.node_list.clear()
+        controller.node_list.addItem("插件 / Demo")
+        controller.node_list.setCurrentRow(0)
+        controller.config_form.to_node = lambda: copy.deepcopy(controller.current_plan["nodes"][0])
+        controller.refresh_node_list = lambda: None
+        controller.show_node_config = lambda index: None
+
+        controller._apply_plugin_config_patch({"operation": "set_param", "key": "mode", "value": "new"})
+
+        self.assertEqual(captured[0]["plugin_id"], "demo")
+        self.assertEqual(controller.current_plan["nodes"][0]["config"]["params"]["mode"], "new")
+        self.assertEqual(controller.status_bar.currentMessage(), "协议状态消息")
+        window.close()
+        app.processEvents()
+
     def test_plugin_structured_list_edits_item_schema_columns_as_update_patch(self):
         try:
             qt = qt_app.load_qt6()

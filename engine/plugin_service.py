@@ -400,12 +400,21 @@ class PluginService:
             plugins_dir=plugins_dir,
         )
         applied_patch = copy.deepcopy(result.get("patch") or validation.get("patch") or patch_payload)
+        patch_result = _plugin_config_patch_result(
+            plugin_id=key,
+            patch=applied_patch,
+            changed=bool(result.get("changed", updated_config != current_config)),
+            message=str(result.get("message") or "插件配置已更新"),
+            description=described,
+            issues=result.get("issues") or [],
+        )
         return {
             "ok": True,
             "plugin_id": key,
             "patch": applied_patch,
-            "changed": bool(result.get("changed", updated_config != current_config)),
-            "message": str(result.get("message") or "插件配置已更新"),
+            "changed": patch_result["changed"],
+            "message": patch_result["message"],
+            "patch_result": patch_result,
             "params": copy.deepcopy(updated_config.get("params", {}) or {}),
             "config": updated_config,
             "description": described,
@@ -1270,6 +1279,74 @@ def _plugin_config_sections(
             "lines": compatibility_lines,
         })
     return sections
+
+
+def _plugin_config_patch_result(*, plugin_id="", patch=None, changed=False, message="", description=None, issues=None):
+    patch_payload = copy.deepcopy(patch or {})
+    description_payload = description if isinstance(description, dict) else {}
+    config_effect = description_payload.get("config_effect") if isinstance(description_payload.get("config_effect"), dict) else {}
+    status_message = str(message or "插件配置已更新").strip() or "插件配置已更新"
+    operation = str(patch_payload.get("operation") or "").strip()
+    view_id = str(patch_payload.get("view_id") or "").strip()
+    editor_kind = str(patch_payload.get("editor_kind") or "").strip()
+    section = str(patch_payload.get("section") or "").strip()
+    target_index = patch_payload.get("target_index")
+    result = {
+        "schema_version": "plugin_config_patch_result.v1",
+        "plugin_id": str(plugin_id or "").strip(),
+        "ok": True,
+        "changed": bool(changed),
+        "message": status_message,
+        "status_message": status_message,
+        "patch": patch_payload,
+        "patch_summary": {
+            "operation": operation,
+            "view_id": view_id,
+            "editor_kind": editor_kind,
+            "section": section,
+            "target_index": target_index,
+            "action_id": str(patch_payload.get("action_id") or "").strip(),
+        },
+        "description_summary": {
+            "schema_version": str(description_payload.get("config_schema_version") or description_payload.get("schema_version") or ""),
+            "protocol_family": str(description_payload.get("protocol_family") or ""),
+            "config_key": str(description_payload.get("config_key") or ""),
+            "view_count": len(description_payload.get("views") or []),
+            "action_count": len(description_payload.get("actions") or []),
+            "warning_count": len(description_payload.get("warning_items") or []),
+            "section_count": len(description_payload.get("config_sections") or []),
+            "summary": copy.deepcopy(description_payload.get("summary") or {}),
+        },
+        "config_effect_summary": _plugin_config_effect_summary(config_effect) if config_effect.get("ok") else {},
+        "issues": copy.deepcopy(issues or []),
+    }
+    if operation:
+        operation_label = _plugin_patch_operation_label(operation)
+        target_parts = []
+        if section:
+            target_parts.append(section)
+        if target_index is not None:
+            target_parts.append(f"第 {target_index} 项")
+        if target_parts:
+            result["display_summary"] = f"{operation_label}：{' / '.join(str(part) for part in target_parts)}"
+        else:
+            result["display_summary"] = operation_label
+    else:
+        result["display_summary"] = status_message
+    return result
+
+
+def _plugin_patch_operation_label(operation):
+    return {
+        "append_item": "新增配置项",
+        "update_item": "更新配置项",
+        "replace_item": "替换配置项",
+        "delete_item": "删除配置项",
+        "remove_item": "移除配置项",
+        "set_enabled": "切换启用状态",
+        "move_item": "移动配置项",
+        "set_param": "更新参数",
+    }.get(str(operation or "").strip(), str(operation or "").strip() or "配置修改")
 
 
 def _plugin_config_views_with_action_state(views, actions=None):

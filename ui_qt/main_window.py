@@ -1923,7 +1923,13 @@ class QtWorkflowMainWindow:
         self.refresh_node_list()
         self.node_list.setCurrentRow(index)
         self.show_node_config(index)
-        self.status_bar.showMessage(str(result.get("message") or "插件配置已更新。"))
+        patch_result = result.get("patch_result") if isinstance(result.get("patch_result"), dict) else {}
+        self.status_bar.showMessage(str(
+            patch_result.get("status_message")
+            or patch_result.get("message")
+            or result.get("message")
+            or "插件配置已更新。"
+        ))
 
     def _make_plugin_resource_list_widget(self, view, described):
         qt = self.qt
