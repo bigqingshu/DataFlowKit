@@ -1740,6 +1740,79 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertGreaterEqual(form.config_fields["params.path"]["editor"].minimumWidth(), 260)
         app.processEvents()
 
+    def test_config_form_uses_parameter_metadata_as_fallback_groups(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        schema = {
+            "parameter_metadata": {
+                "schema_version": "plugin_parameters.v1",
+                "plugin_id": "demo",
+                "field_count": 2,
+                "fields": [
+                    {
+                        "key": "params.mode",
+                        "config_path": ["params", "mode"],
+                        "label": "模式",
+                        "type": "select",
+                        "choices": ["快", "稳"],
+                        "default": "快",
+                    },
+                    {
+                        "key": "params.path",
+                        "config_path": ["params", "path"],
+                        "label": "目录",
+                        "type": "text",
+                        "placeholder": "选择插件目录",
+                        "default": "data",
+                    },
+                ],
+                "group_index": {
+                    "plugin.parameters": {
+                        "title": "插件参数",
+                        "advanced": False,
+                        "field_keys": ["params.mode", "params.path"],
+                    },
+                },
+                "layout_index": {
+                    "schema_version": "plugin_parameter_layout.v1",
+                    "field_order": ["params.mode", "params.path"],
+                    "group_order": ["plugin.parameters"],
+                    "groups": [
+                        {
+                            "group_key": "plugin.parameters",
+                            "title": "插件参数",
+                            "advanced": False,
+                            "field_keys": ["params.mode", "params.path"],
+                            "field_count": 2,
+                        },
+                    ],
+                },
+            },
+        }
+        node = {
+            "node_type_id": "plugin.demo",
+            "node_id": "n1",
+            "name": "Demo",
+            "enabled": True,
+            "node_version": "1.0.0",
+            "config": {},
+        }
+        form = NodeConfigForm(qt)
+        form.set_node(node, schema=schema)
+
+        self.assertIn("params.mode", form.config_fields)
+        self.assertIn("params.path", form.config_fields)
+        self.assertEqual(form.config_fields["params.mode"]["kind"], "choice")
+        self.assertEqual(form.config_fields["params.path"]["kind"], "text")
+        self.assertEqual(form.config_fields["params.mode"]["editor"].currentText(), "快")
+        self.assertEqual(form.config_fields["params.path"]["editor"].text(), "data")
+        self.assertEqual(form.config_fields["params.path"]["editor"].placeholderText(), "选择插件目录")
+        self.assertEqual(form.to_node()["config"]["params"]["path"], "data")
+        app.processEvents()
+
     def test_config_form_exposes_schema_action_buttons(self):
         try:
             qt = qt_app.load_qt6()

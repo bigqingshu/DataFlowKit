@@ -315,15 +315,15 @@ class NodeConfigForm:
         config = self.node.get("config", {}) or {}
         if not isinstance(config, dict):
             config = {}
+        schema_groups = self._build_schema_config_groups(config)
+        if schema_groups is not None:
+            return schema_groups
+
         if not config:
             group = self.qt.QtWidgets.QGroupBox("参数")
             form = self._form_layout(group)
             form.addRow("", self.qt.QtWidgets.QLabel(""))
             return [group]
-
-        schema_groups = self._build_schema_config_groups(config)
-        if schema_groups is not None:
-            return schema_groups
 
         groups = []
         used = set()
@@ -343,7 +343,7 @@ class NodeConfigForm:
         form_schema = self.schema.get("form", {}) if isinstance(self.schema, dict) else {}
         schema_groups = form_schema.get("groups", []) if isinstance(form_schema, dict) else []
         if not isinstance(schema_groups, list) or not schema_groups:
-            return None
+            return self._build_parameter_metadata_config_groups(config)
 
         groups = []
         used = set()
@@ -365,6 +365,76 @@ class NodeConfigForm:
         if remaining:
             groups.append(self._build_config_group("其他参数", config, remaining))
         return groups
+
+    def _build_parameter_metadata_config_groups(self, config):
+        metadata = self.schema.get("parameter_metadata") if isinstance(self.schema, dict) else {}
+        if not isinstance(metadata, dict) or not metadata:
+            return None
+
+        field_specs = {}
+        for field_spec in metadata.get("fields") or []:
+            if not isinstance(field_spec, dict):
+                continue
+            key = str(field_spec.get("key") or "").strip()
+            if not key:
+                continue
+            field_specs[key] = copy.deepcopy(field_spec)
+        if not field_specs:
+            return None
+
+        layout_index = metadata.get("layout_index") if isinstance(metadata.get("layout_index"), dict) else {}
+        group_index = metadata.get("group_index") if isinstance(metadata.get("group_index"), dict) else {}
+        layout_groups = [item for item in (layout_index.get("groups") or []) if isinstance(item, dict)]
+        if not layout_groups:
+            group_order = [
+                str(item or "").strip()
+                for item in (layout_index.get("group_order") or [])
+                if str(item or "").strip()
+            ]
+            for group_key in group_order:
+                group_spec = group_index.get(group_key)
+                if not isinstance(group_spec, dict):
+                    continue
+                layout_groups.append({
+                    "group_key": group_key,
+                    "title": group_spec.get("title") or group_key,
+                    "advanced": bool(group_spec.get("advanced")),
+                    "field_keys": list(group_spec.get("field_keys") or []),
+                })
+        if not layout_groups:
+            layout_groups = [{
+                "group_key": "plugin.parameters",
+                "title": "插件参数",
+                "advanced": False,
+                "field_keys": list(layout_index.get("field_order") or list(field_specs.keys())),
+            }]
+
+        groups = []
+        used = set()
+        for group_spec in layout_groups:
+            field_keys = [
+                str(key or "").strip()
+                for key in (group_spec.get("field_keys") or [])
+                if str(key or "").strip()
+            ]
+            if not field_keys:
+                continue
+            field_group = []
+            for key in field_keys:
+                field_spec = field_specs.get(key)
+                if field_spec is None:
+                    continue
+                if self._field_value_exists(config, field_spec, key):
+                    field_group.append(field_spec)
+                    self._mark_used_config_path(used, field_spec, key)
+            if field_group:
+                title = str(group_spec.get("title") or "参数").strip() or "参数"
+                groups.append(self._build_config_group(title, config, field_group))
+
+        remaining = [key for key in config.keys() if key not in used]
+        if remaining:
+            groups.append(self._build_config_group("其他参数", config, remaining))
+        return groups or None
 
     def _build_config_group(self, title, config, fields):
         group = self.qt.QtWidgets.QGroupBox(title or "参数")
