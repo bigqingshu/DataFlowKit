@@ -683,6 +683,76 @@ class Qt6UiShellTests(unittest.TestCase):
         window.close()
         app.processEvents()
 
+    def test_plugin_config_views_use_protocol_layout_and_ui_hints(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+
+        described = {
+            "ok": True,
+            "layout": {
+                "schema_version": "DataFlowKit.visual_mapping.layout.v1",
+                "default_view_id": "demo.rules",
+                "view_order": ["demo.overview", "demo.rules", "demo.advanced"],
+                "primary_views": ["demo.overview", "demo.rules"],
+                "advanced_views": ["demo.advanced"],
+                "preferred_navigation": "tabs",
+            },
+            "ui_hints": {
+                "schema_version": "DataFlowKit.visual_mapping.ui_hints.v1",
+                "navigation": "tabs",
+                "density": "compact",
+                "display_mode": "workflow_panel",
+                "view_hints": {
+                    "demo.rules": {
+                        "title": "协议规则",
+                        "description": "按协议默认打开规则。",
+                        "empty_text": "暂无规则。",
+                        "primary_action": "demo.edit.rules",
+                        "role": "primary_editor",
+                    },
+                    "demo.advanced": {
+                        "description": "高级设置。",
+                    },
+                },
+            },
+            "views": [
+                {"view_id": "demo.advanced", "kind": "summary", "title": "高级", "summary": {"状态": "advanced"}},
+                {
+                    "view_id": "demo.rules",
+                    "kind": "structured_list",
+                    "title": "规则",
+                    "items": [{"id": "rule_1", "name": "第一条"}],
+                    "columns": [{"key": "name", "label": "名称"}],
+                },
+                {"view_id": "demo.overview", "kind": "summary", "title": "概览", "summary": {"状态": "ok"}},
+            ],
+        }
+
+        controller._render_plugin_config_views(described)
+        titles = [
+            controller.plugin_config_view_tabs.tabText(index)
+            for index in range(controller.plugin_config_view_tabs.count())
+        ]
+
+        self.assertEqual(titles, ["概览", "协议规则", "高级"])
+        self.assertEqual(controller.plugin_config_view_tabs.currentIndex(), 1)
+        tooltip = controller.plugin_config_view_tabs.tabToolTip(1)
+        self.assertIn("按协议默认打开规则", tooltip)
+        self.assertIn("空状态：暂无规则。", tooltip)
+        self.assertIn("主动作：demo.edit.rules", tooltip)
+
+        controller._append_plugin_config_detail(described)
+        detail_text = controller.node_detail_sections.toPlainText()
+        self.assertIn("插件配置布局：默认视图 demo.rules", detail_text)
+        self.assertIn("插件UI提示：导航 tabs", detail_text)
+        window.close()
+        app.processEvents()
+
     def test_plugin_warning_target_link_focuses_protocol_view(self):
         try:
             qt = qt_app.load_qt6()

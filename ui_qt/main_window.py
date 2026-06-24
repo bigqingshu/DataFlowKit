@@ -983,6 +983,36 @@ class QtWorkflowMainWindow:
                 lines.append("兼容提示：" + "；".join(compatibility_warnings[:3]))
         if config_actions:
             lines.append("配置动作：" + "、".join(str(item.get("label") or item.get("action_id") or "") for item in config_actions[:6]))
+        plugin_layout = self._plugin_config_layout(described)
+        plugin_ui_hints = self._plugin_config_ui_hints(described)
+        if plugin_layout:
+            layout_parts = []
+            default_view_id = str(plugin_layout.get("default_view_id") or "").strip()
+            if default_view_id:
+                layout_parts.append(f"默认视图 {default_view_id}")
+            primary_views = [str(item) for item in (plugin_layout.get("primary_views") or []) if str(item).strip()]
+            advanced_views = [str(item) for item in (plugin_layout.get("advanced_views") or []) if str(item).strip()]
+            if primary_views:
+                layout_parts.append("主要视图 " + "、".join(primary_views[:4]))
+            if advanced_views:
+                layout_parts.append("高级视图 " + "、".join(advanced_views[:4]))
+            if layout_parts:
+                lines.append("插件配置布局：" + "；".join(layout_parts))
+        if plugin_ui_hints:
+            hint_parts = []
+            for key, label in [
+                ("navigation", "导航"),
+                ("density", "密度"),
+                ("display_mode", "显示模式"),
+            ]:
+                value = str(plugin_ui_hints.get(key) or "").strip()
+                if value:
+                    hint_parts.append(f"{label} {value}")
+            view_hints = plugin_ui_hints.get("view_hints") if isinstance(plugin_ui_hints.get("view_hints"), dict) else {}
+            if view_hints:
+                hint_parts.append(f"视图提示 {len(view_hints)} 个")
+            if hint_parts:
+                lines.append("插件UI提示：" + "；".join(hint_parts[:6]))
         parameter_metadata = described.get("parameter_metadata") if isinstance(described.get("parameter_metadata"), dict) else {}
         layout_index = parameter_metadata.get("layout_index") if isinstance(parameter_metadata.get("layout_index"), dict) else {}
         ui_hints = parameter_metadata.get("ui_hints") if isinstance(parameter_metadata.get("ui_hints"), dict) else {}
@@ -1206,8 +1236,11 @@ class QtWorkflowMainWindow:
         if not described.get("ok"):
             return
         warnings_by_view = self._plugin_warning_items_by_view(described)
+        view_hints = self._plugin_config_view_hints(described)
+        default_view_id = self._plugin_config_default_view_id(described)
         added = 0
-        for view in described.get("views") or []:
+        default_tab_index = -1
+        for view in self._ordered_plugin_config_views(described):
             if not isinstance(view, dict):
                 continue
             kind = str(view.get("kind") or "")
@@ -1225,8 +1258,56 @@ class QtWorkflowMainWindow:
             if view_id:
                 self.plugin_config_view_widgets_by_id[view_id] = widget
             self._apply_plugin_config_tab_warning(tab_index, warnings_by_view.get(view_id) or [])
+            self._apply_plugin_config_tab_hint(tab_index, view, view_hints.get(view_id) or {})
+            if view_id and view_id == default_view_id:
+                default_tab_index = tab_index
             added += 1
+        if default_tab_index >= 0:
+            self.plugin_config_view_tabs.setCurrentIndex(default_tab_index)
         self.plugin_config_view_tabs.setVisible(added > 0)
+
+    def _ordered_plugin_config_views(self, described):
+        views = [view for view in (described or {}).get("views") or [] if isinstance(view, dict)]
+        layout = self._plugin_config_layout(described)
+        view_order = [str(item).strip() for item in (layout.get("view_order") or []) if str(item).strip()]
+        if not view_order:
+            return views
+        order_index = {view_id: index for index, view_id in enumerate(view_order)}
+        return sorted(
+            views,
+            key=lambda view: (
+                order_index.get(str(view.get("view_id") or ""), len(order_index)),
+                views.index(view),
+            ),
+        )
+
+    def _plugin_config_layout(self, described):
+        if not isinstance(described, dict):
+            return {}
+        layout = described.get("layout") if isinstance(described.get("layout"), dict) else {}
+        if layout:
+            return layout
+        extension = described.get("plugin_extension") if isinstance(described.get("plugin_extension"), dict) else {}
+        return extension.get("layout") if isinstance(extension.get("layout"), dict) else {}
+
+    def _plugin_config_ui_hints(self, described):
+        if not isinstance(described, dict):
+            return {}
+        ui_hints = described.get("ui_hints") if isinstance(described.get("ui_hints"), dict) else {}
+        if ui_hints:
+            return ui_hints
+        extension = described.get("plugin_extension") if isinstance(described.get("plugin_extension"), dict) else {}
+        return extension.get("ui_hints") if isinstance(extension.get("ui_hints"), dict) else {}
+
+    def _plugin_config_view_hints(self, described):
+        ui_hints = self._plugin_config_ui_hints(described)
+        view_hints = ui_hints.get("view_hints") if isinstance(ui_hints.get("view_hints"), dict) else {}
+        return view_hints
+
+    def _plugin_config_default_view_id(self, described):
+        layout = self._plugin_config_layout(described)
+        ui_hints = self._plugin_config_ui_hints(described)
+        return str(layout.get("default_view_id") or ui_hints.get("default_view_id") or "").strip()
 
     def _focus_plugin_config_target(self, target):
         if not isinstance(target, dict) or not target.get("can_focus_view"):
@@ -1324,6 +1405,29 @@ class QtWorkflowMainWindow:
             return
         if not icon.isNull():
             self.plugin_config_view_tabs.setTabIcon(tab_index, icon)
+
+    def _apply_plugin_config_tab_hint(self, tab_index, view, hint):
+        if tab_index < 0 or not isinstance(hint, dict):
+            return
+        lines = []
+        for key, label in [
+            ("description", ""),
+            ("empty_text", "空状态"),
+            ("role", "角色"),
+            ("primary_action", "主动作"),
+        ]:
+            value = str(hint.get(key) or "").strip()
+            if not value:
+                continue
+            lines.append(f"{label}：{value}" if label else value)
+        if not lines:
+            return
+        existing = str(self.plugin_config_view_tabs.tabToolTip(tab_index) or "").strip()
+        tooltip = "\n".join([part for part in [existing, "\n".join(lines)] if part])
+        self.plugin_config_view_tabs.setTabToolTip(tab_index, tooltip)
+        title = str(hint.get("title") or view.get("title") or "").strip()
+        if title:
+            self.plugin_config_view_tabs.setTabText(tab_index, title[:24])
 
     def _make_plugin_config_view_widget(self, view, described):
         kind = str(view.get("kind") or "")
