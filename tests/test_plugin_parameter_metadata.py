@@ -35,6 +35,77 @@ class PluginParameterMetadataTests(unittest.TestCase):
     def _group_titles(self, schema):
         return [group["title"] for group in schema["form"]["groups"]]
 
+    def _assert_parameter_metadata_quality_gate(self, plugin_id):
+        schema = self._schema(plugin_id)
+        all_fields = self._fields(schema)
+        metadata = schema["parameter_metadata"]
+        metadata_fields = {
+            field["key"]: field
+            for field in metadata.get("fields", [])
+        }
+        fields = {
+            key: field
+            for key, field in all_fields.items()
+            if key in metadata_fields
+        }
+
+        self.assertEqual(metadata["schema_version"], "plugin_parameters.v1")
+        self.assertEqual(metadata["field_count"], len(fields))
+        self.assertEqual(set(metadata["field_index"].keys()), set(fields.keys()))
+        self.assertEqual(set(metadata_fields.keys()), set(fields.keys()))
+
+        for key, field in fields.items():
+            field_type = str(field.get("type") or "")
+            if field_type in {"field_select", "table_select", "dynamic_select"}:
+                self.assertIn("options_source", field, key)
+                self.assertIn("empty_text", field, key)
+                self.assertTrue(str(field["empty_text"]).strip(), key)
+            if field_type == "field_select":
+                self.assertIn("invalid_value_text", field, key)
+                self.assertTrue(str(field["invalid_value_text"]).strip(), key)
+
+            for meta_key in ("depends_on", "refresh_on_change"):
+                for dependency in field.get(meta_key) or []:
+                    self.assertTrue(str(dependency).startswith("params."), (key, meta_key, dependency))
+
+            for meta_key in ("visible_when", "enabled_when"):
+                self._assert_condition_uses_parameter_keys(field.get(meta_key), field_key=key)
+
+        for source_type, detail in (metadata.get("options_source_details") or {}).items():
+            self.assertTrue(detail.get("field_keys"), source_type)
+            self.assertGreaterEqual(detail.get("field_count", 0), len(detail.get("field_keys") or []))
+            for field_key in detail.get("field_keys") or []:
+                self.assertIn(field_key, fields)
+
+        for source_type, entries in (metadata.get("options_source_index") or {}).items():
+            self.assertTrue(entries, source_type)
+            for entry in entries:
+                self.assertIn(entry.get("field_key"), fields)
+
+    def _assert_condition_uses_parameter_keys(self, condition, *, field_key):
+        if not condition:
+            return
+        if isinstance(condition, dict):
+            if "field" in condition:
+                self.assertTrue(
+                    str(condition.get("field") or "").startswith("params."),
+                    (field_key, condition),
+                )
+            for item in condition.get("all") or []:
+                self._assert_condition_uses_parameter_keys(item, field_key=field_key)
+            for item in condition.get("any") or []:
+                self._assert_condition_uses_parameter_keys(item, field_key=field_key)
+
+    def test_parameter_metadata_quality_gate_for_multi_ui_clients(self):
+        for plugin_id in (
+            "plugin.example_cached_plugin",
+            "plugin.word_excel_read_to_db_v1",
+            "plugin.word_excel_write_from_table_v2",
+            "plugin.visual_mapping_write_plan_v1",
+        ):
+            with self.subTest(plugin_id=plugin_id):
+                self._assert_parameter_metadata_quality_gate(plugin_id)
+
     def test_word_excel_reader_parameter_metadata_is_ui_ready(self):
         schema = self._schema("plugin.word_excel_read_to_db_v1")
         fields = self._fields(schema)
