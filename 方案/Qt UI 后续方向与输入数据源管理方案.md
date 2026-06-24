@@ -150,6 +150,12 @@ Qt 主窗口只持有当前工作流输入：
 - 载入 SQLite 表。
 - 载入文件表。
 - 表分页和 table handle。
+- 解析剪贴板文本为表格。
+- 字段名规范化与首行提升。
+- 单元格 patch。
+- 表格搜索与搜索导航。
+- 保存/删除 SQLite 表。
+- 描述 `data_source_service.v1`、`data_source_actions.v1`、`table_save_modes.v1`。
 
 现有 `WorkflowFacade` 已经支持：
 
@@ -157,18 +163,28 @@ Qt 主窗口只持有当前工作流输入：
 - 构建预览来源。
 - 载入预览来源。
 
-还缺的主要是：
+现有 `StdioWorker` 已经暴露：
 
-- 剪贴板文本解析的 UI 无关接口。
-- 表格编辑操作的 UI 无关接口。
-- 保存 SQLite 表的统一接口。
-- 删除 SQLite 表的统一接口。
-- 数据源状态 payload。
-- stdio worker 对上述动作的暴露。
+- `describe_data_source_service`
+- `describe_table_save_modes`
+- `save_table`
+- `delete_table`
+- `create_table_handle`
+- `get_table_handle_page`
+- `release_table_handle`
+
+当前剩余重点已经从“先有没有服务”转为：
+
+- Qt 是否充分消费 `data_source_service.v1` 和 action schema，而不是继续手写按钮状态。
+- Qt 是否把大表路径更多切到 table handle/page。
+- 输入数据库路径、工作区数据库路径、输出数据库路径是否继续拆清。
+- `.NET` / Web 是否只依赖 stdio/headless payload，不复用 Python UI 代码。
 
 ## 8. 实施顺序
 
 ### 第一阶段：只补数据源服务
+
+当前状态：**已基本完成**
 
 目标是不动 Qt 界面或少动界面，先把主程序数据准备逻辑抽成共享函数。
 
@@ -180,12 +196,16 @@ Qt 主窗口只持有当前工作流输入：
 
 ### 第二阶段：Qt 输入数据源区域轻改
 
+当前状态：**已完成主要入口，仍需继续收紧状态来源**
+
 - 在“1. 输入数据源”加入 `选择表` 下拉。
 - 加入 `载入` 按钮。
 - 加入 `输入数据源管理` 按钮。
 - 数据库路径先使用主窗口中的当前工作数据库设置，后续再独立。
 
 ### 第三阶段：Qt 数据源管理窗口
+
+当前状态：**已落地可用窗口，继续按共享服务削薄 UI 逻辑**
 
 - 新增 `ui_qt/data_source_window.py`。
 - 使用 `QTableView` 显示和编辑表格。
@@ -196,10 +216,17 @@ Qt 主窗口只持有当前工作流输入：
 
 ### 第四阶段：大表和多 UI 兼容
 
+当前状态：**后端与 stdio 已具备基础，Qt 和 .NET/Web 消费方式还需继续推进**
+
 - 大表载入改用 table handle / 分页。
 - stdio worker 暴露同一批数据源动作。
 - .NET UI 只调用 stdio worker，不复用 Python UI 代码。
 - Qt 和 .NET 的数据源窗口共享同一套 payload 和行为规则。
+
+下一步建议拆成两块：
+
+1. Qt 侧优先改为从 `describe_data_source_service` 获取能力与动作说明，减少按钮逻辑硬编码。
+2. 大表载入路径优先使用 table handle/page，避免后续 `.NET` / Web 一开始就复制整表传输模式。
 
 ## 9. 风险点
 
