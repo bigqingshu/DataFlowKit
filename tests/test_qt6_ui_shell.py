@@ -2909,11 +2909,37 @@ class Qt6UiShellTests(unittest.TestCase):
             manager.refresh_table_combo()
             manager.table_combo.setCurrentText("orders")
             manager.page_size_spin.setValue(2)
+            handle_calls = []
+            original_create_handle = controller.engine_client.create_table_handle
+            original_get_handle_page = controller.engine_client.get_table_handle_page
+            original_release_handle = controller.engine_client.release_table_handle
+
+            def record_create_handle(*args, **kwargs):
+                handle_calls.append(("create", copy.deepcopy(kwargs)))
+                return original_create_handle(*args, **kwargs)
+
+            def record_get_handle_page(handle, *args, **kwargs):
+                handle_calls.append(("page", handle, copy.deepcopy(kwargs)))
+                return original_get_handle_page(handle, *args, **kwargs)
+
+            def record_release_handle(handle):
+                handle_calls.append(("release", handle))
+                return original_release_handle(handle)
+
+            controller.engine_client.create_table_handle = record_create_handle
+            controller.engine_client.get_table_handle_page = record_get_handle_page
+            controller.engine_client.release_table_handle = record_release_handle
+
             manager.load_selected_table()
             app.processEvents()
 
             self.assertTrue(manager.current_table_is_partial)
+            self.assertEqual(handle_calls[0][0], "create")
+            self.assertEqual(handle_calls[0][1]["source"]["type"], "sqlite")
+            self.assertEqual(handle_calls[0][1]["limit"], 3)
+            self.assertTrue(manager.current_table_handle)
             self.assertEqual(manager.current_table()["rows"], rows[:2])
+            self.assertEqual(manager.current_source["type"], "sqlite")
             self.assertIn("第 1-2 行", manager.page_status_label.text())
             self.assertFalse(manager.save_button.isEnabled())
             self.assertFalse(manager.edit_mode_checkbox.isEnabled())
@@ -2922,10 +2948,15 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertTrue(manager.apply_input_button.isEnabled())
             self.assertTrue(manager.delete_table_button.isEnabled())
             self.assertTrue(manager.next_page_button.isEnabled())
+            first_handle = manager.current_table_handle
 
             manager.goto_next_page()
             app.processEvents()
 
+            self.assertEqual(handle_calls[1][0], "page")
+            self.assertEqual(handle_calls[1][1], first_handle)
+            self.assertEqual(handle_calls[1][2]["offset"], 2)
+            self.assertEqual(manager.current_table_handle, first_handle)
             self.assertEqual(manager.page_offset, 2)
             self.assertEqual(manager.current_table()["rows"], rows[2:4])
             self.assertIn("第 3-4 行", manager.page_status_label.text())
@@ -2933,6 +2964,9 @@ class Qt6UiShellTests(unittest.TestCase):
             manager.apply_to_workflow()
             app.processEvents()
 
+            self.assertIn(("release", first_handle), handle_calls)
+            self.assertFalse(controller.engine_client.list_table_handles()["handles"])
+            self.assertEqual(manager.current_table_handle, "")
             self.assertFalse(manager.current_table_is_partial)
             self.assertEqual(manager.current_table()["rows"], rows)
             self.assertEqual(controller.current_rows, rows)

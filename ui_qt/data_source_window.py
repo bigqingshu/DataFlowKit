@@ -42,6 +42,7 @@ class DataSourceManagerWindow:
         self.page_limit = 500
         self.page_has_more = False
         self.current_table_is_partial = False
+        self.current_table_handle = ""
         self.current_display_name = ""
 
         self.window = qt.QtWidgets.QDialog(parent)
@@ -171,6 +172,7 @@ class DataSourceManagerWindow:
         self.prev_button.clicked.connect(lambda checked=False: self.goto_search_match(-1))
         self.next_button.clicked.connect(lambda checked=False: self.goto_search_match(1))
         self.table_model.dataChanged.connect(lambda *_args: self.mark_dirty())
+        self.window.finished.connect(lambda *_args: self._release_current_table_handle())
         self.apply_edit_mode()
         self.refresh_table_combo(show_status=False)
 
@@ -260,7 +262,49 @@ class DataSourceManagerWindow:
             return {}
         return copy.deepcopy(described if isinstance(described, dict) else {})
 
-    def set_table(self, headers, rows, *, source=None, title="", dirty=False, page_info=None, partial=False):
+    def _has_table_action(self, action_id):
+        service = self.service_description if isinstance(self.service_description, dict) else {}
+        table_actions = service.get("table_actions") if isinstance(service.get("table_actions"), dict) else {}
+        action = table_actions.get(action_id) if isinstance(table_actions, dict) else {}
+        if not isinstance(action, dict):
+            return False
+        engine_action = str(action.get("engine_action") or action_id)
+        return engine_action == action_id and callable(getattr(self.engine_client, action_id, None))
+
+    def _release_current_table_handle(self):
+        handle = str(getattr(self, "current_table_handle", "") or "").strip()
+        if not handle:
+            return
+        self.current_table_handle = ""
+        self._release_table_handle(handle)
+
+    def _release_table_handle(self, handle):
+        handle = str(handle or "").strip()
+        if not handle:
+            return
+        try:
+            self.engine_client.release_table_handle(handle)
+        except Exception:
+            pass
+
+    def set_table(
+        self,
+        headers,
+        rows,
+        *,
+        source=None,
+        title="",
+        dirty=False,
+        page_info=None,
+        partial=False,
+        table_handle="",
+        release_handle=True,
+    ):
+        table_handle = str(table_handle or "").strip()
+        if release_handle and getattr(self, "current_table_handle", "") and self.current_table_handle != table_handle:
+            self._release_current_table_handle()
+        if table_handle:
+            self.current_table_handle = table_handle
         self.current_source = copy.deepcopy(source or {"type": "memory"})
         self.dirty = bool(dirty)
         self._set_page_state(page_info=page_info, source=source, partial=partial)
@@ -601,7 +645,7 @@ class DataSourceManagerWindow:
             "db_path": db_path,
             "table_name": table_name,
         }
-        loaded = self.engine_client.load_table(source, limit=limit + 1, offset=offset)
+        loaded, table_handle = self._load_table_page_payload(source, limit=limit, offset=offset)
         if not loaded.get("ok"):
             self._show_result_issues("载入表失败", loaded)
             return
@@ -618,12 +662,31 @@ class DataSourceManagerWindow:
         self.set_table(
             table.get("headers") or [],
             visible_rows,
-            source=loaded.get("source") or source,
+            source=source,
             title=f"SQLite：{table_name}",
             dirty=False,
             page_info=page_info,
             partial=is_partial,
+            table_handle=table_handle if is_partial else "",
+            release_handle=False if table_handle else True,
         )
+        if table_handle and not is_partial:
+            self.current_table_handle = ""
+            self._release_table_handle(table_handle)
+
+    def _load_table_page_payload(self, source, *, limit, offset):
+        table_handle = str(getattr(self, "current_table_handle", "") or "").strip()
+        if table_handle and self._has_table_action("get_table_handle_page"):
+            loaded = self.engine_client.get_table_handle_page(table_handle, limit=limit + 1, offset=offset)
+            if loaded.get("ok"):
+                return loaded, table_handle
+            self._release_current_table_handle()
+        if self._has_table_action("create_table_handle"):
+            self._release_current_table_handle()
+            loaded = self.engine_client.create_table_handle(source=source, limit=limit + 1, offset=offset)
+            if loaded.get("ok"):
+                return loaded, str(loaded.get("handle") or "").strip()
+        return self.engine_client.load_table(source, limit=limit + 1, offset=offset), ""
 
     def reload_current_page_size(self):
         if self.current_table_is_partial and self._selected_sqlite_source():
