@@ -268,6 +268,28 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertIn("old", batch_columns["replace_value_field"]["choices"])
         self.assertIn("append_item", view_by_id["visual_mapping.rules"]["patch_operations"])
         self.assertIn("set_enabled", view_by_id["visual_mapping.rules"]["patch_operations"])
+        patch_schema = described["patch_schema"]
+        self.assertEqual(patch_schema["schema_version"], visual.CONFIG_SCHEMA_VERSION)
+        self.assertEqual(patch_schema["protocol_family"], "plugin_complex_config")
+        self.assertEqual(patch_schema["kind"], "config_patch")
+        self.assertEqual(patch_schema["operation_aliases"]["update_item"], "replace_item")
+        self.assertEqual(
+            patch_schema["sections"]["rules"]["path"],
+            ["plugin_settings", "configs", "default", "rules"],
+        )
+        patch_field_keys = {field["key"] for field in patch_schema["fields"]}
+        self.assertIn("target_index", patch_field_keys)
+        self.assertIn("payload", patch_field_keys)
+        rule_patch_schema = view_by_id["visual_mapping.rules"]["patch_schema"]
+        self.assertEqual(rule_patch_schema["sections"]["rules"]["view_id"], "visual_mapping.rules")
+        self.assertIn(
+            "target_index",
+            next(
+                operation["requires"]
+                for operation in rule_patch_schema["operations"]
+                if operation["operation"] == "replace_item"
+            ),
+        )
         self.assertEqual(view_by_id["visual_mapping.features"]["items"][0]["condition_count"], 1)
         self.assertEqual(view_by_id["visual_mapping.features"]["items"][0]["conditions"][0]["value"], "old")
         self.assertEqual(view_by_id["visual_mapping.features"]["item_model_key"], "feature_default")
@@ -454,6 +476,10 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertEqual(standard_updated["description"]["summary"]["rules"], 2)
         self.assertIn("linked_rule_default", standard_updated["description"]["models"])
         self.assertTrue(standard_updated["description"]["capabilities"]["config_patch"])
+        service_patch_schema = standard_updated["description"]["plugin_extension"]["patch_schema"]
+        self.assertEqual(service_patch_schema["kind"], "config_patch")
+        self.assertEqual(service_patch_schema["sections"]["rules"]["model_key"], "rule_default")
+        self.assertEqual(service_patch_schema["operation_aliases"]["remove_item"], "delete_item")
         self.assertEqual(standard_updated["description"]["plugin_extension"]["protocol_family"], "plugin_complex_config")
         self.assertTrue(feature_added["ok"])
         self.assertEqual(feature_added["patch"]["path"], ["plugin_settings", "configs", "default", "features"])

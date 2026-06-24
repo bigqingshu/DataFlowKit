@@ -318,6 +318,7 @@ def describe_config(params, context):
         "global_rules": "global_rule_default",
         "linked_rules": "linked_rule_default",
     }
+    patch_sections = {}
     for spec in editor_specs:
         section = _as_text((spec.get("config_path") or [""])[-1])
         model_key = section_model_keys.get(section, "")
@@ -351,6 +352,18 @@ def describe_config(params, context):
         if model_key:
             spec["item_model_key"] = model_key
             spec["item_default"] = copy.deepcopy(models.get(model_key) or {})
+        patch_sections[section] = {
+            "section": section,
+            "view_id": spec.get("view_id"),
+            "path": copy.deepcopy(spec.get("config_path") or []),
+            "model_key": model_key,
+            "operations": list(patch_operations),
+        }
+        spec["patch_schema"] = _visual_mapping_patch_schema(
+            config_name,
+            operations=patch_operations,
+            sections={section: patch_sections[section]},
+        )
     views = [{
         "view_id": "visual_mapping.overview",
         "title": "映射配置总览",
@@ -400,6 +413,11 @@ def describe_config(params, context):
             },
         },
         "models": models,
+        "patch_schema": _visual_mapping_patch_schema(
+            config_name,
+            operations=patch_operations,
+            sections=patch_sections,
+        ),
         "warnings": _normalize_config_warnings(context.get("settings_warnings") or []),
         "capabilities": {
             "schema_config": True,
@@ -412,6 +430,66 @@ def describe_config(params, context):
             "supported_patch_operations": patch_operations,
             "view_kinds": ["summary", "structured_list"],
         },
+    }
+
+
+def _visual_mapping_patch_schema(config_name, *, operations=None, sections=None):
+    operation_items = []
+    operation_defs = {
+        "append_item": {
+            "label": "新增项",
+            "path_kind": "section",
+            "requires": ["section", "payload"],
+        },
+        "replace_item": {
+            "label": "替换项",
+            "aliases": ["update_item"],
+            "path_kind": "item",
+            "requires": ["section", "target_index", "payload"],
+        },
+        "delete_item": {
+            "label": "删除项",
+            "aliases": ["remove_item"],
+            "path_kind": "item",
+            "requires": ["section", "target_index"],
+        },
+        "move_item": {
+            "label": "移动项",
+            "path_kind": "item",
+            "requires": ["section", "target_index", "to_index"],
+        },
+        "set_enabled": {
+            "label": "设置启用状态",
+            "path_kind": "item",
+            "requires": ["section", "target_index", "payload.enabled"],
+        },
+    }
+    for operation in operations or []:
+        item = copy.deepcopy(operation_defs.get(operation) or {})
+        item["operation"] = operation
+        operation_items.append(item)
+    return {
+        "schema_version": CONFIG_SCHEMA_VERSION,
+        "protocol_family": CONFIG_PROTOCOL_FAMILY,
+        "kind": "config_patch",
+        "config_key": _as_text(config_name) or "default",
+        "operation_aliases": {
+            "update_item": "replace_item",
+            "remove_item": "delete_item",
+        },
+        "fields": [
+            {"key": "schema_version", "type": "string", "required": False, "default": CONFIG_SCHEMA_VERSION},
+            {"key": "config_name", "type": "string", "required": False, "default": _as_text(config_name) or "default"},
+            {"key": "section", "type": "string", "required": True, "choices": sorted(CONFIG_SECTIONS)},
+            {"key": "operation", "type": "string", "required": True},
+            {"key": "path", "type": "path", "required": False},
+            {"key": "target_index", "type": "integer", "required": False},
+            {"key": "target_id", "type": "string", "required": False},
+            {"key": "to_index", "type": "integer", "required": False},
+            {"key": "payload", "type": "object", "required": False},
+        ],
+        "operations": operation_items,
+        "sections": copy.deepcopy(sections or {}),
     }
 
 
