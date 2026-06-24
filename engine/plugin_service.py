@@ -544,6 +544,18 @@ class PluginService:
         parameter_metadata_view = _plugin_parameter_metadata_view(parameter_metadata)
         if parameter_metadata_view:
             views = _merge_plugin_config_items(views, [parameter_metadata_view], "view_id")
+        default_layout = _default_plugin_config_layout(
+            views,
+            parameter_metadata=parameter_metadata,
+            actions=actions,
+        )
+        default_ui_hints = _default_plugin_config_ui_hints(
+            views,
+            parameter_metadata=parameter_metadata,
+            actions=actions,
+        )
+        config_layout = copy.deepcopy(plugin_extension.get("layout") or default_layout)
+        config_ui_hints = copy.deepcopy(plugin_extension.get("ui_hints") or default_ui_hints)
 
         schema_warning_items = _normalize_plugin_config_warning_items(
             schema.get("warnings") or [],
@@ -606,8 +618,8 @@ class PluginService:
             "actions": actions,
             "config_sections": config_sections,
             "summary": copy.deepcopy(plugin_extension.get("summary") or {}),
-            "layout": copy.deepcopy(plugin_extension.get("layout") or {}),
-            "ui_hints": copy.deepcopy(plugin_extension.get("ui_hints") or {}),
+            "layout": config_layout,
+            "ui_hints": config_ui_hints,
             "context": copy.deepcopy(plugin_extension.get("context") or {}),
             "models": copy.deepcopy(plugin_extension.get("models") or {}),
             "protocol_manifest": copy.deepcopy(plugin_extension.get("protocol_manifest") or {}),
@@ -2029,6 +2041,113 @@ def _plugin_config_action_id_for_view(view, *, actions=None):
         if editor_kind and str(action.get("editor_kind") or "").strip() == editor_kind:
             return action_id
     return ""
+
+
+def _default_plugin_config_layout(views, *, parameter_metadata=None, actions=None):
+    view_items = [copy.deepcopy(item) for item in (views or []) if isinstance(item, dict)]
+    view_order = [
+        str(item.get("view_id") or "").strip()
+        for item in view_items
+        if str(item.get("view_id") or "").strip()
+    ]
+    form_view_ids = [
+        str(item.get("view_id") or "").strip()
+        for item in view_items
+        if str(item.get("kind") or "") == "form" and str(item.get("view_id") or "").strip()
+    ]
+    summary_view_ids = [
+        str(item.get("view_id") or "").strip()
+        for item in view_items
+        if str(item.get("kind") or "") in {"summary", "resource_list"} and str(item.get("view_id") or "").strip()
+    ]
+    compatibility_action_ids = [
+        str(item.get("action_id") or "").strip()
+        for item in actions or []
+        if isinstance(item, dict) and str(item.get("kind") or "") == "compatibility" and str(item.get("action_id") or "").strip()
+    ]
+    groups = []
+    layout = (parameter_metadata or {}).get("layout_index") if isinstance((parameter_metadata or {}).get("layout_index"), dict) else {}
+    for group in layout.get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        group_key = str(group.get("group_key") or "").strip()
+        if not group_key:
+            continue
+        groups.append({
+            "group_key": group_key,
+            "title": str(group.get("title") or group_key),
+            "advanced": bool(group.get("advanced")),
+            "field_keys": list(group.get("field_keys") or []),
+            "field_count": int(group.get("field_count") or len(group.get("field_keys") or [])),
+        })
+    return {
+        "schema_version": "plugin_config_layout.v1",
+        "protocol_family": "plugin_config",
+        "default_view_id": "plugin.params" if "plugin.params" in view_order else (view_order[0] if view_order else ""),
+        "view_order": view_order,
+        "primary_views": form_view_ids or view_order[:1],
+        "secondary_views": [view_id for view_id in summary_view_ids if view_id not in form_view_ids],
+        "compatibility_action_ids": compatibility_action_ids,
+        "parameter_groups": groups,
+        "preferred_navigation": "tabs",
+    }
+
+
+def _default_plugin_config_ui_hints(views, *, parameter_metadata=None, actions=None):
+    view_hints = {}
+    for view in views or []:
+        if not isinstance(view, dict):
+            continue
+        view_id = str(view.get("view_id") or "").strip()
+        if not view_id:
+            continue
+        kind = str(view.get("kind") or "").strip()
+        title = str(view.get("title") or view_id)
+        hint = {
+            "title": title,
+            "kind": kind,
+            "description": _default_plugin_view_description(view),
+        }
+        action_id = _plugin_config_action_id_for_view(view, actions=actions)
+        if action_id:
+            hint["primary_action_id"] = action_id
+        view_hints[view_id] = hint
+    metadata = parameter_metadata if isinstance(parameter_metadata, dict) else {}
+    ui_hints = metadata.get("ui_hints") if isinstance(metadata.get("ui_hints"), dict) else {}
+    warning_fields = list(ui_hints.get("warning_fields") or [])
+    advanced_fields = list(ui_hints.get("advanced_fields") or [])
+    return {
+        "schema_version": "plugin_config_ui_hints.v1",
+        "protocol_family": "plugin_config",
+        "display_mode": "standard_plugin_config",
+        "navigation": "tabs",
+        "density": "compact",
+        "default_view_id": "plugin.params" if "plugin.params" in view_hints else (next(iter(view_hints), "")),
+        "view_hints": view_hints,
+        "parameter_field_hints": copy.deepcopy(ui_hints),
+        "warning_fields": warning_fields,
+        "advanced_fields": advanced_fields,
+        "action_prominence": {
+            str(item.get("action_id") or ""): str(item.get("ui_prominence") or ("low" if str(item.get("kind") or "") == "compatibility" else "normal"))
+            for item in actions or []
+            if isinstance(item, dict) and str(item.get("action_id") or "").strip()
+        },
+    }
+
+
+def _default_plugin_view_description(view):
+    kind = str((view or {}).get("kind") or "").strip()
+    if kind == "form":
+        return "按参数 schema 显示插件配置表单。"
+    if kind == "summary":
+        return "显示插件配置摘要和协议元数据。"
+    if kind == "resource_list":
+        return "显示插件配置相关资源。"
+    if kind == "structured_list":
+        return "显示可由结构化 patch 修改的插件配置列表。"
+    if kind == "text_preview":
+        return "显示插件配置文本预览。"
+    return "显示插件配置视图。"
 
 
 def _plugin_parameter_metadata_lines(metadata, *, capabilities=None):

@@ -234,6 +234,15 @@ class PluginServiceTests(unittest.TestCase):
         self.assertTrue(described["ok"])
         self.assertEqual(described["schema_version"], "plugin_config.v1")
         self.assertEqual(described["views"][0]["view_id"], "plugin.params")
+        self.assertEqual(described["layout"]["schema_version"], "plugin_config_layout.v1")
+        self.assertEqual(described["layout"]["default_view_id"], "plugin.params")
+        self.assertIn("plugin.params", described["layout"]["view_order"])
+        self.assertEqual(described["layout"]["parameter_groups"][0]["group_key"], "plugin.parameters")
+        self.assertEqual(described["ui_hints"]["schema_version"], "plugin_config_ui_hints.v1")
+        self.assertEqual(described["ui_hints"]["default_view_id"], "plugin.params")
+        self.assertEqual(described["ui_hints"]["view_hints"]["plugin.params"]["kind"], "form")
+        self.assertEqual(described["ui_hints"]["parameter_field_hints"]["schema_version"], "plugin_parameter_ui_hints.v1")
+        self.assertEqual(described["ui_hints"]["action_prominence"]["open_legacy_config"], "low")
         self.assertEqual(described["config_compatibility"], compatibility)
         self.assertEqual(described["legacy_config_state"], legacy_state)
         self.assertEqual(described["actions"][0]["action_id"], "open_legacy_config")
@@ -695,6 +704,11 @@ class PluginServiceTests(unittest.TestCase):
             described["result"]["parameter_metadata"]["ui_hints"]["schema_version"],
             "plugin_parameter_ui_hints.v1",
         )
+        self.assertEqual(described["result"]["layout"]["schema_version"], "plugin_config_layout.v1")
+        self.assertEqual(described["result"]["layout"]["default_view_id"], "plugin.params")
+        self.assertIn("plugin.params", described["result"]["layout"]["view_order"])
+        self.assertEqual(described["result"]["ui_hints"]["schema_version"], "plugin_config_ui_hints.v1")
+        self.assertEqual(described["result"]["ui_hints"]["view_hints"]["plugin.params"]["kind"], "form")
         view_by_id = {view["view_id"]: view for view in described["result"]["views"]}
         self.assertIn("plugin.parameter_metadata", view_by_id)
         self.assertEqual(view_by_id["plugin.parameter_metadata"]["kind"], "summary")
