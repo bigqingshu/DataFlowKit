@@ -42,6 +42,7 @@ class DataSourceManagerWindow:
         self.page_limit = 500
         self.page_has_more = False
         self.current_table_is_partial = False
+        self.current_display_name = ""
 
         self.window = qt.QtWidgets.QDialog(parent)
         self.window.setWindowTitle("输入数据源管理")
@@ -230,13 +231,13 @@ class DataSourceManagerWindow:
             },
         }
 
-    def _describe_data_source_panel_state(self):
+    def _describe_data_source_panel_state(self, *, display_name=""):
         try:
             panel = self.engine_client.build_data_source_panel_state(
                 self.current_table(),
                 source=self.current_source,
                 dirty=self.dirty,
-                display_name=self.status_label.text().split("：", 1)[0] if hasattr(self, "status_label") else "",
+                display_name=str(display_name or self._current_status_title()),
                 partial=self.current_table_is_partial,
                 page_info={
                     "offset": self.page_offset,
@@ -268,6 +269,7 @@ class DataSourceManagerWindow:
         self.table_model.set_table(headers or [], rows or [])
         self.table_model.clear_search_highlight()
         table_name = self.current_source.get("table_name") or ""
+        self.current_display_name = str(title or table_name or "当前表格")
         if table_name:
             self.table_combo.setCurrentText(str(table_name))
             self.save_table_name_edit.setText(str(table_name))
@@ -282,6 +284,13 @@ class DataSourceManagerWindow:
         self._refresh_table_shape_status()
 
     def _refresh_table_shape_status(self, *, title=""):
+        panel_state = self._describe_data_source_panel_state(display_name=title or self._current_status_title())
+        view_state = panel_state.get("view_state") if isinstance(panel_state, dict) else {}
+        status_text = str((view_state or {}).get("status_text") or "").strip()
+        if status_text:
+            self.current_display_name = str((view_state or {}).get("title") or title or self._current_status_title())
+            self.status_label.setText(status_text)
+            return
         table = self.current_table()
         headers = table.get("headers") or []
         rows = table.get("rows") or []
@@ -289,6 +298,13 @@ class DataSourceManagerWindow:
         page_note = "，分页预览" if self.current_table_is_partial else ""
         prefix = str(title or "当前表格")
         self.status_label.setText(f"{prefix}：{len(rows)} 行 x {len(headers)} 列{page_note}{dirty_note}")
+
+    def _current_status_title(self):
+        if getattr(self, "current_display_name", ""):
+            return str(self.current_display_name)
+        if not hasattr(self, "status_label"):
+            return ""
+        return self.status_label.text().split("：", 1)[0]
 
     def _set_page_state(self, *, page_info=None, source=None, partial=False):
         self.current_table_is_partial = bool(partial)
@@ -333,11 +349,22 @@ class DataSourceManagerWindow:
         if not hasattr(self, "page_status_label"):
             return
         source = self._selected_sqlite_source()
-        can_page = bool(source)
-        self.page_size_spin.setEnabled(can_page)
-        self.prev_page_button.setEnabled(self.current_table_is_partial and self.page_offset > 0)
-        self.next_page_button.setEnabled(self.current_table_is_partial and self.page_has_more)
-        self.load_full_table_button.setEnabled(can_page)
+        panel_state = self._describe_data_source_panel_state()
+        view_state = panel_state.get("view_state") if isinstance(panel_state, dict) else {}
+        controls_state = self._describe_data_source_panel_state_for_source(source or self.current_source)
+        controls_view = controls_state.get("view_state") if isinstance(controls_state, dict) else {}
+        page_controls = (controls_view or {}).get("page_controls") if isinstance(controls_view, dict) else {}
+        if isinstance(page_controls, dict) and page_controls:
+            self.page_size_spin.setEnabled(bool(page_controls.get("page_size_enabled")))
+            self.prev_page_button.setEnabled(bool(page_controls.get("prev_enabled")))
+            self.next_page_button.setEnabled(bool(page_controls.get("next_enabled")))
+            self.load_full_table_button.setEnabled(bool(page_controls.get("load_full_enabled")))
+        else:
+            can_page = bool(source)
+            self.page_size_spin.setEnabled(can_page)
+            self.prev_page_button.setEnabled(self.current_table_is_partial and self.page_offset > 0)
+            self.next_page_button.setEnabled(self.current_table_is_partial and self.page_has_more)
+            self.load_full_table_button.setEnabled(can_page)
         self._refresh_data_action_controls()
         if self.current_table_is_partial and self.edit_mode_checkbox.isChecked():
             self.edit_mode_checkbox.blockSignals(True)
@@ -345,7 +372,10 @@ class DataSourceManagerWindow:
             self.edit_mode_checkbox.blockSignals(False)
         self.apply_edit_mode()
 
-        if self.current_table_is_partial:
+        page_status_text = str((view_state or {}).get("page_status_text") or "").strip()
+        if page_status_text:
+            self.page_status_label.setText(page_status_text)
+        elif self.current_table_is_partial:
             row_count = len(self.current_table().get("rows") or [])
             if row_count:
                 start = self.page_offset + 1
@@ -405,13 +435,13 @@ class DataSourceManagerWindow:
         self.edit_mode_checkbox.setEnabled(editable_table and self._action_enabled(actions, "patch_cell"))
         self.delete_table_button.setEnabled(self._action_enabled(selected_actions, "delete_sqlite"))
 
-    def _describe_data_source_panel_state_for_source(self, source):
+    def _describe_data_source_panel_state_for_source(self, source, *, display_name=""):
         try:
             panel = self.engine_client.build_data_source_panel_state(
                 self.current_table(),
                 source=source,
                 dirty=self.dirty,
-                display_name=self.status_label.text().split("：", 1)[0] if hasattr(self, "status_label") else "",
+                display_name=str(display_name or self._current_status_title()),
                 partial=self.current_table_is_partial,
                 page_info={
                     "offset": self.page_offset,

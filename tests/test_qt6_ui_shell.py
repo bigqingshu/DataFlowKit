@@ -2348,6 +2348,15 @@ class Qt6UiShellTests(unittest.TestCase):
             "panel_state": {
                 "schema_version": "data_source_panel_state.v1",
                 "view_state": {
+                    "title": "后端状态",
+                    "status_text": "后端状态：1 行 x 1 列，未保存",
+                    "page_status_text": "后端分页文本",
+                    "page_controls": {
+                        "page_size_enabled": False,
+                        "prev_enabled": True,
+                        "next_enabled": False,
+                        "load_full_enabled": True,
+                    },
                     "action_enabled": {
                         "clear_table": False,
                         "promote_first_row": False,
@@ -2379,8 +2388,16 @@ class Qt6UiShellTests(unittest.TestCase):
             "action_schema": {},
         }
         manager.set_table(["A"], [["1"]], source={"type": "sqlite", "db_path": "demo.db", "table_name": "demo"}, dirty=True)
+        manager._refresh_table_shape_status()
+        manager._refresh_page_controls()
         manager._refresh_data_action_controls()
 
+        self.assertEqual(manager.status_label.text(), "后端状态：1 行 x 1 列，未保存")
+        self.assertEqual(manager.page_status_label.text(), "后端分页文本")
+        self.assertFalse(manager.page_size_spin.isEnabled())
+        self.assertTrue(manager.prev_page_button.isEnabled())
+        self.assertFalse(manager.next_page_button.isEnabled())
+        self.assertTrue(manager.load_full_table_button.isEnabled())
         self.assertFalse(manager.clear_button.isEnabled())
         self.assertFalse(manager.promote_header_button.isEnabled())
         self.assertTrue(manager.search_button.isEnabled())

@@ -821,16 +821,31 @@ def build_data_source_panel_state(
     columns = int(state.get("column_count") or 0)
     dirty_note = "，未保存" if dirty else ""
     partial_note = "，分页预览" if partial else ""
+    page_state = copy_page_info(page)
+    source_type = str(state.get("source_type") or source_payload.get("type") or "memory")
     view_state = {
         "title": display_name_text,
-        "source_type": state.get("source_type"),
+        "source_type": source_type,
         "table_name": table_name,
         "db_path": db_path,
         "shape_text": f"{rows} 行 x {columns} 列",
         "status_text": f"{display_name_text}：{rows} 行 x {columns} 列{partial_note}{dirty_note}",
         "dirty_text": "未保存" if dirty else "",
         "partial": bool(partial),
-        "page": copy_page_info(page),
+        "page": page_state,
+        "page_status_text": build_data_source_page_status_text(
+            rows=rows,
+            source_type=source_type,
+            partial=partial,
+            page=page_state,
+        ),
+        "page_controls": build_data_source_page_controls(
+            source_type=source_type,
+            table_name=table_name,
+            db_path=db_path,
+            partial=partial,
+            page=page_state,
+        ),
         "search": copy_search_navigation(search),
         "action_enabled": {
             key: bool((value or {}).get("enabled"))
@@ -876,6 +891,34 @@ def copy_page_info(page):
         "limit": page.get("limit") if isinstance(page, dict) else None,
         "has_more": bool(page.get("has_more")) if isinstance(page, dict) else False,
         "total_rows": page.get("total_rows") if isinstance(page, dict) else None,
+    }
+
+
+def build_data_source_page_status_text(*, rows=0, source_type="", partial=False, page=None):
+    page = copy_page_info(page or {})
+    if partial:
+        limit_text = page["limit"] if page["limit"] is not None else "未指定"
+        if rows:
+            start = page["offset"] + 1
+            end = page["offset"] + int(rows or 0)
+            text = f"分页预览：第 {start}-{end} 行，每页 {limit_text}"
+        else:
+            text = f"分页预览：偏移 {page['offset']} 无数据，每页 {limit_text}"
+        return text + ("，还有下一页" if page["has_more"] else "，已到末页")
+    if str(source_type or "") == "sqlite":
+        return "分页预览：当前为完整表"
+    return "分页预览：未载入"
+
+
+def build_data_source_page_controls(*, source_type="", table_name="", db_path="", partial=False, page=None):
+    page = copy_page_info(page or {})
+    can_page = str(source_type or "") == "sqlite" and bool(str(db_path or "").strip()) and bool(str(table_name or "").strip())
+    return {
+        "can_page": can_page,
+        "page_size_enabled": can_page,
+        "prev_enabled": bool(partial and page["offset"] > 0),
+        "next_enabled": bool(partial and page["has_more"]),
+        "load_full_enabled": can_page,
     }
 
 
