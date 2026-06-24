@@ -185,9 +185,11 @@ class StdioWorkerApiTests(unittest.TestCase):
         }))
         panel = worker.handle_request(request("build_data_source_panel_state", {
             "table": patched["result"]["table"],
-            "source": {"type": "clipboard"},
+            "source": {"type": "sqlite", "db_path": "input.db", "table_name": "orders"},
             "dirty": True,
             "display_name": "临时输入",
+            "partial": True,
+            "page_info": {"offset": 1, "limit": 2, "has_more": True},
             "search_navigation": searched["result"]["navigation"],
         }))
         service_desc = worker.handle_request(request("describe_data_source_service"))
@@ -212,6 +214,11 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertEqual(actions["result"]["action_schema"]["actions"]["patch_cell"]["engine_action"], "patch_table_cell")
         self.assertEqual(panel["result"]["panel_state"]["schema_version"], "data_source_panel_state.v1")
         self.assertEqual(panel["result"]["panel_state"]["view_state"]["search"]["current_cell"], {"row": 1, "column": 1})
+        self.assertEqual(panel["result"]["panel_state"]["view_state"]["page_status_text"], "分页预览：第 2-3 行，每页 2，还有下一页")
+        self.assertTrue(panel["result"]["panel_state"]["view_state"]["page_controls"]["page_size_enabled"])
+        self.assertTrue(panel["result"]["panel_state"]["view_state"]["page_controls"]["prev_enabled"])
+        self.assertTrue(panel["result"]["panel_state"]["view_state"]["page_controls"]["next_enabled"])
+        self.assertTrue(panel["result"]["panel_state"]["view_state"]["page_controls"]["load_full_enabled"])
         self.assertIn("describe_data_source_service", panel["result"]["panel_state"]["service"]["action_ids"])
         self.assertTrue(service_desc["ok"])
         self.assertEqual(service_desc["result"]["schema_version"], "data_source_service.v1")

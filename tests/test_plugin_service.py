@@ -530,9 +530,23 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(listed["result"]["plugins"][0]["node_type_id"], "plugin.demo")
         self.assertTrue(schema["ok"])
         self.assertEqual(schema["result"]["schema"]["display_name"], "插件 / Demo")
+        self.assertEqual(
+            schema["result"]["schema"]["legacy_config_state"]["schema_version"],
+            "plugin_legacy_config_state.v1",
+        )
+        self.assertEqual(schema["result"]["schema"]["legacy_config_state"]["mode"], "legacy_fallback")
+        self.assertEqual(
+            schema["result"]["schema"]["parameter_metadata"]["options_source_index"]["preview_headers"][0]["field_key"],
+            "params.field",
+        )
         self.assertTrue(described["ok"])
         self.assertEqual(described["result"]["schema_version"], "plugin_config.v1")
+        self.assertEqual(
+            described["result"]["legacy_config_state"]["schema_version"],
+            "plugin_legacy_config_state.v1",
+        )
         self.assertEqual(described["result"]["views"][0]["kind"], "form")
+        self.assertEqual(described["result"]["actions"][0]["legacy_config_state"]["mode"], "legacy_fallback")
         self.assertTrue(default_config["ok"])
         self.assertEqual(default_config["result"]["config"]["params"]["field"], "A")
         self.assertTrue(run["ok"])
