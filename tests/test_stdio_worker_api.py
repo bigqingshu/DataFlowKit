@@ -363,6 +363,10 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertIn("describe_data_source_service", panel["result"]["panel_state"]["service"]["action_ids"])
         self.assertEqual(manager["result"]["manager_state"]["schema_version"], "data_source_manager_state.v1")
         self.assertEqual(manager["result"]["manager_state"]["panel_state"]["schema_version"], "data_source_panel_state.v1")
+        self.assertEqual(manager["result"]["manager_state"]["layout"]["schema_version"], "data_source_manager_layout.v1")
+        self.assertIn("table_loader", manager["result"]["manager_state"]["layout"]["section_order"])
+        self.assertEqual(manager["result"]["manager_state"]["ui_hints"]["schema_version"], "data_source_manager_ui_hints.v1")
+        self.assertEqual(manager["result"]["manager_state"]["ui_hints"]["action_prominence"]["apply_to_workflow"], "primary")
         self.assertEqual(manager["result"]["manager_state"]["source_controls"]["table_names"], ["orders", "archive"])
         self.assertTrue(manager["result"]["manager_state"]["source_controls"]["load_enabled"])
         self.assertIn("build_data_source_manager_state", manager["result"]["manager_state"]["service"]["action_ids"])
@@ -379,6 +383,14 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertEqual(
             service_desc["result"]["result_schemas"]["data_source_manager_state"]["schema_version"],
             "data_source_manager_state.v1",
+        )
+        self.assertEqual(
+            service_desc["result"]["result_schemas"]["data_source_manager_layout"]["schema_version"],
+            "data_source_manager_layout.v1",
+        )
+        self.assertEqual(
+            service_desc["result"]["result_schemas"]["data_source_manager_ui_hints"]["schema_version"],
+            "data_source_manager_ui_hints.v1",
         )
         self.assertTrue(service_desc["result"]["capabilities"]["sqlite_save"])
 

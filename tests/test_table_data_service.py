@@ -224,6 +224,8 @@ class TableDataServiceTests(unittest.TestCase):
         self.assertEqual(service_desc["protocol_family"], "data_source_service")
         self.assertTrue(service_desc["capabilities"]["clipboard_parse"])
         self.assertTrue(service_desc["capabilities"]["panel_state"])
+        self.assertTrue(service_desc["capabilities"]["manager_layout"])
+        self.assertTrue(service_desc["capabilities"]["manager_ui_hints"])
         self.assertEqual(
             service_desc["actions"]["build_data_source_panel_state"]["engine_action"],
             "build_data_source_panel_state",
@@ -255,6 +257,14 @@ class TableDataServiceTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in service_desc["save_modes"]["modes"]], ["replace", "timestamp", "fail", "append"])
         self.assertEqual(service_desc["result_schemas"]["data_source_state"]["schema_version"], "data_source_state.v1")
         self.assertEqual(service_desc["result_schemas"]["data_source_panel_state"]["schema_version"], "data_source_panel_state.v1")
+        self.assertEqual(
+            service_desc["result_schemas"]["data_source_manager_layout"]["schema_version"],
+            "data_source_manager_layout.v1",
+        )
+        self.assertEqual(
+            service_desc["result_schemas"]["data_source_manager_ui_hints"]["schema_version"],
+            "data_source_manager_ui_hints.v1",
+        )
         self.assertEqual(service_desc["result_schemas"]["table_handle"]["schema_version"], "table_handle.v1")
         self.assertTrue(panel["ok"])
         panel_state = panel["panel_state"]
@@ -275,6 +285,14 @@ class TableDataServiceTests(unittest.TestCase):
         manager_state = manager["manager_state"]
         self.assertEqual(manager_state["schema_version"], "data_source_manager_state.v1")
         self.assertEqual(manager_state["panel_state"]["schema_version"], "data_source_panel_state.v1")
+        self.assertEqual(manager_state["layout"]["schema_version"], "data_source_manager_layout.v1")
+        self.assertEqual(manager_state["layout"]["default_section_id"], "table")
+        self.assertIn("database", manager_state["layout"]["section_order"])
+        self.assertIn("save_sqlite", manager_state["layout"]["sections"][4]["action_ids"])
+        self.assertEqual(manager_state["ui_hints"]["schema_version"], "data_source_manager_ui_hints.v1")
+        self.assertEqual(manager_state["ui_hints"]["default_focus"], "table")
+        self.assertEqual(manager_state["ui_hints"]["action_prominence"]["delete_sqlite"], "danger")
+        self.assertIn("分页预览", manager_state["ui_hints"]["section_hints"]["table"]["description"])
         self.assertIn("build_data_source_manager_state", manager_state["service"]["action_ids"])
         self.assertEqual(manager_state["source_controls"]["db_path"], "input.db")
         self.assertEqual(manager_state["source_controls"]["table_names"], ["demo", "archive"])

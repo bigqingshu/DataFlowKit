@@ -44,6 +44,8 @@ DATA_SOURCE_ACTION_SCHEMA_VERSION = "data_source_action_schema.v1"
 DATA_SOURCE_SERVICE_SCHEMA_VERSION = "data_source_service.v1"
 DATA_SOURCE_PANEL_STATE_SCHEMA_VERSION = "data_source_panel_state.v1"
 DATA_SOURCE_MANAGER_STATE_SCHEMA_VERSION = "data_source_manager_state.v1"
+DATA_SOURCE_MANAGER_LAYOUT_SCHEMA_VERSION = "data_source_manager_layout.v1"
+DATA_SOURCE_MANAGER_UI_HINTS_SCHEMA_VERSION = "data_source_manager_ui_hints.v1"
 DATA_SOURCE_PROTOCOL_FAMILY = "data_source_service"
 TABLE_SAVE_MODES_SCHEMA_VERSION = "table_save_modes.v1"
 
@@ -275,10 +277,14 @@ class TableDataService:
         if not selected_table_name:
             source_payload = state.get("source") if isinstance(state.get("source"), dict) else {}
             selected_table_name = str(source_payload.get("table_name") or source_payload.get("table") or "").strip()
+        layout = describe_data_source_manager_layout()
+        ui_hints = describe_data_source_manager_ui_hints()
         manager_state = {
             "schema_version": DATA_SOURCE_MANAGER_STATE_SCHEMA_VERSION,
             "protocol_family": DATA_SOURCE_PROTOCOL_FAMILY,
             "panel_state": copy.deepcopy(state),
+            "layout": layout,
+            "ui_hints": ui_hints,
             "service": {
                 "schema_version": service.get("schema_version"),
                 "protocol_family": service.get("protocol_family"),
@@ -1231,6 +1237,126 @@ def _describe_data_source_data_actions():
     }
 
 
+def describe_data_source_manager_layout():
+    sections = [
+        {
+            "section_id": "toolbar",
+            "title": "数据操作",
+            "role": "primary_actions",
+            "action_ids": ["load_clipboard", "import_file", "clear_table", "promote_first_row", "apply_to_workflow"],
+        },
+        {
+            "section_id": "database",
+            "title": "数据库",
+            "role": "source_selector",
+            "fields": ["db_path"],
+            "action_ids": ["list_tables"],
+        },
+        {
+            "section_id": "table_loader",
+            "title": "载入表",
+            "role": "table_selector",
+            "fields": ["selected_table"],
+            "action_ids": ["load_table", "create_table_handle"],
+        },
+        {
+            "section_id": "paging",
+            "title": "分页",
+            "role": "table_paging",
+            "fields": ["page_size"],
+            "action_ids": ["get_table_handle_page", "get_table_page"],
+        },
+        {
+            "section_id": "save",
+            "title": "保存",
+            "role": "sqlite_write",
+            "fields": ["table_name", "mode"],
+            "action_ids": ["save_sqlite", "delete_sqlite"],
+        },
+        {
+            "section_id": "search",
+            "title": "搜索",
+            "role": "table_search",
+            "fields": ["keyword"],
+            "action_ids": ["search_table", "build_table_search_navigation"],
+        },
+        {
+            "section_id": "table",
+            "title": "表格",
+            "role": "table_editor",
+            "action_ids": ["patch_cell"],
+        },
+        {
+            "section_id": "status",
+            "title": "状态",
+            "role": "feedback",
+            "fields": ["status_text", "page_status_text", "search_status_text"],
+        },
+    ]
+    return {
+        "schema_version": DATA_SOURCE_MANAGER_LAYOUT_SCHEMA_VERSION,
+        "protocol_family": DATA_SOURCE_PROTOCOL_FAMILY,
+        "default_section_id": "table",
+        "section_order": [section["section_id"] for section in sections],
+        "sections": sections,
+        "preferred_navigation": "stacked_rows",
+    }
+
+
+def describe_data_source_manager_ui_hints():
+    return {
+        "schema_version": DATA_SOURCE_MANAGER_UI_HINTS_SCHEMA_VERSION,
+        "protocol_family": DATA_SOURCE_PROTOCOL_FAMILY,
+        "display_mode": "tool_window",
+        "density": "compact",
+        "default_focus": "table",
+        "section_hints": {
+            "toolbar": {
+                "description": "放置剪贴板、导入、清空、字段提升和设置为工作流输入等主操作。",
+                "placement": "top",
+            },
+            "database": {
+                "description": "选择或输入 SQLite 数据库路径，并触发表列表刷新。",
+                "placement": "top",
+            },
+            "table_loader": {
+                "description": "从当前数据库选择并载入 SQLite 表。",
+                "placement": "top",
+                "empty_text": "当前数据库没有可选表。",
+            },
+            "paging": {
+                "description": "对大型 SQLite 表使用分页预览，必要时载入完整表。",
+                "placement": "top",
+            },
+            "save": {
+                "description": "将当前表保存到 SQLite，或删除已选择的 SQLite 表。",
+                "placement": "top",
+                "warning": "删除 SQLite 表需要确认；保存模式由 table_save_modes.v1 描述。",
+            },
+            "search": {
+                "description": "搜索当前表，并通过 search_navigation.v1 定位单元格和高亮行。",
+                "placement": "top",
+            },
+            "table": {
+                "description": "显示和编辑当前表格；分页预览状态下默认禁止直接编辑。",
+                "placement": "center",
+            },
+            "status": {
+                "description": "显示载入、保存、分页、搜索和编辑状态。",
+                "placement": "bottom",
+            },
+        },
+        "action_prominence": {
+            "apply_to_workflow": "primary",
+            "save_sqlite": "primary",
+            "delete_sqlite": "danger",
+            "load_clipboard": "secondary",
+            "import_file": "secondary",
+            "search_table": "secondary",
+        },
+    }
+
+
 def describe_data_source_service():
     action_schema = describe_data_source_action_schema()
     actions = action_schema.get("actions") or {}
@@ -1257,6 +1383,8 @@ def describe_data_source_service():
             "sqlite_delete": True,
             "action_state": True,
             "panel_state": True,
+            "manager_layout": True,
+            "manager_ui_hints": True,
         },
         "actions": {
             "describe_data_source_service": {
@@ -1327,6 +1455,8 @@ def describe_data_source_service():
             "data_source_service": {"schema_version": DATA_SOURCE_SERVICE_SCHEMA_VERSION},
             "data_source_panel_state": {"schema_version": DATA_SOURCE_PANEL_STATE_SCHEMA_VERSION},
             "data_source_manager_state": {"schema_version": DATA_SOURCE_MANAGER_STATE_SCHEMA_VERSION},
+            "data_source_manager_layout": {"schema_version": DATA_SOURCE_MANAGER_LAYOUT_SCHEMA_VERSION},
+            "data_source_manager_ui_hints": {"schema_version": DATA_SOURCE_MANAGER_UI_HINTS_SCHEMA_VERSION},
             "data_source_state": {"schema_version": DATA_SOURCE_STATE_SCHEMA_VERSION},
             "data_source_actions": {"schema_version": DATA_SOURCE_ACTIONS_SCHEMA_VERSION},
             "data_source_action_schema": {"schema_version": DATA_SOURCE_ACTION_SCHEMA_VERSION},
