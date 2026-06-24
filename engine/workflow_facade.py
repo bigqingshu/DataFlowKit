@@ -1174,6 +1174,54 @@ class WorkflowFacade:
             "requires_confirmation": False,
         }
 
+    def resolve_node_config_options(
+        self,
+        node_type_id="",
+        *,
+        node=None,
+        config=None,
+        field_key="",
+        current_values=None,
+        preview_headers=None,
+        table_names=None,
+        table_columns=None,
+        transit_context=None,
+    ):
+        node = copy.deepcopy(node or {}) if isinstance(node, dict) else {}
+        if not node_type_id and node:
+            node_type_id = node.get("node_type_id") or node.get("type") or ""
+        config_source = config
+        if config_source is None and node:
+            config_source = node.get("config")
+        normalized_type = normalize_node_type_id(node_type_id)
+        if normalized_type == "core.filter":
+            from workflow.filter_config_helpers import resolve_filter_config_options
+
+            return resolve_filter_config_options(
+                config_source if isinstance(config_source, dict) else {},
+                preview_headers,
+                field_key=field_key,
+                current_values=current_values,
+                table_names=table_names,
+                table_columns=table_columns,
+                transit_context=transit_context,
+            )
+        return {
+            "ok": False,
+            "schema_version": "node_config_options.v1",
+            "node_type_id": normalized_type,
+            "field_key": str(field_key or ""),
+            "source": "unsupported",
+            "choices": [],
+            "empty_text": f"节点暂不支持共享候选：{normalized_type or node_type_id}",
+            "issues": [{
+                "severity": "warning",
+                "code": "unsupported_node_config_options",
+                "message": f"节点暂不支持共享候选：{normalized_type or node_type_id}",
+                "path": "/node_type_id",
+            }],
+        }
+
     def _shared_config_context_sections(self, shared_config_context):
         context = shared_config_context if isinstance(shared_config_context, dict) else {}
         if not context:

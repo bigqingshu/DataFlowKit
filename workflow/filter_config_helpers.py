@@ -9,6 +9,7 @@ from workflow.nodes.filter_plan_nodes import (
     get_plan_filter_output_header_conflicts,
     get_plan_filter_output_headers,
     normalize_filter_condition_value_source,
+    plan_filter_field_belongs_to_table,
 )
 from workflow.advanced_filter_command_service import (
     apply_advanced_filter_command,
@@ -19,6 +20,7 @@ from workflow.advanced_filter_command_service import (
 FILTER_CONFIG_CONTEXT_SCHEMA_VERSION = "filter_config_context.v1"
 FILTER_OPTIONS_STATE_SCHEMA_VERSION = "filter_options_state.v1"
 FILTER_CONFIG_COMMAND_RESULT_SCHEMA_VERSION = "filter_config_command_result.v1"
+FILTER_CONFIG_OPTIONS_SCHEMA_VERSION = "filter_config_options.v1"
 FILTER_CONFIG_PROTOCOL_FAMILY = "advanced_filter_service"
 
 
@@ -105,6 +107,96 @@ def describe_filter_config_context(config, headers, *, table_names=None, table_c
         "risk_state": copy.deepcopy(options_state.get("risk_state") or {}),
         "output_text": str(options_state.get("output_text") or ""),
         "options_state": options_state,
+    }
+
+
+def resolve_filter_config_options(
+    config,
+    headers,
+    *,
+    field_key="",
+    current_values=None,
+    table_names=None,
+    table_columns=None,
+    transit_context=None,
+):
+    """Resolve UI-neutral advanced-filter config options for a field."""
+
+    context = describe_filter_config_context(
+        config,
+        headers,
+        table_names=table_names,
+        table_columns=table_columns,
+        transit_context=transit_context,
+    )
+    field_key = str(field_key or "").strip()
+    current_values = dict(current_values or {})
+    config_copy = context.get("config") or {}
+    field_state = context.get("field_state") or {}
+    choices = []
+    source = "unknown"
+    empty_text = "暂无候选。"
+    value_source = normalize_filter_condition_value_source({
+        "value_source": current_values.get("value_source", config_copy.get("value_source", "固定值")),
+    })
+
+    if field_key in {"field", "conditions.field", "filter_field"}:
+        source = "available_fields"
+        choices = list(context.get("available_fields") or [])
+        empty_text = "当前没有可选筛选字段。"
+    elif field_key in {"value", "conditions.value"}:
+        source = "available_fields" if value_source == "字段值" else "manual"
+        choices = list(context.get("available_fields") or []) if value_source == "字段值" else []
+        empty_text = "条件值当前使用固定值，可手动输入。"
+    elif field_key in {"output_fields", "outputs", "output"}:
+        source = "available_fields"
+        choices = list(context.get("available_fields") or [])
+        empty_text = "当前没有可选输出字段。"
+    elif field_key in {"join_left", "join_rules.left", "left"}:
+        source = "current_fields"
+        choices = list(field_state.get("current_values") or [])
+        empty_text = "当前表没有可选匹配字段。"
+    elif field_key in {"join_right", "join_rules.right", "right"}:
+        source = "available_fields"
+        right_table = str(current_values.get("right_table") or "").strip()
+        if right_table:
+            choices = [
+                field
+                for field in (context.get("available_fields") or [])
+                if plan_filter_field_belongs_to_table(field, right_table)
+            ]
+            source = "table_fields"
+        else:
+            choices = list(context.get("available_fields") or [])
+        empty_text = "当前没有可选右侧匹配字段。"
+    elif field_key in {"right_table", "join_rules.right_table"}:
+        source = "extra_tables"
+        choices = list(config_copy.get("extra_tables") or [])
+        empty_text = "请先选择关联表。"
+    elif field_key in {"extra_tables"}:
+        source = "table_names"
+        choices = list(table_names or [])
+        choices.extend(
+            f"中转:{name}"
+            for name in sorted(((transit_context or {}).get("transit_tables") or {}).keys())
+        )
+        empty_text = "当前没有可选关联表。"
+    else:
+        empty_text = f"字段暂不支持共享候选：{field_key or '-'}。"
+
+    choices = _unique_strings(choices)
+    return {
+        "ok": True,
+        "schema_version": FILTER_CONFIG_OPTIONS_SCHEMA_VERSION,
+        "protocol_family": FILTER_CONFIG_PROTOCOL_FAMILY,
+        "node_type_id": "core.filter",
+        "field_key": field_key,
+        "source": source,
+        "choices": choices,
+        "empty_text": empty_text,
+        "value_source": value_source,
+        "context": context,
+        "options_state": copy.deepcopy(context.get("options_state") or {}),
     }
 
 
@@ -728,4 +820,16 @@ def _int_list(values):
             result.append(int(value))
         except Exception:
             continue
+    return result
+
+
+def _unique_strings(values):
+    result = []
+    seen = set()
+    for value in values or []:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
     return result

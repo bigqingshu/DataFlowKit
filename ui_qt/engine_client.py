@@ -175,6 +175,31 @@ class QtHeadlessEngineClient:
             transit_context=copy.deepcopy(transit_context),
         )
 
+    def resolve_node_config_options(
+        self,
+        node_type_id="",
+        *,
+        node=None,
+        config=None,
+        field_key="",
+        current_values=None,
+        preview_headers=None,
+        table_names=None,
+        table_columns=None,
+        transit_context=None,
+    ):
+        return self.facade.resolve_node_config_options(
+            node_type_id,
+            node=copy.deepcopy(node),
+            config=copy.deepcopy(config),
+            field_key=field_key,
+            current_values=copy.deepcopy(current_values),
+            preview_headers=preview_headers,
+            table_names=table_names,
+            table_columns=table_columns,
+            transit_context=copy.deepcopy(transit_context),
+        )
+
     def build_output_panel_state(self, payload=None, **fallbacks):
         return self.facade.build_output_panel_state(payload, **fallbacks)
 

@@ -16,6 +16,7 @@ from workflow.filter_config_helpers import (
     build_treeview_cell_edit_state,
     choose_filter_actual_output_lookup_fields,
     describe_filter_config_context,
+    resolve_filter_config_options,
     append_filter_condition_row,
     append_filter_condition_row_via_service,
     append_filter_join_rule_row,
@@ -440,6 +441,63 @@ class FilterConfigHelpersTests(unittest.TestCase):
         })
 
         self.assertEqual(removed["config"]["output_fields"], ["当前表.Code", "lookup.Name"])
+
+    def test_resolve_filter_config_options_returns_field_and_value_candidates(self):
+        config = {
+            "extra_tables": ["lookup", "中转:cached"],
+            "output_fields": ["当前表.Code"],
+        }
+        transit_context = {"transit_tables": {"cached": {"headers": ["Value"]}}}
+
+        field_options = resolve_filter_config_options(
+            config,
+            ["Code"],
+            field_key="conditions.field",
+            table_names=["lookup"],
+            table_columns={"lookup": ["Code", "Name"]},
+            transit_context=transit_context,
+        )
+
+        self.assertTrue(field_options["ok"])
+        self.assertEqual(field_options["schema_version"], "filter_config_options.v1")
+        self.assertEqual(field_options["source"], "available_fields")
+        self.assertEqual(
+            field_options["choices"],
+            ["当前表.Code", "lookup.Code", "lookup.Name", "中转:cached.Value"],
+        )
+
+        fixed_value_options = resolve_filter_config_options(
+            config,
+            ["Code"],
+            field_key="conditions.value",
+            current_values={"value_source": "固定值"},
+            table_columns={"lookup": ["Code", "Name"]},
+            transit_context=transit_context,
+        )
+        self.assertEqual(fixed_value_options["source"], "manual")
+        self.assertEqual(fixed_value_options["choices"], [])
+
+        field_value_options = resolve_filter_config_options(
+            config,
+            ["Code"],
+            field_key="conditions.value",
+            current_values={"value_source": "字段"},
+            table_columns={"lookup": ["Code", "Name"]},
+            transit_context=transit_context,
+        )
+        self.assertEqual(field_value_options["source"], "available_fields")
+        self.assertIn("lookup.Name", field_value_options["choices"])
+
+        right_options = resolve_filter_config_options(
+            config,
+            ["Code"],
+            field_key="join_rules.right",
+            current_values={"right_table": "lookup"},
+            table_columns={"lookup": ["Code", "Name"]},
+            transit_context=transit_context,
+        )
+        self.assertEqual(right_options["source"], "table_fields")
+        self.assertEqual(right_options["choices"], ["lookup.Code", "lookup.Name"])
 
 
 if __name__ == "__main__":

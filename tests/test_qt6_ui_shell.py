@@ -1061,6 +1061,19 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(command_result["config"]["output_fields"], ["当前表.Code", "people.Code", "people.Name"])
         self.assertEqual(command_result["node_config_context"]["shared_config_context"]["selected_tables"], ["当前表", "people"])
 
+        option_result = client.resolve_node_config_options(
+            "core.filter",
+            config={"extra_tables": ["people"]},
+            field_key="conditions.value",
+            current_values={"value_source": "字段值"},
+            preview_headers=["Code"],
+            table_names=["people"],
+            table_columns={"people": ["Code", "Name"]},
+        )
+        self.assertTrue(option_result["ok"])
+        self.assertEqual(option_result["schema_version"], "filter_config_options.v1")
+        self.assertEqual(option_result["choices"], ["当前表.Code", "people.Code", "people.Name"])
+
     def test_facade_describes_confirmation_prompts(self):
         client = QtHeadlessEngineClient()
 

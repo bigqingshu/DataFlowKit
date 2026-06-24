@@ -127,6 +127,22 @@ class StdioWorker:
                 table_columns=payload.get("table_columns"),
                 transit_context=payload.get("transit_context") or payload.get("context"),
             )
+        if action == "resolve_node_config_options":
+            node = payload.get("node")
+            node_type = payload.get("node_type") or payload.get("type") or payload.get("node_type_id")
+            if isinstance(node, dict):
+                node_type = node_type or node.get("node_type_id") or node.get("type")
+            return self.facade.resolve_node_config_options(
+                node_type,
+                node=node if isinstance(node, dict) else None,
+                config=payload.get("config"),
+                field_key=payload.get("field_key", ""),
+                current_values=payload.get("current_values"),
+                preview_headers=payload.get("preview_headers"),
+                table_names=payload.get("table_names"),
+                table_columns=payload.get("table_columns"),
+                transit_context=payload.get("transit_context") or payload.get("context"),
+            )
         if action == "migrate_plan":
             return self.engine.migrate_plan(
                 payload.get("plan", {}),
