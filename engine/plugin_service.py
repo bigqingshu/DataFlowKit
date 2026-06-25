@@ -2842,7 +2842,7 @@ def _normalize_plugin_config_warning_items(warnings, *, plugin_id="", source="pl
         item.setdefault("source", source_text)
         if plugin_text:
             item.setdefault("plugin_id", plugin_text)
-        item.setdefault("target", _plugin_config_warning_target(item))
+        item["target"] = _plugin_config_warning_target(item)
         result.append(item)
     return result
 
@@ -2850,10 +2850,13 @@ def _normalize_plugin_config_warning_items(warnings, *, plugin_id="", source="pl
 def _plugin_config_warning_target(item):
     if not isinstance(item, dict):
         return {}
-    view_id = str(item.get("view_id") or "").strip()
-    field = str(item.get("field") or "").strip()
-    path = str(item.get("path") or "").strip()
+    raw_target = item.get("target") if isinstance(item.get("target"), dict) else {}
+    view_id = str(item.get("view_id") or raw_target.get("view_id") or "").strip()
+    field = str(item.get("field") or raw_target.get("field") or raw_target.get("field_key") or "").strip()
+    path = str(item.get("path") or raw_target.get("path") or raw_target.get("focus_path") or "").strip()
     config_path = item.get("config_path")
+    if config_path in (None, "", []):
+        config_path = raw_target.get("config_path")
     config_path_text = _format_plugin_config_path(config_path)
     target = {
         "schema_version": "plugin_config_warning_target.v1",
@@ -2866,6 +2869,9 @@ def _plugin_config_warning_target(item):
         "can_focus_view": bool(view_id),
         "can_focus_field": bool(view_id and (field or config_path_text or path)),
     }
+    for key, value in raw_target.items():
+        if key not in target:
+            target[key] = copy.deepcopy(value)
     focus_path = path
     if not focus_path and view_id and field:
         focus_path = f"/views/{view_id}/fields/{field}"

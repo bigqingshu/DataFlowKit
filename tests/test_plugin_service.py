@@ -554,6 +554,7 @@ class PluginServiceTests(unittest.TestCase):
             "        'warnings': [",
             "            'demo warning',",
             "            {'code': 'demo_structured_warning', 'level': 'warning', 'message': 'structured warning', 'view_id': 'demo.items'},",
+            "            {'code': 'demo_target_warning', 'level': 'warning', 'message': 'target warning', 'target': {'view_id': 'demo.items', 'field': 'name'}},",
             "        ],",
             "    }",
             "def preview_config_effect(params, context):",
@@ -623,6 +624,11 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(warning_by_code["demo_structured_warning"]["target"]["view_id"], "demo.items")
         self.assertEqual(warning_by_code["demo_structured_warning"]["target"]["focus_path"], "/views/demo.items")
         self.assertTrue(warning_by_code["demo_structured_warning"]["target"]["can_focus_view"])
+        self.assertEqual(warning_by_code["demo_target_warning"]["target"]["schema_version"], "plugin_config_warning_target.v1")
+        self.assertEqual(warning_by_code["demo_target_warning"]["target"]["view_id"], "demo.items")
+        self.assertEqual(warning_by_code["demo_target_warning"]["target"]["field"], "name")
+        self.assertEqual(warning_by_code["demo_target_warning"]["target"]["focus_path"], "/views/demo.items/fields/name")
+        self.assertTrue(warning_by_code["demo_target_warning"]["target"]["can_focus_field"])
 
     def test_plugin_config_patch_validates_applies_and_refreshes_description(self):
         with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:
