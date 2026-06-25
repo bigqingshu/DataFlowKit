@@ -1701,42 +1701,24 @@ class QtWorkflowMainWindow:
         button_row = qt.QtWidgets.QHBoxLayout()
         buttons = {}
         button_specs = {}
-        for text, operation, target_offset in [
-            ("新增", "append_item", None),
-            ("应用修改", "update_item", None),
-            ("删除", "delete_item", None),
-            ("启停", "set_enabled", None),
-            ("上移", "move_item", -1),
-            ("下移", "move_item", 1),
-        ]:
-            button_key = operation if target_offset is None else f"{operation}_{target_offset}"
-            button_state = action_buttons.get(button_key) if isinstance(action_buttons.get(button_key), dict) else {}
-            button = qt.QtWidgets.QPushButton(str(button_state.get("label") or text))
-            effective_operation = operation
-            if operation == "update_item" and "update_item" not in supported_operations and "replace_item" in supported_operations:
-                effective_operation = "replace_item"
-            if button_state.get("effective_operation"):
-                effective_operation = str(button_state.get("effective_operation"))
-            visible = True
-            if operation == "update_item":
-                visible = bool(can_update_item)
-            elif supported_operations and operation not in supported_operations:
-                visible = False
-            if "visible" in button_state:
-                visible = bool(button_state.get("visible"))
+        for spec in self._plugin_structured_button_specs(
+            action_buttons,
+            supported_operations=supported_operations,
+            can_update_item=can_update_item,
+        ):
+            button_key = str(spec.get("key") or "").strip()
+            if not button_key:
+                continue
+            button = qt.QtWidgets.QPushButton(str(spec.get("label") or button_key))
+            visible = bool(spec.get("visible", True))
             if not visible:
                 button.setVisible(False)
             button.clicked.connect(
-                lambda checked=False, op=effective_operation, offset=target_offset, fr=frame: self._apply_plugin_structured_list_patch(fr, op, offset)
+                lambda checked=False, op=str(spec.get("effective_operation") or spec.get("operation") or ""), offset=spec.get("target_offset"), fr=frame: self._apply_plugin_structured_list_patch(fr, op, offset)
             )
             button_row.addWidget(button)
             buttons[button_key] = button
-            spec = copy.deepcopy(button_state)
-            spec.setdefault("operation", operation)
-            spec.setdefault("effective_operation", effective_operation)
-            spec.setdefault("target_offset", target_offset)
-            spec.setdefault("visible", visible)
-            button_specs[button_key] = spec
+            button_specs[button_key] = copy.deepcopy(spec)
         button_row.addStretch(1)
         frame.plugin_config_buttons = buttons
         frame.plugin_config_button_specs = button_specs
@@ -1746,6 +1728,59 @@ class QtWorkflowMainWindow:
         layout.addLayout(button_row)
         self._update_plugin_structured_list_buttons(frame)
         return frame
+
+    def _plugin_structured_button_specs(self, action_buttons, *, supported_operations, can_update_item):
+        action_buttons = action_buttons if isinstance(action_buttons, dict) else {}
+        if action_buttons:
+            result = []
+            for key, state in action_buttons.items():
+                if not isinstance(state, dict):
+                    continue
+                operation = str(state.get("operation") or "").strip()
+                if not operation:
+                    continue
+                target_offset = state.get("target_offset")
+                button_key = str(state.get("key") or key or "").strip()
+                if not button_key:
+                    button_key = operation if target_offset is None else f"{operation}_{target_offset}"
+                spec = copy.deepcopy(state)
+                spec["key"] = button_key
+                spec.setdefault("effective_operation", str(state.get("effective_operation") or operation))
+                spec.setdefault("target_offset", target_offset)
+                spec.setdefault("visible", bool(state.get("visible", True)))
+                spec.setdefault("enabled", bool(state.get("enabled", spec.get("visible", True))))
+                result.append(spec)
+            if result:
+                return result
+
+        fallback = []
+        for text, operation, target_offset in [
+            ("新增", "append_item", None),
+            ("应用修改", "update_item", None),
+            ("删除", "delete_item", None),
+            ("启停", "set_enabled", None),
+            ("上移", "move_item", -1),
+            ("下移", "move_item", 1),
+        ]:
+            button_key = operation if target_offset is None else f"{operation}_{target_offset}"
+            effective_operation = operation
+            visible = True
+            if operation == "update_item":
+                visible = bool(can_update_item)
+                if "update_item" not in supported_operations and "replace_item" in supported_operations:
+                    effective_operation = "replace_item"
+            elif supported_operations and operation not in supported_operations:
+                visible = False
+            fallback.append({
+                "key": button_key,
+                "label": text,
+                "operation": operation,
+                "effective_operation": effective_operation,
+                "target_offset": target_offset,
+                "visible": visible,
+                "enabled": visible,
+            })
+        return fallback
 
     def _update_plugin_structured_list_buttons(self, frame):
         table = getattr(frame, "plugin_config_table", None)

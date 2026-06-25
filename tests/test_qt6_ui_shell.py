@@ -559,6 +559,7 @@ class Qt6UiShellTests(unittest.TestCase):
                 "action_state": {
                     "schema_version": "plugin_config_action_state.v1",
                     "buttons": {
+                        "custom_append": {"key": "custom_append", "label": "协议新增", "operation": "append_item", "visible": True, "enabled": True},
                         "append_item": {"label": "新增", "operation": "append_item", "visible": True, "enabled": True},
                         "update_item": {"label": "应用修改", "operation": "update_item", "visible": True, "enabled": True, "requires_selection": True},
                         "delete_item": {"label": "删除", "operation": "delete_item", "visible": True, "enabled": True, "requires_selection": True},
@@ -573,6 +574,8 @@ class Qt6UiShellTests(unittest.TestCase):
 
         table = widget.findChild(qt.QtWidgets.QTableWidget)
         self.assertIsNotNone(table)
+        self.assertEqual(list(widget.plugin_config_buttons.keys())[0], "custom_append")
+        self.assertEqual(widget.plugin_config_buttons["custom_append"].text(), "协议新增")
         self.assertFalse(widget.plugin_config_buttons["move_item_-1"].isEnabled())
         self.assertTrue(widget.plugin_config_buttons["move_item_1"].isEnabled())
         self.assertFalse(widget.plugin_config_buttons["set_enabled"].isVisible())
