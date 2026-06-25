@@ -810,6 +810,27 @@ def _visual_mapping_warning_schema(config_name):
             {"key": "path", "type": "string", "required": False},
             {"key": "config_path", "type": "path", "required": False},
             {"key": "hint", "type": "string", "required": False},
+            {"key": "target", "type": "object", "required": False},
+        ],
+        "target_schema": {
+            "schema_version": "plugin_config_warning_target.v1",
+            "provider": "PluginService.describe_plugin_config",
+            "fields": [
+                {"key": "view_id", "type": "string", "required": False},
+                {"key": "field", "type": "string", "required": False},
+                {"key": "path", "type": "string", "required": False},
+                {"key": "focus_path", "type": "string", "required": False},
+                {"key": "config_path", "type": "path", "required": False},
+                {"key": "config_path_text", "type": "string", "required": False},
+                {"key": "can_focus_view", "type": "boolean", "required": True},
+                {"key": "can_focus_field", "type": "boolean", "required": True},
+            ],
+        },
+        "target_mapping": [
+            {"source": "view_id", "target": "target.view_id"},
+            {"source": "field", "target": "target.field"},
+            {"source": "path", "target": "target.focus_path"},
+            {"source": "config_path", "target": "target.config_path"},
         ],
     }
 

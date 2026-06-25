@@ -285,6 +285,17 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         warning_field_keys = {field["key"] for field in warning_schema["fields"]}
         self.assertIn("path", warning_field_keys)
         self.assertIn("config_path", warning_field_keys)
+        self.assertIn("target", warning_field_keys)
+        self.assertEqual(warning_schema["target_schema"]["schema_version"], "plugin_config_warning_target.v1")
+        self.assertEqual(warning_schema["target_schema"]["provider"], "PluginService.describe_plugin_config")
+        target_field_keys = {field["key"] for field in warning_schema["target_schema"]["fields"]}
+        self.assertIn("focus_path", target_field_keys)
+        self.assertIn("can_focus_view", target_field_keys)
+        self.assertIn("can_focus_field", target_field_keys)
+        self.assertEqual(
+            warning_schema["target_mapping"][0],
+            {"source": "view_id", "target": "target.view_id"},
+        )
         self.assertEqual(described["summary"]["rules"], 1)
         self.assertEqual(described["summary"]["features"], 1)
         self.assertEqual(described["summary"]["global_rules"], 1)
@@ -714,6 +725,9 @@ class VisualMappingWritePlanTests(unittest.TestCase):
             described_with_warning["plugin_extension"]["warning_schema"]["kind"],
             "config_warning",
         )
+        warning_schema = described_with_warning["plugin_extension"]["warning_schema"]
+        self.assertEqual(warning_schema["target_schema"]["schema_version"], "plugin_config_warning_target.v1")
+        self.assertIn("target", {field["key"] for field in warning_schema["fields"]})
         rules_view = next(
             view for view in standard_updated["description"]["views"]
             if view.get("view_id") == "visual_mapping.rules"
