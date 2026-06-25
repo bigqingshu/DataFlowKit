@@ -614,6 +614,8 @@ def _visual_mapping_protocol_manifest(
             "sections": sorted((patch_schema.get("sections") or {}).keys()),
             "target_id_supported": bool(patch_schema.get("target_id_supported", False)),
             "target_id_fields": copy.deepcopy(patch_schema.get("target_id_fields") or {}),
+            "result_schema": (patch_schema.get("result_schema") or {}).get("schema_version"),
+            "target_schema": (patch_schema.get("target_schema") or {}).get("schema_version"),
         },
         "warnings": {
             "schema_version": warning_schema.get("schema_version"),
@@ -906,6 +908,37 @@ def _visual_mapping_patch_schema(config_name, *, operations=None, sections=None)
         "sections": sections,
         "target_id_supported": bool(target_id_fields),
         "target_id_fields": target_id_fields,
+        "result_schema": {
+            "schema_version": "plugin_config_patch_result.v1",
+            "provider": "PluginService.apply_plugin_config_patch",
+            "fields": [
+                {"key": "changed", "type": "boolean", "required": True},
+                {"key": "message", "type": "string", "required": False},
+                {"key": "patch_summary", "type": "object", "required": True},
+                {"key": "target", "type": "object", "required": True},
+                {"key": "description_summary", "type": "object", "required": False},
+                {"key": "config_effect_summary", "type": "object", "required": False},
+            ],
+        },
+        "target_schema": {
+            "schema_version": "plugin_config_patch_target.v1",
+            "provider": "PluginService.apply_plugin_config_patch",
+            "fields": [
+                {"key": "operation", "type": "string", "required": False},
+                {"key": "view_id", "type": "string", "required": False},
+                {"key": "editor_kind", "type": "string", "required": False},
+                {"key": "action_id", "type": "string", "required": False},
+                {"key": "section", "type": "string", "required": False},
+                {"key": "path", "type": "path", "required": False},
+                {"key": "path_text", "type": "string", "required": False},
+                {"key": "target_index", "type": "integer", "required": False},
+                {"key": "target_id", "type": "string", "required": False},
+                {"key": "to_index", "type": "integer", "required": False},
+                {"key": "focus_path", "type": "string", "required": False},
+                {"key": "can_focus_view", "type": "boolean", "required": True},
+                {"key": "can_focus_item", "type": "boolean", "required": True},
+            ],
+        },
     }
 
 
