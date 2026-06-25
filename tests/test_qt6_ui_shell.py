@@ -734,6 +734,19 @@ class Qt6UiShellTests(unittest.TestCase):
                 },
                 {"view_id": "demo.overview", "kind": "summary", "title": "概览", "summary": {"状态": "ok"}},
             ],
+            "warning_items": [
+                {
+                    "code": "target_only_warning",
+                    "message": "目标视图警告",
+                    "target": {
+                        "schema_version": "plugin_config_warning_target.v1",
+                        "view_id": "demo.rules",
+                        "field": "rules.name",
+                        "focus_path": "/views/demo.rules/fields/rules.name",
+                        "can_focus_view": True,
+                    },
+                },
+            ],
         }
 
         controller._render_plugin_config_views(described)
@@ -748,6 +761,8 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertIn("按协议默认打开规则", tooltip)
         self.assertIn("空状态：暂无规则。", tooltip)
         self.assertIn("主动作：demo.edit.rules", tooltip)
+        self.assertIn("目标视图警告", tooltip)
+        self.assertIn("字段 rules.name", tooltip)
 
         controller._append_plugin_config_detail(described)
         detail_text = controller.node_detail_sections.toPlainText()

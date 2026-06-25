@@ -1433,7 +1433,8 @@ class QtWorkflowMainWindow:
         for item in described.get("warning_items") or []:
             if not isinstance(item, dict):
                 continue
-            view_id = str(item.get("view_id") or "").strip()
+            target = item.get("target") if isinstance(item.get("target"), dict) else {}
+            view_id = str(item.get("view_id") or target.get("view_id") or "").strip()
             line = self._format_plugin_warning_item(item)
             if view_id and line:
                 result.setdefault(view_id, []).append(line)
