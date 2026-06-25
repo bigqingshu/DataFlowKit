@@ -484,6 +484,9 @@ class HeadlessWorkflowEngine:
     def resolve_plugin_parameter_options(self, plugin_id, **kwargs):
         return self.plugins.resolve_plugin_parameter_options(plugin_id, **kwargs)
 
+    def resolve_plugin_parameter_field_state(self, plugin_id, **kwargs):
+        return self.plugins.resolve_plugin_parameter_field_state(plugin_id, **kwargs)
+
     def resolve_plugin_config_options(self, plugin_id, **kwargs):
         return self.plugins.resolve_plugin_config_options(plugin_id, **kwargs)
 

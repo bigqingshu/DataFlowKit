@@ -572,6 +572,27 @@ class QtHeadlessEngineClient:
             context=copy.deepcopy(context),
         )
 
+    def resolve_plugin_parameter_field_state(
+        self,
+        plugin_id,
+        *,
+        field_key="",
+        param_key="",
+        config=None,
+        changed_fields=None,
+        input_table=None,
+        context=None,
+    ):
+        return self.engine.resolve_plugin_parameter_field_state(
+            plugin_id,
+            field_key=field_key,
+            param_key=param_key,
+            config=copy.deepcopy(config),
+            changed_fields=copy.deepcopy(changed_fields),
+            input_table=copy.deepcopy(input_table),
+            context=copy.deepcopy(context),
+        )
+
     def resolve_plugin_config_options(
         self,
         plugin_id,

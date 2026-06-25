@@ -335,6 +335,16 @@ class PluginServiceTests(unittest.TestCase):
                 config={"plugin_id": "extended", "params": {"config_name": "default"}},
                 context={"table_names": ["orders", "archive"]},
             )
+            visible_state = service.resolve_plugin_parameter_field_state(
+                "plugin.extended",
+                config={"plugin_id": "extended", "params": {"input_alias": "当前表", "config_name": "default"}},
+                changed_fields=["params.config_name"],
+            )
+            hidden_state = service.resolve_plugin_parameter_field_state(
+                "plugin.extended",
+                field_key="params.directory_path",
+                config={"plugin_id": "extended", "params": {"input_alias": "其他表", "config_name": ""}},
+            )
 
         self.assertTrue(schema["ok"])
         self.assertEqual(schema["schema"]["parameters"][0]["name"], "table_name")
@@ -458,6 +468,7 @@ class PluginServiceTests(unittest.TestCase):
         )
         self.assertEqual(described["protocol_manifest"]["schema_version"], "plugin_config_protocol_manifest.v1")
         self.assertTrue(described["protocol_manifest"]["interfaces"]["resolve_plugin_parameter_options"])
+        self.assertTrue(described["protocol_manifest"]["interfaces"]["resolve_plugin_parameter_field_state"])
         self.assertFalse(described["protocol_manifest"]["interfaces"]["legacy_config_window"])
         self.assertEqual(described["protocol_manifest"]["schemas"]["parameter_field_state"], "plugin_parameter_field_state.v1")
         self.assertEqual(described["protocol_manifest"]["parameter_metadata"]["field_state_schema"], "plugin_parameter_field_state.v1")
@@ -475,6 +486,24 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(table_options["field_key"], "params.table_name")
         self.assertEqual(table_options["choices"], ["orders", "archive"])
         self.assertFalse(table_options["dynamic"])
+        self.assertEqual(visible_state["schema_version"], "plugin_parameter_field_runtime_state.v1")
+        self.assertEqual(visible_state["plugin_id"], "extended")
+        self.assertEqual(visible_state["field_count"], 4)
+        directory_runtime = visible_state["field_state_index"]["params.directory_path"]
+        self.assertTrue(directory_runtime["visible"])
+        self.assertTrue(directory_runtime["enabled"])
+        self.assertEqual(directory_runtime["status"], "active")
+        self.assertEqual(directory_runtime["current_value"], "")
+        self.assertTrue(directory_runtime["refresh_triggered"])
+        self.assertTrue(directory_runtime["needs_options_refresh"])
+        self.assertIn("params.config_name", directory_runtime["condition_dependencies"])
+        self.assertEqual(directory_runtime["warning"], "目录不存在时运行会失败")
+        self.assertEqual(visible_state["field_state_index"]["params.config_name"]["dependents"], ["params.directory_path"])
+        self.assertTrue(hidden_state["ok"])
+        self.assertEqual(hidden_state["field_count"], 1)
+        self.assertFalse(hidden_state["fields"][0]["visible"])
+        self.assertFalse(hidden_state["fields"][0]["enabled"])
+        self.assertEqual(hidden_state["fields"][0]["status"], "hidden")
         self.assertEqual(described["resources"][0]["file"], "extended_settings.json")
         self.assertEqual(described["views"][1]["kind"], "resource_list")
 
@@ -695,6 +724,12 @@ class PluginServiceTests(unittest.TestCase):
                 "field_key": "params.field",
                 "input_table": {"headers": ["A", "B"], "rows": [["x", "y"]]},
             }))
+            field_state = worker.handle_request(request("resolve_plugin_parameter_field_state", {
+                "plugin_id": "plugin.demo",
+                "plugins_dir": temp_dir,
+                "field_key": "params.field",
+                "config": {"plugin_id": "demo", "params": {"field": "A", "limit": 3}},
+            }))
             default_config = worker.handle_request(request("make_plugin_default_config", {
                 "plugin_id": "demo",
                 "plugins_dir": temp_dir,
@@ -756,6 +791,11 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(resolved_options["result"]["schema_version"], "plugin_parameter_options.v1")
         self.assertEqual(resolved_options["result"]["choices"], ["A", "B"])
         self.assertEqual(resolved_options["result"]["options_source"], {"type": "preview_headers"})
+        self.assertTrue(field_state["ok"])
+        self.assertEqual(field_state["result"]["schema_version"], "plugin_parameter_field_runtime_state.v1")
+        self.assertEqual(field_state["result"]["fields"][0]["field_key"], "params.field")
+        self.assertTrue(field_state["result"]["fields"][0]["visible"])
+        self.assertTrue(field_state["result"]["fields"][0]["enabled"])
         self.assertTrue(default_config["ok"])
         self.assertEqual(default_config["result"]["config"]["params"]["field"], "A")
         self.assertTrue(run["ok"])

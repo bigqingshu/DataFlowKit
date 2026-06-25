@@ -489,6 +489,18 @@ class StdioWorker:
                 context=payload.get("context"),
                 plugins_dir=payload.get("plugins_dir"),
             )
+        if action == "resolve_plugin_parameter_field_state":
+            plugin_id = payload.get("plugin_id") or payload.get("node_type_id")
+            return self.engine.resolve_plugin_parameter_field_state(
+                plugin_id,
+                field_key=payload.get("field_key", ""),
+                param_key=payload.get("param_key", ""),
+                config=payload.get("config"),
+                changed_fields=payload.get("changed_fields"),
+                input_table=payload.get("input_table"),
+                context=payload.get("context"),
+                plugins_dir=payload.get("plugins_dir"),
+            )
         if action == "resolve_plugin_config_options":
             plugin_id = payload.get("plugin_id") or payload.get("node_type_id")
             return self.engine.resolve_plugin_config_options(

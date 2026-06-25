@@ -715,6 +715,49 @@ class PluginService:
             "issues": copy.deepcopy(result.get("issues") or []),
         }
 
+    def resolve_plugin_parameter_field_state(
+        self,
+        plugin_id,
+        *,
+        field_key="",
+        param_key="",
+        config=None,
+        changed_fields=None,
+        input_table=None,
+        context=None,
+        plugins_dir=None,
+    ):
+        schema_result = self.get_plugin_schema(plugin_id, plugins_dir=plugins_dir)
+        if not schema_result.get("ok"):
+            return schema_result
+        key = self._resolve_plugin_key(plugin_id)
+        current_config = copy.deepcopy(config or schema_result.get("default_config") or {})
+        if not isinstance(current_config, dict):
+            current_config = copy.deepcopy(schema_result.get("default_config") or {})
+        metadata = (schema_result.get("schema") or {}).get("parameter_metadata") or {}
+        states = _resolve_plugin_parameter_field_runtime_state(
+            metadata,
+            current_config,
+            field_key=field_key,
+            param_key=param_key,
+            changed_fields=changed_fields,
+        )
+        if states.get("ok") is False:
+            return states
+        return {
+            "ok": True,
+            "schema_version": "plugin_parameter_field_runtime_state.v1",
+            "plugin_id": key,
+            "field_key": str(field_key or ""),
+            "param_key": str(param_key or ""),
+            "field_count": len(states.get("fields") or []),
+            "fields": copy.deepcopy(states.get("fields") or []),
+            "field_state_index": copy.deepcopy(states.get("field_state_index") or {}),
+            "dependency_index": copy.deepcopy(metadata.get("dependency_index") or {}),
+            "changed_fields": list(states.get("changed_fields") or []),
+            "issues": copy.deepcopy(states.get("issues") or []),
+        }
+
     def resolve_plugin_config_options(
         self,
         plugin_id,
@@ -2227,6 +2270,7 @@ def _default_plugin_config_protocol_manifest(
         or metadata_capabilities.get("dynamic_options")
     )
     has_option_sources = bool(context_requirements.get("options_sources") or has_dynamic_options)
+    has_field_state = bool(metadata.get("field_state_index") or metadata.get("field_state_schema"))
     legacy_actions = [
         str(item.get("action_id") or "").strip()
         for item in action_items
@@ -2241,6 +2285,7 @@ def _default_plugin_config_protocol_manifest(
             "get_plugin_schema": True,
             "describe_plugin_config": True,
             "resolve_plugin_parameter_options": has_option_sources,
+            "resolve_plugin_parameter_field_state": has_field_state,
             "preview_plugin_config_effect": bool(capabilities.get("preview_config_effect") or capabilities.get("config_effect_preview")),
             "apply_plugin_config_patch": bool(capabilities.get("config_patch")),
             "legacy_config_window": bool(legacy_actions),
@@ -3134,6 +3179,160 @@ def _normalize_parameter_ref_list(value):
         for item in value
         if str(item).strip()
     ]
+
+
+def _resolve_plugin_parameter_field_runtime_state(
+    metadata,
+    current_config,
+    *,
+    field_key="",
+    param_key="",
+    changed_fields=None,
+):
+    metadata = metadata if isinstance(metadata, dict) else {}
+    state_index = metadata.get("field_state_index") if isinstance(metadata.get("field_state_index"), dict) else {}
+    if not state_index:
+        return {
+            "ok": True,
+            "fields": [],
+            "field_state_index": {},
+            "changed_fields": [],
+            "issues": [],
+        }
+    field_key = str(field_key or "").strip()
+    param_key = str(param_key or "").strip()
+    requested_keys = []
+    if field_key:
+        requested_keys = [field_key] if field_key in state_index else []
+    elif param_key:
+        requested_keys = [
+            key
+            for key, item in state_index.items()
+            if str((item or {}).get("param_key") or "") == param_key
+        ]
+    else:
+        requested_keys = list(state_index.keys())
+    if (field_key or param_key) and not requested_keys:
+        return _plugin_failure(
+            "plugin_parameter_field_state_not_found",
+            f"未找到插件参数字段：{field_key or param_key}",
+            "/field_key",
+        )
+    changed_keys = _normalize_parameter_ref_list(changed_fields)
+    changed_lookup = set(changed_keys)
+    values = _plugin_parameter_runtime_values(metadata, current_config)
+    dependency_index = metadata.get("dependency_index") if isinstance(metadata.get("dependency_index"), dict) else {}
+    fields = []
+    runtime_index = {}
+    for key in requested_keys:
+        state = copy.deepcopy(state_index.get(key) or {})
+        visible = bool(state.get("default_visible", True)) and _plugin_parameter_condition_matches(state.get("visible_when"), values)
+        enabled = visible and bool(state.get("default_enabled", True)) and _plugin_parameter_condition_matches(state.get("enabled_when"), values)
+        dependencies = _unique_string_values(
+            list(state.get("depends_on") or [])
+            + list(state.get("refresh_on_change") or [])
+            + _parameter_condition_field_refs(state.get("visible_when"))
+            + _parameter_condition_field_refs(state.get("enabled_when"))
+        )
+        refresh_triggered = bool(changed_lookup.intersection(dependencies))
+        item = {
+            "schema_version": "plugin_parameter_field_runtime_state_item.v1",
+            "field_key": key,
+            "param_key": str(state.get("param_key") or ""),
+            "label": str(state.get("label") or key),
+            "type": str(state.get("type") or "text"),
+            "visible": visible,
+            "enabled": enabled,
+            "status": "hidden" if not visible else ("active" if enabled else "disabled"),
+            "default_visible": bool(state.get("default_visible", True)),
+            "default_enabled": bool(state.get("default_enabled", True)),
+            "advanced": bool(state.get("advanced")),
+            "required": bool(state.get("required")),
+            "depends_on": list(state.get("depends_on") or []),
+            "refresh_on_change": list(state.get("refresh_on_change") or []),
+            "condition_dependencies": dependencies,
+            "dependents": list(dependency_index.get(key) or []),
+            "needs_options_refresh": bool(state.get("needs_options_refresh") or refresh_triggered),
+            "refresh_triggered": refresh_triggered,
+            "has_warning": bool(state.get("has_warning")),
+            "warning": str(state.get("warning") or ""),
+            "placeholder": str(state.get("placeholder") or ""),
+            "empty_text": str(state.get("empty_text") or ""),
+            "invalid_value_text": str(state.get("invalid_value_text") or ""),
+            "visible_when": copy.deepcopy(state.get("visible_when")) if state.get("visible_when") is not None else {},
+            "enabled_when": copy.deepcopy(state.get("enabled_when")) if state.get("enabled_when") is not None else {},
+            "options_source": copy.deepcopy(state.get("options_source") or {}),
+            "current_value": copy.deepcopy(values.get(key)),
+            "issues": [],
+        }
+        fields.append(item)
+        runtime_index[key] = copy.deepcopy(item)
+    return {
+        "ok": True,
+        "fields": fields,
+        "field_state_index": runtime_index,
+        "changed_fields": changed_keys,
+        "issues": [],
+    }
+
+
+def _plugin_parameter_runtime_values(metadata, current_config):
+    metadata = metadata if isinstance(metadata, dict) else {}
+    params = copy.deepcopy(metadata.get("default_params") or {})
+    if isinstance(current_config, dict):
+        config_params = current_config.get("params") if isinstance(current_config.get("params"), dict) else {}
+        params.update(copy.deepcopy(config_params))
+    field_index = metadata.get("field_index") if isinstance(metadata.get("field_index"), dict) else {}
+    values = {}
+    for key, item in field_index.items():
+        param_key = str((item or {}).get("param_key") or "").strip()
+        value = params.get(param_key) if param_key else None
+        values[str(key)] = copy.deepcopy(value)
+        if param_key:
+            values[param_key] = copy.deepcopy(value)
+    for param_key, value in params.items():
+        values.setdefault(str(param_key), copy.deepcopy(value))
+        values.setdefault("params." + str(param_key), copy.deepcopy(value))
+    return values
+
+
+def _plugin_parameter_condition_matches(condition, values):
+    if not condition:
+        return True
+    if not isinstance(condition, dict):
+        return True
+    if "all" in condition:
+        return all(_plugin_parameter_condition_matches(item, values) for item in condition.get("all") or [])
+    if "any" in condition:
+        return any(_plugin_parameter_condition_matches(item, values) for item in condition.get("any") or [])
+    if "not" in condition:
+        return not _plugin_parameter_condition_matches(condition.get("not"), values)
+    field = condition.get("field")
+    actual = values.get(field)
+    if "equals" in condition and not _plugin_parameter_values_equal(actual, condition.get("equals")):
+        return False
+    if "not_equals" in condition and _plugin_parameter_values_equal(actual, condition.get("not_equals")):
+        return False
+    if "in" in condition:
+        expected_values = condition.get("in") or []
+        if not any(_plugin_parameter_values_equal(actual, expected) for expected in expected_values):
+            return False
+    if "not_in" in condition:
+        expected_values = condition.get("not_in") or []
+        if any(_plugin_parameter_values_equal(actual, expected) for expected in expected_values):
+            return False
+    if "truthy" in condition and bool(actual) is not bool(condition.get("truthy")):
+        return False
+    return True
+
+
+def _plugin_parameter_values_equal(actual, expected):
+    if isinstance(expected, bool):
+        if isinstance(actual, bool):
+            return actual is expected
+        text = str(actual).strip().lower()
+        return text in {"1", "true", "yes", "on"} if expected else text in {"", "0", "false", "no", "off"}
+    return str(actual) == str(expected)
 
 
 def _plugin_parameter_layout_index(groups, parameter_fields):
