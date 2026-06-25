@@ -477,6 +477,8 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertEqual(manager["result"]["manager_state"]["layout"]["schema_version"], "data_source_manager_layout.v1")
         self.assertIn("table_loader", manager["result"]["manager_state"]["layout"]["section_order"])
         self.assertEqual(manager["result"]["manager_state"]["ui_hints"]["schema_version"], "data_source_manager_ui_hints.v1")
+        self.assertEqual(manager["result"]["manager_state"]["manager_fields"]["schema_version"], "data_source_manager_fields.v1")
+        self.assertEqual(manager["result"]["manager_state"]["manager_fields"]["fields"]["selected_table"]["choices"], ["orders", "archive"])
         self.assertEqual(manager["result"]["manager_state"]["ui_hints"]["action_prominence"]["apply_to_workflow"], "primary")
         self.assertEqual(manager["result"]["manager_state"]["source_controls"]["table_names"], ["orders", "archive"])
         self.assertTrue(manager["result"]["manager_state"]["source_controls"]["load_enabled"])
@@ -502,6 +504,10 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertEqual(
             service_desc["result"]["result_schemas"]["data_source_manager_ui_hints"]["schema_version"],
             "data_source_manager_ui_hints.v1",
+        )
+        self.assertEqual(
+            service_desc["result"]["result_schemas"]["data_source_manager_fields"]["schema_version"],
+            "data_source_manager_fields.v1",
         )
         self.assertEqual(
             service_desc["result"]["client_profiles"]["schema_version"],

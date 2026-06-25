@@ -48,6 +48,7 @@ class DataSourceManagerWindow:
         self.current_display_name = ""
         self.manager_layout = {}
         self.manager_ui_hints = {}
+        self.manager_fields = {}
         self.manager_sections_by_id = {}
         self.manager_action_sections = {}
         self.action_widgets = {}
@@ -246,6 +247,7 @@ class DataSourceManagerWindow:
         state = manager_state if isinstance(manager_state, dict) else self._describe_data_source_manager_state()
         layout = state.get("layout") if isinstance(state.get("layout"), dict) else {}
         ui_hints = state.get("ui_hints") if isinstance(state.get("ui_hints"), dict) else {}
+        manager_fields = state.get("manager_fields") if isinstance(state.get("manager_fields"), dict) else {}
         service = state.get("service") if isinstance(state.get("service"), dict) else {}
         client_profiles = service.get("client_profiles") if isinstance(service.get("client_profiles"), dict) else self.client_profiles
         transport_hints = service.get("transport_hints") if isinstance(service.get("transport_hints"), dict) else self.transport_hints
@@ -253,6 +255,7 @@ class DataSourceManagerWindow:
             return
         self.manager_layout = copy.deepcopy(layout)
         self.manager_ui_hints = copy.deepcopy(ui_hints)
+        self.manager_fields = copy.deepcopy(manager_fields)
         self.client_profiles = copy.deepcopy(client_profiles if isinstance(client_profiles, dict) else {})
         self.transport_hints = copy.deepcopy(transport_hints if isinstance(transport_hints, dict) else {})
         self.manager_sections_by_id = {
@@ -268,8 +271,10 @@ class DataSourceManagerWindow:
                     self.manager_action_sections[action_key] = section_id
         self.window.setProperty("data_source_manager_layout_schema", str(layout.get("schema_version") or ""))
         self.window.setProperty("data_source_manager_ui_hints_schema", str(ui_hints.get("schema_version") or ""))
+        self.window.setProperty("data_source_manager_fields_schema", str(manager_fields.get("schema_version") or ""))
         self.window.setProperty("data_source_manager_default_section", str(layout.get("default_section_id") or ui_hints.get("default_focus") or ""))
         self.window.setProperty("data_source_manager_display_mode", str(ui_hints.get("display_mode") or ""))
+        self.window.setProperty("data_source_manager_field_order", ",".join(str(item) for item in (manager_fields.get("field_order") or [])))
         table_transfer = self._transport_table_transfer()
         self.window.setProperty("data_source_client_profiles_schema", str(self.client_profiles.get("schema_version") or ""))
         self.window.setProperty("data_source_transport_hints_schema", str(self.transport_hints.get("schema_version") or ""))

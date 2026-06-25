@@ -44,6 +44,7 @@ DATA_SOURCE_ACTION_SCHEMA_VERSION = "data_source_action_schema.v1"
 DATA_SOURCE_SERVICE_SCHEMA_VERSION = "data_source_service.v1"
 DATA_SOURCE_PANEL_STATE_SCHEMA_VERSION = "data_source_panel_state.v1"
 DATA_SOURCE_MANAGER_STATE_SCHEMA_VERSION = "data_source_manager_state.v1"
+DATA_SOURCE_MANAGER_FIELDS_SCHEMA_VERSION = "data_source_manager_fields.v1"
 DATA_SOURCE_MANAGER_LAYOUT_SCHEMA_VERSION = "data_source_manager_layout.v1"
 DATA_SOURCE_MANAGER_UI_HINTS_SCHEMA_VERSION = "data_source_manager_ui_hints.v1"
 DATA_SOURCE_CLIENT_PROFILES_SCHEMA_VERSION = "data_source_client_profiles.v1"
@@ -281,12 +282,25 @@ class TableDataService:
             selected_table_name = str(source_payload.get("table_name") or source_payload.get("table") or "").strip()
         layout = describe_data_source_manager_layout()
         ui_hints = describe_data_source_manager_ui_hints()
+        manager_fields = describe_data_source_manager_fields(
+            source_controls={
+                "db_path": db_path_text,
+                "table_names": table_names_list,
+                "selected_table": selected_table_name,
+            },
+            page_info=page_info,
+            search_navigation=search_navigation,
+            save_modes=table_save_modes,
+            view_state=state.get("view_state") if isinstance(state.get("view_state"), dict) else {},
+            transport_hints=service.get("transport_hints") if isinstance(service.get("transport_hints"), dict) else transport_hints,
+        )
         manager_state = {
             "schema_version": DATA_SOURCE_MANAGER_STATE_SCHEMA_VERSION,
             "protocol_family": DATA_SOURCE_PROTOCOL_FAMILY,
             "panel_state": copy.deepcopy(state),
             "layout": layout,
             "ui_hints": ui_hints,
+            "manager_fields": manager_fields,
             "service": {
                 "schema_version": service.get("schema_version"),
                 "protocol_family": service.get("protocol_family"),
@@ -295,6 +309,7 @@ class TableDataService:
                 "action_ids": sorted(str(key) for key in (service.get("actions") or {}).keys()),
                 "data_action_ids": sorted(str(key) for key in (service.get("data_actions") or {}).keys()),
                 "table_action_ids": sorted(str(key) for key in (service.get("table_actions") or {}).keys()),
+                "manager_field_ids": list(manager_fields.get("field_order") or []),
                 "client_profiles": copy.deepcopy(service.get("client_profiles") or {}),
                 "transport_hints": copy.deepcopy(service.get("transport_hints") or {}),
                 "result_schemas": copy.deepcopy(service.get("result_schemas") or {}),
@@ -1404,6 +1419,274 @@ def describe_data_source_manager_ui_hints():
     }
 
 
+def describe_data_source_manager_fields(
+    *,
+    source_controls=None,
+    page_info=None,
+    search_navigation=None,
+    save_modes=None,
+    view_state=None,
+    transport_hints=None,
+):
+    source_controls = dict(source_controls or {})
+    page_state = copy_page_info(page_info or {})
+    search_state = copy_search_navigation(search_navigation or {})
+    view_state = dict(view_state or {})
+    save_modes = save_modes if isinstance(save_modes, dict) else {
+        "schema_version": TABLE_SAVE_MODES_SCHEMA_VERSION,
+        "default_mode": "replace",
+        "modes": describe_save_modes(),
+        "mode_field": {
+            "key": "mode",
+            "label": "保存模式",
+            "type": "select",
+            "choices_source": "modes",
+            "default": "replace",
+        },
+    }
+    transport_hints = transport_hints if isinstance(transport_hints, dict) else describe_data_source_transport_hints()
+    table_transfer = transport_hints.get("table_transfer") if isinstance(transport_hints.get("table_transfer"), dict) else {}
+    table_names = [str(item).strip() for item in (source_controls.get("table_names") or []) if str(item).strip()]
+    db_path = str(source_controls.get("db_path") or "").strip()
+    selected_table = str(source_controls.get("selected_table") or "").strip()
+    page_size_default = _coerce_int_value(table_transfer.get("page_size_default"), default=200, minimum=1)
+    page_size_max_hint = _coerce_int_value(table_transfer.get("page_size_max_hint"), default=2000, minimum=1)
+    page_size_value = _coerce_int_value(
+        page_state.get("limit"),
+        default=page_size_default,
+        minimum=1,
+        maximum=page_size_max_hint,
+    )
+    table_name_value = str(
+        view_state.get("table_name")
+        or source_controls.get("table_name")
+        or selected_table
+        or ""
+    ).strip()
+    keyword_value = str(
+        search_state.get("keyword")
+        or view_state.get("keyword")
+        or ""
+    ).strip()
+    mode_field = save_modes.get("mode_field") if isinstance(save_modes.get("mode_field"), dict) else {}
+    mode_default = str(mode_field.get("default") or save_modes.get("default_mode") or "replace")
+    mode_choices = copy.deepcopy(save_modes.get("modes") or [])
+    status_text = str(view_state.get("status_text") or "")
+    page_status_text = str(view_state.get("page_status_text") or "")
+    search_status_text = str(search_state.get("status_text") or "")
+
+    def field(
+        field_id,
+        *,
+        label,
+        type_,
+        section_id,
+        value=None,
+        default=None,
+        editable=True,
+        readonly=False,
+        required=False,
+        placeholder="",
+        help_text="",
+        action_ids=None,
+        refresh_on_change=None,
+        options_source=None,
+        choices=None,
+        choices_source="",
+        value_path="",
+        empty_text="",
+        minimum=None,
+        maximum=None,
+        step=None,
+    ):
+        payload = {
+            "field_id": field_id,
+            "label": label,
+            "type": type_,
+            "section_id": section_id,
+            "value": value,
+            "default": default,
+            "editable": bool(editable),
+            "readonly": bool(readonly),
+            "required": bool(required),
+            "placeholder": placeholder,
+            "help": help_text,
+            "action_ids": list(action_ids or []),
+            "refresh_on_change": list(refresh_on_change or []),
+            "value_path": value_path,
+            "options_source": copy.deepcopy(options_source) if isinstance(options_source, dict) else options_source,
+            "choices": copy.deepcopy(choices) if isinstance(choices, list) else [],
+            "choices_source": choices_source,
+            "empty_text": empty_text,
+        }
+        if minimum is not None:
+            payload["minimum"] = minimum
+        if maximum is not None:
+            payload["maximum"] = maximum
+        if step is not None:
+            payload["step"] = step
+        return payload
+
+    fields = {
+        "db_path": field(
+            "db_path",
+            label="数据库",
+            type_="path",
+            section_id="database",
+            value=db_path,
+            default="",
+            placeholder="选择或输入 SQLite 数据库路径",
+            help_text="选择数据库后可刷新表列表。",
+            action_ids=["list_tables"],
+            value_path="source_controls.db_path",
+        ),
+        "selected_table": field(
+            "selected_table",
+            label="载入表",
+            type_="table_select",
+            section_id="table_loader",
+            value=selected_table,
+            default="",
+            placeholder="从当前数据库选择表",
+            help_text="用于载入 SQLite 表或创建表句柄。",
+            action_ids=["load_table", "create_table_handle"],
+            refresh_on_change=["db_path"],
+            options_source={"type": "source_controls", "key": "table_names"},
+            choices=table_names,
+            choices_source="source_controls.table_names",
+            value_path="source_controls.selected_table",
+            empty_text="当前数据库没有可选表。",
+        ),
+        "page_size": field(
+            "page_size",
+            label="每页",
+            type_="spinbox",
+            section_id="paging",
+            value=page_size_value,
+            default=page_size_default,
+            help_text="分页预览的每页行数。",
+            action_ids=["get_table_handle_page", "get_table_page"],
+            value_path="panel_state.view_state.page.limit",
+            minimum=1,
+            maximum=page_size_max_hint,
+            step=100,
+        ),
+        "table_name": field(
+            "table_name",
+            label="保存表名",
+            type_="text",
+            section_id="save",
+            value=table_name_value,
+            default=selected_table,
+            placeholder="保存到 SQLite 时的表名",
+            help_text="保存和删除 SQLite 表时使用的表名。",
+            action_ids=["save_sqlite", "delete_sqlite"],
+            refresh_on_change=["selected_table"],
+            value_path="panel_state.view_state.table_name",
+        ),
+        "mode": field(
+            "mode",
+            label="保存模式",
+            type_="select",
+            section_id="save",
+            value=mode_default,
+            default=mode_default,
+            help_text="选择 SQLite 保存策略。",
+            action_ids=["save_sqlite"],
+            options_source={"type": "save_modes", "key": "modes"},
+            choices=mode_choices,
+            choices_source="save_modes.modes",
+            value_path="save_modes.mode_field.default",
+        ),
+        "keyword": field(
+            "keyword",
+            label="搜索",
+            type_="text",
+            section_id="search",
+            value=keyword_value,
+            default="",
+            placeholder="输入要搜索的关键字",
+            help_text="搜索当前表格并定位命中单元格。",
+            action_ids=["search_table", "build_table_search_navigation"],
+            value_path="panel_state.view_state.search.keyword",
+        ),
+        "status_text": field(
+            "status_text",
+            label="状态",
+            type_="label",
+            section_id="status",
+            value=status_text,
+            default="",
+            readonly=True,
+            editable=False,
+            help_text="当前输入数据源的摘要信息。",
+            value_path="panel_state.view_state.status_text",
+        ),
+        "page_status_text": field(
+            "page_status_text",
+            label="分页",
+            type_="label",
+            section_id="status",
+            value=page_status_text,
+            default="",
+            readonly=True,
+            editable=False,
+            help_text="分页状态说明。",
+            value_path="panel_state.view_state.page_status_text",
+        ),
+        "search_status_text": field(
+            "search_status_text",
+            label="搜索状态",
+            type_="label",
+            section_id="status",
+            value=search_status_text,
+            default="",
+            readonly=True,
+            editable=False,
+            help_text="搜索命中与定位状态。",
+            value_path="panel_state.view_state.search.status_text",
+        ),
+    }
+    field_order = [
+        "db_path",
+        "selected_table",
+        "page_size",
+        "table_name",
+        "mode",
+        "keyword",
+        "status_text",
+        "page_status_text",
+        "search_status_text",
+    ]
+    section_field_order = {
+        "database": ["db_path"],
+        "table_loader": ["selected_table"],
+        "paging": ["page_size"],
+        "save": ["table_name", "mode"],
+        "search": ["keyword"],
+        "status": ["status_text", "page_status_text", "search_status_text"],
+    }
+    return {
+        "schema_version": DATA_SOURCE_MANAGER_FIELDS_SCHEMA_VERSION,
+        "protocol_family": DATA_SOURCE_PROTOCOL_FAMILY,
+        "field_order": field_order,
+        "section_field_order": section_field_order,
+        "fields": fields,
+    }
+
+
+def _coerce_int_value(value, *, default=0, minimum=None, maximum=None):
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        result = int(default)
+    if minimum is not None:
+        result = max(int(minimum), result)
+    if maximum is not None:
+        result = min(int(maximum), result)
+    return result
+
+
 def describe_data_source_client_profiles():
     profiles = {
         "qt_embedded": {
@@ -1546,6 +1829,7 @@ def describe_data_source_service():
             "panel_state": True,
             "manager_layout": True,
             "manager_ui_hints": True,
+            "manager_fields": True,
             "client_profiles": True,
             "transport_hints": True,
         },
@@ -1610,6 +1894,29 @@ def describe_data_source_service():
         "table_actions": table_actions,
         "client_profiles": client_profiles,
         "transport_hints": transport_hints,
+        "manager_fields": describe_data_source_manager_fields(
+            source_controls={
+                "db_path": "",
+                "table_names": [],
+                "selected_table": "",
+            },
+            page_info={},
+            search_navigation={},
+            save_modes={
+                "schema_version": TABLE_SAVE_MODES_SCHEMA_VERSION,
+                "default_mode": "replace",
+                "modes": describe_save_modes(),
+                "mode_field": {
+                    "key": "mode",
+                    "label": "保存模式",
+                    "type": "select",
+                    "choices_source": "modes",
+                    "default": "replace",
+                },
+            },
+            view_state={},
+            transport_hints=transport_hints,
+        ),
         "action_schema": action_schema,
         "save_modes": {
             "schema_version": TABLE_SAVE_MODES_SCHEMA_VERSION,
@@ -1620,6 +1927,7 @@ def describe_data_source_service():
             "data_source_service": {"schema_version": DATA_SOURCE_SERVICE_SCHEMA_VERSION},
             "data_source_panel_state": {"schema_version": DATA_SOURCE_PANEL_STATE_SCHEMA_VERSION},
             "data_source_manager_state": {"schema_version": DATA_SOURCE_MANAGER_STATE_SCHEMA_VERSION},
+            "data_source_manager_fields": {"schema_version": DATA_SOURCE_MANAGER_FIELDS_SCHEMA_VERSION},
             "data_source_manager_layout": {"schema_version": DATA_SOURCE_MANAGER_LAYOUT_SCHEMA_VERSION},
             "data_source_manager_ui_hints": {"schema_version": DATA_SOURCE_MANAGER_UI_HINTS_SCHEMA_VERSION},
             "data_source_client_profiles": {"schema_version": DATA_SOURCE_CLIENT_PROFILES_SCHEMA_VERSION},

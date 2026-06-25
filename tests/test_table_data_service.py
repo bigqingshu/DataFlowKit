@@ -242,6 +242,18 @@ class TableDataServiceTests(unittest.TestCase):
         self.assertEqual(service_desc["transport_hints"]["schema_version"], "data_source_transport_hints.v1")
         self.assertEqual(service_desc["transport_hints"]["table_transfer"]["preferred_action"], "create_table_handle")
         self.assertTrue(service_desc["transport_hints"]["confirmation"]["delete_sqlite"]["requires_confirmation"])
+        self.assertEqual(service_desc["manager_fields"]["schema_version"], "data_source_manager_fields.v1")
+        self.assertEqual(service_desc["manager_fields"]["field_order"], [
+            "db_path",
+            "selected_table",
+            "page_size",
+            "table_name",
+            "mode",
+            "keyword",
+            "status_text",
+            "page_status_text",
+            "search_status_text",
+        ])
         self.assertEqual(
             service_desc["actions"]["build_data_source_panel_state"]["engine_action"],
             "build_data_source_panel_state",
@@ -280,6 +292,10 @@ class TableDataServiceTests(unittest.TestCase):
         self.assertEqual(
             service_desc["result_schemas"]["data_source_manager_ui_hints"]["schema_version"],
             "data_source_manager_ui_hints.v1",
+        )
+        self.assertEqual(
+            service_desc["result_schemas"]["data_source_manager_fields"]["schema_version"],
+            "data_source_manager_fields.v1",
         )
         self.assertEqual(
             service_desc["result_schemas"]["data_source_client_profiles"]["schema_version"],
@@ -323,6 +339,10 @@ class TableDataServiceTests(unittest.TestCase):
         self.assertIn("build_data_source_manager_state", manager_state["service"]["action_ids"])
         self.assertEqual(manager_state["service"]["client_profiles"]["profiles"]["dotnet_desktop"]["state_strategy"], "render_from_layout_and_ui_hints")
         self.assertEqual(manager_state["service"]["transport_hints"]["editing"]["paged_table_editing"], "readonly_until_full_table_loaded")
+        self.assertEqual(manager_state["manager_fields"]["schema_version"], "data_source_manager_fields.v1")
+        self.assertEqual(manager_state["manager_fields"]["fields"]["selected_table"]["choices"], ["demo", "archive"])
+        self.assertEqual(manager_state["manager_fields"]["fields"]["page_size"]["value"], 50)
+        self.assertEqual(manager_state["service"]["manager_field_ids"][0], "db_path")
         self.assertEqual(manager_state["source_controls"]["db_path"], "input.db")
         self.assertEqual(manager_state["source_controls"]["table_names"], ["demo", "archive"])
         self.assertEqual(manager_state["source_controls"]["selected_table"], "demo")
