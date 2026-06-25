@@ -259,6 +259,8 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertEqual(manifest["action_state"]["schema_version"], "plugin_config_action_state.v1")
         self.assertEqual(manifest["action_state"]["provider"], "PluginService.describe_plugin_config")
         self.assertIn("append_item", manifest["action_state"]["button_keys"])
+        self.assertEqual(manifest["action_state"]["button_order"], manifest["action_state"]["button_keys"])
+        self.assertIn("button_order", {field["key"] for field in manifest["action_state"]["fields"]})
         self.assertIn("move_item_-1", manifest["action_state"]["boundary_sensitive_buttons"])
         self.assertIn("requires_selection", {field["key"] for field in manifest["action_state"]["button_fields"]})
         manifest_views = {view["view_id"]: view for view in manifest["views"]}
@@ -752,6 +754,7 @@ class VisualMappingWritePlanTests(unittest.TestCase):
         self.assertFalse(rules_view["items"][1]["enabled"])
         self.assertEqual(rules_view["action_state"]["schema_version"], "plugin_config_action_state.v1")
         self.assertEqual(rules_view["action_state"]["view_id"], "visual_mapping.rules")
+        self.assertEqual(rules_view["action_state"]["button_order"][0], "append_item")
         self.assertEqual(rules_view["action_state"]["buttons"]["append_item"]["action_id"], "visual_mapping.edit.rules")
         self.assertFalse(rules_view["action_state"]["buttons"]["move_item_-1"]["enabled"])
         self.assertTrue(rules_view["action_state"]["buttons"]["move_item_1"]["enabled"])

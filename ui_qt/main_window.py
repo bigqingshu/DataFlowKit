@@ -1706,6 +1706,7 @@ class QtWorkflowMainWindow:
             action_buttons,
             supported_operations=supported_operations,
             can_update_item=can_update_item,
+            button_order=action_state.get("button_order") if isinstance(action_state.get("button_order"), list) else [],
         ):
             button_key = str(spec.get("key") or "").strip()
             if not button_key:
@@ -1730,11 +1731,30 @@ class QtWorkflowMainWindow:
         self._update_plugin_structured_list_buttons(frame)
         return frame
 
-    def _plugin_structured_button_specs(self, action_buttons, *, supported_operations, can_update_item):
+    def _plugin_structured_button_specs(
+        self,
+        action_buttons,
+        *,
+        supported_operations,
+        can_update_item,
+        button_order=None,
+    ):
         action_buttons = action_buttons if isinstance(action_buttons, dict) else {}
         if action_buttons:
             result = []
-            for key, state in action_buttons.items():
+            ordered_keys = []
+            seen = set()
+            for key in button_order or []:
+                button_key = str(key or "").strip()
+                if button_key and button_key in action_buttons and button_key not in seen:
+                    ordered_keys.append(button_key)
+                    seen.add(button_key)
+            for key in action_buttons:
+                if key not in seen:
+                    ordered_keys.append(key)
+                    seen.add(key)
+            for key in ordered_keys:
+                state = action_buttons.get(key)
                 if not isinstance(state, dict):
                     continue
                 operation = str(state.get("operation") or "").strip()

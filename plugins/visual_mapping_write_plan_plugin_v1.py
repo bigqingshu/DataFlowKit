@@ -668,6 +668,7 @@ def _visual_mapping_action_state_schema():
         "applies_to_view_kind": "structured_list",
         "view_kinds": ["structured_list"],
         "button_keys": button_keys,
+        "button_order": button_keys,
         "boundary_sensitive_buttons": ["move_item_-1", "move_item_1"],
         "selection_required_buttons": ["update_item", "delete_item", "set_enabled", "move_item_-1", "move_item_1"],
         "operation_aliases": {
@@ -683,6 +684,7 @@ def _visual_mapping_action_state_schema():
             {"key": "item_count", "type": "integer", "required": True},
             {"key": "selected_index", "type": "integer", "required": False},
             {"key": "supported_operations", "type": "list", "required": True},
+            {"key": "button_order", "type": "list", "required": True},
             {"key": "buttons", "type": "object", "required": True},
         ],
         "button_fields": [

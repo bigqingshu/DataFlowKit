@@ -2001,6 +2001,14 @@ def _plugin_structured_list_action_state(view, *, actions=None):
             "action_id": action_id,
         }
 
+    button_order = [
+        "append_item",
+        "update_item",
+        "delete_item",
+        "set_enabled",
+        "move_item_-1",
+        "move_item_1",
+    ]
     buttons = {
         "append_item": button_state("append_item", "新增", "append_item"),
         "update_item": button_state("update_item", "应用修改", "update_item"),
@@ -2018,6 +2026,7 @@ def _plugin_structured_list_action_state(view, *, actions=None):
         "item_count": item_count,
         "selected_index": selected_index,
         "supported_operations": sorted(supported_operations),
+        "button_order": button_order,
         "buttons": buttons,
     }
 
