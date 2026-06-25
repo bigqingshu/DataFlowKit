@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import json
+from pathlib import Path
 
 from ui_qt.node_ui_metadata import (
     build_field_help_payload,
@@ -129,6 +130,9 @@ class NodeConfigForm:
         self.node_fields = {}
         self.config_fields = {}
         self.validation_issues = []
+        self.shared_config_service_buttons = {}
+        self.shared_config_service_status_text = ""
+        self.shared_config_service_status_label = None
         self.set_node(None)
 
     def set_headers(self, headers):
@@ -164,6 +168,7 @@ class NodeConfigForm:
             "ok": True,
             "parameter_metadata": self._parameter_metadata_state(),
             "shared_config_context": self._shared_config_context_state(),
+            "shared_config_service": self._shared_config_service_state(),
             "fields": {
                 key: {
                     "kind": field.get("kind"),
@@ -196,6 +201,22 @@ class NodeConfigForm:
             )
             return copy.deepcopy(described.get("shared_config_context") or {})
         return {}
+
+    def _shared_config_service_state(self):
+        context = self._shared_config_context_state()
+        service = context.get("service") if isinstance(context.get("service"), dict) else {}
+        layout = service.get("layout") if isinstance(service.get("layout"), dict) else {}
+        command_schema = service.get("command_schema_detail") if isinstance(service.get("command_schema_detail"), dict) else {}
+        sections = [item for item in (layout.get("sections") or []) if isinstance(item, dict)]
+        return {
+            "schema_version": str(context.get("schema_version") or ""),
+            "protocol_family": str(context.get("protocol_family") or ""),
+            "section_ids": [str(item.get("section_id") or "") for item in sections if str(item.get("section_id") or "").strip()],
+            "command_ids": list(command_schema.get("command_ids") or []),
+            "visible_command_ids": sorted(self.shared_config_service_buttons.keys()),
+            "status_text": str(self.shared_config_service_status_text or ""),
+            "ui_hints": copy.deepcopy(service.get("ui_hints") or {}),
+        }
 
     def _current_config_snapshot(self):
         source_config = self.node.get("config", {}) if isinstance(self.node, dict) else {}
@@ -244,6 +265,8 @@ class NodeConfigForm:
         self.node_fields = {}
         self.config_fields = {}
         self.validation_issues = []
+        self.shared_config_service_buttons = {}
+        self.shared_config_service_status_label = None
 
         content = self.qt.QtWidgets.QWidget()
         outer = self.qt.QtWidgets.QVBoxLayout(content)
@@ -262,6 +285,9 @@ class NodeConfigForm:
             outer.addWidget(group)
         self._apply_dynamic_state()
         self._apply_validation_state()
+        shared_config_panel = self._build_shared_config_service_panel()
+        if shared_config_panel is not None:
+            outer.addWidget(shared_config_panel)
         outer.addStretch(1)
         self.scroll_area.setWidget(content)
 
@@ -450,6 +476,273 @@ class NodeConfigForm:
             form.addRow(label, editor)
             self.config_fields[key]["label"] = label
         return group
+
+    def _build_shared_config_service_panel(self):
+        shared_context = self._shared_config_context_state()
+        if not isinstance(shared_context, dict) or not shared_context:
+            return None
+        service = shared_context.get("service") if isinstance(shared_context.get("service"), dict) else {}
+        layout = service.get("layout") if isinstance(service.get("layout"), dict) else {}
+        command_schema = service.get("command_schema_detail") if isinstance(service.get("command_schema_detail"), dict) else {}
+        ui_hints = service.get("ui_hints") if isinstance(service.get("ui_hints"), dict) else {}
+        commands = command_schema.get("commands") if isinstance(command_schema.get("commands"), dict) else {}
+        sections = [item for item in (layout.get("sections") or []) if isinstance(item, dict)]
+        if not sections:
+            return None
+
+        panel = self.qt.QtWidgets.QGroupBox("共享配置服务")
+        panel.setObjectName("sharedConfigServicePanel")
+        panel_layout = self.qt.QtWidgets.QVBoxLayout(panel)
+        panel_layout.setContentsMargins(8, 8, 8, 8)
+        panel_layout.setSpacing(8)
+
+        summary_widget = self.qt.QtWidgets.QWidget()
+        summary_layout = self.qt.QtWidgets.QFormLayout(summary_widget)
+        summary_layout.setContentsMargins(0, 0, 0, 0)
+        summary_layout.setSpacing(4)
+
+        service_title = str(service.get("protocol_family") or shared_context.get("protocol_family") or "共享配置协议")
+        schema_version = str(service.get("schema_version") or shared_context.get("schema_version") or "")
+        preferred_navigation = str(layout.get("preferred_navigation") or "")
+        default_focus = str(ui_hints.get("default_focus") or "")
+        density = str(ui_hints.get("density") or "")
+        output_text = str(shared_context.get("output_text") or "").strip()
+        risk_text = str((shared_context.get("risk_state") or {}).get("text") or "").strip()
+
+        summary_layout.addRow("协议", self._line(service_title, read_only=True))
+        summary_layout.addRow("版本", self._line(schema_version, read_only=True))
+        summary_layout.addRow("导航", self._line(preferred_navigation, read_only=True))
+        summary_layout.addRow("默认焦点", self._line(default_focus, read_only=True))
+        summary_layout.addRow("密度", self._line(density, read_only=True))
+        if output_text:
+            summary_layout.addRow("输出", self._line(output_text, read_only=True))
+        if risk_text:
+            summary_layout.addRow("提示", self._line(risk_text, read_only=True))
+        panel_layout.addWidget(summary_widget)
+
+        self.shared_config_service_status_label = self.qt.QtWidgets.QLabel(self.shared_config_service_status_text or "")
+        self.shared_config_service_status_label.setObjectName("sharedConfigServiceStatus")
+        self.shared_config_service_status_label.setWordWrap(True)
+        panel_layout.addWidget(self.shared_config_service_status_label)
+
+        for section in sections:
+            section_group = self.qt.QtWidgets.QGroupBox(str(section.get("title") or section.get("section_id") or "共享分区"))
+            section_group.setObjectName(f"sharedConfigSection_{str(section.get('section_id') or '').strip()}")
+            section_layout = self.qt.QtWidgets.QVBoxLayout(section_group)
+            section_layout.setContentsMargins(8, 8, 8, 8)
+            section_layout.setSpacing(6)
+
+            section_id = str(section.get("section_id") or "").strip()
+            section_hint = (ui_hints.get("section_hints") or {}).get(section_id, {}) if isinstance(ui_hints.get("section_hints"), dict) else {}
+            section_description = str(section_hint.get("description") or "").strip()
+            if section_description:
+                desc_label = self.qt.QtWidgets.QLabel(section_description)
+                desc_label.setWordWrap(True)
+                desc_label.setStyleSheet("color: #667085;")
+                section_layout.addWidget(desc_label)
+
+            command_ids = [str(item) for item in (section.get("command_ids") or []) if str(item).strip()]
+            command_grid = self.qt.QtWidgets.QGridLayout()
+            command_grid.setHorizontalSpacing(8)
+            command_grid.setVerticalSpacing(6)
+            command_grid.setContentsMargins(0, 0, 0, 0)
+
+            supported_count = 0
+            for index, command_id in enumerate(command_ids):
+                command_info = commands.get(command_id) if isinstance(commands.get(command_id), dict) else {}
+                button = self.qt.QtWidgets.QPushButton(str(command_info.get("label") or command_id))
+                button.setObjectName(f"sharedConfigCommand_{command_id}")
+                prominence = str((ui_hints.get("command_prominence") or {}).get(command_id) or "")
+                if prominence:
+                    button.setProperty("sharedCommandProminence", prominence)
+                payload, disabled_reason = self._shared_config_command_payload(
+                    command_id,
+                    command_info,
+                    shared_context,
+                    interactive=False,
+                )
+                if payload is None:
+                    button.setEnabled(False)
+                    tooltip_parts = [str(command_info.get("label") or command_id)]
+                    if disabled_reason:
+                        tooltip_parts.append(str(disabled_reason))
+                    button.setToolTip(" | ".join(part for part in tooltip_parts if part))
+                else:
+                    supported_count += 1
+                    tooltip_parts = [str(command_info.get("label") or command_id)]
+                    if disabled_reason:
+                        tooltip_parts.append(str(disabled_reason))
+                    button.setToolTip(" | ".join(part for part in tooltip_parts if part))
+                    button.clicked.connect(
+                        lambda checked=False, cid=command_id: self._apply_shared_config_command(cid)
+                    )
+                row, column = divmod(index, 2)
+                command_grid.addWidget(button, row, column)
+                self.shared_config_service_buttons[command_id] = button
+
+            if command_ids:
+                section_layout.addLayout(command_grid)
+            if supported_count == 0 and not section_description:
+                empty_label = self.qt.QtWidgets.QLabel("暂无可直接触发的动作。")
+                empty_label.setWordWrap(True)
+                empty_label.setStyleSheet("color: #98a2b3;")
+                section_layout.addWidget(empty_label)
+            panel_layout.addWidget(section_group)
+
+        return panel
+
+    def _shared_config_command_payload(self, command_id, command_info, shared_context, *, interactive=True):
+        command_id = str(command_id or "").strip()
+        command_info = command_info if isinstance(command_info, dict) else {}
+        shared_context = shared_context if isinstance(shared_context, dict) else {}
+        service = shared_context.get("service") if isinstance(shared_context.get("service"), dict) else {}
+        layout = service.get("layout") if isinstance(service.get("layout"), dict) else {}
+        ui_hints = service.get("ui_hints") if isinstance(service.get("ui_hints"), dict) else {}
+        command_schema = service.get("command_schema_detail") if isinstance(service.get("command_schema_detail"), dict) else {}
+        commands = command_schema.get("commands") if isinstance(command_schema.get("commands"), dict) else {}
+        _ = layout, ui_hints, commands
+
+        if command_id == "refresh_fields":
+            return {
+                "type": command_id,
+                "selected_tables": list(shared_context.get("selected_tables") or []),
+                "columns_by_table": copy.deepcopy(shared_context.get("table_columns") or {}),
+            }, ""
+        if command_id in {
+            "filter_valid_state",
+            "add_all_output_fields",
+            "clear_output_fields",
+            "clear_conditions",
+            "clear_join_rules",
+            "export_template",
+        }:
+            return {"type": command_id}, ""
+
+        if command_id in {"dedupe_preview", "build_main_preview_snapshot"}:
+            return None, "需要预览结果上下文。"
+
+        file_dialog = command_info.get("file_dialog") if isinstance(command_info.get("file_dialog"), dict) else {}
+        if command_id in {"save_template_file", "load_template_file"} and file_dialog:
+            if not interactive:
+                return {"type": command_id, "__needs_file_dialog": True}, "点击后选择文件。"
+            path = self._select_shared_config_file(file_dialog, save=file_dialog.get("dialog") == "save_file")
+            if not path:
+                return None, "已取消文件选择。"
+            payload = {"type": command_id, "path": path}
+            if command_id == "save_template_file":
+                payload["keep_backup"] = bool(next((item.get("default") for item in (command_info.get("inputs") or []) if isinstance(item, dict) and str(item.get("key") or "") == "keep_backup"), True))
+            if command_id == "load_template_file":
+                payload["apply"] = bool(next((item.get("default") for item in (command_info.get("inputs") or []) if isinstance(item, dict) and str(item.get("key") or "") == "apply"), True))
+            return payload, ""
+
+        required_keys = []
+        for item in command_info.get("inputs") or []:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key") or "").strip()
+            if key:
+                required_keys.append(key)
+        if required_keys:
+            return None, "需要参数：" + "、".join(required_keys)
+        return None, "暂未接入自动执行。"
+
+    def _select_shared_config_file(self, file_dialog, *, save=False):
+        file_dialog = file_dialog if isinstance(file_dialog, dict) else {}
+        title = str(file_dialog.get("title") or ("保存文件" if save else "选择文件"))
+        filters = self._file_dialog_filters(file_dialog.get("filters") or [])
+        start_dir = ""
+        if save:
+            path, _ = self.qt.QtWidgets.QFileDialog.getSaveFileName(self.widget, title, start_dir, filters)
+            if not path:
+                return ""
+            ext = str(file_dialog.get("defaultextension") or "").strip()
+            if ext and not Path(path).suffix:
+                path = path + ext
+            return path
+        path, _ = self.qt.QtWidgets.QFileDialog.getOpenFileName(self.widget, title, start_dir, filters)
+        return str(path or "")
+
+    def _file_dialog_filters(self, filters):
+        parts = []
+        for item in filters or []:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label") or "文件").strip()
+            pattern = str(item.get("pattern") or "*.*").strip()
+            parts.append(f"{label} ({pattern})")
+        return ";;".join(parts) or "所有文件 (*.*)"
+
+    def _set_shared_config_service_status(self, text):
+        self.shared_config_service_status_text = str(text or "")
+        if self.shared_config_service_status_label is not None:
+            self.shared_config_service_status_label.setText(self.shared_config_service_status_text)
+
+    def _shared_config_command_status_text(self, command_info, result):
+        command_info = command_info if isinstance(command_info, dict) else {}
+        label = str(command_info.get("label") or command_info.get("command_id") or "共享配置动作")
+        result = result if isinstance(result, dict) else {}
+        if result.get("ok"):
+            if bool(result.get("changed", False)):
+                return f"{label} 已应用。"
+            return f"{label} 已完成。"
+        issues = [item for item in (result.get("issues") or []) if isinstance(item, dict)]
+        message = ""
+        for issue in issues:
+            message = str(issue.get("message") or "").strip()
+            if message:
+                break
+        return f"{label} 失败：{message or '执行失败。'}"
+
+    def _apply_shared_config_command(self, command_id):
+        if not isinstance(self.node, dict):
+            return {}
+        node_snapshot = self.to_node()
+        if not isinstance(node_snapshot, dict):
+            node_snapshot = copy.deepcopy(self.node)
+        node_type_id = normalize_node_type_id(node_snapshot.get("node_type_id") or node_snapshot.get("type") or "")
+        if node_type_id != "core.filter":
+            return {}
+        shared_context = self._shared_config_context_state()
+        service = shared_context.get("service") if isinstance(shared_context.get("service"), dict) else {}
+        command_schema = service.get("command_schema_detail") if isinstance(service.get("command_schema_detail"), dict) else {}
+        command_info = copy.deepcopy((command_schema.get("commands") or {}).get(command_id) or {})
+        payload, disabled_reason = self._shared_config_command_payload(
+            command_id,
+            command_info,
+            shared_context,
+            interactive=True,
+        )
+        if payload is None:
+            self._set_shared_config_service_status(disabled_reason or "暂未接入。")
+            return {}
+        result = self.engine_client.apply_node_config_command(
+            node_type_id,
+            node=node_snapshot,
+            config=node_snapshot.get("config"),
+            command=payload,
+            preview_headers=self.headers,
+            table_names=self.table_names,
+            table_columns=self.table_columns,
+        )
+        status_text = self._shared_config_command_status_text(command_info or {"label": command_id}, result)
+        if bool(result.get("ok")) and isinstance(result.get("config"), dict):
+            updated_node = copy.deepcopy(node_snapshot)
+            updated_node["config"] = copy.deepcopy(result.get("config") or {})
+            if updated_node.get("config") != node_snapshot.get("config"):
+                self.set_node(
+                    updated_node,
+                    headers=self.headers,
+                    table_names=self.table_names,
+                    table_columns=self.table_columns,
+                    plan=self.plan,
+                    schema=self.schema,
+                )
+        self._set_shared_config_service_status(status_text)
+        if result.get("issues"):
+            self.set_validation_issues(result.get("issues"))
+        elif bool(result.get("ok")):
+            self.set_validation_issues([])
+        return result
 
     def _field_config_path(self, field_schema, key):
         path = (field_schema or {}).get("config_path")

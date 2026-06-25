@@ -311,6 +311,16 @@ def apply_filter_config_service_command(config, headers, all_fields, command):
     return apply_advanced_filter_command(state, command)
 
 
+def _sync_filter_config_from_service_state(config, state, *, sync_tables=False):
+    config["conditions"] = filter_conditions_from_rows(filter_conditions_to_rows(state.get("conditions") or []))
+    config["join_rules"] = filter_join_rules_from_rows(filter_join_rules_to_rows(state.get("join_rules") or []))
+    config["output_fields"] = list(state.get("output_fields") or [])
+    if sync_tables:
+        selected_tables = _unique_strings(state.get("selected_tables") or [])
+        config["extra_tables"] = [table for table in selected_tables if table != "当前表"]
+    return config
+
+
 def apply_filter_config_command(
     config,
     headers,
@@ -337,7 +347,34 @@ def apply_filter_config_command(
 
     service_result = None
     extra_payload = {}
-    if command_type == "add_condition":
+    if command_type == "refresh_fields":
+        selected_tables = command.get("selected_tables")
+        if selected_tables is not None:
+            tables = _unique_strings(selected_tables)
+            config_copy["extra_tables"] = [table for table in tables if table != "当前表"]
+        refreshed_fields = build_filter_available_fields(
+            headers,
+            config_copy.get("extra_tables", []),
+            table_columns=table_columns,
+            transit_context=transit_context,
+        )
+        all_fields = _unique_strings(refreshed_fields)
+        service_result = apply_filter_config_service_command(config_copy, headers, all_fields, {
+            "type": "refresh_fields",
+            "selected_tables": ["当前表"] + list(config_copy.get("extra_tables", []) or []),
+            "columns_by_table": _filter_fields_to_columns_by_table(all_fields),
+        })
+        if service_result.get("ok"):
+            state = service_result.get("state") or {}
+            _sync_filter_config_from_service_state(config_copy, state, sync_tables=True)
+
+    elif command_type == "filter_valid_state":
+        service_result = apply_filter_config_service_command(config_copy, headers, all_fields, {"type": "filter_valid_state"})
+        if service_result.get("ok"):
+            state = service_result.get("state") or {}
+            _sync_filter_config_from_service_state(config_copy, state)
+
+    elif command_type == "add_condition":
         field = str(command.get("field") or "").strip()
         op = str(command.get("op") or command.get("operator") or "等于").strip()
         value = command.get("value", "")

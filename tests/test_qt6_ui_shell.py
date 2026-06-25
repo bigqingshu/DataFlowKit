@@ -2069,6 +2069,77 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(form.to_node()["config"]["fields"], ["B", "C"])
         app.processEvents()
 
+    def test_config_form_exposes_shared_filter_service_commands(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+
+        schema = get_node_ui_schema(
+            "core.filter",
+            table_names=["people"],
+            table_columns={"people": ["Code", "Name"]},
+        )
+        form = NodeConfigForm(qt)
+        form.set_node(
+            {
+                "node_type_id": "core.filter",
+                "node_id": "n1",
+                "name": "高级筛选",
+                "enabled": True,
+                "node_version": "1.0.0",
+                "config": {
+                    "source_table": "当前表",
+                    "extra_tables": ["people"],
+                    "conditions": [],
+                    "join_rules": [],
+                    "output_fields": [],
+                    "logic": "AND",
+                    "join_logic": "AND",
+                    "result_limit": "5000",
+                    "max_intermediate": "200000",
+                },
+            },
+            headers=["Code"],
+            table_names=["people"],
+            table_columns={"people": ["Code", "Name"]},
+            schema=schema,
+        )
+        form.widget.show()
+        app.processEvents()
+
+        panel = form.widget.findChild(qt.QtWidgets.QGroupBox, "sharedConfigServicePanel")
+        add_all = form.widget.findChild(qt.QtWidgets.QPushButton, "sharedConfigCommand_add_all_output_fields")
+        clear_output = form.widget.findChild(qt.QtWidgets.QPushButton, "sharedConfigCommand_clear_output_fields")
+        build_preview = form.widget.findChild(qt.QtWidgets.QPushButton, "sharedConfigCommand_build_preview")
+        state = form.describe_state()["shared_config_service"]
+
+        self.assertIsNotNone(panel)
+        self.assertIsNotNone(add_all)
+        self.assertIsNotNone(clear_output)
+        self.assertIsNotNone(build_preview)
+        self.assertEqual(state["protocol_family"], "advanced_filter_service")
+        self.assertIn("output_fields", state["section_ids"])
+        self.assertIn("add_all_output_fields", state["visible_command_ids"])
+        self.assertFalse(build_preview.isEnabled())
+        self.assertIn("需要参数", build_preview.toolTip())
+
+        add_all.click()
+        app.processEvents()
+
+        self.assertEqual(form.to_node()["config"]["output_fields"], ["当前表.Code", "people.Code", "people.Name"])
+        self.assertIn("添加全部输出字段", form.describe_state()["shared_config_service"]["status_text"])
+        self.assertIn("已应用", form.describe_state()["shared_config_service"]["status_text"])
+
+        clear_output = form.widget.findChild(qt.QtWidgets.QPushButton, "sharedConfigCommand_clear_output_fields")
+        self.assertIsNotNone(clear_output)
+        clear_output.click()
+        app.processEvents()
+
+        self.assertEqual(form.to_node()["config"]["output_fields"], [])
+        self.assertIn("清空输出字段", form.describe_state()["shared_config_service"]["status_text"])
+
     def test_config_form_supports_table_name_multi_select_actions(self):
         try:
             qt = qt_app.load_qt6()

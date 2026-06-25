@@ -487,6 +487,56 @@ class FilterConfigHelpersTests(unittest.TestCase):
         self.assertEqual(applied["config"]["output_fields"], ["lookup.Name"])
         self.assertTrue(applied["config"]["remove_duplicates"])
 
+    def test_filter_config_refresh_fields_and_filter_valid_state_are_service_commands(self):
+        config = {
+            "extra_tables": ["old_lookup"],
+            "conditions": [
+                {"field": "当前表.Code", "op": "等于", "value_source": "固定值", "value": "A"},
+                {"field": "old_lookup.Missing", "op": "等于", "value_source": "固定值", "value": "B"},
+            ],
+            "join_rules": [
+                {"left": "当前表.Code", "op": "等于", "right_table": "old_lookup", "right": "old_lookup.Missing"}
+            ],
+            "output_fields": ["当前表.Code", "old_lookup.Missing"],
+        }
+
+        refreshed = apply_filter_config_command(
+            config,
+            ["Code"],
+            ["当前表.Code", "old_lookup.Missing"],
+            {
+                "type": "refresh_fields",
+                "selected_tables": ["当前表", "lookup"],
+            },
+            table_names=["lookup"],
+            table_columns={"lookup": ["Code", "Name"]},
+        )
+        cleaned = apply_filter_config_command(
+            config,
+            ["Code"],
+            ["当前表.Code", "lookup.Code", "lookup.Name"],
+            {"type": "filter_valid_state"},
+            table_names=["lookup"],
+            table_columns={"lookup": ["Code", "Name"]},
+        )
+
+        self.assertTrue(refreshed["ok"])
+        self.assertEqual(refreshed["config"]["extra_tables"], ["lookup"])
+        self.assertEqual(
+            refreshed["config"]["conditions"],
+            [{"field": "当前表.Code", "op": "等于", "value_source": "固定值", "value": "A"}],
+        )
+        self.assertEqual(refreshed["config"]["join_rules"], [])
+        self.assertEqual(refreshed["config"]["output_fields"], ["当前表.Code"])
+        self.assertEqual(refreshed["options_state"]["all_fields"], ["当前表.Code", "lookup.Code", "lookup.Name"])
+        self.assertTrue(cleaned["ok"])
+        self.assertEqual(
+            cleaned["config"]["conditions"],
+            [{"field": "当前表.Code", "op": "等于", "value_source": "固定值", "value": "A"}],
+        )
+        self.assertEqual(cleaned["config"]["join_rules"], [])
+        self.assertEqual(cleaned["config"]["output_fields"], ["当前表.Code"])
+
     def test_filter_config_template_file_commands_are_ui_free(self):
         config = {
             "extra_tables": ["lookup"],

@@ -5,8 +5,6 @@ from __future__ import annotations
 
 import copy
 
-from engine.issue_schema import has_error_issues, make_issue
-from engine.table_data_service import TableDataService
 from shared.atomic_json_utils import atomic_write_json, load_json_with_backup
 from workflow.advanced_filter_window_logic import (
     add_advanced_filter_condition,
@@ -39,6 +37,26 @@ ADVANCED_FILTER_UI_HINTS_SCHEMA_VERSION = "advanced_filter_ui_hints.v1"
 ADVANCED_FILTER_PROTOCOL_FAMILY = "advanced_filter_service"
 
 EMPTY_VALUE_OPERATORS = {"为空", "不为空"}
+
+
+def _has_error_issues(issues):
+    return any(str((issue or {}).get("severity") or "error").strip().lower() == "error" for issue in (issues or []))
+
+
+def _make_issue(severity, code, message, *, path="", source=""):
+    severity = str(severity or "error").strip().lower()
+    if severity not in {"error", "warning", "info"}:
+        severity = "error"
+    payload = {
+        "severity": severity,
+        "code": str(code or "unknown_issue"),
+        "message": str(message or ""),
+    }
+    if path:
+        payload["path"] = str(path)
+    if source:
+        payload["source"] = str(source)
+    return payload
 
 
 def describe_advanced_filter_service():
@@ -665,7 +683,9 @@ def apply_advanced_filter_command(state, command):
         db_path = str(command.get("db_path") or "").strip()
         if not db_path:
             issues.append(_issue("error", "missing_db_path", "保存 SQLite 表需要数据库路径。", path="/command/db_path"))
-        if not has_error_issues(issues):
+        if not _has_error_issues(issues):
+            from engine.table_data_service import TableDataService
+
             table_payload = {
                 "type": "table",
                 "headers": list(current["preview_headers"]),
@@ -785,7 +805,7 @@ def _editable_state_slice(state):
 
 def _result(state, changed, issues, command_type, *, requires_confirmation, extra=None):
     payload = {
-        "ok": not has_error_issues(issues) and not requires_confirmation,
+        "ok": not _has_error_issues(issues) and not requires_confirmation,
         "changed": bool(changed),
         "command": command_type,
         "state": copy.deepcopy(state),
@@ -836,7 +856,7 @@ def _command_extra(state, command_type, command=None):
 
 
 def _issue(severity, code, message, *, path=""):
-    return make_issue(
+    return _make_issue(
         severity,
         code,
         message,
