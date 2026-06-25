@@ -3164,6 +3164,14 @@ class Qt6UiShellTests(unittest.TestCase):
                 "table_page.v1",
             )
             self.assertEqual(
+                manager_state["service"]["client_profiles"]["schema_version"],
+                "data_source_client_profiles.v1",
+            )
+            self.assertEqual(
+                manager_state["service"]["transport_hints"]["table_transfer"]["preferred_action"],
+                "create_table_handle",
+            )
+            self.assertEqual(
                 manager_state["service"]["result_schemas"]["data_source_manager_state"]["schema_version"],
                 "data_source_manager_state.v1",
             )

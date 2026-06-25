@@ -46,6 +46,8 @@ DATA_SOURCE_PANEL_STATE_SCHEMA_VERSION = "data_source_panel_state.v1"
 DATA_SOURCE_MANAGER_STATE_SCHEMA_VERSION = "data_source_manager_state.v1"
 DATA_SOURCE_MANAGER_LAYOUT_SCHEMA_VERSION = "data_source_manager_layout.v1"
 DATA_SOURCE_MANAGER_UI_HINTS_SCHEMA_VERSION = "data_source_manager_ui_hints.v1"
+DATA_SOURCE_CLIENT_PROFILES_SCHEMA_VERSION = "data_source_client_profiles.v1"
+DATA_SOURCE_TRANSPORT_HINTS_SCHEMA_VERSION = "data_source_transport_hints.v1"
 DATA_SOURCE_PROTOCOL_FAMILY = "data_source_service"
 TABLE_SAVE_MODES_SCHEMA_VERSION = "table_save_modes.v1"
 
@@ -293,6 +295,8 @@ class TableDataService:
                 "action_ids": sorted(str(key) for key in (service.get("actions") or {}).keys()),
                 "data_action_ids": sorted(str(key) for key in (service.get("data_actions") or {}).keys()),
                 "table_action_ids": sorted(str(key) for key in (service.get("table_actions") or {}).keys()),
+                "client_profiles": copy.deepcopy(service.get("client_profiles") or {}),
+                "transport_hints": copy.deepcopy(service.get("transport_hints") or {}),
                 "result_schemas": copy.deepcopy(service.get("result_schemas") or {}),
             },
             "action_schema": {
@@ -949,6 +953,8 @@ def build_data_source_panel_state(
             "action_ids": sorted(str(key) for key in (service.get("actions") or {}).keys()),
             "data_action_ids": sorted(str(key) for key in (service.get("data_actions") or {}).keys()),
             "table_action_ids": sorted(str(key) for key in (service.get("table_actions") or {}).keys()),
+            "client_profiles": copy.deepcopy(service.get("client_profiles") or {}),
+            "transport_hints": copy.deepcopy(service.get("transport_hints") or {}),
             "result_schemas": copy.deepcopy(service.get("result_schemas") or {}),
         },
         "action_schema": {
@@ -1357,10 +1363,124 @@ def describe_data_source_manager_ui_hints():
     }
 
 
+def describe_data_source_client_profiles():
+    profiles = {
+        "qt_embedded": {
+            "label": "Qt 直连客户端",
+            "transport": "in_process",
+            "recommended_actions": [
+                "describe_data_source_service",
+                "build_data_source_manager_state",
+                "list_tables",
+                "create_table_handle",
+                "get_table_handle_page",
+                "release_table_handle",
+                "save_table",
+                "delete_table",
+            ],
+            "table_strategy": "use_handle_for_sqlite_pages",
+            "state_strategy": "consume_manager_state",
+            "release_required": True,
+        },
+        "stdio_desktop": {
+            "label": "stdio 桌面客户端",
+            "transport": "json_stdio",
+            "recommended_actions": [
+                "describe_data_source_service",
+                "build_data_source_manager_state",
+                "list_tables",
+                "create_table_handle",
+                "get_table_handle_page",
+                "release_table_handle",
+            ],
+            "table_strategy": "avoid_full_table_payloads",
+            "state_strategy": "consume_manager_state",
+            "release_required": True,
+        },
+        "dotnet_desktop": {
+            "label": ".NET 桌面客户端",
+            "transport": "json_stdio_or_local_bridge",
+            "recommended_actions": [
+                "describe_data_source_service",
+                "describe_data_source_actions",
+                "build_data_source_manager_state",
+                "create_table_handle",
+                "get_table_handle_page",
+                "release_table_handle",
+            ],
+            "table_strategy": "page_with_handle_then_apply_to_workflow",
+            "state_strategy": "render_from_layout_and_ui_hints",
+            "release_required": True,
+        },
+        "web_remote": {
+            "label": "Web/远程客户端",
+            "transport": "json_rpc",
+            "recommended_actions": [
+                "describe_data_source_service",
+                "build_data_source_manager_state",
+                "create_table_handle",
+                "get_table_handle_page",
+                "release_table_handle",
+            ],
+            "table_strategy": "handle_pages_only",
+            "state_strategy": "render_from_layout_and_ui_hints",
+            "release_required": True,
+        },
+    }
+    return {
+        "schema_version": DATA_SOURCE_CLIENT_PROFILES_SCHEMA_VERSION,
+        "protocol_family": DATA_SOURCE_PROTOCOL_FAMILY,
+        "default_profile": "stdio_desktop",
+        "profiles": profiles,
+    }
+
+
+def describe_data_source_transport_hints():
+    return {
+        "schema_version": DATA_SOURCE_TRANSPORT_HINTS_SCHEMA_VERSION,
+        "protocol_family": DATA_SOURCE_PROTOCOL_FAMILY,
+        "table_transfer": {
+            "preferred_action": "create_table_handle",
+            "page_action": "get_table_handle_page",
+            "release_action": "release_table_handle",
+            "inline_action": "get_table_page",
+            "prefer_handle_when": ["sqlite_source", "unknown_row_count", "remote_or_stdio_client"],
+            "page_size_default": 200,
+            "page_size_max_hint": 2000,
+        },
+        "lifecycle": {
+            "release_required": True,
+            "release_when": ["manager_closed", "source_changed", "full_table_loaded", "workflow_input_applied"],
+            "list_action": "list_table_handles",
+        },
+        "editing": {
+            "cell_patch_action": "patch_cell",
+            "paged_table_editing": "readonly_until_full_table_loaded",
+            "save_action": "save_sqlite",
+            "apply_action": "apply_to_workflow",
+        },
+        "confirmation": {
+            "delete_sqlite": {
+                "requires_confirmation": True,
+                "confirmation_field": "confirmed",
+                "danger": True,
+            },
+        },
+        "state_payloads": {
+            "manager_state_action": "build_data_source_manager_state",
+            "panel_state_action": "build_data_source_panel_state",
+            "layout_schema": DATA_SOURCE_MANAGER_LAYOUT_SCHEMA_VERSION,
+            "ui_hints_schema": DATA_SOURCE_MANAGER_UI_HINTS_SCHEMA_VERSION,
+        },
+    }
+
+
 def describe_data_source_service():
     action_schema = describe_data_source_action_schema()
     actions = action_schema.get("actions") or {}
     table_actions = _describe_data_source_data_actions()
+    client_profiles = describe_data_source_client_profiles()
+    transport_hints = describe_data_source_transport_hints()
     data_actions = {
         key: value
         for key, value in actions.items()
@@ -1385,6 +1505,8 @@ def describe_data_source_service():
             "panel_state": True,
             "manager_layout": True,
             "manager_ui_hints": True,
+            "client_profiles": True,
+            "transport_hints": True,
         },
         "actions": {
             "describe_data_source_service": {
@@ -1445,6 +1567,8 @@ def describe_data_source_service():
         },
         "data_actions": data_actions,
         "table_actions": table_actions,
+        "client_profiles": client_profiles,
+        "transport_hints": transport_hints,
         "action_schema": action_schema,
         "save_modes": {
             "schema_version": TABLE_SAVE_MODES_SCHEMA_VERSION,
@@ -1457,6 +1581,8 @@ def describe_data_source_service():
             "data_source_manager_state": {"schema_version": DATA_SOURCE_MANAGER_STATE_SCHEMA_VERSION},
             "data_source_manager_layout": {"schema_version": DATA_SOURCE_MANAGER_LAYOUT_SCHEMA_VERSION},
             "data_source_manager_ui_hints": {"schema_version": DATA_SOURCE_MANAGER_UI_HINTS_SCHEMA_VERSION},
+            "data_source_client_profiles": {"schema_version": DATA_SOURCE_CLIENT_PROFILES_SCHEMA_VERSION},
+            "data_source_transport_hints": {"schema_version": DATA_SOURCE_TRANSPORT_HINTS_SCHEMA_VERSION},
             "data_source_state": {"schema_version": DATA_SOURCE_STATE_SCHEMA_VERSION},
             "data_source_actions": {"schema_version": DATA_SOURCE_ACTIONS_SCHEMA_VERSION},
             "data_source_action_schema": {"schema_version": DATA_SOURCE_ACTION_SCHEMA_VERSION},

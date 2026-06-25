@@ -475,6 +475,23 @@ class StdioWorkerApiTests(unittest.TestCase):
             service_desc["result"]["result_schemas"]["data_source_manager_ui_hints"]["schema_version"],
             "data_source_manager_ui_hints.v1",
         )
+        self.assertEqual(
+            service_desc["result"]["client_profiles"]["schema_version"],
+            "data_source_client_profiles.v1",
+        )
+        self.assertEqual(
+            service_desc["result"]["client_profiles"]["profiles"]["stdio_desktop"]["transport"],
+            "json_stdio",
+        )
+        self.assertEqual(
+            service_desc["result"]["transport_hints"]["table_transfer"]["page_action"],
+            "get_table_handle_page",
+        )
+        self.assertTrue(service_desc["result"]["transport_hints"]["lifecycle"]["release_required"])
+        self.assertEqual(
+            service_desc["result"]["result_schemas"]["data_source_transport_hints"]["schema_version"],
+            "data_source_transport_hints.v1",
+        )
         self.assertTrue(service_desc["result"]["capabilities"]["sqlite_save"])
 
     def test_data_source_save_and_delete_table_actions(self):

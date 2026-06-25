@@ -226,6 +226,14 @@ class TableDataServiceTests(unittest.TestCase):
         self.assertTrue(service_desc["capabilities"]["panel_state"])
         self.assertTrue(service_desc["capabilities"]["manager_layout"])
         self.assertTrue(service_desc["capabilities"]["manager_ui_hints"])
+        self.assertTrue(service_desc["capabilities"]["client_profiles"])
+        self.assertTrue(service_desc["capabilities"]["transport_hints"])
+        self.assertEqual(service_desc["client_profiles"]["schema_version"], "data_source_client_profiles.v1")
+        self.assertEqual(service_desc["client_profiles"]["default_profile"], "stdio_desktop")
+        self.assertIn("create_table_handle", service_desc["client_profiles"]["profiles"]["web_remote"]["recommended_actions"])
+        self.assertEqual(service_desc["transport_hints"]["schema_version"], "data_source_transport_hints.v1")
+        self.assertEqual(service_desc["transport_hints"]["table_transfer"]["preferred_action"], "create_table_handle")
+        self.assertTrue(service_desc["transport_hints"]["confirmation"]["delete_sqlite"]["requires_confirmation"])
         self.assertEqual(
             service_desc["actions"]["build_data_source_panel_state"]["engine_action"],
             "build_data_source_panel_state",
@@ -265,6 +273,14 @@ class TableDataServiceTests(unittest.TestCase):
             service_desc["result_schemas"]["data_source_manager_ui_hints"]["schema_version"],
             "data_source_manager_ui_hints.v1",
         )
+        self.assertEqual(
+            service_desc["result_schemas"]["data_source_client_profiles"]["schema_version"],
+            "data_source_client_profiles.v1",
+        )
+        self.assertEqual(
+            service_desc["result_schemas"]["data_source_transport_hints"]["schema_version"],
+            "data_source_transport_hints.v1",
+        )
         self.assertEqual(service_desc["result_schemas"]["table_handle"]["schema_version"], "table_handle.v1")
         self.assertTrue(panel["ok"])
         panel_state = panel["panel_state"]
@@ -280,6 +296,8 @@ class TableDataServiceTests(unittest.TestCase):
         self.assertTrue(panel_state["view_state"]["action_enabled"]["delete_sqlite"])
         self.assertIn("build_data_source_panel_state", panel_state["service"]["action_ids"])
         self.assertIn("create_table_handle", panel_state["service"]["table_action_ids"])
+        self.assertEqual(panel_state["service"]["client_profiles"]["schema_version"], "data_source_client_profiles.v1")
+        self.assertEqual(panel_state["service"]["transport_hints"]["table_transfer"]["release_action"], "release_table_handle")
         self.assertEqual(panel_state["save_modes"]["mode_ids"], ["replace", "timestamp", "fail", "append"])
         self.assertTrue(manager["ok"])
         manager_state = manager["manager_state"]
@@ -294,6 +312,8 @@ class TableDataServiceTests(unittest.TestCase):
         self.assertEqual(manager_state["ui_hints"]["action_prominence"]["delete_sqlite"], "danger")
         self.assertIn("分页预览", manager_state["ui_hints"]["section_hints"]["table"]["description"])
         self.assertIn("build_data_source_manager_state", manager_state["service"]["action_ids"])
+        self.assertEqual(manager_state["service"]["client_profiles"]["profiles"]["dotnet_desktop"]["state_strategy"], "render_from_layout_and_ui_hints")
+        self.assertEqual(manager_state["service"]["transport_hints"]["editing"]["paged_table_editing"], "readonly_until_full_table_loaded")
         self.assertEqual(manager_state["source_controls"]["db_path"], "input.db")
         self.assertEqual(manager_state["source_controls"]["table_names"], ["demo", "archive"])
         self.assertEqual(manager_state["source_controls"]["selected_table"], "demo")
