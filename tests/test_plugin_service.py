@@ -507,6 +507,61 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(described["resources"][0]["file"], "extended_settings.json")
         self.assertEqual(described["views"][1]["kind"], "resource_list")
 
+    def test_plugin_template_exposes_parameter_metadata_baseline(self):
+        with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:
+            service = PluginService(
+                plugins_dir=str(Path.cwd() / "plugins"),
+                app_dir=temp_dir,
+            )
+            schema = service.get_plugin_schema("plugin.example_cached_plugin")
+            described = service.describe_plugin_config(
+                "plugin.example_cached_plugin",
+                config={"plugin_id": "example_cached_plugin", "params": {"enable_cache": True}},
+            )
+            hidden_state = service.resolve_plugin_parameter_field_state(
+                "plugin.example_cached_plugin",
+                field_key="params.cache_namespace",
+                config={"plugin_id": "example_cached_plugin", "params": {"enable_cache": False}},
+            )
+
+        self.assertTrue(schema["ok"])
+        fields = {
+            field["key"]: field
+            for group in schema["schema"]["form"]["groups"]
+            for field in group["fields"]
+        }
+        self.assertEqual(fields["params.path_field"]["options_source"], {"type": "preview_headers"})
+        self.assertEqual(fields["params.path_field"]["empty_text"], "当前输入表没有可选字段")
+        self.assertEqual(fields["params.sample_table"]["options_source"], {"type": "table_names"})
+        self.assertEqual(fields["params.sample_table"]["empty_text"], "当前没有可选数据库表")
+        self.assertEqual(fields["params.enable_cache"]["refresh_on_change"], ["params.enable_cache"])
+        self.assertEqual(fields["params.force_refresh"]["enabled_when"], {"field": "params.enable_cache", "equals": True})
+        self.assertEqual(fields["params.cache_namespace"]["visible_when"], {"field": "params.enable_cache", "equals": True})
+        self.assertEqual(fields["params.cache_namespace"]["width_hint"], "wide")
+        metadata = schema["schema"]["parameter_metadata"]
+        self.assertEqual(metadata["field_count"], 8)
+        self.assertEqual(metadata["field_state_schema"]["schema_version"], "plugin_parameter_field_state.v1")
+        self.assertEqual(set(metadata["context_requirements"]["options_sources"]), {"preview_headers", "table_names"})
+        self.assertTrue(metadata["capabilities"]["conditional_fields"])
+        self.assertTrue(metadata["capabilities"]["field_dependencies"])
+        self.assertEqual(metadata["field_state_index"]["params.cache_namespace"]["placeholder"], "例如：默认、客户A、批次2026")
+        self.assertEqual(
+            metadata["dependency_index"]["params.enable_cache"],
+            ["params.cache_key_mode", "params.cache_namespace", "params.enable_cache", "params.force_refresh"],
+        )
+        self.assertTrue(described["ok"])
+        self.assertEqual(described["layout"]["default_view_id"], "plugin.params")
+        self.assertEqual(described["protocol_manifest"]["parameter_metadata"]["field_count"], 8)
+        self.assertEqual(described["protocol_manifest"]["parameter_metadata"]["field_state_schema"], "plugin_parameter_field_state.v1")
+        self.assertEqual(
+            set(described["protocol_manifest"]["parameter_metadata"]["options_sources"]),
+            {"preview_headers", "table_names"},
+        )
+        self.assertTrue(hidden_state["ok"])
+        self.assertFalse(hidden_state["fields"][0]["visible"])
+        self.assertFalse(hidden_state["fields"][0]["enabled"])
+        self.assertEqual(hidden_state["fields"][0]["status"], "hidden")
+
     def test_legacy_only_plugin_marks_non_standard_ui_unsupported(self):
         with tempfile.TemporaryDirectory(dir=os.getcwd()) as temp_dir:
             write_legacy_only_plugin(temp_dir)

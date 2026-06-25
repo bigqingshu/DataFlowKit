@@ -495,10 +495,14 @@
 
 ### 11.3 `plugin_template_输出日志_后台进度_插件缓存版.py`
 
-后续建议补强：
+当前状态：
 
-1. 把本规范中的推荐字段写回模板说明。
-2. 让后续新插件默认就带 `group`、`options_source`、`visible_when` 示例。
+1. 模板已内置 `PARAMETER_UI_METADATA`。
+2. 模板字段已覆盖 `group / group_order / order`。
+3. 输入字段已提供 `options_source=preview_headers` 与 `empty_text`。
+4. 数据库表字段已提供 `options_source=table_names` 与 `invalid_value_text`。
+5. 缓存相关字段已提供 `enabled_when / visible_when / depends_on / refresh_on_change` 示例。
+6. 测试已将模板固定为参数型插件 UI 元数据样板，后续新增插件应优先沿用该写法。
 
 ---
 
