@@ -2620,6 +2620,19 @@ class QtWorkflowMainWindow:
         compatibility_tier = str(compatibility.get("compatibility_tier") or "").strip()
         ui_support = compatibility.get("ui_support") if isinstance(compatibility.get("ui_support"), dict) else {}
         direct_ui = ui_support.get("direct_ui") if isinstance(ui_support.get("direct_ui"), dict) else {}
+        legacy_window_policy = action.get("legacy_window_policy") if isinstance(action.get("legacy_window_policy"), dict) else {}
+        if not legacy_window_policy:
+            legacy_window_policy = (
+                legacy_state.get("legacy_window_policy")
+                if isinstance(legacy_state.get("legacy_window_policy"), dict)
+                else {}
+            )
+        if not legacy_window_policy:
+            legacy_window_policy = (
+                ui_support.get("legacy_window_policy")
+                if isinstance(ui_support.get("legacy_window_policy"), dict)
+                else {}
+            )
         action_source = str(action.get("source") or "").strip()
         if mode:
             lifecycle_parts.append(f"模式：{mode}")
@@ -2640,6 +2653,32 @@ class QtWorkflowMainWindow:
         ]
         if supported_ui:
             lifecycle_parts.append("标准协议支持UI：" + "、".join(supported_ui))
+        if legacy_window_policy.get("available"):
+            legacy_labels = {
+                "tk": "Tk",
+                "qt": "Qt",
+                "dotnet": ".NET",
+                "web": "Web",
+                "electron": "Electron",
+                "cli": "CLI",
+            }
+            supported_legacy = [
+                legacy_labels.get(str(key), str(key))
+                for key in (legacy_window_policy.get("supported_ui") or [])
+                if str(key).strip()
+            ]
+            unsupported_legacy = [
+                legacy_labels.get(str(key), str(key))
+                for key in (legacy_window_policy.get("unsupported_ui") or [])
+                if str(key).strip()
+            ]
+            if supported_legacy:
+                lifecycle_parts.append("旧窗口可直接打开UI：" + "、".join(supported_legacy))
+            if unsupported_legacy:
+                lifecycle_parts.append("旧窗口不可直接打开UI：" + "、".join(unsupported_legacy))
+            behavior = str(legacy_window_policy.get("unsupported_behavior") or "").strip()
+            if behavior:
+                lifecycle_parts.append(f"旧窗口不支持时：{behavior}")
         if ui_placement:
             lifecycle_parts.append(f"建议位置：{ui_placement}")
         if ui_prominence:

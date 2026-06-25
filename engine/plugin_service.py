@@ -490,6 +490,11 @@ class PluginService:
         custom_window = plugin.get("custom_config_window") if isinstance(plugin.get("custom_config_window"), dict) else {}
         legacy_config_state = plugin.get("legacy_config_state") if isinstance(plugin.get("legacy_config_state"), dict) else {}
         if legacy_config_state.get("available") or custom_window.get("available"):
+            legacy_window_policy = (
+                legacy_config_state.get("legacy_window_policy")
+                if isinstance(legacy_config_state.get("legacy_window_policy"), dict)
+                else {}
+            )
             legacy_warning = str(
                 legacy_config_state.get("warning")
                 or custom_window.get("warning")
@@ -512,6 +517,7 @@ class PluginService:
                 "migration_target": str(legacy_config_state.get("migration_target") or "describe_config + parameter_metadata + config_patch"),
                 "remove_when": str(legacy_config_state.get("remove_when") or "插件已提供等价 schema/patch 配置能力且目标 UI 已完成承接。"),
                 "warning": legacy_warning,
+                "legacy_window_policy": copy.deepcopy(legacy_window_policy),
                 "legacy_config_state": copy.deepcopy(legacy_config_state),
             })
         actions = _merge_plugin_config_items(actions, plugin_extension.get("actions"), "action_id")
@@ -1123,6 +1129,10 @@ def _plugin_config_ui_support(
     legacy_required=False,
 ):
     standard_supported = bool(schema_config or config_description or config_patch)
+    legacy_window_policy = _plugin_legacy_window_policy(
+        available=legacy_custom_config,
+        required=legacy_required,
+    )
     direct_ui = {
         "tk": bool(standard_supported or legacy_custom_config),
         "qt": bool(standard_supported or legacy_custom_config),
@@ -1137,8 +1147,32 @@ def _plugin_config_ui_support(
         "legacy_supported": bool(legacy_custom_config),
         "legacy_required": bool(legacy_required),
         "direct_ui": direct_ui,
+        "legacy_window_policy": legacy_window_policy,
         "recommended_entry": "standard_protocol" if standard_supported else ("legacy_window" if legacy_required else "unavailable"),
         "unsupported_ui_reason": "" if standard_supported else "插件缺少 schema/describe_config/patch 配置协议。",
+    }
+
+
+def _plugin_legacy_window_policy(*, available=False, required=False):
+    direct_open_allowed = {
+        "tk": bool(available),
+        "qt": bool(available),
+        "dotnet": False,
+        "web": False,
+        "electron": False,
+        "cli": False,
+    }
+    return {
+        "schema_version": "plugin_legacy_window_policy.v1",
+        "available": bool(available),
+        "required": bool(required),
+        "direct_open_allowed": direct_open_allowed,
+        "supported_ui": [key for key, enabled in direct_open_allowed.items() if enabled],
+        "unsupported_ui": [key for key, enabled in direct_open_allowed.items() if not enabled],
+        "recommended_fallback_ui": ["tk", "qt"] if available else [],
+        "unsupported_behavior": "show_migration_prompt",
+        "migration_target": "describe_config + parameter_metadata + config_patch" if available else "",
+        "note": "旧 GUI 配置窗口仅允许 Tk/Qt 兼容入口直接打开；.NET/Web/Electron/CLI 应提示迁移到统一配置协议。",
     }
 
 
@@ -1162,6 +1196,13 @@ def _plugin_legacy_config_state(compatibility=None, *, has_custom_config=False):
         recommendation = "prefer_schema_patch" if primary_path == "schema_patch" else "prefer_standard_config"
     migration_target = str(compatibility.get("migration_target") or "").strip()
     remove_when = str(compatibility.get("remove_when") or "").strip()
+    ui_support = compatibility.get("ui_support") if isinstance(compatibility.get("ui_support"), dict) else {}
+    legacy_window_policy = ui_support.get("legacy_window_policy") if isinstance(ui_support.get("legacy_window_policy"), dict) else {}
+    if not legacy_window_policy:
+        legacy_window_policy = _plugin_legacy_window_policy(
+            available=available,
+            required=legacy_required,
+        )
     warning = ""
     if available:
         warning = (
@@ -1192,6 +1233,7 @@ def _plugin_legacy_config_state(compatibility=None, *, has_custom_config=False):
         "ui_recommendation": recommendation,
         "migration_target": migration_target,
         "remove_when": remove_when,
+        "legacy_window_policy": copy.deepcopy(legacy_window_policy),
         "warning": warning,
     }
 
@@ -2265,6 +2307,13 @@ def _default_plugin_config_protocol_manifest(
             "legacy_ui_required": bool(compatibility.get("legacy_ui_required")),
             "legacy_fallback_available": bool(compatibility.get("legacy_fallback_available")),
             "legacy_action_ids": legacy_actions,
+            "legacy_window_policy": copy.deepcopy(
+                (
+                    compatibility.get("ui_support")
+                    if isinstance(compatibility.get("ui_support"), dict)
+                    else {}
+                ).get("legacy_window_policy") or {}
+            ),
         },
     }
 
@@ -2443,6 +2492,36 @@ def _plugin_config_compatibility_lines(compatibility):
         if entry:
             line += f"；推荐入口 {entry}"
         lines.append(line)
+    legacy_policy = ui_support.get("legacy_window_policy") if isinstance(ui_support.get("legacy_window_policy"), dict) else {}
+    if legacy_policy.get("available"):
+        labels = {
+            "tk": "Tk",
+            "qt": "Qt",
+            "dotnet": ".NET",
+            "web": "Web",
+            "electron": "Electron",
+            "cli": "CLI",
+        }
+        supported_legacy = [
+            labels.get(str(item), str(item))
+            for item in (legacy_policy.get("supported_ui") or [])
+            if str(item).strip()
+        ]
+        unsupported_legacy = [
+            labels.get(str(item), str(item))
+            for item in (legacy_policy.get("unsupported_ui") or [])
+            if str(item).strip()
+        ]
+        line_parts = []
+        if supported_legacy:
+            line_parts.append("可直接打开 " + "、".join(supported_legacy))
+        if unsupported_legacy:
+            line_parts.append("不可直接打开 " + "、".join(unsupported_legacy[:4]))
+        behavior = str(legacy_policy.get("unsupported_behavior") or "").strip()
+        if behavior:
+            line_parts.append(f"不支持时 {behavior}")
+        if line_parts:
+            lines.append("旧窗口多UI策略：" + "；".join(line_parts))
     if legacy_state.get("available"):
         lines.append(
             f"旧窗口状态：{legacy_state.get('mode')}；状态 {legacy_state.get('status')}；UI建议 {legacy_state.get('ui_recommendation')}"
