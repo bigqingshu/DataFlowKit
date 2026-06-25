@@ -3204,6 +3204,8 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertIn("区域：保存", manager.save_button.toolTip())
             self.assertIn("服务动作：save_table", manager.save_button.toolTip())
             self.assertIn("警告：删除 SQLite 表需要确认", manager.delete_table_button.toolTip())
+            self.assertIn("确认级别：danger", manager.delete_table_button.toolTip())
+            self.assertIn("确认动作：删除", manager.delete_table_button.toolTip())
             self.assertIn("区域：表格", manager.table_view.toolTip())
             self.assertEqual(manager_state["source_controls"]["db_path"], db_path)
             self.assertIn("orders", manager_state["source_controls"]["table_names"])
@@ -3225,6 +3227,47 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertEqual(controller.input_summary_label.text(), "当前输入：3 行 x 2 列")
             self.assertIn("数据源管理窗口", controller.status_bar.currentMessage())
             manager.window.close()
+        window.close()
+        app.processEvents()
+
+    def test_data_source_manager_delete_uses_shared_confirmation_payload(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        with TemporaryDirectory() as temp_dir:
+            db_path = str(Path(temp_dir) / "input.db")
+            TableAccessManager(db_path).write_table("orders", ["id"], [["1"]], mode="replace")
+            window = build_main_window(qt)
+            controller = window.qt_workflow_controller
+            controller.input_db_path_edit.setText(db_path)
+            controller.apply_input_db_path_from_edit(show_status=False)
+            controller.open_data_source_manager()
+            manager = controller.data_source_manager_controller
+            manager.refresh_table_combo()
+            manager.table_combo.setCurrentText("orders")
+
+            captured = {}
+            original_question = qt.QtWidgets.QMessageBox.question
+
+            def fake_question(parent, title, message, buttons, default_button):
+                captured["title"] = title
+                captured["message"] = message
+                captured["buttons"] = buttons
+                captured["default_button"] = default_button
+                return qt.QtWidgets.QMessageBox.StandardButton.No
+
+            qt.QtWidgets.QMessageBox.question = fake_question
+            try:
+                manager.delete_selected_table()
+            finally:
+                qt.QtWidgets.QMessageBox.question = original_question
+
+            self.assertEqual(captured["title"], "删除当前表")
+            self.assertIn("SQLite 表：orders", captured["message"])
+            self.assertIn("创建备份表", captured["message"])
+            self.assertIn("已取消删除", manager.status_label.text())
             window.close()
             app.processEvents()
 

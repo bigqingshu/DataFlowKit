@@ -313,6 +313,7 @@ class DataSourceManagerWindow:
                     widget.setProperty("data_source_action_id", action_id)
                     widget.setProperty("data_source_section_id", section_id)
                     widget.setProperty("data_source_prominence", prominence)
+                    widget.setProperty("data_source_base_tooltip", tooltip)
                 if tooltip and hasattr(widget, "setToolTip"):
                     widget.setToolTip(tooltip)
 
@@ -370,6 +371,10 @@ class DataSourceManagerWindow:
             lines.append(description)
         if warning:
             lines.append(f"警告：{warning}")
+        action_state = self._current_action_state(action_id)
+        state_tooltip = self._action_state_tooltip(action_state)
+        if state_tooltip:
+            lines.append(state_tooltip)
         return "\n".join(lines)
 
     def _action_prominence(self, action_id):
@@ -713,14 +718,78 @@ class DataSourceManagerWindow:
             return bool(default)
         return bool(action.get("enabled", default))
 
+    def _current_action_state(self, action_id, *, source=None):
+        if source is None and hasattr(self, "_last_action_states") and isinstance(self._last_action_states, dict):
+            action = self._last_action_states.get(action_id)
+            if isinstance(action, dict):
+                return copy.deepcopy(action)
+        actions = self._data_source_action_state(source=source)
+        action = actions.get(action_id) if isinstance(actions, dict) else {}
+        return copy.deepcopy(action if isinstance(action, dict) else {})
+
+    def _action_state_tooltip(self, action):
+        if not isinstance(action, dict):
+            return ""
+        lines = []
+        if not bool(action.get("enabled", True)):
+            reason = str(action.get("disabled_reason") or "").strip()
+            if reason:
+                lines.append(f"不可用：{reason}")
+        confirmation = action.get("confirmation") if isinstance(action.get("confirmation"), dict) else {}
+        if confirmation:
+            severity = str(confirmation.get("severity") or "").strip()
+            confirm_label = str(confirmation.get("confirm_label") or "").strip()
+            if severity:
+                lines.append(f"确认级别：{severity}")
+            if confirm_label:
+                lines.append(f"确认动作：{confirm_label}")
+        return "\n".join(lines)
+
+    def _action_confirmation(self, action_id, *, source=None):
+        action = self._current_action_state(action_id, source=source)
+        confirmation = action.get("confirmation") if isinstance(action.get("confirmation"), dict) else {}
+        return copy.deepcopy(confirmation)
+
+    def _format_confirmation_message(self, confirmation, *, table_name="", db_path=""):
+        template = str(confirmation.get("message_template") or confirmation.get("message") or "").strip()
+        if template:
+            try:
+                return template.format(table_name=table_name, db_path=db_path)
+            except Exception:
+                return template
+        return f"即将删除 SQLite 表：{table_name}\n删除前会创建备份表，是否继续？"
+
+    def _apply_action_state_tooltips(self, actions):
+        if not isinstance(actions, dict):
+            return
+        for action_id, action in actions.items():
+            if not isinstance(action, dict):
+                continue
+            state_tip = self._action_state_tooltip(action)
+            for widget in (self.action_widgets or {}).get(action_id, []):
+                if widget is None or not hasattr(widget, "toolTip") or not hasattr(widget, "setToolTip"):
+                    continue
+                base = ""
+                if hasattr(widget, "property"):
+                    base = str(widget.property("data_source_base_tooltip") or "").strip()
+                if not base:
+                    base = str(widget.toolTip() or "").strip()
+                widget.setToolTip((base + "\n" + state_tip) if base and state_tip else (base or state_tip))
+
     def _refresh_data_action_controls(self):
         if not hasattr(self, "save_button"):
             return
         panel_state = self._describe_data_source_panel_state()
         if panel_state:
             action_enabled = (panel_state.get("view_state") or {}).get("action_enabled") or {}
+            action_state = panel_state.get("action_state") if isinstance(panel_state.get("action_state"), dict) else {}
+            self._last_action_states = copy.deepcopy(action_state.get("actions") or {})
             selected_state = self._describe_data_source_panel_state_for_source(self._selected_sqlite_source() or self.current_source)
             selected_enabled = (selected_state.get("view_state") or {}).get("action_enabled") if selected_state else {}
+            selected_action_state = selected_state.get("action_state") if isinstance(selected_state, dict) and isinstance(selected_state.get("action_state"), dict) else {}
+            selected_actions = selected_action_state.get("actions") if isinstance(selected_action_state.get("actions"), dict) else {}
+            if isinstance(selected_actions.get("delete_sqlite"), dict):
+                self._last_action_states["delete_sqlite"] = copy.deepcopy(selected_actions["delete_sqlite"])
             self.clear_button.setEnabled(bool(action_enabled.get("clear_table")))
             self.promote_header_button.setEnabled(not self.current_table_is_partial and bool(action_enabled.get("promote_first_row")))
             self.search_button.setEnabled(bool(action_enabled.get("search_table")))
@@ -728,9 +797,13 @@ class DataSourceManagerWindow:
             self.apply_input_button.setEnabled(bool(action_enabled.get("apply_to_workflow")))
             self.edit_mode_checkbox.setEnabled(not self.current_table_is_partial and bool(action_enabled.get("patch_cell")))
             self.delete_table_button.setEnabled(bool((selected_enabled or {}).get("delete_sqlite")))
+            self._apply_action_state_tooltips(self._last_action_states)
             return
         actions = self._data_source_action_state()
         selected_actions = self._data_source_action_state(source=self._selected_sqlite_source() or self.current_source)
+        self._last_action_states = copy.deepcopy(actions)
+        if isinstance(selected_actions.get("delete_sqlite"), dict):
+            self._last_action_states["delete_sqlite"] = copy.deepcopy(selected_actions["delete_sqlite"])
         editable_table = not self.current_table_is_partial
         self.clear_button.setEnabled(self._action_enabled(actions, "clear_table"))
         self.promote_header_button.setEnabled(editable_table and self._action_enabled(actions, "promote_first_row"))
@@ -739,6 +812,7 @@ class DataSourceManagerWindow:
         self.apply_input_button.setEnabled(self._action_enabled(actions, "apply_to_workflow"))
         self.edit_mode_checkbox.setEnabled(editable_table and self._action_enabled(actions, "patch_cell"))
         self.delete_table_button.setEnabled(self._action_enabled(selected_actions, "delete_sqlite"))
+        self._apply_action_state_tooltips(self._last_action_states)
 
     def _describe_data_source_panel_state_for_source(self, source, *, display_name=""):
         try:
@@ -1027,11 +1101,14 @@ class DataSourceManagerWindow:
         if not db_path or not table_name:
             self.status_label.setText("删除前需要数据库路径和表名。")
             return
+        confirmation = self._action_confirmation("delete_sqlite", source={"type": "sqlite", "db_path": db_path, "table_name": table_name})
+        title = str(confirmation.get("title") or "删除当前表")
+        message = self._format_confirmation_message(confirmation, table_name=table_name, db_path=db_path)
         buttons = self.qt.QtWidgets.QMessageBox.StandardButton.Yes | self.qt.QtWidgets.QMessageBox.StandardButton.No
         answer = self.qt.QtWidgets.QMessageBox.question(
             self.window,
-            "删除当前表",
-            f"即将删除 SQLite 表：{table_name}\n删除前会创建备份表，是否继续？",
+            title,
+            message,
             buttons,
             self.qt.QtWidgets.QMessageBox.StandardButton.No,
         )

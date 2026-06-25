@@ -1030,37 +1030,66 @@ def build_data_source_action_state(table=None, *, source=None, dirty=False):
     has_headers = bool(headers)
     has_rows = bool(rows)
     has_table = has_headers or has_rows
+    has_db_path = bool(str(source_payload.get("db_path") or "").strip())
+    has_table_name = bool(str(source_payload.get("table_name") or source_payload.get("table") or "").strip())
     is_sqlite_source = bool(
         source_type == "sqlite"
-        and str(source_payload.get("db_path") or "").strip()
-        and str(source_payload.get("table_name") or "").strip()
+        and has_db_path
+        and has_table_name
     )
 
-    def action(label, enabled=True, **extra):
+    def disabled_reasons(*items):
+        return [str(item).strip() for item in items if str(item or "").strip()]
+
+    def action(label, enabled=True, disabled=None, **extra):
         payload = {"label": label, "enabled": bool(enabled)}
+        reasons = disabled_reasons(*(disabled or []))
+        if reasons:
+            payload["disabled_reason"] = reasons[0]
+            payload["disabled_reasons"] = reasons
         payload.update(extra)
         return payload
 
     actions = {
         "load_clipboard": action("读取剪贴板"),
         "import_file": action("导入文件"),
-        "clear_table": action("清空", enabled=has_table),
-        "promote_first_row": action("首行作字段名", enabled=has_rows),
-        "search_table": action("搜索", enabled=has_table),
-        "patch_cell": action("编辑单元格", enabled=has_headers and has_rows),
+        "clear_table": action("清空", enabled=has_table, disabled=["当前没有可清空的表格。"] if not has_table else []),
+        "promote_first_row": action("首行作字段名", enabled=has_rows, disabled=["当前表格没有可提升的行。"] if not has_rows else []),
+        "search_table": action("搜索", enabled=has_table, disabled=["当前没有可搜索的表格。"] if not has_table else []),
+        "patch_cell": action("编辑单元格", enabled=has_headers and has_rows, disabled=disabled_reasons(
+            "当前表格没有字段。" if not has_headers else "",
+            "当前表格没有可编辑的行。" if not has_rows else "",
+        )),
         "save_sqlite": action(
             "保存到 SQLite",
             enabled=has_headers,
+            disabled=["当前表格没有字段，不能保存。"] if not has_headers else [],
             requires=["db_path", "table_name"],
             mode_source="describe_table_save_modes",
         ),
         "delete_sqlite": action(
             "删除 SQLite 表",
             enabled=is_sqlite_source,
+            disabled=disabled_reasons(
+                "当前来源不是 SQLite 表。" if source_type != "sqlite" else "",
+                "缺少数据库路径。" if source_type == "sqlite" and not has_db_path else "",
+                "缺少表名。" if source_type == "sqlite" and not has_table_name else "",
+            ),
             requires=["db_path", "table_name", "confirmed"],
             requires_confirmation=True,
+            confirmation={
+                "schema_version": "data_source_confirmation.v1",
+                "code": "confirm_delete_sqlite_table",
+                "title": "删除当前表",
+                "message_template": "即将删除 SQLite 表：{table_name}\n删除前会创建备份表，是否继续？",
+                "confirm_label": "删除",
+                "cancel_label": "取消",
+                "confirmation_field": "confirmed",
+                "backup": True,
+                "severity": "danger",
+            },
         ),
-        "apply_to_workflow": action("设置为工作流输入", enabled=has_headers),
+        "apply_to_workflow": action("设置为工作流输入", enabled=has_headers, disabled=["当前表格没有字段，不能设置为工作流输入。"] if not has_headers else []),
     }
     return {
         "schema_version": DATA_SOURCE_ACTIONS_SCHEMA_VERSION,
