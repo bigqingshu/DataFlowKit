@@ -1050,6 +1050,17 @@ def build_data_source_action_state(table=None, *, source=None, dirty=False):
         payload.update(extra)
         return payload
 
+    action_order = [
+        "load_clipboard",
+        "import_file",
+        "clear_table",
+        "promote_first_row",
+        "search_table",
+        "patch_cell",
+        "save_sqlite",
+        "delete_sqlite",
+        "apply_to_workflow",
+    ]
     actions = {
         "load_clipboard": action("读取剪贴板"),
         "import_file": action("导入文件"),
@@ -1100,6 +1111,7 @@ def build_data_source_action_state(table=None, *, source=None, dirty=False):
         "has_headers": has_headers,
         "has_rows": has_rows,
         "is_sqlite_source": is_sqlite_source,
+        "action_order": action_order,
         "actions": actions,
     }
 
