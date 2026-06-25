@@ -277,6 +277,7 @@ class DataSourceManagerWindow:
         self.window.setProperty("data_source_table_transfer_action", str(table_transfer.get("preferred_action") or ""))
         self.window.setProperty("data_source_table_page_action", str(table_transfer.get("page_action") or ""))
         self.window.setProperty("data_source_table_release_action", str(table_transfer.get("release_action") or ""))
+        self.window.setProperty("data_source_table_release_when", ",".join(self._transport_release_when()))
         self.window.setProperty("data_source_page_size_default", self._transport_page_size_default(default=self.page_limit))
         self.window.setProperty("data_source_page_size_max_hint", self._transport_page_size_max(default=self.page_size_spin.maximum() if hasattr(self, "page_size_spin") else 100000))
         self.window.setProperty("data_source_paged_table_editing", self._transport_paged_table_editing())
@@ -532,6 +533,15 @@ class DataSourceManagerWindow:
         hints = self.transport_hints if isinstance(self.transport_hints, dict) else {}
         editing = hints.get("editing") if isinstance(hints.get("editing"), dict) else {}
         return editing
+
+    def _transport_lifecycle_hints(self):
+        hints = self.transport_hints if isinstance(self.transport_hints, dict) else {}
+        lifecycle = hints.get("lifecycle") if isinstance(hints.get("lifecycle"), dict) else {}
+        return lifecycle
+
+    def _transport_release_when(self):
+        lifecycle = self._transport_lifecycle_hints()
+        return [str(item) for item in (lifecycle.get("release_when") or []) if str(item).strip()]
 
     def _transport_paged_table_editing(self):
         editing = self._transport_editing_hints()

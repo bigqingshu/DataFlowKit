@@ -3470,6 +3470,8 @@ class Qt6UiShellTests(unittest.TestCase):
             self.assertEqual(manager.window.property("data_source_table_transfer_action"), "create_table_handle")
             self.assertEqual(manager.window.property("data_source_table_page_action"), "get_table_handle_page")
             self.assertEqual(manager.window.property("data_source_table_release_action"), "release_table_handle")
+            self.assertIn("manager_closed", manager.window.property("data_source_table_release_when"))
+            self.assertIn("workflow_input_applied", manager.window.property("data_source_table_release_when"))
             self.assertEqual(manager.window.property("data_source_page_size_default"), 200)
             self.assertEqual(manager.window.property("data_source_paged_table_editing"), "readonly_until_full_table_loaded")
             self.assertEqual(manager.page_size_spin.value(), 200)

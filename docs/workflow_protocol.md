@@ -445,8 +445,9 @@ Runtime identity rules:
   `transport_hints`. Qt, `.NET`, Web, and stdio clients should read these fields
   before drawing a data-source manager: large or remote tables should prefer
   `create_table_handle` + `get_table_handle_page`, handles should be released
-  with `release_table_handle` when the source/window changes, and destructive
-  SQLite operations should honor the shared confirmation metadata.
+  with `release_table_handle` according to `transport_hints.lifecycle.release_when`
+  such as source/window changes, full-table loading, or workflow input apply;
+  destructive SQLite operations should honor the shared confirmation metadata.
 - Clients should use `build_table_access`, `precheck_access`,
   `format_access_issue`, `record_access_audit`, `list_access_audit_logs`, and
   `format_access_audit_event` for table-access defaults, execution precheck,
