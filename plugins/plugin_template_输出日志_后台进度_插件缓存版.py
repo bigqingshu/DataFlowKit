@@ -8,6 +8,13 @@
 3. 按需修改 get_parameter_schema() 和 run()。
 4. 在主程序计划窗口点击“刷新插件”。
 
+多 UI 配置建议：
+- 新插件优先通过 get_parameter_schema() + PARAMETER_UI_METADATA 描述参数。
+- 字段候选使用 options_source，例如 preview_headers、table_names。
+- 字段联动使用 visible_when / enabled_when / depends_on / refresh_on_change。
+- 复杂配置再补 describe_config / validate_config_patch / apply_config_patch。
+- 不建议新增只依赖 open_config_window(...) 的配置入口。
+
 缓存说明：
 - 本模板演示“插件内部缓存”，不依赖主程序做全局节点缓存。
 - 缓存文件默认保存在 context["plugin_data_dir"]/cache.sqlite。
@@ -89,6 +96,15 @@ PARAMETER_UI_METADATA = {
         enabled_when={"field": "enable_cache", "equals": True},
         depends_on=["enable_cache"],
     ),
+    "cache_namespace": _ui_meta(
+        "缓存",
+        GROUP_CACHE,
+        230,
+        placeholder="例如：默认、客户A、批次2026",
+        visible_when={"field": "enable_cache", "equals": True},
+        depends_on=["enable_cache"],
+        width_hint="wide",
+    ),
 }
 
 
@@ -155,6 +171,13 @@ def get_parameter_schema():
             "default": "快速签名",
             "options": ["快速签名", "文件Hash"],
             "help": "快速签名=路径+大小+修改时间；文件Hash=额外计算sha256，更准确但更慢。",
+        },
+        {
+            "name": "cache_namespace",
+            "label": "缓存命名空间",
+            "type": "text",
+            "default": "",
+            "help": "可选：同一文件和参数需要按项目/批次隔离缓存时填写；留空则使用默认缓存空间。",
         },
     ])
 

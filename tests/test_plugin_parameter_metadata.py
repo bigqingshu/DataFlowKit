@@ -262,6 +262,15 @@ class PluginParameterMetadataTests(unittest.TestCase):
         self.assertEqual(fields["params.enable_cache"]["refresh_on_change"], ["params.enable_cache"])
         self.assertEqual(fields["params.cache_key_mode"]["enabled_when"]["field"], "params.enable_cache")
         self.assertEqual(fields["params.cache_key_mode"]["depends_on"], ["params.enable_cache"])
+        self.assertEqual(fields["params.cache_namespace"]["visible_when"]["field"], "params.enable_cache")
+        self.assertEqual(fields["params.cache_namespace"]["depends_on"], ["params.enable_cache"])
+        self.assertEqual(fields["params.cache_namespace"]["width_hint"], "wide")
+        self.assertIn("项目/批次", fields["params.cache_namespace"]["help"])
+        metadata = schema["parameter_metadata"]
+        self.assertIn("params.cache_namespace", metadata["ui_hints"]["placeholder_fields"])
+        self.assertIn("params.cache_namespace", metadata["ui_hints"]["width_hint_fields"])
+        self.assertIn("params.enable_cache", metadata["dependency_index"])
+        self.assertIn("params.cache_namespace", metadata["dependency_index"]["params.enable_cache"])
 
     def test_visual_mapping_plugin_is_complex_config_protocol_sample(self):
         described = self.service.describe_plugin_config(
