@@ -519,6 +519,9 @@ class HeadlessWorkflowEngine:
     def analyze_jumps(self, plan=None, *, nodes=None):
         return self.jumps.analyze_plan(plan, nodes=nodes)
 
+    def describe_jump_manager_state(self, plan=None, *, nodes=None):
+        return self.jumps.describe_manager_state(plan, nodes=nodes)
+
     def validate_jumps(self, plan=None, *, nodes=None):
         return self.jumps.validate_jumps(plan, nodes=nodes)
 

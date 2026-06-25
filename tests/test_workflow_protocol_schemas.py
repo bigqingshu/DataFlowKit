@@ -160,6 +160,7 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
             "list_access_audit_logs",
             "format_access_audit_event",
             "analyze_jumps",
+            "describe_jump_manager_state",
             "validate_jumps",
             "format_jump_issue",
             "get_plugin_schema",

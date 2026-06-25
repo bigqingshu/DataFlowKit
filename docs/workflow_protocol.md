@@ -352,6 +352,7 @@ Recommended actions:
 - `list_access_audit_logs`
 - `format_access_audit_event`
 - `analyze_jumps`
+- `describe_jump_manager_state`
 - `validate_jumps`
 - `format_jump_issue`
 - `get_plugin_schema`
@@ -453,9 +454,10 @@ Runtime identity rules:
   Chinese `type` and stable `node_type_id`, and returns shared issue fields
   plus `can_continue`, `requires_confirmation`, and `blocking_count` so UIs can
   implement audit/prompt/strict policies without importing Tkinter mixins.
-- Clients should use `analyze_jumps`, `validate_jumps`, and `format_jump_issue`
-  for jump-anchor relations and jump precheck display instead of importing
-  Tkinter jump manager helpers.
+- Clients should use `analyze_jumps`, `describe_jump_manager_state`,
+  `validate_jumps`, and `format_jump_issue` for jump-anchor relations, shared
+  jump-manager panels, and jump precheck display instead of importing Tkinter
+  jump manager helpers.
 - Clients should use `list_plugins`, `get_plugin_schema`, and
   `make_plugin_default_config` for plugin discovery, plugin node UI metadata,
   and default plugin-node config. `list_node_catalog` and `list_node_ui_schemas`

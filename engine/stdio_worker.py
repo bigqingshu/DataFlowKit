@@ -454,6 +454,11 @@ class StdioWorker:
                 payload.get("plan"),
                 nodes=payload.get("nodes"),
             )
+        if action == "describe_jump_manager_state":
+            return self.engine.describe_jump_manager_state(
+                payload.get("plan"),
+                nodes=payload.get("nodes"),
+            )
         if action == "validate_jumps":
             return self.engine.validate_jumps(
                 payload.get("plan"),

@@ -29,11 +29,20 @@ class JumpAnalysisServiceTests(unittest.TestCase):
         }
 
         analysis = engine.analyze_jumps(plan)
+        manager_state = engine.describe_jump_manager_state(plan)
         validation = engine.validate_jumps(plan)
 
         self.assertTrue(analysis["ok"])
         self.assertEqual(analysis["anchors"][0]["anchor_id"], "END")
         self.assertEqual(analysis["relations"][0]["target_anchor_id"], "END")
+        self.assertEqual(manager_state["schema_version"], "jump_manager_state.v1")
+        self.assertEqual(manager_state["layout"]["schema_version"], "jump_manager_layout.v1")
+        self.assertEqual(manager_state["ui_hints"]["schema_version"], "jump_manager_ui_hints.v1")
+        self.assertEqual(manager_state["actions"]["action_order"], ["refresh", "validate", "format_issue"])
+        self.assertEqual(manager_state["counts"]["anchors"], 1)
+        self.assertEqual(manager_state["counts"]["relations"], 1)
+        self.assertEqual(manager_state["anchors"][0]["reference_count"], 1)
+        self.assertEqual(manager_state["anchors"][0]["status"], "active")
         self.assertTrue(validation["ok"])
         self.assertGreaterEqual(validation["counts"]["warning"], 1)
         self.assertEqual(validation["issues"][0]["code"], "jump_validation_warning")
@@ -64,12 +73,16 @@ class JumpAnalysisServiceTests(unittest.TestCase):
         }
 
         analyzed = worker.handle_request(request("analyze_jumps", {"plan": plan}))
+        manager_state = worker.handle_request(request("describe_jump_manager_state", {"plan": plan}))
         validated = worker.handle_request(request("validate_jumps", {"plan": plan}))
         formatted = worker.handle_request(request("format_jump_issue", {
             "issue": validated["result"]["issues"][0],
         }))
 
         self.assertTrue(analyzed["ok"])
+        self.assertTrue(manager_state["ok"])
+        self.assertEqual(manager_state["result"]["schema_version"], "jump_manager_state.v1")
+        self.assertEqual(manager_state["result"]["layout"]["sections"][1]["section_id"], "relations")
         self.assertTrue(validated["ok"])
         self.assertTrue(validated["result"]["ok"])
         self.assertIn("跳转目标锚点未配置", formatted["result"]["text"])

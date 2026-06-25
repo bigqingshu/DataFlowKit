@@ -659,6 +659,9 @@ class QtHeadlessEngineClient:
     def analyze_jumps(self, plan):
         return self.engine.analyze_jumps(copy.deepcopy(plan))
 
+    def describe_jump_manager_state(self, plan):
+        return self.engine.describe_jump_manager_state(copy.deepcopy(plan))
+
     def validate_jumps(self, plan):
         return self.engine.validate_jumps(copy.deepcopy(plan))
 
