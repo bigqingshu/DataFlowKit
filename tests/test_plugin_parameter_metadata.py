@@ -185,6 +185,9 @@ class PluginParameterMetadataTests(unittest.TestCase):
         self.assertEqual(ui_hints["params.win32_open_retries"]["step"], 1)
         self.assertEqual(ui_hints["params.win32_open_retries"]["unit"], "次")
         self.assertIn("params.preview_write_files", metadata["ui_hints"]["warning_fields"])
+        self.assertEqual(fields["params.verify_after_write"]["visible_when"]["field"], "params.write_engine")
+        self.assertEqual(fields["params.verify_after_write"]["depends_on"], ["params.write_engine"])
+        self.assertIn("win32 Word", fields["params.verify_after_write"]["help"])
         self.assertEqual(fields["params.word_text_write_mode"]["depends_on"], ["params.write_engine"])
         self.assertEqual(fields["params.word_text_write_mode"]["refresh_on_change"], ["params.word_text_write_mode"])
         self.assertEqual(
@@ -200,8 +203,34 @@ class PluginParameterMetadataTests(unittest.TestCase):
             fields["params.scoped_replace_default"]["depends_on"],
             ["params.write_engine", "params.word_text_write_mode"],
         )
-        self.assertEqual(fields["params.old_text_field"]["depends_on"], ["params.word_text_write_mode"])
-        self.assertEqual(fields["params.replace_scope_field"]["depends_on"], ["params.word_text_write_mode"])
+        self.assertEqual(
+            fields["params.old_text_field"]["depends_on"],
+            ["params.write_engine", "params.word_text_write_mode", "params.write_strategy_field"],
+        )
+        self.assertIn("word_global_replace", fields["params.old_text_field"]["help"])
+        self.assertIn("params.old_text_field", metadata["ui_hints"]["warning_fields"])
+        self.assertIn("params.write_strategy_field", metadata["options_source_details"]["preview_headers"]["depends_on"])
+        preview_header_entries = {
+            item["field_key"]: item
+            for item in metadata["options_source_index"]["preview_headers"]
+        }
+        self.assertEqual(
+            preview_header_entries["params.old_text_field"]["depends_on"],
+            ["params.write_engine", "params.word_text_write_mode", "params.write_strategy_field"],
+        )
+        self.assertEqual(
+            fields["params.replace_scope_field"]["depends_on"],
+            ["params.write_engine", "params.word_text_write_mode", "params.write_strategy_field"],
+        )
+        self.assertIn("节点级默认替换次数", fields["params.replace_scope_field"]["help"])
+        self.assertIn("params.replace_scope_field", metadata["ui_hints"]["warning_fields"])
+        self.assertIn("params.rule_old_text_field", metadata["ui_hints"]["warning_fields"])
+        self.assertIn("params.rule_new_text_field", metadata["ui_hints"]["warning_fields"])
+        self.assertEqual(fields["params.rule_old_text_field"]["depends_on"], ["params.write_engine", "params.word_text_write_mode"])
+        self.assertEqual(fields["params.rule_new_text_field"]["depends_on"], ["params.write_engine", "params.word_text_write_mode"])
+        self.assertIn("255 字符限制", fields["params.rule_old_text_field"]["help"])
+        self.assertIn("配套使用", fields["params.rule_new_text_field"]["help"])
+        self.assertIn("行级策略", fields["params.write_strategy_field"]["help"])
 
         for key in (
             "params.path_field",
