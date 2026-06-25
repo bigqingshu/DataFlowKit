@@ -47,6 +47,7 @@ PLUGIN_INFO = {
 SETTINGS_FILE = "visual_mapping_write_plan_settings.json"
 CONFIG_SCHEMA_VERSION = "DataFlowKit.visual_mapping.config.v1"
 CONFIG_PROTOCOL_FAMILY = "plugin_complex_config"
+CONFIG_ACTION_STATE_SCHEMA_VERSION = "plugin_config_action_state.v1"
 CONFIG_SECTIONS = {"rules", "features", "global_rules", "linked_rules"}
 MAX_AREA_SCAN_ROWS = 100000
 FEATURE_ANY_LABEL = "不限制"
@@ -467,6 +468,7 @@ def describe_config(params, context):
             "preview_config_effect": True,
             "protocol_manifest": True,
             "structured_warnings": True,
+            "action_state": True,
             "layout_hints": True,
             "ui_hints": True,
             "legacy_custom_config": True,
@@ -600,6 +602,7 @@ def _visual_mapping_protocol_manifest(
         "views": view_items,
         "actions": action_items,
         "models": sorted((models or {}).keys()),
+        "action_state": _visual_mapping_action_state_schema(),
         "patch": {
             "schema_version": patch_schema.get("schema_version"),
             "kind": patch_schema.get("kind"),
@@ -642,6 +645,56 @@ def _visual_mapping_protocol_manifest(
             "provider": "preview_config_effect",
             "view_id": "plugin.config_effect",
         },
+    }
+
+
+def _visual_mapping_action_state_schema():
+    button_keys = [
+        "append_item",
+        "update_item",
+        "delete_item",
+        "set_enabled",
+        "move_item_-1",
+        "move_item_1",
+    ]
+    return {
+        "schema_version": CONFIG_ACTION_STATE_SCHEMA_VERSION,
+        "protocol_family": CONFIG_PROTOCOL_FAMILY,
+        "kind": "structured_list_action_state",
+        "provider": "PluginService.describe_plugin_config",
+        "description": "由服务层根据 view.patch_operations、selection 和 actions 生成结构化列表按钮状态，供 Qt/.NET/Web 统一渲染。",
+        "applies_to_view_kind": "structured_list",
+        "view_kinds": ["structured_list"],
+        "button_keys": button_keys,
+        "boundary_sensitive_buttons": ["move_item_-1", "move_item_1"],
+        "selection_required_buttons": ["update_item", "delete_item", "set_enabled", "move_item_-1", "move_item_1"],
+        "operation_aliases": {
+            "update_item": "replace_item",
+            "remove_item": "delete_item",
+        },
+        "fields": [
+            {"key": "schema_version", "type": "string", "required": True},
+            {"key": "view_id", "type": "string", "required": True},
+            {"key": "editor_kind", "type": "string", "required": False},
+            {"key": "section", "type": "string", "required": False},
+            {"key": "action_id", "type": "string", "required": False},
+            {"key": "item_count", "type": "integer", "required": True},
+            {"key": "selected_index", "type": "integer", "required": False},
+            {"key": "supported_operations", "type": "list", "required": True},
+            {"key": "buttons", "type": "object", "required": True},
+        ],
+        "button_fields": [
+            {"key": "key", "type": "string", "required": True},
+            {"key": "label", "type": "string", "required": True},
+            {"key": "operation", "type": "string", "required": True},
+            {"key": "effective_operation", "type": "string", "required": False},
+            {"key": "target_offset", "type": "integer", "required": False},
+            {"key": "visible", "type": "boolean", "required": True},
+            {"key": "enabled", "type": "boolean", "required": True},
+            {"key": "requires_selection", "type": "boolean", "required": True},
+            {"key": "disabled_reason", "type": "string", "required": False},
+            {"key": "action_id", "type": "string", "required": False},
+        ],
     }
 
 

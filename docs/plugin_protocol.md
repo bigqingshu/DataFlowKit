@@ -414,6 +414,8 @@ editor_kind:
 
 Qt 已能按这些字段重排插件配置页签、默认切到推荐视图，并把视图说明合并到 tab tooltip。后续 .NET/Web 应优先消费同一批字段，而不是复制 Qt 当前布局。
 
+复杂 `structured_list` 视图还应消费服务层生成的 `action_state`，当前 schema 为 `plugin_config_action_state.v1`。它会描述每个按钮的 `visible`、`enabled`、`requires_selection`、`disabled_reason`、`target_offset` 与 `action_id`，例如新增、更新、删除、启用/禁用、上移、下移。UI 不应自行根据行号猜测边界按钮状态，也不应硬编码动作入口；后续 Qt/.NET/Web 都应优先按 `view.action_state.buttons` 渲染列表工具按钮。
+
 对于只有 `PARAMETER_SCHEMA`、没有自定义复杂 `describe_config().layout/ui_hints` 的普通参数型插件，`PluginService.describe_plugin_config()` 会生成默认：
 
 - `layout.schema_version: plugin_config_layout.v1`
