@@ -37,9 +37,11 @@ class DataSourceManagerWindow:
         self.save_mode_entries = []
         self.save_modes_description = {}
         self.service_description = self._describe_data_source_service()
+        self.client_profiles = self._service_client_profiles()
+        self.transport_hints = self._service_transport_hints()
         self.page_source = None
         self.page_offset = 0
-        self.page_limit = 500
+        self.page_limit = self._transport_page_size_default(default=500)
         self.page_has_more = False
         self.current_table_is_partial = False
         self.current_table_handle = ""
@@ -106,7 +108,7 @@ class DataSourceManagerWindow:
 
         page_row = qt.QtWidgets.QHBoxLayout()
         self.page_size_spin = qt.QtWidgets.QSpinBox()
-        self.page_size_spin.setRange(1, 100000)
+        self.page_size_spin.setRange(1, self._transport_page_size_max(default=100000))
         self.page_size_spin.setValue(self.page_limit)
         self.page_size_spin.setSingleStep(100)
         self.prev_page_button = qt.QtWidgets.QPushButton("上一页")
@@ -244,10 +246,15 @@ class DataSourceManagerWindow:
         state = manager_state if isinstance(manager_state, dict) else self._describe_data_source_manager_state()
         layout = state.get("layout") if isinstance(state.get("layout"), dict) else {}
         ui_hints = state.get("ui_hints") if isinstance(state.get("ui_hints"), dict) else {}
+        service = state.get("service") if isinstance(state.get("service"), dict) else {}
+        client_profiles = service.get("client_profiles") if isinstance(service.get("client_profiles"), dict) else self.client_profiles
+        transport_hints = service.get("transport_hints") if isinstance(service.get("transport_hints"), dict) else self.transport_hints
         if not layout and not ui_hints:
             return
         self.manager_layout = copy.deepcopy(layout)
         self.manager_ui_hints = copy.deepcopy(ui_hints)
+        self.client_profiles = copy.deepcopy(client_profiles if isinstance(client_profiles, dict) else {})
+        self.transport_hints = copy.deepcopy(transport_hints if isinstance(transport_hints, dict) else {})
         self.manager_sections_by_id = {
             str(section.get("section_id") or ""): copy.deepcopy(section)
             for section in layout.get("sections") or []
@@ -263,6 +270,17 @@ class DataSourceManagerWindow:
         self.window.setProperty("data_source_manager_ui_hints_schema", str(ui_hints.get("schema_version") or ""))
         self.window.setProperty("data_source_manager_default_section", str(layout.get("default_section_id") or ui_hints.get("default_focus") or ""))
         self.window.setProperty("data_source_manager_display_mode", str(ui_hints.get("display_mode") or ""))
+        table_transfer = self._transport_table_transfer()
+        self.window.setProperty("data_source_client_profiles_schema", str(self.client_profiles.get("schema_version") or ""))
+        self.window.setProperty("data_source_transport_hints_schema", str(self.transport_hints.get("schema_version") or ""))
+        self.window.setProperty("data_source_default_client_profile", str(self.client_profiles.get("default_profile") or ""))
+        self.window.setProperty("data_source_table_transfer_action", str(table_transfer.get("preferred_action") or ""))
+        self.window.setProperty("data_source_table_page_action", str(table_transfer.get("page_action") or ""))
+        self.window.setProperty("data_source_table_release_action", str(table_transfer.get("release_action") or ""))
+        self.window.setProperty("data_source_page_size_default", self._transport_page_size_default(default=self.page_limit))
+        self.window.setProperty("data_source_page_size_max_hint", self._transport_page_size_max(default=self.page_size_spin.maximum() if hasattr(self, "page_size_spin") else 100000))
+        if hasattr(self, "page_size_spin"):
+            self.page_size_spin.setMaximum(self._transport_page_size_max(default=self.page_size_spin.maximum()))
         self._apply_manager_section_hints()
         self._apply_manager_action_hints()
 
@@ -404,6 +422,8 @@ class DataSourceManagerWindow:
                 "action_ids": sorted(str(key) for key in (service.get("actions") or {}).keys()),
                 "data_action_ids": sorted(str(key) for key in (service.get("data_actions") or {}).keys()),
                 "table_action_ids": sorted(str(key) for key in (service.get("table_actions") or {}).keys()),
+                "client_profiles": copy.deepcopy(service.get("client_profiles") or {}),
+                "transport_hints": copy.deepcopy(service.get("transport_hints") or {}),
                 "result_schemas": copy.deepcopy(service.get("result_schemas") or {}),
             },
             "action_schema": {
@@ -478,6 +498,29 @@ class DataSourceManagerWindow:
         except Exception:
             return {}
         return copy.deepcopy(described if isinstance(described, dict) else {})
+
+    def _service_client_profiles(self):
+        service = self.service_description if isinstance(self.service_description, dict) else {}
+        profiles = service.get("client_profiles") if isinstance(service.get("client_profiles"), dict) else {}
+        return copy.deepcopy(profiles)
+
+    def _service_transport_hints(self):
+        service = self.service_description if isinstance(self.service_description, dict) else {}
+        hints = service.get("transport_hints") if isinstance(service.get("transport_hints"), dict) else {}
+        return copy.deepcopy(hints)
+
+    def _transport_table_transfer(self):
+        hints = self.transport_hints if isinstance(self.transport_hints, dict) else {}
+        transfer = hints.get("table_transfer") if isinstance(hints.get("table_transfer"), dict) else {}
+        return transfer
+
+    def _transport_page_size_default(self, *, default=500):
+        transfer = self._transport_table_transfer()
+        return max(1, self._int_value(transfer.get("page_size_default"), default=default))
+
+    def _transport_page_size_max(self, *, default=100000):
+        transfer = self._transport_table_transfer()
+        return max(1, self._int_value(transfer.get("page_size_max_hint"), default=default))
 
     def _has_table_action(self, action_id):
         service = self.service_description if isinstance(self.service_description, dict) else {}
