@@ -243,6 +243,15 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(described["ui_hints"]["view_hints"]["plugin.params"]["kind"], "form")
         self.assertEqual(described["ui_hints"]["parameter_field_hints"]["schema_version"], "plugin_parameter_ui_hints.v1")
         self.assertEqual(described["ui_hints"]["action_prominence"]["open_legacy_config"], "low")
+        self.assertEqual(described["protocol_manifest"]["schema_version"], "plugin_config_protocol_manifest.v1")
+        self.assertEqual(described["protocol_manifest"]["provider"], "PluginService.describe_plugin_config")
+        self.assertTrue(described["protocol_manifest"]["interfaces"]["describe_plugin_config"])
+        self.assertTrue(described["protocol_manifest"]["interfaces"]["resolve_plugin_parameter_options"])
+        self.assertFalse(described["protocol_manifest"]["interfaces"]["apply_plugin_config_patch"])
+        self.assertTrue(described["protocol_manifest"]["interfaces"]["legacy_config_window"])
+        self.assertEqual(described["protocol_manifest"]["layout"]["default_view_id"], "plugin.params")
+        self.assertEqual(described["protocol_manifest"]["parameter_metadata"]["field_count"], 2)
+        self.assertEqual(described["protocol_manifest"]["compatibility"]["legacy_action_ids"], ["open_legacy_config"])
         self.assertEqual(described["config_compatibility"], compatibility)
         self.assertEqual(described["legacy_config_state"], legacy_state)
         self.assertEqual(described["actions"][0]["action_id"], "open_legacy_config")
@@ -433,6 +442,15 @@ class PluginServiceTests(unittest.TestCase):
             described["node_ui_schema"]["parameter_metadata"]["ui_hints"],
             described["parameter_metadata"]["ui_hints"],
         )
+        self.assertEqual(described["protocol_manifest"]["schema_version"], "plugin_config_protocol_manifest.v1")
+        self.assertTrue(described["protocol_manifest"]["interfaces"]["resolve_plugin_parameter_options"])
+        self.assertFalse(described["protocol_manifest"]["interfaces"]["legacy_config_window"])
+        self.assertEqual(
+            set(described["protocol_manifest"]["parameter_metadata"]["options_sources"]),
+            {"table_names", "plugin_input_tables", "plugin_dynamic_choices"},
+        )
+        self.assertTrue(described["protocol_manifest"]["parameter_metadata"]["capabilities"]["conditional_fields"])
+        self.assertIn("plugin.resources", described["protocol_manifest"]["layout"]["secondary_views"])
         self.assertEqual(dynamic_options["schema_version"], "plugin_parameter_options.v1")
         self.assertEqual(dynamic_options["param_key"], "config_name")
         self.assertEqual(dynamic_options["choices"], ["default", "advanced"])

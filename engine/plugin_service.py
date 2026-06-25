@@ -583,11 +583,24 @@ class PluginService:
         if config_effect.get("ok"):
             combined_capabilities["config_effect_preview"] = True
             combined_capabilities["preview_config_effect"] = True
+        default_protocol_manifest = _default_plugin_config_protocol_manifest(
+            plugin_id=key,
+            protocol_family=protocol_family,
+            views=views,
+            resources=resources,
+            actions=actions,
+            layout=config_layout,
+            ui_hints=config_ui_hints,
+            parameter_metadata=parameter_metadata,
+            config_compatibility=plugin.get("config_compatibility"),
+            capabilities=combined_capabilities,
+        )
+        protocol_manifest = copy.deepcopy(plugin_extension.get("protocol_manifest") or default_protocol_manifest)
         config_sections = _plugin_config_sections(
             views=views,
             resources=resources,
             actions=actions,
-            protocol_manifest=plugin_extension.get("protocol_manifest"),
+            protocol_manifest=protocol_manifest,
             patch_schema=plugin_extension.get("patch_schema"),
             warning_schema=plugin_extension.get("warning_schema"),
             warning_items=warning_items,
@@ -622,7 +635,7 @@ class PluginService:
             "ui_hints": config_ui_hints,
             "context": copy.deepcopy(plugin_extension.get("context") or {}),
             "models": copy.deepcopy(plugin_extension.get("models") or {}),
-            "protocol_manifest": copy.deepcopy(plugin_extension.get("protocol_manifest") or {}),
+            "protocol_manifest": protocol_manifest,
             "config_compatibility": copy.deepcopy(plugin.get("config_compatibility") or {}),
             "legacy_config_state": copy.deepcopy(plugin.get("legacy_config_state") or {}),
             "capabilities": combined_capabilities,
@@ -2140,6 +2153,118 @@ def _default_plugin_config_ui_hints(views, *, parameter_metadata=None, actions=N
             str(item.get("action_id") or ""): str(item.get("ui_prominence") or ("low" if str(item.get("kind") or "") == "compatibility" else "normal"))
             for item in actions or []
             if isinstance(item, dict) and str(item.get("action_id") or "").strip()
+        },
+    }
+
+
+def _default_plugin_config_protocol_manifest(
+    *,
+    plugin_id="",
+    protocol_family="",
+    views=None,
+    resources=None,
+    actions=None,
+    layout=None,
+    ui_hints=None,
+    parameter_metadata=None,
+    config_compatibility=None,
+    capabilities=None,
+):
+    metadata = parameter_metadata if isinstance(parameter_metadata, dict) else {}
+    layout = layout if isinstance(layout, dict) else {}
+    ui_hints = ui_hints if isinstance(ui_hints, dict) else {}
+    compatibility = config_compatibility if isinstance(config_compatibility, dict) else {}
+    capabilities = capabilities if isinstance(capabilities, dict) else {}
+    context_requirements = metadata.get("context_requirements") if isinstance(metadata.get("context_requirements"), dict) else {}
+    metadata_capabilities = metadata.get("capabilities") if isinstance(metadata.get("capabilities"), dict) else {}
+    action_items = [item for item in actions or [] if isinstance(item, dict)]
+    view_items = [item for item in views or [] if isinstance(item, dict)]
+    resource_items = [item for item in resources or [] if isinstance(item, dict)]
+    has_dynamic_options = bool(
+        context_requirements.get("needs_dynamic_options")
+        or metadata_capabilities.get("dynamic_options")
+    )
+    has_option_sources = bool(context_requirements.get("options_sources") or has_dynamic_options)
+    legacy_actions = [
+        str(item.get("action_id") or "").strip()
+        for item in action_items
+        if str(item.get("kind") or "") == "compatibility" and str(item.get("action_id") or "").strip()
+    ]
+    return {
+        "schema_version": "plugin_config_protocol_manifest.v1",
+        "protocol_family": str(protocol_family or "plugin_form_config"),
+        "plugin_id": str(plugin_id or ""),
+        "provider": "PluginService.describe_plugin_config",
+        "interfaces": {
+            "get_plugin_schema": True,
+            "describe_plugin_config": True,
+            "resolve_plugin_parameter_options": has_option_sources,
+            "preview_plugin_config_effect": bool(capabilities.get("preview_config_effect") or capabilities.get("config_effect_preview")),
+            "apply_plugin_config_patch": bool(capabilities.get("config_patch")),
+            "legacy_config_window": bool(legacy_actions),
+        },
+        "schemas": {
+            "config": "plugin_config.v1",
+            "layout": str(layout.get("schema_version") or ""),
+            "ui_hints": str(ui_hints.get("schema_version") or ""),
+            "parameter_metadata": str(metadata.get("schema_version") or ""),
+        },
+        "views": [
+            {
+                "view_id": str(item.get("view_id") or ""),
+                "title": str(item.get("title") or item.get("view_id") or ""),
+                "kind": str(item.get("kind") or ""),
+            }
+            for item in view_items
+            if str(item.get("view_id") or "").strip()
+        ],
+        "resources": [
+            {
+                "resource_id": str(item.get("resource_id") or ""),
+                "label": str(item.get("label") or item.get("resource_id") or ""),
+                "kind": str(item.get("kind") or item.get("type") or ""),
+            }
+            for item in resource_items
+            if str(item.get("resource_id") or "").strip()
+        ],
+        "actions": [
+            {
+                "action_id": str(item.get("action_id") or ""),
+                "label": str(item.get("label") or item.get("action_id") or ""),
+                "kind": str(item.get("kind") or ""),
+                "lifecycle": str(item.get("lifecycle") or ""),
+                "ui_prominence": str(item.get("ui_prominence") or ""),
+            }
+            for item in action_items
+            if str(item.get("action_id") or "").strip()
+        ],
+        "layout": {
+            "default_view_id": str(layout.get("default_view_id") or ""),
+            "view_order": list(layout.get("view_order") or []),
+            "primary_views": list(layout.get("primary_views") or []),
+            "secondary_views": list(layout.get("secondary_views") or []),
+            "preferred_navigation": str(layout.get("preferred_navigation") or ""),
+        },
+        "ui_hints": {
+            "display_mode": str(ui_hints.get("display_mode") or ""),
+            "navigation": str(ui_hints.get("navigation") or ""),
+            "density": str(ui_hints.get("density") or ""),
+            "default_view_id": str(ui_hints.get("default_view_id") or ""),
+        },
+        "parameter_metadata": {
+            "schema_version": str(metadata.get("schema_version") or ""),
+            "field_count": int(metadata.get("field_count") or 0),
+            "group_count": len(metadata.get("groups") or []),
+            "options_sources": list(context_requirements.get("options_sources") or []),
+            "context_requirements": copy.deepcopy(context_requirements),
+            "capabilities": copy.deepcopy(metadata_capabilities),
+        },
+        "compatibility": {
+            "compatibility_tier": str(compatibility.get("compatibility_tier") or ""),
+            "primary_config_path": str(compatibility.get("primary_config_path") or ""),
+            "legacy_ui_required": bool(compatibility.get("legacy_ui_required")),
+            "legacy_fallback_available": bool(compatibility.get("legacy_fallback_available")),
+            "legacy_action_ids": legacy_actions,
         },
     }
 
