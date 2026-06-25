@@ -732,6 +732,15 @@ class Qt6UiShellTests(unittest.TestCase):
                     },
                 },
             },
+            "protocol_manifest": {
+                "schema_version": "plugin_config_protocol_manifest.v1",
+                "provider": "PluginService.describe_plugin_config",
+                "interfaces": {
+                    "describe_plugin_config": True,
+                    "resolve_plugin_parameter_options": True,
+                    "legacy_config_window": False,
+                },
+            },
             "views": [
                 {"view_id": "demo.advanced", "kind": "summary", "title": "高级", "summary": {"状态": "advanced"}},
                 {
@@ -766,6 +775,18 @@ class Qt6UiShellTests(unittest.TestCase):
 
         self.assertEqual(titles, ["概览", "协议规则", "高级"])
         self.assertEqual(controller.plugin_config_view_tabs.currentIndex(), 1)
+        self.assertEqual(
+            controller.plugin_config_view_tabs.property("plugin_protocol_manifest_schema"),
+            "plugin_config_protocol_manifest.v1",
+        )
+        self.assertEqual(
+            controller.plugin_config_view_tabs.property("plugin_protocol_manifest_provider"),
+            "PluginService.describe_plugin_config",
+        )
+        self.assertEqual(
+            controller.plugin_config_view_tabs.property("plugin_protocol_manifest_interfaces"),
+            "describe_plugin_config,resolve_plugin_parameter_options",
+        )
         tooltip = controller.plugin_config_view_tabs.tabToolTip(1)
         self.assertIn("按协议默认打开规则", tooltip)
         self.assertIn("空状态：暂无规则。", tooltip)

@@ -999,7 +999,7 @@ class QtWorkflowMainWindow:
         if resources:
             lines.append("配置资源：" + "、".join(str(item.get("label") or item.get("resource_id") or "") for item in resources[:6]))
         manifest_line = self._plugin_protocol_manifest_summary(
-            described.get("protocol_manifest") or plugin_extension.get("protocol_manifest")
+            self._plugin_config_protocol_manifest(described)
         )
         if manifest_line:
             lines.append(manifest_line)
@@ -1284,12 +1284,16 @@ class QtWorkflowMainWindow:
             return
         self.plugin_config_view_widgets_by_id = {}
         self.plugin_config_view_tabs.clear()
+        self.plugin_config_view_tabs.setProperty("plugin_protocol_manifest_schema", "")
+        self.plugin_config_view_tabs.setProperty("plugin_protocol_manifest_provider", "")
+        self.plugin_config_view_tabs.setProperty("plugin_protocol_manifest_interfaces", "")
         self.plugin_config_view_tabs.setVisible(False)
 
     def _render_plugin_config_views(self, described):
         self._clear_plugin_config_views()
         if not described.get("ok"):
             return
+        self._apply_plugin_protocol_manifest_properties(described)
         warnings_by_view = self._plugin_warning_items_by_view(described)
         view_hints = self._plugin_config_view_hints(described)
         default_view_id = self._plugin_config_default_view_id(described)
@@ -1320,6 +1324,29 @@ class QtWorkflowMainWindow:
         if default_tab_index >= 0:
             self.plugin_config_view_tabs.setCurrentIndex(default_tab_index)
         self.plugin_config_view_tabs.setVisible(added > 0)
+
+    def _apply_plugin_protocol_manifest_properties(self, described):
+        manifest = self._plugin_config_protocol_manifest(described)
+        if not manifest or not hasattr(self, "plugin_config_view_tabs"):
+            return
+        interfaces = manifest.get("interfaces") if isinstance(manifest.get("interfaces"), dict) else {}
+        enabled_interfaces = sorted(
+            str(key)
+            for key, enabled in interfaces.items()
+            if enabled and str(key or "").strip()
+        )
+        self.plugin_config_view_tabs.setProperty(
+            "plugin_protocol_manifest_schema",
+            str(manifest.get("schema_version") or ""),
+        )
+        self.plugin_config_view_tabs.setProperty(
+            "plugin_protocol_manifest_provider",
+            str(manifest.get("provider") or ""),
+        )
+        self.plugin_config_view_tabs.setProperty(
+            "plugin_protocol_manifest_interfaces",
+            ",".join(enabled_interfaces),
+        )
 
     def _ordered_plugin_config_views(self, described):
         views = [view for view in (described or {}).get("views") or [] if isinstance(view, dict)]
@@ -1353,6 +1380,15 @@ class QtWorkflowMainWindow:
             return ui_hints
         extension = described.get("plugin_extension") if isinstance(described.get("plugin_extension"), dict) else {}
         return extension.get("ui_hints") if isinstance(extension.get("ui_hints"), dict) else {}
+
+    def _plugin_config_protocol_manifest(self, described):
+        if not isinstance(described, dict):
+            return {}
+        manifest = described.get("protocol_manifest") if isinstance(described.get("protocol_manifest"), dict) else {}
+        if manifest:
+            return manifest
+        extension = described.get("plugin_extension") if isinstance(described.get("plugin_extension"), dict) else {}
+        return extension.get("protocol_manifest") if isinstance(extension.get("protocol_manifest"), dict) else {}
 
     def _plugin_config_view_hints(self, described):
         ui_hints = self._plugin_config_ui_hints(described)
