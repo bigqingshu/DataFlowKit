@@ -149,6 +149,10 @@ class StdioWorkerApiTests(unittest.TestCase):
             "plugin_parameter_ui_hints.v1",
         )
         self.assertEqual(
+            schema["result"]["schema"]["parameter_metadata"]["field_state_schema"]["schema_version"],
+            "plugin_parameter_field_state.v1",
+        )
+        self.assertEqual(
             schema["result"]["schema"]["parameter_metadata"]["layout_index"]["field_order"],
             ["params.field"],
         )
@@ -160,6 +164,10 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertEqual(
             described["result"]["parameter_metadata"]["ui_hints"]["schema_version"],
             "plugin_parameter_ui_hints.v1",
+        )
+        self.assertEqual(
+            described["result"]["parameter_metadata"]["field_state_index"]["params.field"]["schema_version"],
+            "plugin_parameter_field_state.v1",
         )
         self.assertEqual(
             described["result"]["parameter_metadata"]["layout_index"]["field_order"],

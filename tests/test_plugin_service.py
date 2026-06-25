@@ -388,6 +388,12 @@ class PluginServiceTests(unittest.TestCase):
         self.assertTrue(metadata["capabilities"]["advanced_fields"])
         self.assertEqual(metadata["layout_index"]["schema_version"], "plugin_parameter_layout.v1")
         self.assertEqual(metadata["ui_hints"]["schema_version"], "plugin_parameter_ui_hints.v1")
+        self.assertEqual(metadata["field_state_schema"]["schema_version"], "plugin_parameter_field_state.v1")
+        self.assertEqual(metadata["field_state_index"]["params.directory_path"]["visible_when"], {"field": "params.input_alias", "equals": "当前表"})
+        self.assertEqual(metadata["field_state_index"]["params.directory_path"]["enabled_when"], {"field": "params.config_name", "truthy": True})
+        self.assertTrue(metadata["field_state_index"]["params.directory_path"]["has_warning"])
+        self.assertEqual(metadata["field_state_index"]["params.config_name"]["options_source"]["type"], "plugin_dynamic_choices")
+        self.assertTrue(metadata["field_state_index"]["params.config_name"]["needs_options_refresh"])
         self.assertIn("params.directory_path", metadata["layout_index"]["field_order"])
         self.assertIn("params.directory_path", metadata["ui_hints"]["advanced_fields"])
         self.assertIn("params.directory_path", metadata["ui_hints"]["placeholder_fields"])
@@ -453,6 +459,9 @@ class PluginServiceTests(unittest.TestCase):
         self.assertEqual(described["protocol_manifest"]["schema_version"], "plugin_config_protocol_manifest.v1")
         self.assertTrue(described["protocol_manifest"]["interfaces"]["resolve_plugin_parameter_options"])
         self.assertFalse(described["protocol_manifest"]["interfaces"]["legacy_config_window"])
+        self.assertEqual(described["protocol_manifest"]["schemas"]["parameter_field_state"], "plugin_parameter_field_state.v1")
+        self.assertEqual(described["protocol_manifest"]["parameter_metadata"]["field_state_schema"], "plugin_parameter_field_state.v1")
+        self.assertEqual(described["protocol_manifest"]["parameter_metadata"]["field_state_count"], 4)
         self.assertEqual(
             set(described["protocol_manifest"]["parameter_metadata"]["options_sources"]),
             {"table_names", "plugin_input_tables", "plugin_dynamic_choices"},

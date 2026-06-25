@@ -2250,6 +2250,7 @@ def _default_plugin_config_protocol_manifest(
             "layout": str(layout.get("schema_version") or ""),
             "ui_hints": str(ui_hints.get("schema_version") or ""),
             "parameter_metadata": str(metadata.get("schema_version") or ""),
+            "parameter_field_state": str((metadata.get("field_state_schema") or {}).get("schema_version") or ""),
         },
         "views": [
             {
@@ -2300,6 +2301,8 @@ def _default_plugin_config_protocol_manifest(
             "options_sources": list(context_requirements.get("options_sources") or []),
             "context_requirements": copy.deepcopy(context_requirements),
             "capabilities": copy.deepcopy(metadata_capabilities),
+            "field_state_schema": str((metadata.get("field_state_schema") or {}).get("schema_version") or ""),
+            "field_state_count": len(metadata.get("field_state_index") or {}),
         },
         "compatibility": {
             "compatibility_tier": str(compatibility.get("compatibility_tier") or ""),
@@ -2997,6 +3000,7 @@ def _plugin_parameter_metadata(default_config, parameter_schema):
     options_source_index = _plugin_parameter_options_source_index(parameter_fields)
     options_source_details = _plugin_parameter_options_source_details(options_source_index)
     field_index = _plugin_parameter_field_index(parameter_fields)
+    field_state_index = _plugin_parameter_field_state_index(parameter_fields)
     group_index = {
         group["group_key"]: {
             "title": group["title"],
@@ -3017,6 +3021,8 @@ def _plugin_parameter_metadata(default_config, parameter_schema):
         "layout_index": _plugin_parameter_layout_index(groups, parameter_fields),
         "ui_hints": _plugin_parameter_ui_hints(parameter_fields),
         "dependency_index": _plugin_parameter_dependency_index(parameter_fields),
+        "field_state_schema": _plugin_parameter_field_state_schema(),
+        "field_state_index": field_state_index,
         "options_source_index": options_source_index,
         "options_source_details": options_source_details,
         "default_params": copy.deepcopy((default_config or {}).get("params") or {}),
@@ -3033,8 +3039,101 @@ def _plugin_parameter_metadata(default_config, parameter_schema):
             "field_dependencies": any(field.get("depends_on") or field.get("refresh_on_change") for field in parameter_fields),
             "field_actions": any(field.get("action") for field in parameter_fields),
             "advanced_fields": any(bool(field.get("advanced")) for field in parameter_fields),
+            "field_state": bool(field_state_index),
         },
     }
+
+
+def _plugin_parameter_field_state_schema():
+    return {
+        "schema_version": "plugin_parameter_field_state.v1",
+        "provider": "PluginService._plugin_parameter_metadata",
+        "description": "描述参数字段当前状态的共享结构，供 Qt/.NET/Web 统一渲染可见、启用、提示、候选刷新和依赖关系。",
+        "fields": [
+            {"key": "field_key", "type": "string", "required": True},
+            {"key": "param_key", "type": "string", "required": False},
+            {"key": "label", "type": "string", "required": False},
+            {"key": "type", "type": "string", "required": False},
+            {"key": "group", "type": "string", "required": False},
+            {"key": "default_visible", "type": "bool", "required": True},
+            {"key": "default_enabled", "type": "bool", "required": True},
+            {"key": "advanced", "type": "bool", "required": True},
+            {"key": "required", "type": "bool", "required": True},
+            {"key": "visible_when", "type": "condition", "required": False},
+            {"key": "enabled_when", "type": "condition", "required": False},
+            {"key": "depends_on", "type": "list", "required": False},
+            {"key": "refresh_on_change", "type": "list", "required": False},
+            {"key": "options_source", "type": "object", "required": False},
+            {"key": "has_warning", "type": "bool", "required": True},
+            {"key": "warning", "type": "string", "required": False},
+            {"key": "placeholder", "type": "string", "required": False},
+            {"key": "empty_text", "type": "string", "required": False},
+            {"key": "invalid_value_text", "type": "string", "required": False},
+            {"key": "needs_options_refresh", "type": "bool", "required": True},
+        ],
+        "condition_fields": ["visible_when", "enabled_when"],
+        "dependency_fields": ["depends_on", "refresh_on_change"],
+    }
+
+
+def _plugin_parameter_field_state_index(parameter_fields):
+    result = {}
+    for field in parameter_fields or []:
+        if not isinstance(field, dict):
+            continue
+        key = str(field.get("key") or "").strip()
+        if not key:
+            continue
+        options_source = field.get("options_source") if isinstance(field.get("options_source"), dict) else {}
+        depends_on = _normalize_parameter_ref_list(field.get("depends_on"))
+        refresh_on_change = _normalize_parameter_ref_list(field.get("refresh_on_change"))
+        options_source_type = str(options_source.get("type") or "").strip()
+        state = {
+            "schema_version": "plugin_parameter_field_state.v1",
+            "field_key": key,
+            "param_key": str(field.get("param_key") or ""),
+            "label": str(field.get("label") or key),
+            "type": str(field.get("type") or "text"),
+            "group": _plugin_parameter_group_title(field),
+            "default_visible": True,
+            "default_enabled": True,
+            "advanced": bool(field.get("advanced")),
+            "required": bool(field.get("required")),
+            "depends_on": depends_on,
+            "refresh_on_change": refresh_on_change,
+            "has_warning": bool(str(field.get("warning") or "").strip()),
+            "warning": str(field.get("warning") or ""),
+            "placeholder": str(field.get("placeholder") or ""),
+            "empty_text": str(field.get("empty_text") or ""),
+            "invalid_value_text": str(field.get("invalid_value_text") or ""),
+            "needs_options_refresh": bool(
+                options_source_type in {"plugin_dynamic_choices", "table_columns"}
+                or depends_on
+                or refresh_on_change
+            ),
+        }
+        if field.get("visible_when") is not None:
+            state["visible_when"] = copy.deepcopy(field.get("visible_when"))
+        if field.get("enabled_when") is not None:
+            state["enabled_when"] = copy.deepcopy(field.get("enabled_when"))
+        if options_source:
+            state["options_source"] = copy.deepcopy(options_source)
+        result[key] = state
+    return result
+
+
+def _normalize_parameter_ref_list(value):
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    return [
+        str(item).strip()
+        for item in value
+        if str(item).strip()
+    ]
 
 
 def _plugin_parameter_layout_index(groups, parameter_fields):

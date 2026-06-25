@@ -1935,6 +1935,41 @@ class Qt6UiShellTests(unittest.TestCase):
                     "numeric_fields": [],
                     "width_hint_fields": ["params.path"],
                 },
+                "field_state_schema": {
+                    "schema_version": "plugin_parameter_field_state.v1",
+                },
+                "field_state_index": {
+                    "params.mode": {
+                        "schema_version": "plugin_parameter_field_state.v1",
+                        "field_key": "params.mode",
+                        "param_key": "mode",
+                        "label": "模式",
+                        "type": "select",
+                        "default_visible": True,
+                        "default_enabled": True,
+                        "advanced": True,
+                        "required": False,
+                        "has_warning": True,
+                        "warning": "模式会影响运行耗时",
+                        "empty_text": "暂无模式",
+                        "invalid_value_text": "请选择有效模式",
+                        "needs_options_refresh": False,
+                    },
+                    "params.path": {
+                        "schema_version": "plugin_parameter_field_state.v1",
+                        "field_key": "params.path",
+                        "param_key": "path",
+                        "label": "目录",
+                        "type": "text",
+                        "default_visible": True,
+                        "default_enabled": True,
+                        "advanced": False,
+                        "required": False,
+                        "has_warning": False,
+                        "depends_on": ["params.mode"],
+                        "needs_options_refresh": True,
+                    },
+                },
                 "dependency_index": {"params.mode": ["params.path"]},
                 "capabilities": {"dynamic_options": True, "field_dependencies": True},
                 "context_requirements": {"needs_dynamic_options": True},
@@ -1960,6 +1995,9 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(state["parameter_metadata"]["dependency_index"]["params.mode"], ["params.path"])
         self.assertEqual(state["parameter_metadata"]["layout_index"]["schema_version"], "plugin_parameter_layout.v1")
         self.assertEqual(state["parameter_metadata"]["ui_hints"]["schema_version"], "plugin_parameter_ui_hints.v1")
+        self.assertEqual(state["parameter_metadata"]["field_state_schema"]["schema_version"], "plugin_parameter_field_state.v1")
+        self.assertTrue(state["parameter_metadata"]["field_state_index"]["params.mode"]["has_warning"])
+        self.assertEqual(state["parameter_metadata"]["field_state_index"]["params.path"]["depends_on"], ["params.mode"])
         self.assertIn("params.mode", state["parameter_metadata"]["layout_index"]["field_order"])
         self.assertIn("params.mode", state["parameter_metadata"]["ui_hints"]["advanced_fields"])
         self.assertIn("params.mode", state["parameter_metadata"]["ui_hints"]["warning_fields"])
