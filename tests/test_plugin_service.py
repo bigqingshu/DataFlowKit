@@ -642,13 +642,20 @@ class PluginServiceTests(unittest.TestCase):
                 "plugin.patch_demo",
                 config=config,
                 patch={"operation": "delete_everything"},
-            )
+        )
 
         self.assertTrue(validation["ok"])
-        self.assertEqual(validation["patch"], patch)
+        self.assertEqual(validation["patch"]["operation"], patch["operation"])
+        self.assertEqual(validation["patch"]["schema_version"], "plugin_config_patch.v1")
+        self.assertEqual(validation["patch"]["patch_context"]["operation"], "set_param")
         self.assertTrue(applied["ok"])
         self.assertTrue(applied["changed"])
         self.assertEqual(applied["config"]["params"]["mode"], "new")
+        self.assertEqual(applied["patch"]["schema_version"], "plugin_config_patch.v1")
+        self.assertEqual(applied["patch"]["protocol_family"], "plugin_config_patch")
+        self.assertEqual(applied["patch"]["plugin_id"], "patch_demo")
+        self.assertEqual(applied["patch"]["patch_context"]["schema_version"], "plugin_config_patch_context.v1")
+        self.assertEqual(applied["patch"]["patch_context"]["operation"], "set_param")
         self.assertEqual(applied["patch_result"]["schema_version"], "plugin_config_patch_result.v1")
         self.assertEqual(applied["patch_result"]["plugin_id"], "patch_demo")
         self.assertTrue(applied["patch_result"]["changed"])
@@ -860,6 +867,9 @@ class PluginServiceTests(unittest.TestCase):
         self.assertTrue(validation["result"]["ok"])
         self.assertTrue(applied["ok"])
         self.assertEqual(applied["result"]["config"]["params"]["mode"], "stdio")
+        self.assertEqual(applied["result"]["patch"]["schema_version"], "plugin_config_patch.v1")
+        self.assertEqual(applied["result"]["patch"]["plugin_id"], "patch_demo")
+        self.assertEqual(applied["result"]["patch"]["patch_context"]["operation"], "set_param")
         self.assertEqual(applied["result"]["patch_result"]["schema_version"], "plugin_config_patch_result.v1")
         self.assertEqual(applied["result"]["patch_result"]["description_summary"]["summary"], {"mode": "stdio"})
         self.assertEqual(applied["result"]["description"]["plugin_extension"]["summary"]["mode"], "stdio")

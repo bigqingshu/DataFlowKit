@@ -400,7 +400,10 @@ class PluginService:
             context=runtime_context,
             plugins_dir=plugins_dir,
         )
-        applied_patch = copy.deepcopy(result.get("patch") or validation.get("patch") or patch_payload)
+        applied_patch = _enrich_plugin_config_patch_payload(
+            result.get("patch") or validation.get("patch") or patch_payload,
+            plugin_id=key,
+        )
         patch_result = _plugin_config_patch_result(
             plugin_id=key,
             patch=applied_patch,
@@ -1972,6 +1975,49 @@ def _plugin_config_patch_result(*, plugin_id="", patch=None, changed=False, mess
     return result
 
 
+def _enrich_plugin_config_patch_payload(patch, *, plugin_id=""):
+    payload = copy.deepcopy(patch if isinstance(patch, dict) else {})
+    plugin_text = str(plugin_id or payload.get("plugin_id") or "").strip()
+    operation = str(payload.get("operation") or "").strip()
+    view_id = str(payload.get("view_id") or "").strip()
+    editor_kind = str(payload.get("editor_kind") or "").strip()
+    action_id = str(payload.get("action_id") or "").strip()
+    section = str(payload.get("section") or "").strip()
+    path = payload.get("path")
+    if not isinstance(path, (list, tuple)):
+        path = payload.get("target") if isinstance(payload.get("target"), (list, tuple)) else []
+    path = [copy.deepcopy(part) for part in path]
+    target_index = payload.get("target_index")
+    if target_index is None:
+        target_index = payload.get("index")
+    if not str(payload.get("schema_version") or "").strip():
+        payload["schema_version"] = "plugin_config_patch.v1"
+    payload.setdefault("protocol_family", "plugin_config_patch")
+    if plugin_text:
+        payload.setdefault("plugin_id", plugin_text)
+    if path and "path" not in payload:
+        payload["path"] = copy.deepcopy(path)
+    if path:
+        payload.setdefault("path_text", _format_plugin_config_path(path))
+    if target_index is not None:
+        payload.setdefault("target_index", target_index)
+    payload.setdefault("patch_context", {
+        "schema_version": "plugin_config_patch_context.v1",
+        "plugin_id": plugin_text,
+        "operation": operation,
+        "view_id": view_id,
+        "editor_kind": editor_kind,
+        "action_id": action_id,
+        "section": section,
+        "path": copy.deepcopy(path),
+        "path_text": _format_plugin_config_path(path),
+        "target_index": target_index,
+        "target_id": str(payload.get("target_id") or "").strip(),
+        "to_index": payload.get("to_index"),
+    })
+    return payload
+
+
 def _plugin_config_patch_target_payload(patch):
     patch_payload = patch if isinstance(patch, dict) else {}
     view_id = str(patch_payload.get("view_id") or "").strip()
@@ -2882,6 +2928,7 @@ def _plugin_config_warning_target(item):
 
 
 def _normalize_plugin_config_patch_validation_result(plugin_id, result, patch):
+    patch_payload = _enrich_plugin_config_patch_payload(patch, plugin_id=plugin_id)
     if isinstance(result, dict):
         payload = copy.deepcopy(result)
         if payload.get("ok") is False:
@@ -2895,7 +2942,7 @@ def _normalize_plugin_config_patch_validation_result(plugin_id, result, patch):
             )
         payload["ok"] = True
         payload.setdefault("plugin_id", plugin_id)
-        payload.setdefault("patch", copy.deepcopy(patch or {}))
+        payload.setdefault("patch", copy.deepcopy(patch_payload))
         payload.setdefault("issues", [])
         return payload
     if isinstance(result, tuple):
@@ -2908,7 +2955,7 @@ def _normalize_plugin_config_patch_validation_result(plugin_id, result, patch):
     return {
         "ok": True,
         "plugin_id": plugin_id,
-        "patch": copy.deepcopy(patch or {}),
+        "patch": patch_payload,
         "issues": [],
     }
 
