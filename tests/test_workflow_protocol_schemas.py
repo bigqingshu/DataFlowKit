@@ -494,6 +494,49 @@ class WorkflowProtocolSchemaTests(unittest.TestCase):
         }
         self.assertTrue(jump_fields["loop_id"]["ui_capabilities"]["depends_on_plan"])
 
+    def test_workflow_facade_resolves_generic_node_config_options(self):
+        from engine.workflow_facade import WorkflowFacade
+
+        plan = {
+            "nodes": [
+                {"node_type_id": "core.loop_start", "config": {"loop_id": "Loop_A"}},
+                {"node_type_id": "core.jump_anchor", "config": {"anchor_id": "ANCHOR_END"}},
+                {"node_type_id": "core.save_transit", "config": {"transit_name": "中转A"}},
+            ]
+        }
+        facade = WorkflowFacade()
+
+        loop_options = facade.resolve_node_config_options(
+            "core.loop_judge",
+            plan=plan,
+            field_key="loop_id",
+        )
+        self.assertTrue(loop_options["ok"])
+        self.assertEqual(loop_options["schema_version"], "node_config_options.v1")
+        self.assertEqual(loop_options["source"], "plan_refs")
+        self.assertEqual(loop_options["choices"], ["Loop_A"])
+        self.assertEqual(loop_options["picker_context"]["ref_kind"], "loop_id")
+
+        jump_options = facade.resolve_node_config_options(
+            "core.conditional_jump",
+            plan=plan,
+            field_key="jump_rules.target_anchor_id",
+        )
+        self.assertTrue(jump_options["ok"])
+        self.assertEqual(jump_options["source"], "plan_refs")
+        self.assertEqual(jump_options["choices"], ["ANCHOR_END"])
+
+        table_field_options = facade.resolve_node_config_options(
+            "core.match_value_output",
+            field_key="lookup_fields",
+            current_values={"lookup_table": "orders"},
+            table_columns={"orders": ["id", "name"]},
+        )
+        self.assertTrue(table_field_options["ok"])
+        self.assertEqual(table_field_options["source"], "table_columns")
+        self.assertEqual(table_field_options["choices"], ["id", "name"])
+        self.assertEqual(table_field_options["picker_context"]["table_name"], "orders")
+
     def test_node_ui_schema_exposes_structured_warning_items(self):
         from workflow.node_ui_schema import get_node_ui_schema
 

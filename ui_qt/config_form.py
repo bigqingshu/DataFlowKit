@@ -1276,14 +1276,13 @@ class NodeConfigForm:
         if not isinstance(self.node, dict):
             return {}
         node_type_id = normalize_node_type_id(self.node.get("node_type_id") or self.node.get("type") or "")
-        if node_type_id != "core.filter":
-            return {}
         field_key = str(field_key or "").strip()
         if not field_key:
             return {}
         try:
             result = self.engine_client.resolve_node_config_options(
                 node_type_id,
+                plan=copy.deepcopy(self.plan),
                 node=copy.deepcopy(self.node),
                 config=self._current_config_snapshot(),
                 field_key=field_key,
@@ -1294,7 +1293,7 @@ class NodeConfigForm:
             )
         except Exception:
             return {}
-        if not result.get("ok") or result.get("schema_version") != "filter_config_options.v1":
+        if not result.get("ok") or result.get("schema_version") not in {"filter_config_options.v1", "node_config_options.v1"}:
             return {}
         if str(result.get("source") or "") == "unknown":
             return {}

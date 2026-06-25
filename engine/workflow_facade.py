@@ -14,6 +14,7 @@ from workflow.node_ui_schema import (
     build_field_help_payload,
     build_node_detail_payload,
     build_node_ui_catalog_from_schemas,
+    get_node_ui_schema,
     normalize_node_type_id,
     plan_reference_choices,
     runtime_reference_choices,
@@ -36,6 +37,34 @@ def _plugin_config_capability_labels(capabilities):
         if capabilities.get(key):
             labels.append(label)
     return labels
+
+
+def _schema_config_field_for_key(schema, field_key):
+    field_key = str(field_key or "").strip()
+    if not field_key or not isinstance(schema, dict):
+        return {}
+    for group in ((schema.get("form") or {}).get("groups") or []):
+        if not isinstance(group, dict):
+            continue
+        for field in group.get("fields") or []:
+            if not isinstance(field, dict):
+                continue
+            key = str(field.get("key") or "").strip()
+            if key == field_key:
+                return copy.deepcopy(field)
+            item_schema = field.get("item_schema") if isinstance(field.get("item_schema"), dict) else {}
+            for column in item_schema.get("columns") or []:
+                if not isinstance(column, dict):
+                    continue
+                column_key = str(column.get("key") or "").strip()
+                if not column_key:
+                    continue
+                if field_key in {column_key, f"{key}.{column_key}"}:
+                    payload = copy.deepcopy(column)
+                    payload.setdefault("parent_key", key)
+                    payload.setdefault("field_key", f"{key}.{column_key}" if key else column_key)
+                    return payload
+    return {}
 
 
 class WorkflowFacade:
@@ -1223,6 +1252,7 @@ class WorkflowFacade:
         self,
         node_type_id="",
         *,
+        plan=None,
         node=None,
         config=None,
         field_key="",
@@ -1251,6 +1281,18 @@ class WorkflowFacade:
                 table_columns=table_columns,
                 transit_context=transit_context,
             )
+        generic = self._resolve_schema_node_config_options(
+            normalized_type,
+            plan=plan,
+            config=config_source if isinstance(config_source, dict) else {},
+            field_key=field_key,
+            current_values=current_values,
+            preview_headers=preview_headers,
+            table_names=table_names,
+            table_columns=table_columns,
+        )
+        if generic:
+            return generic
         return {
             "ok": False,
             "schema_version": "node_config_options.v1",
@@ -1265,6 +1307,92 @@ class WorkflowFacade:
                 "message": f"节点暂不支持共享候选：{normalized_type or node_type_id}",
                 "path": "/node_type_id",
             }],
+        }
+
+    def _resolve_schema_node_config_options(
+        self,
+        node_type_id,
+        *,
+        plan=None,
+        config=None,
+        field_key="",
+        current_values=None,
+        preview_headers=None,
+        table_names=None,
+        table_columns=None,
+    ):
+        node_type_id = normalize_node_type_id(node_type_id)
+        field_key = str(field_key or "").strip()
+        if not node_type_id or not field_key:
+            return {}
+        schema = get_node_ui_schema(
+            node_type_id,
+            preview_headers=preview_headers,
+            table_names=table_names,
+            table_columns=table_columns,
+        )
+        field = _schema_config_field_for_key(schema, field_key)
+        if not field:
+            return {}
+        options_source = field.get("options_source") if isinstance(field.get("options_source"), dict) else {}
+        action = field.get("action") if isinstance(field.get("action"), dict) else {}
+        action_key = str(action.get("key") or "").strip()
+        source_type = str(options_source.get("type") or "").strip()
+        values = {}
+        if isinstance(config, dict):
+            values.update(copy.deepcopy(config))
+        if isinstance(current_values, dict):
+            values.update(copy.deepcopy(current_values))
+
+        choices = []
+        picker_context = {}
+        source = source_type or "field_choices"
+        if source_type == "preview_headers" or (not source_type and str(field.get("type") or "") in {"field_select", "field_multi_select"}):
+            source = "preview_headers"
+            choices = [str(item) for item in (preview_headers or []) if str(item).strip()]
+        else:
+            picker_context = self.describe_picker_context(
+                plan=plan,
+                field_key=field_key,
+                action_key=action_key,
+                ref_kind=str(options_source.get("ref_kind") or action.get("ref_kind") or ""),
+                options_source=options_source,
+                table_names=table_names,
+                table_columns=table_columns,
+                current_values=values,
+            ).get("picker_context") or {}
+            if picker_context.get("source"):
+                source = str(picker_context.get("source") or source)
+                choices = [str(item) for item in (picker_context.get("candidates") or []) if str(item).strip()]
+            else:
+                choices = [str(item) for item in (field.get("choices") or []) if str(item).strip()]
+        if not choices and field.get("choices") is not None and source in {"", "field_choices"}:
+            choices = [str(item) for item in (field.get("choices") or []) if str(item).strip()]
+        issues = []
+        empty_code = str(picker_context.get("empty_code") or "node_config_options_empty")
+        if not choices and (options_source or action_key):
+            issues.append({
+                "severity": "warning",
+                "code": empty_code,
+                "message": str(field.get("empty_text") or picker_context.get("label") or "当前没有可用候选。"),
+                "field": field_key,
+                "source": source,
+            })
+        return {
+            "ok": True,
+            "schema_version": "node_config_options.v1",
+            "node_type_id": node_type_id,
+            "field_key": field_key,
+            "source": source,
+            "label": str(field.get("label") or field_key),
+            "options_source": copy.deepcopy(options_source),
+            "action": copy.deepcopy(action),
+            "choices": choices,
+            "candidate_count": len(choices),
+            "empty_text": str(field.get("empty_text") or ""),
+            "allow_custom": bool(field.get("allow_custom", True)),
+            "picker_context": copy.deepcopy(picker_context),
+            "issues": issues,
         }
 
     def _shared_config_context_sections(self, shared_config_context):

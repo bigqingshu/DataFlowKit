@@ -4206,12 +4206,23 @@ class Qt6UiShellTests(unittest.TestCase):
             self.skipTest(str(exc))
         app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
 
-        form = NodeConfigForm(qt, plan={
+        class SpyClient(QtHeadlessEngineClient):
+            def __init__(self):
+                super().__init__()
+                self.option_calls = []
+
+            def resolve_node_config_options(self, node_type_id="", **kwargs):
+                self.option_calls.append({"node_type_id": node_type_id, **copy.deepcopy(kwargs)})
+                return super().resolve_node_config_options(node_type_id, **kwargs)
+
+        client = SpyClient()
+        plan = {
             "nodes": [
                 {"node_type_id": "core.loop_start", "config": {"loop_id": "Loop_A"}},
                 {"node_type_id": "core.jump_anchor", "config": {"anchor_id": "ANCHOR_END"}},
             ]
-        })
+        }
+        form = NodeConfigForm(qt, plan=plan, engine_client=client)
         schema = {
             "form": {
                 "groups": [
@@ -4266,6 +4277,9 @@ class Qt6UiShellTests(unittest.TestCase):
         loop_editor = form.config_fields["loop_id"]["editor"]
         loop_values = [loop_editor.itemText(i) for i in range(loop_editor.count())]
         self.assertIn("Loop_A", loop_values)
+        loop_calls = [item for item in client.option_calls if item.get("field_key") == "loop_id"]
+        self.assertTrue(loop_calls)
+        self.assertEqual(loop_calls[0]["plan"], plan)
 
         jump_editor = form.config_fields["jump_rules"]["editor"]
         table = jump_editor.structured_state["table"]

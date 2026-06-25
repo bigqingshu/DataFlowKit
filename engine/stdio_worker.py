@@ -134,6 +134,7 @@ class StdioWorker:
                 node_type = node_type or node.get("node_type_id") or node.get("type")
             return self.facade.resolve_node_config_options(
                 node_type,
+                plan=payload.get("plan"),
                 node=node if isinstance(node, dict) else None,
                 config=payload.get("config"),
                 field_key=payload.get("field_key", ""),

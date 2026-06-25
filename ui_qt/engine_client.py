@@ -179,6 +179,7 @@ class QtHeadlessEngineClient:
         self,
         node_type_id="",
         *,
+        plan=None,
         node=None,
         config=None,
         field_key="",
@@ -190,6 +191,7 @@ class QtHeadlessEngineClient:
     ):
         return self.facade.resolve_node_config_options(
             node_type_id,
+            plan=copy.deepcopy(plan),
             node=copy.deepcopy(node),
             config=copy.deepcopy(config),
             field_key=field_key,

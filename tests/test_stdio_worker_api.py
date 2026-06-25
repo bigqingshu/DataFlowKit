@@ -329,6 +329,26 @@ class StdioWorkerApiTests(unittest.TestCase):
         self.assertEqual(result["source"], "table_fields")
         self.assertEqual(result["choices"], ["lookup.Code", "lookup.Name"])
 
+    def test_resolve_node_config_options_returns_generic_plan_refs_over_stdio(self):
+        worker = StdioWorker()
+
+        response = worker.handle_request(request("resolve_node_config_options", {
+            "node_type_id": "core.loop_judge",
+            "plan": {
+                "nodes": [
+                    {"node_type_id": "core.loop_start", "config": {"loop_id": "Loop_A"}},
+                ],
+            },
+            "field_key": "loop_id",
+        }))
+
+        self.assertTrue(response["ok"])
+        result = response["result"]
+        self.assertEqual(result["schema_version"], "node_config_options.v1")
+        self.assertEqual(result["source"], "plan_refs")
+        self.assertEqual(result["choices"], ["Loop_A"])
+        self.assertEqual(result["picker_context"]["ref_kind"], "loop_id")
+
     def test_make_default_node_and_validate_plan(self):
         worker = StdioWorker()
 

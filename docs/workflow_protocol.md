@@ -508,6 +508,19 @@ include `text`, `textarea`, `number`, `bool`, `select`, `field_select`, and
   `min`. Clients may show these hints immediately, while backend
   `validate_config` remains the final authority.
 
+Clients should call `resolve_node_config_options` for dynamic node candidates.
+The action now has a generic schema fallback in addition to specialized
+services such as advanced filter config:
+
+- `plan_refs`: loop ids and jump anchors from the current plan.
+- `runtime_refs`: transit tables/names produced by earlier nodes.
+- `preview_headers`: fields from the current preview/input table.
+- `table_names` / `table_columns`: SQLite table and column candidates.
+- `field_values`: candidates derived from another config field.
+
+Generic results use `node_config_options.v1`; specialized node services may
+return a more specific schema such as `filter_config_options.v1`.
+
 ## 8. Runtime Responses
 
 ```json
