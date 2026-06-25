@@ -130,6 +130,7 @@ class NodeConfigForm:
         self.node_fields = {}
         self.config_fields = {}
         self.validation_issues = []
+        self.parameter_field_runtime_state = {}
         self.shared_config_service_buttons = {}
         self.shared_config_service_status_text = ""
         self.shared_config_service_status_label = None
@@ -167,6 +168,7 @@ class NodeConfigForm:
         return {
             "ok": True,
             "parameter_metadata": self._parameter_metadata_state(),
+            "parameter_field_runtime_state": copy.deepcopy(self.parameter_field_runtime_state or {}),
             "shared_config_context": self._shared_config_context_state(),
             "shared_config_service": self._shared_config_service_state(),
             "fields": {
@@ -269,6 +271,7 @@ class NodeConfigForm:
         self.node_fields = {}
         self.config_fields = {}
         self.validation_issues = []
+        self.parameter_field_runtime_state = {}
         self.shared_config_service_buttons = {}
         self.shared_config_service_status_label = None
 
@@ -1620,15 +1623,23 @@ class NodeConfigForm:
     def _apply_dynamic_state(self):
         self._refresh_dynamic_options()
         values = self._current_field_values()
+        runtime_state = self._resolve_parameter_field_runtime_state()
+        runtime_index = runtime_state.get("field_state_index") if isinstance(runtime_state.get("field_state_index"), dict) else {}
         for field in self.config_fields.values():
+            key = str(field.get("key") or "")
             label = field.get("label")
             editor = field.get("editor")
             container = field.get("editor_container") or editor
             action_button = field.get("action_button")
             if editor is None:
                 continue
-            visible = self._condition_matches(field.get("visible_when"), values)
-            enabled = visible and self._condition_matches(field.get("enabled_when"), values)
+            runtime_item = runtime_index.get(key) if key else None
+            if isinstance(runtime_item, dict):
+                visible = bool(runtime_item.get("visible", True))
+                enabled = bool(runtime_item.get("enabled", visible))
+            else:
+                visible = self._condition_matches(field.get("visible_when"), values)
+                enabled = visible and self._condition_matches(field.get("enabled_when"), values)
             if label is not None:
                 label.setVisible(visible)
             container.setVisible(visible)
@@ -1636,6 +1647,33 @@ class NodeConfigForm:
             if action_button is not None:
                 action_button.setEnabled(enabled)
         self._apply_validation_state()
+
+    def _resolve_parameter_field_runtime_state(self):
+        self.parameter_field_runtime_state = {}
+        if not isinstance(self.node, dict):
+            return {}
+        node_type_id = normalize_node_type_id(self.node.get("node_type_id") or self.node.get("type") or "")
+        if not node_type_id.startswith("plugin."):
+            return {}
+        resolver = getattr(self.engine_client, "resolve_plugin_parameter_field_state", None)
+        if not callable(resolver):
+            return {}
+        try:
+            state = resolver(
+                node_type_id,
+                config=self._current_config_snapshot(),
+                input_table={"headers": list(self.headers or []), "rows": []},
+                context={
+                    "table_names": list(self.table_names or []),
+                    "table_columns": copy.deepcopy(self.table_columns or {}),
+                },
+            )
+        except Exception:
+            return {}
+        if isinstance(state, dict) and state.get("ok"):
+            self.parameter_field_runtime_state = copy.deepcopy(state)
+            return state
+        return {}
 
     def _apply_validation_state(self):
         issue_map = {}

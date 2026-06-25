@@ -2087,6 +2087,103 @@ class Qt6UiShellTests(unittest.TestCase):
         self.assertEqual(form.to_node()["config"]["params"]["path"], "data")
         app.processEvents()
 
+    def test_config_form_prefers_plugin_field_runtime_state(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+
+        class RuntimeStateClient:
+            def __init__(self):
+                self.calls = []
+
+            def resolve_plugin_parameter_field_state(self, plugin_id, **kwargs):
+                self.calls.append((plugin_id, copy.deepcopy(kwargs)))
+                return {
+                    "ok": True,
+                    "schema_version": "plugin_parameter_field_runtime_state.v1",
+                    "plugin_id": "demo",
+                    "field_count": 2,
+                    "field_state_index": {
+                        "params.mode": {
+                            "schema_version": "plugin_parameter_field_runtime_state_item.v1",
+                            "field_key": "params.mode",
+                            "visible": True,
+                            "enabled": True,
+                            "status": "active",
+                        },
+                        "params.path": {
+                            "schema_version": "plugin_parameter_field_runtime_state_item.v1",
+                            "field_key": "params.path",
+                            "visible": False,
+                            "enabled": False,
+                            "status": "hidden",
+                            "depends_on": ["params.mode"],
+                        },
+                    },
+                    "fields": [],
+                    "issues": [],
+                }
+
+        schema = {
+            "form": {
+                "groups": [
+                    {
+                        "title": "插件参数",
+                        "fields": [
+                            {
+                                "key": "params.mode",
+                                "config_path": ["params", "mode"],
+                                "label": "模式",
+                                "type": "text",
+                            },
+                            {
+                                "key": "params.path",
+                                "config_path": ["params", "path"],
+                                "label": "目录",
+                                "type": "text",
+                                "visible_when": {"field": "params.mode", "equals": "show"},
+                            },
+                        ],
+                    }
+                ]
+            },
+            "parameter_metadata": {
+                "schema_version": "plugin_parameters.v1",
+                "field_state_schema": {"schema_version": "plugin_parameter_field_state.v1"},
+                "field_state_index": {
+                    "params.mode": {"schema_version": "plugin_parameter_field_state.v1"},
+                    "params.path": {"schema_version": "plugin_parameter_field_state.v1"},
+                },
+            },
+        }
+        node = {
+            "node_type_id": "plugin.demo",
+            "node_id": "n1",
+            "name": "Demo",
+            "enabled": True,
+            "node_version": "1.0.0",
+            "config": {"params": {"mode": "show", "path": "data"}},
+        }
+        client = RuntimeStateClient()
+        form = NodeConfigForm(qt, engine_client=client)
+        form.set_node(node, schema=schema)
+
+        self.assertEqual(client.calls[0][0], "plugin.demo")
+        self.assertEqual(client.calls[0][1]["config"]["params"]["mode"], "show")
+        self.assertTrue(form.config_fields["params.path"]["editor"].isHidden())
+        state = form.describe_state()
+        self.assertEqual(
+            state["parameter_field_runtime_state"]["schema_version"],
+            "plugin_parameter_field_runtime_state.v1",
+        )
+        self.assertEqual(
+            state["parameter_field_runtime_state"]["field_state_index"]["params.path"]["status"],
+            "hidden",
+        )
+        app.processEvents()
+
     def test_config_form_exposes_schema_action_buttons(self):
         try:
             qt = qt_app.load_qt6()
