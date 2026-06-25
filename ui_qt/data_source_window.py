@@ -279,6 +279,7 @@ class DataSourceManagerWindow:
         self.window.setProperty("data_source_table_release_action", str(table_transfer.get("release_action") or ""))
         self.window.setProperty("data_source_page_size_default", self._transport_page_size_default(default=self.page_limit))
         self.window.setProperty("data_source_page_size_max_hint", self._transport_page_size_max(default=self.page_size_spin.maximum() if hasattr(self, "page_size_spin") else 100000))
+        self.window.setProperty("data_source_paged_table_editing", self._transport_paged_table_editing())
         if hasattr(self, "page_size_spin"):
             self.page_size_spin.setMaximum(self._transport_page_size_max(default=self.page_size_spin.maximum()))
         self._apply_manager_section_hints()
@@ -527,6 +528,23 @@ class DataSourceManagerWindow:
         transfer = self._transport_table_transfer()
         return max(1, self._int_value(transfer.get("page_size_max_hint"), default=default))
 
+    def _transport_editing_hints(self):
+        hints = self.transport_hints if isinstance(self.transport_hints, dict) else {}
+        editing = hints.get("editing") if isinstance(hints.get("editing"), dict) else {}
+        return editing
+
+    def _transport_paged_table_editing(self):
+        editing = self._transport_editing_hints()
+        return str(editing.get("paged_table_editing") or "readonly_until_full_table_loaded").strip()
+
+    def _partial_table_is_readonly(self):
+        return self.current_table_is_partial and self._transport_paged_table_editing() == "readonly_until_full_table_loaded"
+
+    def _partial_table_disabled_reason(self):
+        if not self._partial_table_is_readonly():
+            return ""
+        return "分页预览按协议只读，请先载入完整表。"
+
     def _has_table_action(self, action_id):
         service = self.service_description if isinstance(self.service_description, dict) else {}
         table_actions = service.get("table_actions") if isinstance(service.get("table_actions"), dict) else {}
@@ -587,7 +605,7 @@ class DataSourceManagerWindow:
         self._refresh_table_shape_status(title=title)
 
     def mark_dirty(self):
-        if self.current_table_is_partial:
+        if self._partial_table_is_readonly():
             return
         self.dirty = True
         self._refresh_data_action_controls()
@@ -676,7 +694,7 @@ class DataSourceManagerWindow:
             self.next_page_button.setEnabled(self.current_table_is_partial and self.page_has_more)
             self.load_full_table_button.setEnabled(can_page)
         self._refresh_data_action_controls()
-        if self.current_table_is_partial and self.edit_mode_checkbox.isChecked():
+        if self._partial_table_is_readonly() and self.edit_mode_checkbox.isChecked():
             self.edit_mode_checkbox.blockSignals(True)
             self.edit_mode_checkbox.setChecked(False)
             self.edit_mode_checkbox.blockSignals(False)
@@ -766,6 +784,9 @@ class DataSourceManagerWindow:
             if not isinstance(action, dict):
                 continue
             state_tip = self._action_state_tooltip(action)
+            readonly_reason = self._partial_table_disabled_reason()
+            if readonly_reason and action_id in {"patch_cell", "save_sqlite", "promote_first_row"}:
+                state_tip = (state_tip + "\n" + readonly_reason) if state_tip else readonly_reason
             for widget in (self.action_widgets or {}).get(action_id, []):
                 if widget is None or not hasattr(widget, "toolTip") or not hasattr(widget, "setToolTip"):
                     continue
@@ -791,11 +812,12 @@ class DataSourceManagerWindow:
             if isinstance(selected_actions.get("delete_sqlite"), dict):
                 self._last_action_states["delete_sqlite"] = copy.deepcopy(selected_actions["delete_sqlite"])
             self.clear_button.setEnabled(bool(action_enabled.get("clear_table")))
-            self.promote_header_button.setEnabled(not self.current_table_is_partial and bool(action_enabled.get("promote_first_row")))
+            editable_table = not self._partial_table_is_readonly()
+            self.promote_header_button.setEnabled(editable_table and bool(action_enabled.get("promote_first_row")))
             self.search_button.setEnabled(bool(action_enabled.get("search_table")))
-            self.save_button.setEnabled(not self.current_table_is_partial and bool(action_enabled.get("save_sqlite")))
+            self.save_button.setEnabled(editable_table and bool(action_enabled.get("save_sqlite")))
             self.apply_input_button.setEnabled(bool(action_enabled.get("apply_to_workflow")))
-            self.edit_mode_checkbox.setEnabled(not self.current_table_is_partial and bool(action_enabled.get("patch_cell")))
+            self.edit_mode_checkbox.setEnabled(editable_table and bool(action_enabled.get("patch_cell")))
             self.delete_table_button.setEnabled(bool((selected_enabled or {}).get("delete_sqlite")))
             self._apply_action_state_tooltips(self._last_action_states)
             return
@@ -804,7 +826,7 @@ class DataSourceManagerWindow:
         self._last_action_states = copy.deepcopy(actions)
         if isinstance(selected_actions.get("delete_sqlite"), dict):
             self._last_action_states["delete_sqlite"] = copy.deepcopy(selected_actions["delete_sqlite"])
-        editable_table = not self.current_table_is_partial
+        editable_table = not self._partial_table_is_readonly()
         self.clear_button.setEnabled(self._action_enabled(actions, "clear_table"))
         self.promote_header_button.setEnabled(editable_table and self._action_enabled(actions, "promote_first_row"))
         self.search_button.setEnabled(self._action_enabled(actions, "search_table"))
@@ -861,7 +883,7 @@ class DataSourceManagerWindow:
         return getattr(self.qt.QtWidgets.QAbstractItemView, name)
 
     def apply_edit_mode(self):
-        if self.current_table_is_partial:
+        if self._partial_table_is_readonly():
             trigger = "NoEditTriggers"
         else:
             trigger = "AllEditTriggers" if self.edit_mode_checkbox.isChecked() else "NoEditTriggers"
@@ -1059,8 +1081,8 @@ class DataSourceManagerWindow:
         return loaded
 
     def save_current_table(self):
-        if self.current_table_is_partial:
-            self.status_label.setText("分页预览不支持直接保存，请先载入完整表。")
+        if self._partial_table_is_readonly():
+            self.status_label.setText(self._partial_table_disabled_reason() or "分页预览不支持直接保存，请先载入完整表。")
             return
         db_path = self.db_path_edit.text().strip()
         table_name = self.save_table_name_edit.text().strip() or self.table_combo.currentText().strip()
