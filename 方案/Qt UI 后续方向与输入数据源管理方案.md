@@ -224,19 +224,20 @@ Qt 主窗口只持有当前工作流输入：
 
 ### 第四阶段：大表和多 UI 兼容
 
-当前状态：**后端与 stdio 已具备基础，Qt 已开始消费 manager layout/ui_hints，.NET/Web 消费方式还需继续推进**
+当前状态：**后端与 stdio 已具备基础，Qt 已开始消费 manager layout/ui_hints 与 transport_hints，.NET/Web 可按同一 payload 跟进**
 
 - 大表载入改用 table handle / 分页。
 - stdio worker 暴露同一批数据源动作。
 - `data_source_manager_state.v1` 已携带 manager layout 与 UI hints，后续 UI 可以按协议组织顶部工具栏、数据库行、载入表行、分页行、保存行、搜索行、表格区和状态区。
-- Qt 数据源窗口已把 manager layout / UI hints 映射到控件属性和 tooltip，后续应继续把按钮状态、区域显示、危险操作确认也压向共享 action payload。
+- `data_source_service.v1` 已携带 `data_source_client_profiles.v1 / data_source_transport_hints.v1`，后续 UI 可以按协议选择桌面直连、stdio、`.NET`、Web 的传输方式，并统一 table handle、分页、释放句柄和删除确认语义。
+- Qt 数据源窗口已把 manager layout / UI hints / transport hints 映射到控件属性、tooltip 和默认分页大小，后续应继续把按钮状态、危险操作确认和独立输入库状态压向共享 action payload。
 - .NET UI 只调用 stdio worker，不复用 Python UI 代码。
 - Qt 和 .NET 的数据源窗口共享同一套 payload 和行为规则。
 
 下一步建议拆成两块：
 
-1. Qt 侧继续从 `describe_data_source_service` 与 `data_source_manager_state` 获取能力、动作、布局与提示说明，减少按钮逻辑和危险提示硬编码。
-2. 大表载入路径优先使用 table handle/page，避免后续 `.NET` / Web 一开始就复制整表传输模式。
+1. Qt 侧继续把删除确认、按钮启用原因、分页编辑限制等细节从 `action_state / transport_hints` 读取，减少本地硬编码。
+2. `.NET` / Web 原型优先调用 `describe_data_source_service`，按 `client_profiles / transport_hints` 实现最小数据源窗口，验证不复用 Python UI 代码也能跑通。
 
 ## 9. 风险点
 
