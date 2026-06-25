@@ -700,6 +700,94 @@ class Qt6UiShellTests(unittest.TestCase):
         window.close()
         app.processEvents()
 
+    def test_plugin_config_warning_target_focuses_form_field(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+
+        controller._render_plugin_config_views({
+            "ok": True,
+            "views": [{
+                "view_id": "demo.form",
+                "kind": "form",
+                "title": "参数",
+                "form": {
+                    "groups": [{
+                        "title": "基础",
+                        "fields": [
+                            {"key": "params.source", "label": "来源", "config_path": ["params", "source"]},
+                            {"key": "params.path", "label": "路径", "config_path": ["params", "path"]},
+                        ],
+                    }],
+                },
+                "values": {"params.source": "当前表", "params.path": ""},
+            }],
+        })
+
+        focused = controller._focus_plugin_config_target({
+            "schema_version": "plugin_config_warning_target.v1",
+            "view_id": "demo.form",
+            "field": "params.path",
+            "config_path": ["params", "path"],
+            "focus_path": "/views/demo.form/fields/params.path",
+            "can_focus_view": True,
+            "can_focus_field": True,
+        })
+
+        self.assertTrue(focused)
+        widget = controller.plugin_config_view_tabs.currentWidget()
+        table = widget.plugin_config_table
+        self.assertEqual(table.currentRow(), 1)
+        self.assertEqual(table.property("plugin_config_last_focus_field"), "params.path")
+        self.assertEqual(table.property("plugin_config_last_focus_path"), "/views/demo.form/fields/params.path")
+        window.close()
+        app.processEvents()
+
+    def test_plugin_config_warning_target_focuses_structured_list_column(self):
+        try:
+            qt = qt_app.load_qt6()
+        except QtBindingUnavailable as exc:
+            self.skipTest(str(exc))
+        app = qt.QtWidgets.QApplication.instance() or qt.QtWidgets.QApplication([])
+        window = build_main_window(qt)
+        controller = window.qt_workflow_controller
+
+        controller._render_plugin_config_views({
+            "ok": True,
+            "views": [{
+                "view_id": "demo.rules",
+                "kind": "structured_list",
+                "title": "规则",
+                "items": [{"id": "rule_1", "name": "第一条", "target": "A"}],
+                "columns": [
+                    {"key": "name", "label": "名称"},
+                    {"key": "mapping.target", "label": "目标字段", "config_path": ["mapping", "target"]},
+                ],
+            }],
+        })
+
+        focused = controller._focus_plugin_config_target({
+            "schema_version": "plugin_config_warning_target.v1",
+            "view_id": "demo.rules",
+            "field": "mapping.target",
+            "focus_path": "/views/demo.rules/fields/mapping.target",
+            "can_focus_view": True,
+            "can_focus_field": True,
+        })
+
+        self.assertTrue(focused)
+        widget = controller.plugin_config_view_tabs.currentWidget()
+        table = widget.plugin_config_table
+        self.assertEqual(table.currentRow(), 0)
+        self.assertEqual(table.currentColumn(), 1)
+        self.assertEqual(widget.property("plugin_config_last_focus_field"), "mapping.target")
+        window.close()
+        app.processEvents()
+
     def test_plugin_config_views_use_protocol_layout_and_ui_hints(self):
         try:
             qt = qt_app.load_qt6()

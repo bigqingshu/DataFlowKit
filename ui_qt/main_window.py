@@ -1423,15 +1423,27 @@ class QtWorkflowMainWindow:
         return True
 
     def _focus_plugin_config_view_item(self, widget, target):
+        widget.plugin_config_last_focus_target = copy.deepcopy(target)
+        widget.setProperty("plugin_config_last_focus_path", str(target.get("focus_path") or ""))
+        field_key = self._plugin_config_target_field_key(target)
+        widget.setProperty("plugin_config_last_focus_field", field_key)
         table = getattr(widget, "plugin_config_table", None)
         if table is None:
             return False
         row = self._plugin_config_target_row(widget, target)
+        if row < 0:
+            row = self._plugin_config_target_field_row(widget, target)
+        col = self._plugin_config_target_column(widget, target)
+        if row < 0 and col >= 0 and table.rowCount() > 0:
+            row = table.currentRow() if table.currentRow() >= 0 else 0
         if row < 0 or row >= table.rowCount():
             return False
+        if col < 0 or col >= table.columnCount():
+            col = 0
         table.selectRow(row)
+        table.setCurrentCell(row, col)
         table.setFocus()
-        item = table.item(row, 0)
+        item = table.item(row, col) or table.item(row, 0)
         if item is not None:
             table.scrollToItem(item)
         detail_tabs = getattr(widget, "plugin_config_detail_tabs", None)
@@ -1463,6 +1475,90 @@ class QtWorkflowMainWindow:
                 if str(item.get(field) or "").strip() == target_id:
                     return row
         return -1
+
+    def _plugin_config_target_field_row(self, widget, target):
+        if not isinstance(target, dict):
+            return -1
+        field_candidates = set(self._plugin_config_target_field_candidates(target))
+        if not field_candidates:
+            return -1
+        for item in getattr(widget, "plugin_config_form_fields", []) or []:
+            if not isinstance(item, dict):
+                continue
+            row = item.get("row")
+            candidates = {
+                str(item.get("key") or "").strip(),
+                str(item.get("field") or "").strip(),
+                self._format_plugin_config_path(item.get("config_path")),
+            }
+            if candidates & field_candidates:
+                try:
+                    return int(row)
+                except (TypeError, ValueError):
+                    return -1
+        return -1
+
+    def _plugin_config_target_column(self, widget, target):
+        if not isinstance(target, dict):
+            return -1
+        columns = getattr(widget, "plugin_config_field_columns", {}) or {}
+        for candidate in self._plugin_config_target_field_candidates(target):
+            if candidate in columns:
+                try:
+                    return int(columns[candidate])
+                except (TypeError, ValueError):
+                    return -1
+        return -1
+
+    def _plugin_structured_field_columns(self, columns):
+        result = {}
+        for index, column in enumerate(columns or []):
+            if not isinstance(column, dict):
+                continue
+            for value in [
+                column.get("key"),
+                column.get("field"),
+                column.get("name"),
+                self._format_plugin_config_path(column.get("config_path")),
+            ]:
+                text = str(value or "").strip()
+                if not text:
+                    continue
+                result.setdefault(text, index)
+                if "." in text:
+                    result.setdefault(text.rsplit(".", 1)[-1], index)
+        return result
+
+    def _plugin_config_target_field_key(self, target):
+        candidates = self._plugin_config_target_field_candidates(target)
+        return candidates[0] if candidates else ""
+
+    def _plugin_config_target_field_candidates(self, target):
+        if not isinstance(target, dict):
+            return []
+        values = []
+        for value in [
+            target.get("field"),
+            target.get("field_key"),
+            target.get("path"),
+            target.get("focus_path"),
+            self._format_plugin_config_path(target.get("config_path")),
+        ]:
+            text = str(value or "").strip()
+            if not text:
+                continue
+            values.append(text)
+            if "/" in text:
+                values.append(text.rstrip("/").rsplit("/", 1)[-1])
+            if "." in text:
+                values.append(text.rsplit(".", 1)[-1])
+        result = []
+        seen = set()
+        for value in values:
+            if value and value not in seen:
+                seen.add(value)
+                result.append(value)
+        return result
 
     def _plugin_warning_items_by_view(self, described):
         result = {}
@@ -1599,6 +1695,8 @@ class QtWorkflowMainWindow:
             return self._make_plugin_protocol_text_widget(view)
 
         table = qt.QtWidgets.QTableWidget()
+        table.plugin_config_table = table
+        table.plugin_config_form_fields = []
         table.setColumnCount(4)
         table.setHorizontalHeaderLabels(["分组", "字段", "值", "说明"])
         table.setRowCount(len(rows))
@@ -1612,6 +1710,13 @@ class QtWorkflowMainWindow:
             else:
                 value = field.get("default", "")
             help_text = field.get("help") or field.get("description") or field.get("warning") or field.get("placeholder") or ""
+            table.plugin_config_form_fields.append({
+                "row": row,
+                "key": key,
+                "field": key,
+                "label": label,
+                "config_path": copy.deepcopy(field.get("config_path") or []),
+            })
             for col, value_text in enumerate([
                 group_label,
                 label,
@@ -1680,6 +1785,7 @@ class QtWorkflowMainWindow:
         frame.plugin_config_action_id = self._plugin_config_action_id_for_view(view, described)
         frame.plugin_config_section = str(view.get("section") or "")
         frame.plugin_config_action_state = copy.deepcopy(action_state)
+        frame.plugin_config_field_columns = self._plugin_structured_field_columns(columns)
         if "append_value" in view:
             append_value = view.get("append_value")
         else:
